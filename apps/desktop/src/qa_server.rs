@@ -603,16 +603,14 @@ Prvw
 File
   Close        Cmd+W
 View
-  Zoom in      Cmd+=
-  Zoom out     Cmd+-
+  Zoom in      +/Cmd+=
+  Zoom out     -/Cmd+-
   ---
   Actual size  Cmd+1
-  Fit to window Cmd+0
-  ---
-  Fullscreen   Cmd+F
+  Fit to window 0/Cmd+0
 Navigate
-  Previous
-  Next
+  Previous     ←/[/Backspace
+  Next         →/]/Space
 ";
 
 fn handle_get_state(

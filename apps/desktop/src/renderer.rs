@@ -279,7 +279,8 @@ impl Renderer {
                 return false;
             }
             other => {
-                log::warn!("wgpu surface issue: {other:?}");
+                // Occluded is normal during macOS window creation/transition
+                log::trace!("wgpu surface status: {other:?}");
                 return false;
             }
         };

@@ -1,32 +1,30 @@
-use muda::{AboutMetadata, Menu, MenuEvent, MenuId, PredefinedMenuItem, Submenu};
+use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
 /// Identifiers for custom menu actions.
 pub struct MenuIds {
+    pub about: MenuId,
     pub zoom_in: MenuId,
     pub zoom_out: MenuId,
     pub actual_size: MenuId,
     pub fit_to_window: MenuId,
-    pub fullscreen: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
 }
 
 /// Build the native menu bar and return the action IDs for matching events.
+///
+/// Note: muda 0.17 crashes with a ZeroWidth icon error when processing accelerators AND when
+/// rendering the built-in About panel on macOS. All shortcuts are handled in the keyboard event
+/// handler in main.rs. The About dialog is also handled manually (not via PredefinedMenuItem::about).
 pub fn create_menu_bar() -> MenuIds {
     let menu = Menu::new();
 
     // App menu (macOS puts the first menu under the app name)
     let app_menu = Submenu::new("Prvw", true);
+    let about = MenuItem::new("About Prvw", true, None);
     app_menu
         .append_items(&[
-            &PredefinedMenuItem::about(
-                None,
-                Some(AboutMetadata {
-                    name: Some("Prvw".to_string()),
-                    version: Some(env!("CARGO_PKG_VERSION").to_string()),
-                    ..Default::default()
-                }),
-            ),
+            &about,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::hide(None),
             &PredefinedMenuItem::hide_others(None),
@@ -42,16 +40,12 @@ pub fn create_menu_bar() -> MenuIds {
         .append_items(&[&PredefinedMenuItem::close_window(None)])
         .expect("Failed to build file menu");
 
-    // View menu
-    // Note: all accelerators are disabled because muda 0.17 crashes with a ZeroWidth icon error
-    // when processing keyboard accelerators on macOS. All shortcuts are handled directly in the
-    // keyboard event handler in main.rs instead. The menu items are still clickable.
+    // View menu (no fullscreen item, F key handles it directly)
     let view_menu = Submenu::new("View", true);
-    let zoom_in = muda::MenuItem::new("Zoom in", true, None);
-    let zoom_out = muda::MenuItem::new("Zoom out", true, None);
-    let actual_size = muda::MenuItem::new("Actual size", true, None);
-    let fit_to_window = muda::MenuItem::new("Fit to window", true, None);
-    let fullscreen = muda::MenuItem::new("Fullscreen", true, None);
+    let zoom_in = MenuItem::new("Zoom in", true, None);
+    let zoom_out = MenuItem::new("Zoom out", true, None);
+    let actual_size = MenuItem::new("Actual size", true, None);
+    let fit_to_window = MenuItem::new("Fit to window", true, None);
     view_menu
         .append_items(&[
             &zoom_in,
@@ -59,15 +53,13 @@ pub fn create_menu_bar() -> MenuIds {
             &PredefinedMenuItem::separator(),
             &actual_size,
             &fit_to_window,
-            &PredefinedMenuItem::separator(),
-            &fullscreen,
         ])
         .expect("Failed to build view menu");
 
     // Navigate menu
     let nav_menu = Submenu::new("Navigate", true);
-    let previous = muda::MenuItem::new("Previous", true, None);
-    let next = muda::MenuItem::new("Next", true, None);
+    let previous = MenuItem::new("Previous      ←", true, None);
+    let next = MenuItem::new("Next            →", true, None);
     nav_menu
         .append_items(&[&previous, &next])
         .expect("Failed to build navigate menu");
@@ -75,17 +67,16 @@ pub fn create_menu_bar() -> MenuIds {
     menu.append_items(&[&app_menu, &file_menu, &view_menu, &nav_menu])
         .expect("Failed to build menu bar");
 
-    // On macOS, init the menu bar as the app menu
     menu.init_for_nsapp();
 
     log::debug!("Menu bar created");
 
     MenuIds {
+        about: about.id().clone(),
         zoom_in: zoom_in.id().clone(),
         zoom_out: zoom_out.id().clone(),
         actual_size: actual_size.id().clone(),
         fit_to_window: fit_to_window.id().clone(),
-        fullscreen: fullscreen.id().clone(),
         previous: previous.id().clone(),
         next: next.id().clone(),
     }

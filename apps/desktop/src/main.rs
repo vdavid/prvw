@@ -370,13 +370,47 @@ impl App {
         }
     }
 
+    fn show_about_dialog(&self) {
+        if let Some(_win) = &self.window {
+            let version = env!("CARGO_PKG_VERSION");
+            // Use a native macOS alert as a modal dialog
+            #[cfg(target_os = "macos")]
+            {
+                use std::process::Command;
+                let message = format!(
+                    "Prvw {version}\n\n\
+                     A fast image viewer for macOS.\n\n\
+                     By David Veszelovszki\n\
+                     https://veszelovszki.com\n\n\
+                     https://getprvw.com"
+                );
+                // osascript displays a native modal dialog
+                let _ = Command::new("osascript")
+                    .args([
+                        "-e",
+                        &format!(
+                            "display dialog \"{}\" with title \"About Prvw\" buttons {{\"OK\"}} default button \"OK\" with icon note",
+                            message.replace('"', "\\\"").replace('\n', "\\n")
+                        ),
+                    ])
+                    .spawn();
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                win.set_title(&format!("Prvw {version} - https://getprvw.com"));
+            }
+        }
+    }
+
     fn handle_menu_event(&mut self, event_loop: &ActiveEventLoop) {
         let Some(ids) = &self.menu_ids else { return };
         let Some(event) = menu::poll_menu_event() else {
             return;
         };
 
-        if event.id() == &ids.zoom_in {
+        if event.id() == &ids.about {
+            self.show_about_dialog();
+        } else if event.id() == &ids.zoom_in {
             self.view_state.keyboard_zoom(true);
             self.update_transform_and_redraw();
         } else if event.id() == &ids.zoom_out {
@@ -388,18 +422,11 @@ impl App {
         } else if event.id() == &ids.fit_to_window {
             self.view_state.fit_to_window();
             self.update_transform_and_redraw();
-        } else if event.id() == &ids.fullscreen {
-            if let Some(win) = &self.window {
-                window::toggle_fullscreen(win);
-                self.update_shared_state();
-            }
         } else if event.id() == &ids.previous {
             self.navigate(false);
         } else if event.id() == &ids.next {
             self.navigate(true);
         } else {
-            // Handle predefined menu items (Quit, Close)
-            // muda handles Quit/Close automatically on macOS via NSApplication
             let _ = event_loop;
         }
     }
@@ -509,8 +536,14 @@ impl App {
     /// Handle a key name from the QA server (web-style key names).
     fn handle_qa_key(&mut self, event_loop: &ActiveEventLoop, key_name: &str) {
         match key_name {
-            "ArrowLeft" => self.navigate(false),
-            "ArrowRight" => self.navigate(true),
+            "ArrowLeft" | "Backspace" | "[" => self.navigate(false),
+            "ArrowRight" | " " | "Space" | "]" => self.navigate(true),
+            "Enter" => {
+                if let Some(win) = &self.window {
+                    window::toggle_fullscreen(win);
+                    self.update_shared_state();
+                }
+            }
             "Escape" => {
                 if let Some(win) = &self.window {
                     if window::is_fullscreen(win) {
@@ -624,6 +657,10 @@ impl ApplicationHandler<AppCommand> for App {
             Arc::clone(&self.shared_state),
             self.event_loop_proxy.clone(),
         );
+
+        // Force a redraw after everything is initialized. The initial display_image() call
+        // may have been skipped because the surface was Occluded during window creation.
+        self.request_redraw();
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, command: AppCommand) {
@@ -760,17 +797,17 @@ impl ApplicationHandler<AppCommand> for App {
                             }
                         }
                     }
-                    Key::Named(NamedKey::ArrowLeft) => self.navigate(false),
-                    Key::Named(NamedKey::ArrowRight) => self.navigate(true),
-                    Key::Named(NamedKey::F11) => {
-                        if let Some(win) = &self.window {
-                            let entering = !window::is_fullscreen(win);
-                            log::info!("Fullscreen {}", if entering { "on" } else { "off" });
-                            window::toggle_fullscreen(win);
-                            self.update_shared_state();
-                        }
-                    }
-                    Key::Character("f") if super_pressed => {
+                    // Navigation: ←, →, Space, Backspace, [, ]
+                    Key::Named(NamedKey::ArrowLeft)
+                    | Key::Named(NamedKey::Backspace)
+                    | Key::Character("[") => self.navigate(false),
+                    Key::Named(NamedKey::ArrowRight)
+                    | Key::Named(NamedKey::Space)
+                    | Key::Character("]") => self.navigate(true),
+                    // Fullscreen: F, Cmd+F, Enter, Opt+Enter, F11
+                    Key::Named(NamedKey::F11)
+                    | Key::Named(NamedKey::Enter)
+                    | Key::Character("f") => {
                         if let Some(win) = &self.window {
                             let entering = !window::is_fullscreen(win);
                             log::info!("Fullscreen {}", if entering { "on" } else { "off" });
