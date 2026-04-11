@@ -1,0 +1,33 @@
+---
+import Layout from '../layouts/Layout.astro'
+import Header from '../components/Header.astro'
+import Hero from '../components/Hero.astro'
+import Features from '../components/Features.astro'
+import Pricing from '../components/Pricing.astro'
+import Footer from '../components/Footer.astro'
+
+const softwareApplicationSchema = {
+    '@context': 'https://schema.org',
+    '@type': 'SoftwareApplication',
+    name: 'Prvw',
+    applicationCategory: 'UtilitiesApplication',
+    operatingSystem: 'macOS',
+    offers: {
+        '@type': 'Offer',
+        price: '0',
+        priceCurrency: 'USD',
+    },
+    url: 'https://getprvw.com',
+}
+---
+
+<Layout title="Prvw - See your photos. Not loading bars.">
+    <Header />
+    <main>
+        <script type="application/ld+json" set:html={JSON.stringify(softwareApplicationSchema)} />
+        <Hero />
+        <Features />
+        <Pricing />
+    </main>
+    <Footer />
+</Layout>

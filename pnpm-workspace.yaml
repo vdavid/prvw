@@ -1,0 +1,3 @@
+packages:
+  - apps/*
+approveBuilds: esbuild,sharp

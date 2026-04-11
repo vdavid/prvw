@@ -1,0 +1,363 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"sort"
+	"strings"
+	"syscall"
+	"time"
+
+	"prvw/scripts/check/checks"
+)
+
+// stringSlice implements flag.Value for accumulating multiple flag values
+type stringSlice []string
+
+func (s *stringSlice) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSlice) Set(value string) error {
+	for v := range strings.SplitSeq(value, ",") {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			*s = append(*s, v)
+		}
+	}
+	return nil
+}
+
+// cliFlags holds the parsed command-line flags.
+type cliFlags struct {
+	rustOnly    bool
+	goOnly      bool
+	appName     string
+	checkNames  []string
+	ciMode      bool
+	verbose     bool
+	includeSlow bool
+	onlySlow    bool
+	failFast    bool
+	noLog       bool
+}
+
+func main() {
+	// Kill all child process groups on Ctrl+C / SIGTERM so no orphans are left behind.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		checks.KillAllProcesses()
+		os.Exit(130) // 128 + SIGINT(2)
+	}()
+
+	// Validate check configuration at startup to catch nickname collisions early
+	if err := checks.ValidateCheckNames(); err != nil {
+		printError("Bad check configuration: %v", err)
+		os.Exit(1)
+	}
+
+	flags := parseFlags()
+	if flags == nil {
+		return // Help was shown
+	}
+
+	rootDir, err := findRootDir()
+	if err != nil {
+		printError("Error: %v", err)
+		os.Exit(1)
+	}
+
+	ctx := &checks.CheckContext{
+		CI:      flags.ciMode,
+		Verbose: flags.verbose,
+		RootDir: rootDir,
+	}
+
+	checksToRun, err := selectChecks(flags)
+	if err != nil {
+		printError("Error: %v", err)
+		os.Exit(1)
+	}
+
+	checksToRun = checks.FilterSlowChecks(checksToRun, flags.includeSlow)
+
+	if flags.onlySlow {
+		var slow []checks.CheckDefinition
+		for _, c := range checksToRun {
+			if c.IsSlow {
+				slow = append(slow, c)
+			}
+		}
+		checksToRun = slow
+	}
+
+	if len(checksToRun) == 0 {
+		fmt.Println("No checks to run.")
+		os.Exit(0)
+	}
+
+	// Ensure pnpm dependencies are installed before running website checks
+	if needsPnpmInstall(checksToRun) {
+		if err := ensurePnpmDependencies(ctx); err != nil {
+			printError("Error: %v", err)
+			os.Exit(1)
+		}
+	}
+
+	runChecks(ctx, checksToRun, flags.failFast, flags.noLog)
+}
+
+// parseFlags parses command-line flags and returns nil if help was shown.
+func parseFlags() *cliFlags {
+	var (
+		rustOnly    = flag.Bool("rust", false, "Run only Rust checks")
+		rustOnly2   = flag.Bool("rust-only", false, "Run only Rust checks")
+		goOnly      = flag.Bool("go", false, "Run only Go checks (scripts)")
+		goOnly2     = flag.Bool("go-only", false, "Run only Go checks (scripts)")
+		appName     = flag.String("app", "", "Run checks for a specific app (desktop, website, scripts)")
+		checkNames  stringSlice
+		ciMode      = flag.Bool("ci", false, "Disable auto-fixing (for CI)")
+		verbose     = flag.Bool("verbose", false, "Show detailed output")
+		includeSlow = flag.Bool("include-slow", false, "Include slow checks (excluded by default)")
+		onlySlow    = flag.Bool("only-slow", false, "Run only slow checks")
+		failFast    = flag.Bool("fail-fast", false, "Stop on first failure")
+		noLog       = flag.Bool("no-log", false, "Disable CSV stats logging")
+		help        = flag.Bool("help", false, "Show help message")
+		h           = flag.Bool("h", false, "Show help message")
+	)
+	flag.Var(&checkNames, "check", "Run specific checks by ID (can be repeated or comma-separated)")
+	flag.Parse()
+
+	if *help || *h {
+		showUsage()
+		return nil
+	}
+
+	return &cliFlags{
+		rustOnly:    *rustOnly || *rustOnly2,
+		goOnly:      *goOnly || *goOnly2,
+		appName:     *appName,
+		checkNames:  checkNames,
+		ciMode:      *ciMode,
+		verbose:     *verbose,
+		includeSlow: *includeSlow || *onlySlow || len(checkNames) > 0,
+		onlySlow:    *onlySlow,
+		failFast:    *failFast,
+		noLog:       *noLog || *ciMode,
+	}
+}
+
+// selectChecks determines which checks to run based on flags.
+// Flags are additive: --check clippy --rust runs clippy plus all Rust checks.
+func selectChecks(flags *cliFlags) ([]checks.CheckDefinition, error) {
+	hasFilter := len(flags.checkNames) > 0 || flags.appName != "" || flags.rustOnly || flags.goOnly
+	if !hasFilter {
+		return checks.AllChecks, nil
+	}
+
+	seen := make(map[string]bool)
+	var result []checks.CheckDefinition
+	addUnique := func(cs []checks.CheckDefinition) {
+		for _, c := range cs {
+			if !seen[c.ID] {
+				seen[c.ID] = true
+				result = append(result, c)
+			}
+		}
+	}
+
+	if len(flags.checkNames) > 0 {
+		named, err := selectChecksByID(flags.checkNames)
+		if err != nil {
+			return nil, err
+		}
+		addUnique(named)
+	}
+	if flags.appName != "" {
+		byApp, err := selectChecksByApp(flags.appName)
+		if err != nil {
+			return nil, err
+		}
+		addUnique(byApp)
+	}
+	if flags.rustOnly {
+		addUnique(checks.GetChecksByTech(checks.AppDesktop, "🦀 Rust"))
+	}
+	if flags.goOnly {
+		addUnique(checks.GetChecksByTech(checks.AppScripts, "🐹 Go"))
+	}
+
+	return result, nil
+}
+
+// selectChecksByID returns checks matching the given IDs.
+func selectChecksByID(names []string) ([]checks.CheckDefinition, error) {
+	var result []checks.CheckDefinition
+	for _, name := range names {
+		check := checks.GetCheckByID(name)
+		if check == nil {
+			return nil, fmt.Errorf("unknown check ID: %s\nRun with --help to see available checks", name)
+		}
+		result = append(result, *check)
+	}
+	return result, nil
+}
+
+// selectChecksByApp returns checks for the given app name.
+func selectChecksByApp(appName string) ([]checks.CheckDefinition, error) {
+	switch strings.ToLower(appName) {
+	case "desktop":
+		return checks.GetChecksByApp(checks.AppDesktop), nil
+	case "website":
+		return checks.GetChecksByApp(checks.AppWebsite), nil
+	case "scripts":
+		return checks.GetChecksByApp(checks.AppScripts), nil
+	default:
+		return nil, fmt.Errorf("unknown app: %s\nAvailable apps: desktop, website, scripts", appName)
+	}
+}
+
+// runChecks executes the checks and prints results.
+func runChecks(ctx *checks.CheckContext, checksToRun []checks.CheckDefinition, failFast, noLog bool) {
+	fmt.Printf("🔍 Running %d %s...\n\n", len(checksToRun), checks.Pluralize(len(checksToRun), "check", "checks"))
+
+	startTime := time.Now()
+	runner := NewRunner(ctx, checksToRun, failFast, noLog)
+	failed, failedChecks := runner.Run()
+
+	totalDuration := time.Since(startTime)
+	fmt.Println()
+	fmt.Printf("%s⏱️  Total runtime: %s%s\n", colorYellow, formatDuration(totalDuration), colorReset)
+
+	if failed {
+		printFailure(failedChecks)
+		os.Exit(1)
+	}
+
+	fmt.Printf("%s✅ All checks passed!%s\n", colorGreen, colorReset)
+}
+
+// printFailure prints the failure message with rerun instructions.
+func printFailure(failedChecks []string) {
+	fmt.Printf("%s❌ Some checks failed.%s\n", colorRed, colorReset)
+	if len(failedChecks) > 0 {
+		fmt.Println()
+		checkWord := "check"
+		if len(failedChecks) > 1 {
+			checkWord = "checks"
+		}
+		fmt.Printf("To rerun the failed %s: ./scripts/check.sh --check %s\n", checkWord, strings.Join(failedChecks, ","))
+	}
+}
+
+// needsPnpmInstall returns true if any of the checks require pnpm dependencies.
+func needsPnpmInstall(checksToRun []checks.CheckDefinition) bool {
+	for _, check := range checksToRun {
+		if check.App == checks.AppWebsite {
+			return true
+		}
+	}
+	return false
+}
+
+// ensurePnpmDependencies runs pnpm install before checks.
+func ensurePnpmDependencies(ctx *checks.CheckContext) error {
+	fmt.Print("📦 Ensuring pnpm dependencies are installed... ")
+	startTime := time.Now()
+
+	skipped, err := checks.EnsurePnpmDependencies(ctx)
+	if err != nil {
+		fmt.Printf("%sFAILED%s\n", colorRed, colorReset)
+		return err
+	}
+
+	duration := time.Since(startTime)
+	if skipped {
+		fmt.Printf("%sOK%s (skipped, lockfile unchanged)\n\n", colorGreen, colorReset)
+	} else {
+		fmt.Printf("%sOK%s (%s)\n\n", colorGreen, colorReset, formatDuration(duration))
+	}
+	return nil
+}
+
+// showUsage displays the help message with dynamically generated check list.
+func showUsage() {
+	fmt.Println("Usage: go run ./scripts/check [OPTIONS]")
+	fmt.Println()
+	fmt.Println("Run code quality checks for the Prvw project.")
+	fmt.Println()
+	fmt.Println("OPTIONS:")
+	fmt.Println("    --app NAME               Run checks for a specific app (desktop, website, scripts)")
+	fmt.Println("    --rust, --rust-only      Run only Rust checks (desktop)")
+	fmt.Println("    --go, --go-only          Run only Go checks (scripts)")
+	fmt.Println("    --check ID               Run specific checks by ID (can be repeated or comma-separated)")
+	fmt.Println("    --ci                     Disable auto-fixing (for CI)")
+	fmt.Println("    --verbose                Show detailed output")
+	fmt.Println("    --include-slow           Include slow checks (excluded by default)")
+	fmt.Println("    --only-slow              Run only slow checks")
+	fmt.Println("    --fail-fast              Stop on first failure")
+	fmt.Println("    --no-log                 Disable CSV stats logging (~/" + csvFileName + ")")
+	fmt.Println("    -h, --help               Show this help message")
+	fmt.Println()
+	fmt.Println("If no options are provided, runs all non-slow checks for all apps.")
+	fmt.Println()
+	fmt.Println("EXAMPLES:")
+	fmt.Println("    go run ./scripts/check                    # Run all checks")
+	fmt.Println("    go run ./scripts/check --app desktop      # Run only desktop app checks")
+	fmt.Println("    go run ./scripts/check --check clippy     # Run specific check")
+	fmt.Println("    go run ./scripts/check --include-slow     # Include slow checks")
+	fmt.Println("    go run ./scripts/check --ci --fail-fast   # CI mode, stop on first failure")
+	fmt.Println()
+	fmt.Println("Available checks:")
+	fmt.Println()
+
+	// Group checks by app and tech
+	type checkGroup struct {
+		app  checks.App
+		tech string
+		ids  []string
+	}
+
+	groupMap := make(map[string]*checkGroup)
+	var groupOrder []string
+
+	for _, check := range checks.AllChecks {
+		key := string(check.App) + "|" + check.Tech
+		if _, ok := groupMap[key]; !ok {
+			groupMap[key] = &checkGroup{
+				app:  check.App,
+				tech: check.Tech,
+			}
+			groupOrder = append(groupOrder, key)
+		}
+		name := check.CLIName()
+		if check.IsSlow {
+			name += " (slow)"
+		}
+		groupMap[key].ids = append(groupMap[key].ids, name)
+	}
+
+	// Sort groups
+	sort.Slice(groupOrder, func(i, j int) bool {
+		gi, gj := groupMap[groupOrder[i]], groupMap[groupOrder[j]]
+		if gi.app != gj.app {
+			return gi.app < gj.app
+		}
+		return gi.tech < gj.tech
+	})
+
+	for _, key := range groupOrder {
+		g, ok := groupMap[key]
+		if !ok {
+			continue
+		}
+		fmt.Printf("  %s: %s\n", checks.AppDisplayName(g.app), g.tech)
+		for _, id := range g.ids {
+			fmt.Printf("    - %s\n", id)
+		}
+	}
+}

@@ -1,0 +1,292 @@
+use crate::image_loader::{self, DecodedImage};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
+
+const DEFAULT_MEMORY_BUDGET: usize = 512 * 1024 * 1024; // 512 MB
+const PRELOAD_AHEAD: usize = 2;
+
+/// Messages sent from the main thread to the preloader.
+pub enum PreloadRequest {
+    /// Preload these files (paths with their directory indices for cache tracking).
+    Load(Vec<(usize, PathBuf)>),
+    /// Shut down the preloader thread.
+    Shutdown,
+}
+
+/// Messages sent from the preloader back to the main thread.
+pub enum PreloadResponse {
+    /// An image was decoded and is ready.
+    Ready { index: usize, image: DecodedImage },
+    /// An image failed to decode.
+    Failed {
+        index: usize,
+        path: PathBuf,
+        reason: String,
+    },
+}
+
+/// LRU cache for decoded images with a memory budget.
+pub struct ImageCache {
+    entries: HashMap<usize, CacheEntry>,
+    /// Access order: most recently used at the end.
+    access_order: Vec<usize>,
+    memory_used: usize,
+    memory_budget: usize,
+}
+
+struct CacheEntry {
+    image: DecodedImage,
+    memory_cost: usize,
+}
+
+impl ImageCache {
+    pub fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            access_order: Vec::new(),
+            memory_used: 0,
+            memory_budget: DEFAULT_MEMORY_BUDGET,
+        }
+    }
+
+    /// Get a cached image by directory index, updating its LRU position.
+    pub fn get(&mut self, index: usize) -> Option<&DecodedImage> {
+        if self.entries.contains_key(&index) {
+            self.touch(index);
+            Some(&self.entries[&index].image)
+        } else {
+            None
+        }
+    }
+
+    /// Insert a decoded image into the cache, evicting LRU entries if over budget.
+    pub fn insert(&mut self, index: usize, image: DecodedImage) {
+        let cost = image_memory_cost(&image);
+
+        // If this single image exceeds the budget, don't cache it
+        if cost > self.memory_budget {
+            log::warn!("Image at index {index} ({cost} bytes) exceeds cache budget, not caching");
+            return;
+        }
+
+        // Remove existing entry if present
+        if self.entries.contains_key(&index) {
+            self.remove(index);
+        }
+
+        // Evict until there's room
+        while self.memory_used + cost > self.memory_budget && !self.access_order.is_empty() {
+            let evict_index = self.access_order[0];
+            self.remove(evict_index);
+        }
+
+        self.entries.insert(
+            index,
+            CacheEntry {
+                image,
+                memory_cost: cost,
+            },
+        );
+        self.access_order.push(index);
+        self.memory_used += cost;
+    }
+
+    pub fn contains(&self, index: usize) -> bool {
+        self.entries.contains_key(&index)
+    }
+
+    /// Remove entries not in the given set of indices (cleanup after navigation).
+    #[allow(dead_code)] // Part of cache API, used as the image set grows
+    pub fn retain_only(&mut self, keep: &[usize]) {
+        let to_remove: Vec<usize> = self
+            .entries
+            .keys()
+            .filter(|k| !keep.contains(k))
+            .copied()
+            .collect();
+        for index in to_remove {
+            self.remove(index);
+        }
+    }
+
+    fn touch(&mut self, index: usize) {
+        self.access_order.retain(|&i| i != index);
+        self.access_order.push(index);
+    }
+
+    fn remove(&mut self, index: usize) {
+        if let Some(entry) = self.entries.remove(&index) {
+            self.memory_used = self.memory_used.saturating_sub(entry.memory_cost);
+            self.access_order.retain(|&i| i != index);
+        }
+    }
+
+    #[cfg(test)]
+    fn memory_used(&self) -> usize {
+        self.memory_used
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+fn image_memory_cost(image: &DecodedImage) -> usize {
+    image.width as usize * image.height as usize * 4
+}
+
+/// Handle to the preloader thread. Owns the sender; the main thread reads from the receiver.
+pub struct Preloader {
+    request_tx: mpsc::Sender<PreloadRequest>,
+    pub response_rx: mpsc::Receiver<PreloadResponse>,
+    _handle: thread::JoinHandle<()>,
+}
+
+impl Preloader {
+    pub fn start() -> Self {
+        let (request_tx, request_rx) = mpsc::channel::<PreloadRequest>();
+        let (response_tx, response_rx) = mpsc::channel::<PreloadResponse>();
+
+        let handle = thread::Builder::new()
+            .name("prvw-preloader".to_string())
+            .spawn(move || {
+                preloader_loop(request_rx, response_tx);
+            })
+            .expect("Failed to spawn preloader thread");
+
+        Self {
+            request_tx,
+            response_rx,
+            _handle: handle,
+        }
+    }
+
+    /// Ask the preloader to decode the given files.
+    pub fn request_preload(&self, files: Vec<(usize, PathBuf)>) {
+        let _ = self.request_tx.send(PreloadRequest::Load(files));
+    }
+
+    /// Shut down the preloader thread.
+    pub fn shutdown(&self) {
+        let _ = self.request_tx.send(PreloadRequest::Shutdown);
+    }
+}
+
+/// Returns the number of images to preload ahead/behind the current position.
+pub fn preload_count() -> usize {
+    PRELOAD_AHEAD
+}
+
+fn preloader_loop(rx: mpsc::Receiver<PreloadRequest>, tx: mpsc::Sender<PreloadResponse>) {
+    loop {
+        match rx.recv() {
+            Ok(PreloadRequest::Load(files)) => {
+                for (index, path) in files {
+                    match image_loader::load_image(&path) {
+                        Ok(image) => {
+                            if tx.send(PreloadResponse::Ready { index, image }).is_err() {
+                                return; // Main thread dropped the receiver
+                            }
+                        }
+                        Err(reason) => {
+                            log::warn!("Preloader: couldn't decode {}: {reason}", path.display());
+                            if tx
+                                .send(PreloadResponse::Failed {
+                                    index,
+                                    path,
+                                    reason,
+                                })
+                                .is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(PreloadRequest::Shutdown) | Err(_) => return,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_image(width: u32, height: u32) -> DecodedImage {
+        DecodedImage {
+            width,
+            height,
+            rgba_data: vec![0u8; (width * height * 4) as usize],
+        }
+    }
+
+    #[test]
+    fn cache_insert_and_get() {
+        let mut cache = ImageCache::new();
+        cache.insert(0, make_image(100, 100));
+        assert!(cache.contains(0));
+        assert!(cache.get(0).is_some());
+        assert_eq!(cache.memory_used(), 100 * 100 * 4);
+    }
+
+    #[test]
+    fn cache_evicts_lru_when_over_budget() {
+        let mut cache = ImageCache::new();
+        cache.memory_budget = 100 * 100 * 4 * 3; // Room for 3 images of 100x100
+
+        for i in 0..4 {
+            cache.insert(i, make_image(100, 100));
+        }
+
+        // Should have evicted the oldest (index 0)
+        assert_eq!(cache.len(), 3);
+        assert!(!cache.contains(0));
+        assert!(cache.contains(1));
+        assert!(cache.contains(2));
+        assert!(cache.contains(3));
+    }
+
+    #[test]
+    fn cache_lru_touch_updates_order() {
+        let mut cache = ImageCache::new();
+        cache.memory_budget = 100 * 100 * 4 * 3;
+
+        cache.insert(0, make_image(100, 100));
+        cache.insert(1, make_image(100, 100));
+        cache.insert(2, make_image(100, 100));
+
+        // Touch index 0 so it becomes most recently used
+        let _ = cache.get(0);
+
+        // Insert a 4th: should evict index 1 (oldest untouched)
+        cache.insert(3, make_image(100, 100));
+        assert!(cache.contains(0)); // Was touched, so kept
+        assert!(!cache.contains(1)); // Evicted
+        assert!(cache.contains(2));
+        assert!(cache.contains(3));
+    }
+
+    #[test]
+    fn cache_retain_only() {
+        let mut cache = ImageCache::new();
+        for i in 0..5 {
+            cache.insert(i, make_image(10, 10));
+        }
+        cache.retain_only(&[1, 3]);
+        assert_eq!(cache.len(), 2);
+        assert!(cache.contains(1));
+        assert!(cache.contains(3));
+    }
+
+    #[test]
+    fn cache_rejects_oversized_image() {
+        let mut cache = ImageCache::new();
+        cache.memory_budget = 100; // Very small
+        cache.insert(0, make_image(100, 100)); // Way over budget
+        assert_eq!(cache.len(), 0);
+    }
+}

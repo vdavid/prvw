@@ -1,0 +1,371 @@
+package checks
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+)
+
+// App represents the application a check belongs to.
+type App string
+
+const (
+	AppDesktop App = "desktop"
+	AppWebsite App = "website"
+	AppScripts App = "scripts"
+)
+
+// AppDisplayName returns a human-readable name for an app with icon.
+func AppDisplayName(app App) string {
+	switch app {
+	case AppDesktop:
+		return "🖥️  Desktop"
+	case AppWebsite:
+		return "🌐 Website"
+	case AppScripts:
+		return "📜 Scripts"
+	default:
+		return string(app)
+	}
+}
+
+// ResultCode indicates the outcome of a check.
+type ResultCode int
+
+const (
+	ResultSuccess ResultCode = iota
+	ResultWarning
+	ResultSkipped
+)
+
+// CheckResult is returned by checks on success.
+type CheckResult struct {
+	Code        ResultCode
+	Message     string
+	MadeChanges bool // true if the check modified files (for example, formatted code)
+	Total       int  // items checked (-1 = N/A)
+	Issues      int  // items needing attention (-1 = N/A)
+	Changes     int  // files modified (-1 = N/A)
+}
+
+// Success creates a success result with the given message (no changes made).
+func Success(message string) CheckResult {
+	return CheckResult{Code: ResultSuccess, Message: message, Total: -1, Issues: -1, Changes: -1}
+}
+
+// SuccessWithChanges creates a success result indicating files were modified.
+func SuccessWithChanges(message string) CheckResult {
+	return CheckResult{Code: ResultSuccess, Message: message, MadeChanges: true, Total: -1, Issues: -1, Changes: -1}
+}
+
+// Skipped creates a skipped result with the given reason.
+func Skipped(reason string) CheckResult {
+	return CheckResult{Code: ResultSkipped, Message: reason, Total: -1, Issues: -1, Changes: -1}
+}
+
+// CheckContext holds the context for running checks.
+type CheckContext struct {
+	CI      bool
+	Verbose bool
+	RootDir string
+}
+
+// CheckFunc is the function signature for check implementations.
+type CheckFunc func(ctx *CheckContext) (CheckResult, error)
+
+// CheckDefinition defines a check's metadata and implementation.
+type CheckDefinition struct {
+	ID          string
+	Nickname    string // Short alias shown in --help and accepted by --check (if empty, ID is used)
+	DisplayName string
+	App         App
+	Tech        string
+	IsSlow      bool
+	DependsOn   []string
+	Run         CheckFunc
+}
+
+// processTracker keeps track of all running child processes so they can be
+// killed as a group on Ctrl+C. Each command is started with its own process
+// group (Setpgid), so killing -pgid cleans up all its descendants too.
+var processTracker = struct {
+	mu    sync.Mutex
+	procs map[*exec.Cmd]struct{}
+}{procs: make(map[*exec.Cmd]struct{})}
+
+// KillAllProcesses sends SIGTERM to the process group of every tracked child.
+func KillAllProcesses() {
+	processTracker.mu.Lock()
+	defer processTracker.mu.Unlock()
+	for cmd := range processTracker.procs {
+		if cmd.Process != nil {
+			// Kill the entire process group (negative PID).
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		}
+	}
+}
+
+// RunCommand executes a command and captures its output.
+// The command is started in its own process group so that all of its
+// descendants can be killed together on shutdown.
+func RunCommand(cmd *exec.Cmd, captureOutput bool) (string, error) {
+	var stdout, stderr bytes.Buffer
+	if captureOutput {
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+
+	// Give the child its own process group so we can kill the whole tree.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	processTracker.mu.Lock()
+	processTracker.procs[cmd] = struct{}{}
+	processTracker.mu.Unlock()
+
+	err := cmd.Wait()
+
+	processTracker.mu.Lock()
+	delete(processTracker.procs, cmd)
+	processTracker.mu.Unlock()
+
+	output := stdout.String()
+	if stderr.Len() > 0 {
+		output += stderr.String()
+	}
+	return output, err
+}
+
+// CommandExists checks if a command exists in PATH.
+func CommandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// EnsureGoTool ensures a Go tool is installed and returns the path to the binary.
+// If the tool is already in PATH, returns just the name. Otherwise installs it
+// and returns the full path to the installed binary.
+func EnsureGoTool(name, installPath string) (string, error) {
+	if CommandExists(name) {
+		return name, nil
+	}
+
+	// Get Go's bin directory
+	goBin := getGoBinDir()
+	if goBin == "" {
+		return "", fmt.Errorf("could not determine Go bin directory")
+	}
+
+	// Install the tool
+	installCmd := exec.Command("go", "install", installPath)
+	if _, err := RunCommand(installCmd, true); err != nil {
+		return "", fmt.Errorf("failed to install %s: %w", name, err)
+	}
+
+	// Return full path to the binary
+	return filepath.Join(goBin, name), nil
+}
+
+// getGoBinDir returns the directory where go install puts binaries.
+func getGoBinDir() string {
+	// First check GOBIN
+	cmd := exec.Command("go", "env", "GOBIN")
+	if output, err := RunCommand(cmd, true); err == nil {
+		if bin := strings.TrimSpace(output); bin != "" {
+			return bin
+		}
+	}
+
+	// Fall back to GOPATH/bin
+	cmd = exec.Command("go", "env", "GOPATH")
+	if output, err := RunCommand(cmd, true); err == nil {
+		if gopath := strings.TrimSpace(output); gopath != "" {
+			return filepath.Join(gopath, "bin")
+		}
+	}
+
+	// Last resort: ~/go/bin
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "go", "bin")
+	}
+
+	return ""
+}
+
+// indentOutput indents each non-empty line of output.
+func indentOutput(output string) string {
+	lines := strings.Split(output, "\n")
+	var result strings.Builder
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			result.WriteString("      ")
+			result.WriteString(line)
+			result.WriteString("\n")
+		}
+	}
+	return result.String()
+}
+
+// EnsurePnpmDependencies runs pnpm install to ensure all dependencies are installed.
+// Skips the install if pnpm-lock.yaml hasn't changed since the last successful run.
+// In CI mode, uses --frozen-lockfile and always runs (never skips).
+// Returns true if the install was skipped.
+func EnsurePnpmDependencies(ctx *CheckContext) (skipped bool, err error) {
+	lockfilePath := filepath.Join(ctx.RootDir, "pnpm-lock.yaml")
+	markerPath := filepath.Join(ctx.RootDir, "node_modules", ".pnpm-install-marker")
+
+	if !ctx.CI {
+		if lockInfo, lockErr := os.Stat(lockfilePath); lockErr == nil {
+			if markerContent, markerErr := os.ReadFile(markerPath); markerErr == nil {
+				recorded := string(markerContent)
+				current := lockInfo.ModTime().UTC().Format("2006-01-02T15:04:05.000000000Z")
+				if recorded == current {
+					return true, nil
+				}
+			}
+		}
+	}
+
+	args := []string{"install"}
+	if ctx.CI {
+		args = append(args, "--frozen-lockfile")
+	}
+
+	cmd := exec.Command("pnpm", args...)
+	cmd.Dir = ctx.RootDir
+	output, err := RunCommand(cmd, true)
+	if err != nil {
+		return false, fmt.Errorf("pnpm install failed:\n%s", indentOutput(output))
+	}
+
+	// Write marker with lockfile's current mtime
+	if lockInfo, lockErr := os.Stat(lockfilePath); lockErr == nil {
+		mtime := lockInfo.ModTime().UTC().Format("2006-01-02T15:04:05.000000000Z")
+		_ = os.WriteFile(markerPath, []byte(mtime), 0644)
+	}
+
+	return false, nil
+}
+
+// Pluralize returns singular if count is 1, plural otherwise.
+func Pluralize(count int, singular, plural string) string {
+	if count == 1 {
+		return singular
+	}
+	return plural
+}
+
+// runESLintCheck runs ESLint check/fix for a given directory.
+// extensions are the file extensions to count (like []string{"*.ts", "*.astro", "*.js"}).
+// If requireConfig is true, skips when eslint.config.js is missing.
+func runESLintCheck(ctx *CheckContext, dir string, extensions []string, requireConfig bool) (CheckResult, error) {
+	if requireConfig {
+		if _, err := os.Stat(filepath.Join(dir, "eslint.config.js")); os.IsNotExist(err) {
+			return Skipped("no eslint.config.js"), nil
+		}
+	}
+
+	// Count lintable files
+	findArgs := buildFindArgs("src", extensions)
+	findCmd := exec.Command("find", findArgs...)
+	findCmd.Dir = dir
+	findOutput, _ := RunCommand(findCmd, true)
+	fileCount := 0
+	if strings.TrimSpace(findOutput) != "" {
+		fileCount = len(strings.Split(strings.TrimSpace(findOutput), "\n"))
+	}
+
+	var cmd *exec.Cmd
+	if ctx.CI {
+		cmd = exec.Command("pnpm", "lint")
+	} else {
+		cmd = exec.Command("pnpm", "lint:fix")
+	}
+	cmd.Dir = dir
+	output, err := RunCommand(cmd, true)
+	if err != nil {
+		if ctx.CI {
+			return CheckResult{}, fmt.Errorf("lint errors found, run pnpm lint:fix locally\n%s", indentOutput(output))
+		}
+		return CheckResult{}, fmt.Errorf("eslint found unfixable errors\n%s", indentOutput(output))
+	}
+
+	if fileCount > 0 {
+		result := Success(fmt.Sprintf("%d %s passed", fileCount, Pluralize(fileCount, "file", "files")))
+		result.Total = fileCount
+		return result, nil
+	}
+	return Success("All files passed"), nil
+}
+
+// buildFindArgs constructs arguments for a find command to locate files with given extensions.
+func buildFindArgs(searchDir string, extensions []string) []string {
+	args := []string{searchDir, "-type", "f", "("}
+	for i, ext := range extensions {
+		if i > 0 {
+			args = append(args, "-o")
+		}
+		args = append(args, "-name", ext)
+	}
+	args = append(args, ")")
+	return args
+}
+
+// GetGoDirectories returns all directories in the repo that contain Go code.
+// Each returned path is relative to rootDir.
+func GetGoDirectories() []string {
+	return []string{
+		"scripts",
+	}
+}
+
+// FindGoModules finds all go.mod files in the given directory and returns
+// the directories containing them.
+func FindGoModules(rootDir string) ([]string, error) {
+	findCmd := exec.Command("find", ".", "-name", "go.mod", "-type", "f")
+	findCmd.Dir = rootDir
+	output, err := RunCommand(findCmd, true)
+	if err != nil {
+		return nil, err
+	}
+
+	var modules []string
+	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
+		if line != "" {
+			// Get directory containing go.mod
+			dir := strings.TrimSuffix(line, "/go.mod")
+			dir = strings.TrimPrefix(dir, "./")
+			if dir == "go.mod" {
+				dir = "."
+			}
+			modules = append(modules, dir)
+		}
+	}
+	return modules, nil
+}
+
+// FindAllGoModules finds Go modules across all Go directories in the repo.
+// Returns a map of base directory to list of module subdirectories.
+func FindAllGoModules(rootDir string) (map[string][]string, error) {
+	result := make(map[string][]string)
+	for _, goDir := range GetGoDirectories() {
+		fullPath := filepath.Join(rootDir, goDir)
+		modules, err := FindGoModules(fullPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find modules in %s: %w", goDir, err)
+		}
+		result[goDir] = modules
+	}
+	return result, nil
+}

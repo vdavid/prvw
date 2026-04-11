@@ -1,0 +1,92 @@
+---
+interface Props {
+    title: string
+    description?: string
+    ogImage?: string
+}
+
+const {
+    title,
+    description = 'A fast, minimal image viewer for macOS. Instant display, GPU-accelerated zoom and pan, background preloading. Built in Rust, free for personal use.',
+    ogImage = '/og-default.png',
+} = Astro.props
+---
+
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="description" content={description} />
+        <meta name="theme-color" content="#0f1419" media="(prefers-color-scheme: dark)" />
+        <meta name="theme-color" content="#f8fafb" media="(prefers-color-scheme: light)" />
+        <meta name="color-scheme" content="dark light" />
+
+        <!-- Open Graph -->
+        <meta property="og:title" content={title} />
+        <meta property="og:description" content={description} />
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content={Astro.url.href} />
+        {ogImage && <meta property="og:image" content={new URL(ogImage, Astro.site).href} />}
+
+        <!-- Twitter -->
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content={title} />
+        <meta name="twitter:description" content={description} />
+        {ogImage && <meta name="twitter:image" content={new URL(ogImage, Astro.site).href} />}
+
+        <!-- Favicon -->
+        <link rel="icon" href="/favicon.ico" sizes="32x32" />
+        <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+        <!-- Preload self-hosted font for faster FCP -->
+        <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-latin-variable.woff2" crossorigin />
+
+        <title>{title}</title>
+
+        <!-- Organization structured data -->
+        <script
+            type="application/ld+json"
+            set:html={JSON.stringify({
+                '@context': 'https://schema.org',
+                '@type': 'Organization',
+                name: 'Prvw',
+                url: 'https://getprvw.com',
+                sameAs: ['https://github.com/vdavid/prvw'],
+            })}
+        />
+
+        {/* Apply persisted theme choice before first paint to prevent FOUC */}
+        <script is:inline>
+            ;(function () {
+                try {
+                    var t = localStorage.getItem('theme')
+                    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t
+                } catch {
+                    /* localStorage unavailable */
+                }
+            })()
+        </script>
+        <style is:inline>
+            @media (prefers-color-scheme: light) {
+                html:not([data-theme='dark']) {
+                    background-color: #f8fafb;
+                }
+            }
+            html[data-theme='light'] {
+                background-color: #f8fafb;
+            }
+            html[data-theme='dark'] {
+                background-color: #0f1419;
+            }
+        </style>
+    </head>
+    <body class="min-h-screen">
+        <slot />
+    </body>
+</html>
+
+<style is:global>
+    @import '../styles/global.css';
+</style>

@@ -1,0 +1,39 @@
+# VS Code
+.vscode/
+
+# IntelliJ IDEA project files
+.idea/
+*.iml
+
+# macOS system files
+.DS_Store
+
+# Personal Claude hooks
+.claude/hooks/session-start.sh
+
+# .env files
+.env
+.env.*
+!.env.example
+
+# Node modules (monorepo-wide)
+node_modules/
+.pnpm-store/
+
+# Rust build artifacts
+target/
+
+# Go build files
+scripts/check/check
+
+# Test results
+playwright-report/
+test-results/
+coverage/
+
+# Build output
+build/
+dist/
+
+# Ignored files
+_ignored/

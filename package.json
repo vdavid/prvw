@@ -1,0 +1,17 @@
+{
+  "name": "prvw",
+  "private": true,
+  "packageManager": "pnpm@10.11.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp"
+    ]
+  },
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "dev:website": "pnpm --filter @prvw/website dev",
+    "build:website": "pnpm --filter @prvw/website build",
+    "check": "./scripts/check.sh"
+  }
+}

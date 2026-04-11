@@ -1,0 +1,19 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 6am on Monday"],
+  "packageRules": [
+    {
+      "description": "Non-major updates: group and auto-merge weekly",
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "groupName": "non-major updates",
+      "automerge": true
+    },
+    {
+      "description": "Major updates: monthly, manual review",
+      "matchUpdateTypes": ["major"],
+      "schedule": ["before 6am on the first day of the month"],
+      "automerge": false
+    }
+  ]
+}
