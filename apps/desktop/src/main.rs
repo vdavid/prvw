@@ -24,8 +24,9 @@ use winit::window::{Window, WindowId};
 #[derive(Parser)]
 #[command(name = "prvw", about = "A fast, minimal image viewer")]
 struct Cli {
-    /// Path to the image file to open
-    file: PathBuf,
+    /// Path(s) to image file(s) to open
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
 }
 
 fn main() {
@@ -64,17 +65,34 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let file_path = cli.file.canonicalize().unwrap_or_else(|e| {
-        eprintln!("Couldn't resolve path {}: {e}", cli.file.display());
-        std::process::exit(1);
-    });
+    let resolved_files: Vec<PathBuf> = cli
+        .files
+        .iter()
+        .filter_map(|f| match f.canonicalize() {
+            Ok(p) if p.is_file() => Some(p),
+            Ok(p) => {
+                log::warn!("Not a file, skipping: {}", p.display());
+                None
+            }
+            Err(e) => {
+                log::warn!("Couldn't resolve {}: {e}", f.display());
+                None
+            }
+        })
+        .collect();
 
-    log::info!("Opening {}", file_path.display());
-
-    if !file_path.is_file() {
-        eprintln!("Not a file: {}", file_path.display());
+    if resolved_files.is_empty() {
+        eprintln!("No valid image files provided");
         std::process::exit(1);
     }
+
+    if resolved_files.len() == 1 {
+        log::info!("Opening {}", resolved_files[0].display());
+    } else {
+        log::info!("Opening {} files", resolved_files.len());
+    }
+
+    let file_path = resolved_files[0].clone();
 
     let event_loop = EventLoop::<AppCommand>::with_user_event()
         .build()
@@ -89,7 +107,13 @@ fn main() {
     #[cfg(target_os = "macos")]
     let _open_handler = macos_open_handler::register(proxy.clone());
 
-    let mut app = App::new(file_path, proxy, Arc::clone(&shared_state));
+    let explicit_files = if resolved_files.len() > 1 {
+        Some(resolved_files)
+    } else {
+        None
+    };
+
+    let mut app = App::new(file_path, explicit_files, proxy, Arc::clone(&shared_state));
     event_loop
         .run_app(&mut app)
         .expect("Event loop terminated unexpectedly");
@@ -108,6 +132,9 @@ pub struct NavigationRecord {
 /// The window and renderer are initialized in `resumed()` (required by winit 0.30 on macOS).
 struct App {
     file_path: PathBuf,
+    /// If multiple files were passed on the CLI, use them as the navigation set instead of
+    /// scanning the directory.
+    explicit_files: Option<Vec<PathBuf>>,
     window: Option<Arc<Window>>,
     renderer: Option<renderer::Renderer>,
     view_state: view::ViewState,
@@ -136,11 +163,13 @@ struct App {
 impl App {
     fn new(
         file_path: PathBuf,
+        explicit_files: Option<Vec<PathBuf>>,
         event_loop_proxy: EventLoopProxy<AppCommand>,
         shared_state: Arc<Mutex<SharedAppState>>,
     ) -> Self {
         Self {
             file_path,
+            explicit_files,
             window: None,
             renderer: None,
             view_state: view::ViewState::new(),
@@ -611,8 +640,12 @@ impl ApplicationHandler<AppCommand> for App {
         // Create native menu bar
         self.menu_ids = Some(menu::create_menu_bar());
 
-        // Scan directory for image files
-        self.dir_list = directory::DirectoryList::from_file(&self.file_path);
+        // Build the navigation list: explicit file list (multi-select) or directory scan
+        self.dir_list = if let Some(files) = self.explicit_files.take() {
+            Some(directory::DirectoryList::from_explicit(files))
+        } else {
+            directory::DirectoryList::from_file(&self.file_path)
+        };
 
         // Start preloader thread pool
         let mut preloader = preloader::Preloader::start();

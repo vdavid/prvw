@@ -68,6 +68,22 @@ impl DirectoryList {
         })
     }
 
+    /// Create a navigation list from an explicit set of files (multi-select open).
+    /// The first file in the list is the initial image.
+    pub fn from_explicit(files: Vec<PathBuf>) -> Self {
+        log::info!("Using explicit file list: {} images", files.len());
+        if let Some(first) = files.first() {
+            log::debug!(
+                "Current position: [0] {}",
+                first.file_name().unwrap_or_default().to_string_lossy()
+            );
+        }
+        Self {
+            files,
+            current_index: 0,
+        }
+    }
+
     pub fn current(&self) -> &Path {
         &self.files[self.current_index]
     }
