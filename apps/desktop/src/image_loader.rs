@@ -1,6 +1,9 @@
+use std::io::Cursor;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
+
+use nom_exif::{EntryValue, ExifTag, MediaParser, MediaSource};
 
 /// Decoded image data ready for GPU upload.
 pub struct DecodedImage {
@@ -17,6 +20,143 @@ fn format_decoded_size(bytes: usize) -> String {
         format!("{:.1} MB", b / MB)
     } else {
         format!("{:.1} KB", b / 1024.0)
+    }
+}
+
+/// Parse EXIF orientation from raw file bytes. Returns 1 (normal) on any failure.
+fn parse_exif_orientation(bytes: &[u8], filename: &str) -> u16 {
+    let orientation = (|| -> Option<u16> {
+        let mut parser = MediaParser::new();
+        let cursor = Cursor::new(bytes);
+        let ms = MediaSource::seekable(cursor).ok()?;
+        if !ms.has_exif() {
+            return None;
+        }
+        let iter: nom_exif::ExifIter = parser.parse(ms).ok()?;
+        let exif: nom_exif::Exif = iter.into();
+        let value = exif.get(ExifTag::Orientation)?;
+        match value {
+            EntryValue::U16(v) => Some(*v),
+            EntryValue::U32(v) => Some(*v as u16),
+            EntryValue::U8(v) => Some(*v as u16),
+            _ => None,
+        }
+    })()
+    .unwrap_or(1);
+
+    if orientation != 1 {
+        log::debug!("EXIF orientation: {orientation} for {filename}");
+    }
+    orientation
+}
+
+/// Apply EXIF orientation transform to an RGBA pixel buffer.
+/// Returns the new (width, height) after rotation.
+fn apply_orientation(width: u32, height: u32, rgba: &mut Vec<u8>, orientation: u16) -> (u32, u32) {
+    match orientation {
+        1 => (width, height),
+        2 => {
+            // Flip horizontal: reverse each row
+            let stride = (width as usize) * 4;
+            for row in rgba.chunks_exact_mut(stride) {
+                let mut left = 0usize;
+                let mut right = (width as usize - 1) * 4;
+                while left < right {
+                    for i in 0..4 {
+                        row.swap(left + i, right + i);
+                    }
+                    left += 4;
+                    right -= 4;
+                }
+            }
+            (width, height)
+        }
+        3 => {
+            // Rotate 180: reverse the entire pixel array
+            let pixel_count = (width as usize) * (height as usize);
+            for i in 0..pixel_count / 2 {
+                let j = pixel_count - 1 - i;
+                let (a, b) = (i * 4, j * 4);
+                for k in 0..4 {
+                    rgba.swap(a + k, b + k);
+                }
+            }
+            (width, height)
+        }
+        4 => {
+            // Flip vertical: reverse row order
+            let stride = (width as usize) * 4;
+            let h = height as usize;
+            for row_idx in 0..h / 2 {
+                let opposite = h - 1 - row_idx;
+                let (top, bottom) = (row_idx * stride, opposite * stride);
+                for col in 0..stride {
+                    rgba.swap(top + col, bottom + col);
+                }
+            }
+            (width, height)
+        }
+        5 => {
+            // Transpose (swap x/y)
+            let (w, h) = (width as usize, height as usize);
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = (y * w + x) * 4;
+                    let dst = (x * h + y) * 4;
+                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                }
+            }
+            *rgba = out;
+            (height, width)
+        }
+        6 => {
+            // Rotate 90 CW: new[x][h-1-y] = old[y][x]
+            let (w, h) = (width as usize, height as usize);
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = (y * w + x) * 4;
+                    let dst = (x * h + (h - 1 - y)) * 4;
+                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                }
+            }
+            *rgba = out;
+            (height, width)
+        }
+        7 => {
+            // Transverse: rotate 90 CW + flip horizontal
+            // new[w-1-x][h-1-y] = old[y][x]  => new dims are (h, w)
+            let (w, h) = (width as usize, height as usize);
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = (y * w + x) * 4;
+                    let dst = ((w - 1 - x) * h + (h - 1 - y)) * 4;
+                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                }
+            }
+            *rgba = out;
+            (height, width)
+        }
+        8 => {
+            // Rotate 270 CW (= 90 CCW): new[w-1-x][y] = old[y][x]
+            let (w, h) = (width as usize, height as usize);
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let src = (y * w + x) * 4;
+                    let dst = ((w - 1 - x) * h + y) * 4;
+                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                }
+            }
+            *rgba = out;
+            (height, width)
+        }
+        _ => {
+            log::warn!("Unknown EXIF orientation value: {orientation}, ignoring");
+            (width, height)
+        }
     }
 }
 
@@ -53,17 +193,36 @@ fn is_jpeg_extension(ext: &str) -> bool {
 
 /// Decode an image file to RGBA8 pixel data.
 /// JPEGs use zune-jpeg (SIMD-accelerated). Everything else goes through the `image` crate.
+/// Applies EXIF orientation correction automatically.
 pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
     log::debug!("Loading {}", path.display());
     let start = Instant::now();
 
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+    let orientation = parse_exif_orientation(&bytes, filename);
+
     let result = if is_jpeg_extension(ext) {
-        load_jpeg(path)
+        decode_jpeg(path, bytes)
     } else {
-        load_generic(path)
+        decode_generic(path, bytes)
     };
+
+    let result = result.map(|mut img| {
+        let (old_w, old_h) = (img.width, img.height);
+        let (new_w, new_h) = apply_orientation(img.width, img.height, &mut img.rgba_data, orientation);
+        if (new_w, new_h) != (old_w, old_h) {
+            log::debug!(
+                "Applied rotation: orientation {orientation} ({old_w}x{old_h} -> {new_w}x{new_h})"
+            );
+        }
+        img.width = new_w;
+        img.height = new_h;
+        img
+    });
 
     match &result {
         Ok(image) => {
@@ -91,21 +250,43 @@ pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
 
 /// Decode an image file to RGBA8 pixel data, with cancellation support.
 /// JPEGs use zune-jpeg (SIMD-accelerated). Everything else goes through the `image` crate.
+/// Applies EXIF orientation correction automatically.
 /// Returns `Err("cancelled")` if the cancellation flag is set during the read or before decoding.
 pub fn load_image_cancellable(
     path: &Path,
     cancelled: &AtomicBool,
 ) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
     log::debug!("Loading (cancellable) {}", path.display());
     let start = Instant::now();
 
+    let bytes = read_file_cancellable(path, cancelled)?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("cancelled".into());
+    }
+
+    let orientation = parse_exif_orientation(&bytes, filename);
+
     let result = if is_jpeg_extension(ext) {
-        load_jpeg_cancellable(path, cancelled)
+        decode_jpeg(path, bytes)
     } else {
-        load_generic_cancellable(path, cancelled)
+        decode_generic(path, bytes)
     };
+
+    let result = result.map(|mut img| {
+        let (old_w, old_h) = (img.width, img.height);
+        let (new_w, new_h) = apply_orientation(img.width, img.height, &mut img.rgba_data, orientation);
+        if (new_w, new_h) != (old_w, old_h) {
+            log::debug!(
+                "Applied rotation: orientation {orientation} ({old_w}x{old_h} -> {new_w}x{new_h})"
+            );
+        }
+        img.width = new_w;
+        img.height = new_h;
+        img
+    });
 
     match &result {
         Ok(image) => {
@@ -132,25 +313,6 @@ pub fn load_image_cancellable(
     }
 
     result
-}
-
-/// Fast JPEG decode via zune-jpeg with SIMD options.
-fn load_jpeg(path: &Path) -> Result<DecodedImage, String> {
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
-    decode_jpeg(path, bytes)
-}
-
-/// Fast JPEG decode with cancellable file read.
-fn load_jpeg_cancellable(
-    path: &Path,
-    cancelled: &AtomicBool,
-) -> Result<DecodedImage, String> {
-    let bytes = read_file_cancellable(path, cancelled)?;
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("cancelled".into());
-    }
-    decode_jpeg(path, bytes)
 }
 
 /// Decode JPEG bytes (shared by cancellable and non-cancellable paths).
@@ -188,26 +350,7 @@ fn decode_jpeg(path: &Path, bytes: Vec<u8>) -> Result<DecodedImage, String> {
 }
 
 /// Fallback: decode via the `image` crate (PNG, WebP, GIF, BMP, TIFF, etc.).
-fn load_generic(path: &Path) -> Result<DecodedImage, String> {
-    let img = image::open(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
-    let rgba = img.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok(DecodedImage {
-        width,
-        height,
-        rgba_data: rgba.into_raw(),
-    })
-}
-
-/// Fallback decode with cancellable file read.
-fn load_generic_cancellable(
-    path: &Path,
-    cancelled: &AtomicBool,
-) -> Result<DecodedImage, String> {
-    let bytes = read_file_cancellable(path, cancelled)?;
-    if cancelled.load(Ordering::Relaxed) {
-        return Err("cancelled".into());
-    }
+fn decode_generic(path: &Path, bytes: Vec<u8>) -> Result<DecodedImage, String> {
     let img = image::load_from_memory(&bytes)
         .map_err(|e| format!("Couldn't decode {}: {e}", path.display()))?;
     let rgba = img.to_rgba8();
