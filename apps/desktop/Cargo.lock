@@ -2495,11 +2495,14 @@ dependencies = [
  "log",
  "muda",
  "pollster",
+ "rayon",
  "serde",
  "serde_json",
  "tempfile",
  "wgpu",
  "winit",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

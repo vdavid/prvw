@@ -245,7 +245,7 @@ impl App {
                 .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
                 .collect();
 
-            if let Some(preloader) = &self.preloader
+            if let Some(preloader) = &mut self.preloader
                 && !to_preload.is_empty()
             {
                 preloader.request_preload(to_preload);
@@ -272,7 +272,7 @@ impl App {
 
     /// Drain preloader responses and cache the results.
     fn poll_preloader(&mut self) {
-        let Some(preloader) = &self.preloader else {
+        let Some(preloader) = &mut self.preloader else {
             return;
         };
         while let Ok(response) = preloader.response_rx.try_recv() {
@@ -283,6 +283,7 @@ impl App {
                     decode_duration,
                     file_name,
                 } => {
+                    preloader.mark_complete(index);
                     log::debug!("Preloaded image at index {index}");
                     self.image_cache
                         .insert(index, image, decode_duration, file_name);
@@ -292,6 +293,7 @@ impl App {
                     path,
                     reason,
                 } => {
+                    preloader.mark_complete(index);
                     log::warn!(
                         "Preload failed for index {index} ({}): {reason}",
                         path.display()
@@ -449,7 +451,7 @@ impl App {
                         window::toggle_fullscreen(win);
                         self.update_shared_state();
                     } else {
-                        if let Some(preloader) = &self.preloader {
+                        if let Some(preloader) = self.preloader.take() {
                             preloader.shutdown();
                         }
                         event_loop.exit();
@@ -511,8 +513,8 @@ impl ApplicationHandler<AppCommand> for App {
         // Scan directory for image files
         self.dir_list = directory::DirectoryList::from_file(&self.file_path);
 
-        // Start preloader thread
-        let preloader = preloader::Preloader::start();
+        // Start preloader thread pool
+        let mut preloader = preloader::Preloader::start();
 
         // Load and display the initial image
         let initial_path = self.file_path.clone();
@@ -630,7 +632,7 @@ impl ApplicationHandler<AppCommand> for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                if let Some(preloader) = &self.preloader {
+                if let Some(preloader) = self.preloader.take() {
                     preloader.shutdown();
                 }
                 event_loop.exit();
@@ -678,7 +680,7 @@ impl ApplicationHandler<AppCommand> for App {
                                 window::toggle_fullscreen(win);
                                 self.update_shared_state();
                             } else {
-                                if let Some(preloader) = &self.preloader {
+                                if let Some(preloader) = self.preloader.take() {
                                     preloader.shutdown();
                                 }
                                 event_loop.exit();

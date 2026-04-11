@@ -11,11 +11,11 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | `main.rs`         | CLI parsing, event loop, `ApplicationHandler` impl          |
 | `window.rs`       | Window creation, fullscreen toggle, title formatting        |
 | `renderer.rs`     | wgpu surface, pipeline, texture upload, rendering           |
-| `image_loader.rs` | Decode image files to RGBA8 via the `image` crate           |
+| `image_loader.rs` | Decode image files to RGBA8 (zune-jpeg for JPEG, `image` crate for others) |
 | `view.rs`         | Zoom/pan math, transform uniform for GPU                    |
 | `menu.rs`         | Native macOS menu bar via `muda`, shortcut wiring           |
 | `directory.rs`    | Scan parent dir for images, sort, track position            |
-| `preloader.rs`    | Background thread decoding, LRU cache (512 MB budget)       |
+| `preloader.rs`    | Parallel background decoding (rayon pool), LRU cache (512 MB budget) |
 | `qa_server.rs`    | Embedded HTTP server for QA/E2E testing (state, commands, screenshots) |
 | `shader.wgsl`     | WGSL vertex/fragment shader for textured quad with 2D transform |
 
@@ -25,8 +25,9 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
   winit 0.30 on macOS. Creating them earlier crashes.
 - **Render on demand**: The renderer only redraws when `needs_redraw` is true (set by zoom, pan, resize, or navigate).
   No continuous render loop. CPU/GPU usage is near zero when idle.
-- **Preloader**: A `std::thread` (not tokio) decodes adjacent images via `std::sync::mpsc` channels. The `ImageCache`
-  uses LRU eviction with a 512 MB memory budget.
+- **Preloader**: A rayon thread pool (min(4, cores-1) threads) decodes adjacent images in parallel, sending results back
+  via `std::sync::mpsc`. An in-flight `HashSet` prevents duplicate work. The `ImageCache` uses LRU eviction with a 512
+  MB memory budget.
 - **Error display**: Errors go to the window title bar, not as text overlay. Text rendering in pure wgpu needs glyphon,
   which is overkill for v1.
 - **Transform**: Zoom and pan are a 2D affine transform applied to the quad's vertices in the vertex shader. No image
@@ -48,6 +49,8 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
   `MenuEvent::receiver().try_recv()`, not callbacks.
 - **bytemuck derives**: Use `bytemuck::Pod` and `bytemuck::Zeroable` (from the `derive` feature), not
   `bytemuck_derive::Pod` directly.
+- **zune-jpeg in debug builds**: zune-jpeg's SIMD is painfully slow without optimizations. `Cargo.toml` sets
+  `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this.
 
 ## Dependencies
 
@@ -57,7 +60,10 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | wgpu        | 29.0.1  | GPU rendering (Metal on macOS)           |
 | pollster    | 0.4.0   | Block on wgpu async calls                |
 | muda        | 0.17.2  | Native macOS menu bar                    |
-| image       | 0.25.10 | Image decoding (JPEG, PNG, GIF, WebP, BMP, TIFF) |
+| image       | 0.25.10 | Image decoding (PNG, GIF, WebP, BMP, TIFF) and PNG encoding for screenshots |
+| zune-jpeg   | 0.5.15  | Fast JPEG decoding with SIMD (replaces `image` for JPEG) |
+| zune-core   | 0.5.1   | Decoder options for zune-jpeg                    |
+| rayon       | 1.11.0  | Thread pool for parallel preloading               |
 | clap        | 4.6.0   | CLI argument parsing                     |
 | log         | 0.4.29  | Logging facade                           |
 | env_logger  | 0.11.10 | Log output to stderr                     |

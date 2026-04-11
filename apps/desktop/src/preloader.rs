@@ -1,20 +1,12 @@
 use crate::image_loader::{self, DecodedImage};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::thread;
+use std::thread::available_parallelism;
 use std::time::{Duration, Instant};
 
 const DEFAULT_MEMORY_BUDGET: usize = 512 * 1024 * 1024; // 512 MB
 const PRELOAD_AHEAD: usize = 2;
-
-/// Messages sent from the main thread to the preloader.
-pub enum PreloadRequest {
-    /// Preload these files (paths with their directory indices for cache tracking).
-    Load(Vec<(usize, PathBuf)>),
-    /// Shut down the preloader thread.
-    Shutdown,
-}
 
 /// Messages sent from the preloader back to the main thread.
 pub enum PreloadResponse {
@@ -193,93 +185,91 @@ fn image_memory_cost(image: &DecodedImage) -> usize {
     image.width as usize * image.height as usize * 4
 }
 
-/// Handle to the preloader thread. Owns the sender; the main thread reads from the receiver.
+/// Parallel image preloader backed by a rayon thread pool.
 pub struct Preloader {
-    request_tx: mpsc::Sender<PreloadRequest>,
+    pool: rayon::ThreadPool,
+    response_tx: mpsc::Sender<PreloadResponse>,
     pub response_rx: mpsc::Receiver<PreloadResponse>,
-    _handle: thread::JoinHandle<()>,
+    /// Indices currently being decoded (prevents duplicate work).
+    in_flight: HashSet<usize>,
 }
 
 impl Preloader {
     pub fn start() -> Self {
-        let (request_tx, request_rx) = mpsc::channel::<PreloadRequest>();
-        let (response_tx, response_rx) = mpsc::channel::<PreloadResponse>();
+        let num_threads = available_parallelism()
+            .map(|n| n.get().saturating_sub(1).clamp(1, 4))
+            .unwrap_or(4);
 
-        let handle = thread::Builder::new()
-            .name("prvw-preloader".to_string())
-            .spawn(move || {
-                preloader_loop(request_rx, response_tx);
-            })
-            .expect("Failed to spawn preloader thread");
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .thread_name(|i| format!("prvw-preload-{i}"))
+            .build()
+            .expect("Failed to create preloader thread pool");
+
+        log::info!("Preloader started with {num_threads} threads");
+
+        let (response_tx, response_rx) = mpsc::channel();
 
         Self {
-            request_tx,
+            pool,
+            response_tx,
             response_rx,
-            _handle: handle,
+            in_flight: HashSet::new(),
         }
     }
 
-    /// Ask the preloader to decode the given files.
-    pub fn request_preload(&self, files: Vec<(usize, PathBuf)>) {
-        let _ = self.request_tx.send(PreloadRequest::Load(files));
+    /// Spawn decode tasks for the given files. Skips indices already in-flight.
+    pub fn request_preload(&mut self, files: Vec<(usize, PathBuf)>) {
+        for (index, path) in files {
+            if self.in_flight.contains(&index) {
+                continue;
+            }
+            self.in_flight.insert(index);
+
+            let tx = self.response_tx.clone();
+            self.pool.spawn(move || {
+                let file_name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let start = Instant::now();
+                match image_loader::load_image(&path) {
+                    Ok(image) => {
+                        let _ = tx.send(PreloadResponse::Ready {
+                            index,
+                            image,
+                            decode_duration: start.elapsed(),
+                            file_name,
+                        });
+                    }
+                    Err(reason) => {
+                        log::warn!("Preloader: couldn't decode {}: {reason}", path.display());
+                        let _ = tx.send(PreloadResponse::Failed {
+                            index,
+                            path,
+                            reason,
+                        });
+                    }
+                }
+            });
+        }
     }
 
-    /// Shut down the preloader thread.
-    pub fn shutdown(&self) {
-        let _ = self.request_tx.send(PreloadRequest::Shutdown);
+    /// Clear the in-flight tracking for a completed index.
+    pub fn mark_complete(&mut self, index: usize) {
+        self.in_flight.remove(&index);
+    }
+
+    /// Shut down the preloader (rayon handles thread cleanup on drop).
+    pub fn shutdown(self) {
+        drop(self);
     }
 }
 
 /// Returns the number of images to preload ahead/behind the current position.
 pub fn preload_count() -> usize {
     PRELOAD_AHEAD
-}
-
-fn preloader_loop(rx: mpsc::Receiver<PreloadRequest>, tx: mpsc::Sender<PreloadResponse>) {
-    loop {
-        match rx.recv() {
-            Ok(PreloadRequest::Load(files)) => {
-                for (index, path) in files {
-                    let file_name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let start = Instant::now();
-                    match image_loader::load_image(&path) {
-                        Ok(image) => {
-                            let decode_duration = start.elapsed();
-                            if tx
-                                .send(PreloadResponse::Ready {
-                                    index,
-                                    image,
-                                    decode_duration,
-                                    file_name,
-                                })
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                        Err(reason) => {
-                            log::warn!("Preloader: couldn't decode {}: {reason}", path.display());
-                            if tx
-                                .send(PreloadResponse::Failed {
-                                    index,
-                                    path,
-                                    reason,
-                                })
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(PreloadRequest::Shutdown) | Err(_) => return,
-        }
-    }
 }
 
 #[cfg(test)]
