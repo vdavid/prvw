@@ -49,6 +49,19 @@ impl DirectoryList {
             .position(|f| f.canonicalize().ok().as_ref() == Some(&canonical_target))
             .unwrap_or(0);
 
+        log::info!(
+            "Scanned directory: {} images in {}",
+            files.len(),
+            dir.display()
+        );
+        log::debug!(
+            "Current position: [{current_index}] {}",
+            files[current_index]
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+        );
+
         Some(Self {
             files,
             current_index,

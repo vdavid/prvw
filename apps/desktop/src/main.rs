@@ -27,13 +27,47 @@ struct Cli {
 }
 
 fn main() {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .filter_module("wgpu", log::LevelFilter::Warn)
+        .filter_module("wgpu_core", log::LevelFilter::Warn)
+        .filter_module("wgpu_hal", log::LevelFilter::Warn)
+        .filter_module("naga", log::LevelFilter::Warn)
+        .filter_module("muda", log::LevelFilter::Warn)
+        .format(|buf, record| {
+            use std::io::Write;
+            let now = chrono::Local::now();
+            let ts = now.format("%H:%M:%S%.3f");
+            let target = record
+                .target()
+                .strip_prefix("prvw::")
+                .unwrap_or(record.target());
+            let level = record.level();
+            let color = match level {
+                log::Level::Error => "\x1b[31m",
+                log::Level::Warn => "\x1b[33m",
+                log::Level::Info => "\x1b[32m",
+                log::Level::Debug => "\x1b[36m",
+                log::Level::Trace => "\x1b[35m",
+            };
+            writeln!(
+                buf,
+                "{ts} {color}{level:<5}\x1b[0m {target:<16} {}",
+                record.args()
+            )
+        })
+        .init();
+
+    let version = env!("CARGO_PKG_VERSION");
+    log::info!("Prvw {version} starting");
+
     let cli = Cli::parse();
 
     let file_path = cli.file.canonicalize().unwrap_or_else(|e| {
         eprintln!("Couldn't resolve path {}: {e}", cli.file.display());
         std::process::exit(1);
     });
+
+    log::info!("Opening {}", file_path.display());
 
     if !file_path.is_file() {
         eprintln!("Not a file: {}", file_path.display());
@@ -126,6 +160,8 @@ impl App {
             None => return,
         };
 
+        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+
         match image_loader::load_image(path) {
             Ok(image) => {
                 self.view_state.update_dimensions(
@@ -138,6 +174,16 @@ impl App {
                 renderer.set_image(&image);
                 renderer.update_transform(&self.view_state.transform());
                 self.request_redraw();
+
+                if let Some(dir) = &self.dir_list {
+                    log::info!(
+                        "Displayed {filename} ({}/{})",
+                        dir.current_index() + 1,
+                        dir.len()
+                    );
+                } else {
+                    log::info!("Displayed {filename}");
+                }
             }
             Err(msg) => {
                 log::error!("{msg}");
@@ -197,6 +243,7 @@ impl App {
         }
 
         let nav_start = Instant::now();
+        let direction = if forward { "next" } else { "prev" };
 
         // Extract what we need from dir_list before mutable borrow
         let (current_path, current_index, total, preload_indices) = {
@@ -211,6 +258,8 @@ impl App {
         };
 
         let was_cached = self.image_cache.contains(current_index);
+        let cached_str = if was_cached { "yes" } else { "no" };
+        log::debug!("Navigate {direction}: {from_index} -> {current_index} (cached: {cached_str})");
 
         // Update window title
         if let Some(win) = &self.window {
@@ -256,6 +305,12 @@ impl App {
     }
 
     fn update_transform_and_redraw(&mut self) {
+        log::debug!(
+            "View: zoom={:.2}, pan=({:.2}, {:.2})",
+            self.view_state.zoom,
+            self.view_state.pan_x,
+            self.view_state.pan_y
+        );
         if let Some(renderer) = &self.renderer {
             renderer.update_transform(&self.view_state.transform());
         }
@@ -284,7 +339,6 @@ impl App {
                     file_name,
                 } => {
                     preloader.mark_complete(index);
-                    log::debug!("Preloaded image at index {index}");
                     self.image_cache
                         .insert(index, image, decode_duration, file_name);
                 }
@@ -294,8 +348,8 @@ impl App {
                     reason,
                 } => {
                     preloader.mark_complete(index);
-                    log::warn!(
-                        "Preload failed for index {index} ({}): {reason}",
+                    log::debug!(
+                        "Preload response: failed [{index}] {}: {reason}",
                         path.display()
                     );
                 }
@@ -361,8 +415,7 @@ impl App {
             state.total_files = dir.len();
         }
 
-        state.diagnostics_text =
-            self.build_diagnostics_text(state.current_index);
+        state.diagnostics_text = self.build_diagnostics_text(state.current_index);
     }
 
     /// Build human/agent-readable diagnostics text covering cache, navigation timing, and memory.
@@ -448,9 +501,11 @@ impl App {
             "Escape" => {
                 if let Some(win) = &self.window {
                     if window::is_fullscreen(win) {
+                        log::info!("Fullscreen off");
                         window::toggle_fullscreen(win);
                         self.update_shared_state();
                     } else {
+                        log::info!("Exiting (Escape via QA)");
                         if let Some(preloader) = self.preloader.take() {
                             preloader.shutdown();
                         }
@@ -632,6 +687,7 @@ impl ApplicationHandler<AppCommand> for App {
 
         match event {
             WindowEvent::CloseRequested => {
+                log::info!("Exiting (window closed)");
                 if let Some(preloader) = self.preloader.take() {
                     preloader.shutdown();
                 }
@@ -639,6 +695,7 @@ impl ApplicationHandler<AppCommand> for App {
             }
 
             WindowEvent::Resized(size) => {
+                log::debug!("Window resized to {}x{}", size.width, size.height);
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
                     if let Some(dir) = &self.dir_list {
@@ -660,6 +717,7 @@ impl ApplicationHandler<AppCommand> for App {
 
             WindowEvent::RedrawRequested => {
                 if self.needs_redraw {
+                    log::trace!("Rendering frame");
                     if let Some(renderer) = &self.renderer {
                         renderer.render();
                     }
@@ -677,9 +735,11 @@ impl ApplicationHandler<AppCommand> for App {
                     Key::Named(NamedKey::Escape) => {
                         if let Some(win) = &self.window {
                             if window::is_fullscreen(win) {
+                                log::info!("Fullscreen off");
                                 window::toggle_fullscreen(win);
                                 self.update_shared_state();
                             } else {
+                                log::info!("Exiting (Escape)");
                                 if let Some(preloader) = self.preloader.take() {
                                     preloader.shutdown();
                                 }
@@ -691,12 +751,16 @@ impl ApplicationHandler<AppCommand> for App {
                     Key::Named(NamedKey::ArrowRight) => self.navigate(true),
                     Key::Named(NamedKey::F11) => {
                         if let Some(win) = &self.window {
+                            let entering = !window::is_fullscreen(win);
+                            log::info!("Fullscreen {}", if entering { "on" } else { "off" });
                             window::toggle_fullscreen(win);
                             self.update_shared_state();
                         }
                     }
                     Key::Character("f") if super_pressed => {
                         if let Some(win) = &self.window {
+                            let entering = !window::is_fullscreen(win);
+                            log::info!("Fullscreen {}", if entering { "on" } else { "off" });
                             window::toggle_fullscreen(win);
                             self.update_shared_state();
                         }

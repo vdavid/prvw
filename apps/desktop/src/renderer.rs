@@ -48,7 +48,7 @@ impl Renderer {
             .await
             .expect("No suitable GPU adapter found");
 
-        log::info!("Using GPU adapter: {:?}", adapter.get_info().name);
+        let adapter_name = adapter.get_info().name;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -79,6 +79,13 @@ impl Renderer {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+
+        log::info!(
+            "GPU: {adapter_name}, surface: {}x{}, format: {:?}",
+            config.width,
+            config.height,
+            surface_format
+        );
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("image shader"),

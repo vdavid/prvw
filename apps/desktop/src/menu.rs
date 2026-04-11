@@ -116,6 +116,8 @@ pub fn create_menu_bar() -> MenuIds {
     // On macOS, init the menu bar as the app menu
     menu.init_for_nsapp();
 
+    log::debug!("Menu bar created");
+
     MenuIds {
         zoom_in: zoom_in.id().clone(),
         zoom_out: zoom_out.id().clone(),

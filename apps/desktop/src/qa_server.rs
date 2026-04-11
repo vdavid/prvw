@@ -8,7 +8,7 @@
 //! Port is controlled by `PRVW_QA_PORT` env var (default 19447, set to 0 to disable).
 
 use base64::Engine;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -104,7 +104,7 @@ pub fn start(
         }
     };
 
-    eprintln!("QA server listening on http://127.0.0.1:{port}");
+    log::info!("QA server listening on http://127.0.0.1:{port}");
 
     let handle = std::thread::Builder::new()
         .name("prvw-qa-server".to_string())
@@ -198,6 +198,8 @@ fn handle_request(
         String::new()
     };
 
+    log::debug!("QA: {method} {path}");
+
     match (method, path) {
         // MCP JSON-RPC endpoint
         ("POST", "/mcp") => handle_mcp(stream, state, proxy, &body, session_id),
@@ -226,8 +228,7 @@ fn handle_mcp(
     body: &str,
     session_id: &str,
 ) -> Result<(), String> {
-    let req: Value = serde_json::from_str(body)
-        .map_err(|e| format!("Invalid JSON: {e}"))?;
+    let req: Value = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {e}"))?;
 
     let method = req["method"].as_str().unwrap_or("");
     let id = req.get("id"); // None for notifications
@@ -239,7 +240,10 @@ fn handle_mcp(
         "tools/call" => Some(mcp_tools_call(&req["params"], state, proxy)),
         "resources/list" => Some(mcp_resources_list()),
         "resources/read" => Some(mcp_resources_read(&req["params"], state)),
-        _ => Some(Err(json_rpc_error(-32601, &format!("Method not found: {method}")))),
+        _ => Some(Err(json_rpc_error(
+            -32601,
+            &format!("Method not found: {method}"),
+        ))),
     };
 
     // Notifications (no `id`) get a 202 Accepted with no body per MCP spec.
@@ -387,13 +391,12 @@ fn mcp_tools_call(
             // Brief pause to let the event loop process the navigation.
             std::thread::sleep(std::time::Duration::from_millis(50));
             let state_text = format_state_text(state);
-            Ok(mcp_text_content(&format!("Navigated {direction}.\n\n{state_text}")))
+            Ok(mcp_text_content(&format!(
+                "Navigated {direction}.\n\n{state_text}"
+            )))
         }
         "key" => {
-            let key = args["key"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+            let key = args["key"].as_str().unwrap_or("").to_string();
             if key.is_empty() {
                 return Err(json_rpc_error(-32602, "key is required"));
             }
@@ -413,7 +416,7 @@ fn mcp_tools_call(
                         return Err(json_rpc_error(
                             -32602,
                             "level must be 'fit', 'actual', or a positive float",
-                        ))
+                        ));
                     }
                 },
             };
@@ -432,7 +435,7 @@ fn mcp_tools_call(
                     return Err(json_rpc_error(
                         -32602,
                         "mode must be 'on', 'off', or 'toggle'",
-                    ))
+                    ));
                 }
             };
             proxy
@@ -470,7 +473,10 @@ fn mcp_tools_call(
                 }]
             }))
         }
-        _ => Err(json_rpc_error(-32602, &format!("Unknown tool: {tool_name}"))),
+        _ => Err(json_rpc_error(
+            -32602,
+            &format!("Unknown tool: {tool_name}"),
+        )),
     }
 }
 
@@ -499,10 +505,7 @@ fn mcp_resources_list() -> Result<Value, Value> {
     }))
 }
 
-fn mcp_resources_read(
-    params: &Value,
-    state: &Arc<Mutex<SharedAppState>>,
-) -> Result<Value, Value> {
+fn mcp_resources_read(params: &Value, state: &Arc<Mutex<SharedAppState>>) -> Result<Value, Value> {
     let uri = params["uri"].as_str().unwrap_or("");
     match uri {
         "prvw://state" => {
@@ -515,15 +518,13 @@ fn mcp_resources_read(
                 }]
             }))
         }
-        "prvw://menu" => {
-            Ok(json!({
-                "contents": [{
-                    "uri": uri,
-                    "mimeType": "text/plain",
-                    "text": MENU_TEXT
-                }]
-            }))
-        }
+        "prvw://menu" => Ok(json!({
+            "contents": [{
+                "uri": uri,
+                "mimeType": "text/plain",
+                "text": MENU_TEXT
+            }]
+        })),
         "prvw://diagnostics" => {
             let text = state
                 .lock()
@@ -695,7 +696,7 @@ fn handle_post_navigate(
                 "text/plain",
                 b"Body must be 'next' or 'prev'",
                 &[],
-            )
+            );
         }
     };
     proxy
@@ -765,13 +766,7 @@ fn handle_post_open(
 ) -> Result<(), String> {
     let path_str = body.trim();
     if path_str.is_empty() {
-        return write_response(
-            stream,
-            400,
-            "text/plain",
-            b"Missing file path in body",
-            &[],
-        );
+        return write_response(stream, 400, "text/plain", b"Missing file path in body", &[]);
     }
     let path = PathBuf::from(path_str);
     proxy

@@ -1,10 +1,22 @@
 use std::path::Path;
+use std::time::Instant;
 
 /// Decoded image data ready for GPU upload.
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
     pub rgba_data: Vec<u8>,
+}
+
+/// Format a byte count as a compact human-readable string (for example, "47.2 MB").
+fn format_decoded_size(bytes: usize) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else {
+        format!("{:.1} KB", b / 1024.0)
+    }
 }
 
 /// JPEG extensions eligible for the fast zune-jpeg decode path.
@@ -18,22 +30,45 @@ fn is_jpeg_extension(ext: &str) -> bool {
 /// Decode an image file to RGBA8 pixel data.
 /// JPEGs use zune-jpeg (SIMD-accelerated). Everything else goes through the `image` crate.
 pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    if is_jpeg_extension(ext) {
+    log::debug!("Loading {}", path.display());
+    let start = Instant::now();
+
+    let result = if is_jpeg_extension(ext) {
         load_jpeg(path)
     } else {
         load_generic(path)
+    };
+
+    match &result {
+        Ok(image) => {
+            let duration = start.elapsed();
+            let decoded_size = format_decoded_size(image.rgba_data.len());
+            let format_name = if is_jpeg_extension(ext) {
+                "JPEG via zune-jpeg".to_string()
+            } else {
+                ext.to_uppercase()
+            };
+            log::info!(
+                "Decoded {format_name}: {}x{} ({decoded_size}) in {}ms",
+                image.width,
+                image.height,
+                duration.as_millis()
+            );
+        }
+        Err(msg) => {
+            log::warn!("Decode failed for {}: {msg}", path.display());
+        }
     }
+
+    result
 }
 
 /// Fast JPEG decode via zune-jpeg with SIMD options.
 fn load_jpeg(path: &Path) -> Result<DecodedImage, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
 
     let options = zune_core::options::DecoderOptions::new_fast();
     let cursor = std::io::Cursor::new(bytes);

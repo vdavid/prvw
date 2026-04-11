@@ -41,8 +41,10 @@ pub fn window_title_with_position(path: &Path, current: usize, total: usize) -> 
 /// Toggle fullscreen on the window.
 pub fn toggle_fullscreen(window: &Window) {
     if window.fullscreen().is_some() {
+        log::debug!("Fullscreen: borderless -> windowed");
         window.set_fullscreen(None);
     } else {
+        log::debug!("Fullscreen: windowed -> borderless");
         window.set_fullscreen(Some(Fullscreen::Borderless(None)));
     }
 }

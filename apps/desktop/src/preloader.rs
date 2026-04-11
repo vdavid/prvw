@@ -102,8 +102,22 @@ impl ImageCache {
         // Evict until there's room
         while self.memory_used + cost > self.memory_budget && !self.access_order.is_empty() {
             let evict_index = self.access_order[0];
+            if let Some(entry) = self.entries.get(&evict_index) {
+                log::debug!(
+                    "Cache evicted [{evict_index}] {} ({}), freeing {}",
+                    entry.file_name,
+                    format_cache_bytes(entry.memory_cost),
+                    format_cache_bytes(entry.memory_cost)
+                );
+            }
             self.remove(evict_index);
         }
+
+        log::debug!(
+            "Cache insert [{index}] {file_name} ({}), total: {}",
+            format_cache_bytes(cost),
+            format_cache_bytes(self.memory_used + cost)
+        );
 
         self.entries.insert(
             index,
@@ -185,6 +199,17 @@ fn image_memory_cost(image: &DecodedImage) -> usize {
     image.width as usize * image.height as usize * 4
 }
 
+/// Format a byte count compactly for cache log messages.
+fn format_cache_bytes(bytes: usize) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else {
+        format!("{:.1} KB", b / 1024.0)
+    }
+}
+
 /// Parallel image preloader backed by a rayon thread pool.
 pub struct Preloader {
     pool: rayon::ThreadPool,
@@ -220,6 +245,8 @@ impl Preloader {
 
     /// Spawn decode tasks for the given files. Skips indices already in-flight.
     pub fn request_preload(&mut self, files: Vec<(usize, PathBuf)>) {
+        let indices: Vec<usize> = files.iter().map(|(i, _)| *i).collect();
+        log::debug!("Preloading {} images: [{:?}]", files.len(), indices);
         for (index, path) in files {
             if self.in_flight.contains(&index) {
                 continue;
@@ -236,15 +263,20 @@ impl Preloader {
                 let start = Instant::now();
                 match image_loader::load_image(&path) {
                     Ok(image) => {
+                        let duration = start.elapsed();
+                        log::debug!(
+                            "Preloaded [{index}] {file_name} in {}ms",
+                            duration.as_millis()
+                        );
                         let _ = tx.send(PreloadResponse::Ready {
                             index,
                             image,
-                            decode_duration: start.elapsed(),
+                            decode_duration: duration,
                             file_name,
                         });
                     }
                     Err(reason) => {
-                        log::warn!("Preloader: couldn't decode {}: {reason}", path.display());
+                        log::warn!("Preload failed for [{index}] {}: {reason}", path.display());
                         let _ = tx.send(PreloadResponse::Failed {
                             index,
                             path,
