@@ -8,8 +8,9 @@
 # macOS system files
 .DS_Store
 
-# Personal Claude hooks
+# Personal Claude files
 .claude/hooks/session-start.sh
+.claude/settings.local.json
 
 # .env files
 .env

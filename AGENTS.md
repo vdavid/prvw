@@ -1,6 +1,6 @@
 # Prvw
 
-This file is for AI agents. Human contributors, see the README.
+This file is for AI agents. Human contributors, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Prvw is a fast, minimal image viewer for macOS written in Rust (`winit` + `wgpu` + `muda`). Think ACDSee 2.41: open a
 pic, see it instantly, zoom/pan, arrow keys for next/prev (preloaded in background), ESC to close. Free forever for
