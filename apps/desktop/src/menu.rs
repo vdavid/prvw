@@ -100,17 +100,12 @@ pub fn create_menu_bar() -> MenuIds {
         .expect("Failed to build view menu");
 
     // Navigate menu
+    // Note: we don't register ArrowLeft/ArrowRight as muda accelerators because muda 0.17
+    // crashes with ZeroWidth icon error when processing bare arrow key accelerators on macOS.
+    // Navigation is handled directly in the keyboard event handler in main.rs instead.
     let nav_menu = Submenu::new("Navigate", true);
-    let previous = muda::MenuItem::new(
-        "Previous",
-        true,
-        Some(Accelerator::new(None, muda::accelerator::Code::ArrowLeft)),
-    );
-    let next = muda::MenuItem::new(
-        "Next",
-        true,
-        Some(Accelerator::new(None, muda::accelerator::Code::ArrowRight)),
-    );
+    let previous = muda::MenuItem::new("Previous", true, None);
+    let next = muda::MenuItem::new("Next", true, None);
     nav_menu
         .append_items(&[&previous, &next])
         .expect("Failed to build navigate menu");

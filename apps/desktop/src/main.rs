@@ -2,17 +2,19 @@ mod directory;
 mod image_loader;
 mod menu;
 mod preloader;
+mod qa_server;
 mod renderer;
 mod view;
 mod window;
 
 use clap::Parser;
+use qa_server::{AppCommand, SharedAppState};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
@@ -37,10 +39,15 @@ fn main() {
         std::process::exit(1);
     }
 
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let event_loop = EventLoop::<AppCommand>::with_user_event()
+        .build()
+        .expect("Failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let mut app = App::new(file_path);
+    let proxy = event_loop.create_proxy();
+    let shared_state = Arc::new(Mutex::new(SharedAppState::default()));
+
+    let mut app = App::new(file_path, proxy, Arc::clone(&shared_state));
     event_loop
         .run_app(&mut app)
         .expect("Event loop terminated unexpectedly");
@@ -66,10 +73,19 @@ struct App {
     last_click_time: Option<Instant>,
     /// Whether we need to re-render next frame
     needs_redraw: bool,
+    /// QA server shared state and event loop proxy
+    shared_state: Arc<Mutex<SharedAppState>>,
+    event_loop_proxy: EventLoopProxy<AppCommand>,
+    /// Handle to the QA server thread (kept alive for the app's lifetime)
+    _qa_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl App {
-    fn new(file_path: PathBuf) -> Self {
+    fn new(
+        file_path: PathBuf,
+        event_loop_proxy: EventLoopProxy<AppCommand>,
+        shared_state: Arc<Mutex<SharedAppState>>,
+    ) -> Self {
         Self {
             file_path,
             window: None,
@@ -84,6 +100,9 @@ impl App {
             last_mouse_pos: (0.0, 0.0),
             last_click_time: None,
             needs_redraw: false,
+            shared_state,
+            event_loop_proxy,
+            _qa_handle: None,
         }
     }
 
@@ -196,6 +215,8 @@ impl App {
                 preloader.request_preload(to_preload);
             }
         }
+
+        self.update_shared_state();
     }
 
     fn update_transform_and_redraw(&mut self) {
@@ -203,6 +224,7 @@ impl App {
             renderer.update_transform(&self.view_state.transform());
         }
         self.request_redraw();
+        self.update_shared_state();
     }
 
     fn request_redraw(&mut self) {
@@ -258,6 +280,7 @@ impl App {
         } else if event.id() == &ids.fullscreen {
             if let Some(win) = &self.window {
                 window::toggle_fullscreen(win);
+                self.update_shared_state();
             }
         } else if event.id() == &ids.previous {
             self.navigate(false);
@@ -269,9 +292,87 @@ impl App {
             let _ = event_loop;
         }
     }
+
+    /// Push current app state into the shared mutex for the QA server to read.
+    fn update_shared_state(&self) {
+        let Ok(mut state) = self.shared_state.lock() else {
+            return;
+        };
+
+        state.zoom = self.view_state.zoom;
+        state.pan_x = self.view_state.pan_x;
+        state.pan_y = self.view_state.pan_y;
+
+        if let Some(win) = &self.window {
+            let size = win.inner_size();
+            state.window_width = size.width;
+            state.window_height = size.height;
+            state.fullscreen = window::is_fullscreen(win);
+            state.window_title = win.title();
+        }
+
+        if let Some(dir) = &self.dir_list {
+            state.current_file = Some(dir.current().to_path_buf());
+            state.current_index = dir.current_index();
+            state.total_files = dir.len();
+        }
+    }
+
+    /// Handle a key name from the QA server (web-style key names).
+    fn handle_qa_key(&mut self, event_loop: &ActiveEventLoop, key_name: &str) {
+        match key_name {
+            "ArrowLeft" => self.navigate(false),
+            "ArrowRight" => self.navigate(true),
+            "Escape" => {
+                if let Some(win) = &self.window {
+                    if window::is_fullscreen(win) {
+                        window::toggle_fullscreen(win);
+                        self.update_shared_state();
+                    } else {
+                        if let Some(preloader) = &self.preloader {
+                            preloader.shutdown();
+                        }
+                        event_loop.exit();
+                    }
+                }
+            }
+            "F11" => {
+                if let Some(win) = &self.window {
+                    window::toggle_fullscreen(win);
+                    self.update_shared_state();
+                }
+            }
+            "f" => {
+                // Cmd+F equivalent: toggle fullscreen
+                if let Some(win) = &self.window {
+                    window::toggle_fullscreen(win);
+                    self.update_shared_state();
+                }
+            }
+            "+" | "=" => {
+                self.view_state.keyboard_zoom(true);
+                self.update_transform_and_redraw();
+            }
+            "-" => {
+                self.view_state.keyboard_zoom(false);
+                self.update_transform_and_redraw();
+            }
+            "0" => {
+                self.view_state.fit_to_window();
+                self.update_transform_and_redraw();
+            }
+            "1" => {
+                self.view_state.actual_size();
+                self.update_transform_and_redraw();
+            }
+            _ => {
+                log::debug!("QA server: unhandled key '{key_name}'");
+            }
+        }
+    }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppCommand> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return; // Already initialized
@@ -324,6 +425,85 @@ impl ApplicationHandler for App {
         }
 
         self.preloader = Some(preloader);
+
+        // Populate shared state before starting the QA server
+        self.update_shared_state();
+
+        // Start the QA HTTP server
+        self._qa_handle = qa_server::start(
+            Arc::clone(&self.shared_state),
+            self.event_loop_proxy.clone(),
+        );
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, command: AppCommand) {
+        match command {
+            AppCommand::SendKey(key_name) => {
+                self.handle_qa_key(event_loop, &key_name);
+            }
+            AppCommand::Navigate(forward) => {
+                self.navigate(forward);
+            }
+            AppCommand::SetZoom(level) => {
+                self.view_state.zoom = level;
+                self.view_state.pan_x = 0.0;
+                self.view_state.pan_y = 0.0;
+                self.update_transform_and_redraw();
+            }
+            AppCommand::FitToWindow => {
+                self.view_state.fit_to_window();
+                self.update_transform_and_redraw();
+            }
+            AppCommand::ActualSize => {
+                self.view_state.actual_size();
+                self.update_transform_and_redraw();
+            }
+            AppCommand::ToggleFullscreen => {
+                if let Some(win) = &self.window {
+                    window::toggle_fullscreen(win);
+                    self.update_shared_state();
+                }
+            }
+            AppCommand::SetFullscreen(on) => {
+                if let Some(win) = &self.window {
+                    let is_fs = window::is_fullscreen(win);
+                    if on != is_fs {
+                        window::toggle_fullscreen(win);
+                        self.update_shared_state();
+                    }
+                }
+            }
+            AppCommand::OpenFile(path) => {
+                let resolved = path.canonicalize().unwrap_or(path);
+                if resolved.is_file() {
+                    self.file_path = resolved.clone();
+                    self.dir_list = directory::DirectoryList::from_file(&resolved);
+                    self.display_image(&resolved);
+
+                    if let Some(dir) = &self.dir_list
+                        && let Some(win) = &self.window
+                    {
+                        win.set_title(&window::window_title_with_position(
+                            &resolved,
+                            dir.current_index(),
+                            dir.len(),
+                        ));
+                    }
+
+                    self.update_shared_state();
+                } else {
+                    log::warn!("QA /open: not a file: {}", resolved.display());
+                }
+            }
+            AppCommand::TakeScreenshot(sender) => {
+                let png_bytes = if let Some(renderer) = &self.renderer {
+                    renderer.capture_screenshot()
+                } else {
+                    Vec::new()
+                };
+                let _ = sender.send(png_bytes);
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -356,6 +536,7 @@ impl ApplicationHandler for App {
                     renderer.update_transform(&self.view_state.transform());
                 }
                 self.request_redraw();
+                self.update_shared_state();
             }
 
             WindowEvent::RedrawRequested => {
@@ -378,6 +559,7 @@ impl ApplicationHandler for App {
                         if let Some(win) = &self.window {
                             if window::is_fullscreen(win) {
                                 window::toggle_fullscreen(win);
+                                self.update_shared_state();
                             } else {
                                 if let Some(preloader) = &self.preloader {
                                     preloader.shutdown();
@@ -391,11 +573,13 @@ impl ApplicationHandler for App {
                     Key::Named(NamedKey::F11) => {
                         if let Some(win) = &self.window {
                             window::toggle_fullscreen(win);
+                            self.update_shared_state();
                         }
                     }
                     Key::Character("f") if super_pressed => {
                         if let Some(win) = &self.window {
                             window::toggle_fullscreen(win);
+                            self.update_shared_state();
                         }
                     }
                     Key::Character("=") | Key::Character("+") if super_pressed => {

@@ -1,5 +1,6 @@
 use crate::image_loader::DecodedImage;
 use crate::view::TransformUniform;
+use image::ImageEncoder;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
@@ -316,6 +317,144 @@ impl Renderer {
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         true
+    }
+
+    /// Capture the current scene as a PNG image. Returns empty Vec if no image is loaded.
+    pub fn capture_screenshot(&self) -> Vec<u8> {
+        let Some(bind_group) = &self.bind_group else {
+            return Vec::new();
+        };
+
+        let width = self.config.width;
+        let height = self.config.height;
+        if width == 0 || height == 0 {
+            return Vec::new();
+        }
+
+        // Create an offscreen texture to render into
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("screenshot texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("screenshot encoder"),
+            });
+
+        // Render the scene to the offscreen texture (same pipeline as normal render)
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("screenshot render pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.06,
+                            g: 0.06,
+                            b: 0.08,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.render_pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.draw(0..6, 0..1);
+        }
+
+        // Copy texture to a staging buffer
+        let bytes_per_pixel = 4u32;
+        let unpadded_bytes_per_row = bytes_per_pixel * width;
+        let padded_bytes_per_row = (unpadded_bytes_per_row + 255) & !255; // align to 256
+        let buffer_size = (padded_bytes_per_row * height) as u64;
+
+        let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("screenshot staging buffer"),
+            size: buffer_size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Map the buffer and read the pixels
+        let buffer_slice = staging_buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+
+        if rx.recv().map(|r| r.is_err()).unwrap_or(true) {
+            log::error!("Failed to map screenshot buffer");
+            return Vec::new();
+        }
+
+        let data = buffer_slice.get_mapped_range();
+
+        // Strip row padding and collect raw RGBA pixels
+        let mut rgba_pixels = Vec::with_capacity((width * height * bytes_per_pixel) as usize);
+        for row in 0..height {
+            let start = (row * padded_bytes_per_row) as usize;
+            let end = start + unpadded_bytes_per_row as usize;
+            rgba_pixels.extend_from_slice(&data[start..end]);
+        }
+        drop(data);
+        staging_buffer.unmap();
+
+        // Encode as PNG using the image crate
+        let mut png_bytes: Vec<u8> = Vec::new();
+        let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
+        if let Err(e) =
+            encoder.write_image(&rgba_pixels, width, height, image::ColorType::Rgba8.into())
+        {
+            log::error!("Failed to encode screenshot PNG: {e}");
+            return Vec::new();
+        }
+
+        png_bytes
     }
 
     pub fn surface_width(&self) -> u32 {

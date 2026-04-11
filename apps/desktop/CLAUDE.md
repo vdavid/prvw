@@ -16,6 +16,7 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | `menu.rs`         | Native macOS menu bar via `muda`, shortcut wiring           |
 | `directory.rs`    | Scan parent dir for images, sort, track position            |
 | `preloader.rs`    | Background thread decoding, LRU cache (512 MB budget)       |
+| `qa_server.rs`    | Embedded HTTP server for QA/E2E testing (state, commands, screenshots) |
 | `shader.wgsl`     | WGSL vertex/fragment shader for textured quad with 2D transform |
 
 ## Key patterns
@@ -30,6 +31,11 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
   which is overkill for v1.
 - **Transform**: Zoom and pan are a 2D affine transform applied to the quad's vertices in the vertex shader. No image
   re-decode needed.
+
+- **QA server**: An embedded HTTP server (raw `TcpListener`, no external crate) on a background thread. Agents and E2E
+  tests use it to query state, send commands, and capture screenshots. Port controlled by `PRVW_QA_PORT` env var
+  (default 19447, set to 0 to disable). Commands flow through `EventLoopProxy<AppCommand>` user events. Screenshots
+  use an offscreen wgpu render target + buffer readback + PNG encoding.
 
 ## Gotchas
 
