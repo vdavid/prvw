@@ -1,7 +1,8 @@
 use crate::image_loader::{self, DecodedImage};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::thread::available_parallelism;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,8 @@ pub enum PreloadResponse {
         path: PathBuf,
         reason: String,
     },
+    /// The task was cancelled before completing.
+    Cancelled { index: usize },
 }
 
 /// LRU cache for decoded images with a memory budget.
@@ -217,12 +220,14 @@ pub struct Preloader {
     pub response_rx: mpsc::Receiver<PreloadResponse>,
     /// Indices currently being decoded (prevents duplicate work).
     in_flight: HashSet<usize>,
+    /// Cancellation tokens for in-flight tasks.
+    cancellation_tokens: Vec<Arc<AtomicBool>>,
 }
 
 impl Preloader {
     pub fn start() -> Self {
         let num_threads = available_parallelism()
-            .map(|n| n.get().saturating_sub(1).clamp(1, 4))
+            .map(|n| n.get())
             .unwrap_or(4);
 
         let pool = rayon::ThreadPoolBuilder::new()
@@ -240,28 +245,43 @@ impl Preloader {
             response_tx,
             response_rx,
             in_flight: HashSet::new(),
+            cancellation_tokens: Vec::new(),
         }
     }
 
-    /// Spawn decode tasks for the given files. Skips indices already in-flight.
-    pub fn request_preload(&mut self, files: Vec<(usize, PathBuf)>) {
-        let indices: Vec<usize> = files.iter().map(|(i, _)| *i).collect();
-        log::debug!("Preloading {} images: [{:?}]", files.len(), indices);
-        for (index, path) in files {
-            if self.in_flight.contains(&index) {
-                continue;
-            }
+    /// Cancel all in-flight tasks and submit new ones.
+    /// Tasks are submitted in priority order: indices earlier in the list get higher priority.
+    pub fn request_preload(&mut self, tasks: Vec<(usize, PathBuf)>) {
+        // Cancel all existing in-flight tasks
+        let cancelled_count = self.cancellation_tokens.len();
+        for token in &self.cancellation_tokens {
+            token.store(true, Ordering::Relaxed);
+        }
+        self.cancellation_tokens.clear();
+        self.in_flight.clear();
+
+        if cancelled_count > 0 {
+            log::debug!("Cancelled {cancelled_count} in-flight tasks");
+        }
+
+        let indices: Vec<usize> = tasks.iter().map(|(i, _)| *i).collect();
+        log::debug!("Preloading {} images: {indices:?}", tasks.len());
+
+        for (priority, (index, path)) in tasks.into_iter().enumerate() {
             self.in_flight.insert(index);
 
+            let cancelled = Arc::new(AtomicBool::new(false));
+            self.cancellation_tokens.push(Arc::clone(&cancelled));
+
             let tx = self.response_tx.clone();
-            self.pool.spawn(move || {
+            let task = move || {
                 let file_name = path
                     .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
                 let start = Instant::now();
-                match image_loader::load_image(&path) {
+                match image_loader::load_image_cancellable(&path, &cancelled) {
                     Ok(image) => {
                         let duration = start.elapsed();
                         log::debug!(
@@ -275,6 +295,10 @@ impl Preloader {
                             file_name,
                         });
                     }
+                    Err(reason) if reason == "cancelled" => {
+                        log::debug!("Preload cancelled for [{index}] {file_name}");
+                        let _ = tx.send(PreloadResponse::Cancelled { index });
+                    }
                     Err(reason) => {
                         log::warn!("Preload failed for [{index}] {}: {reason}", path.display());
                         let _ = tx.send(PreloadResponse::Failed {
@@ -284,7 +308,14 @@ impl Preloader {
                         });
                     }
                 }
-            });
+            };
+
+            // First task (highest priority) gets FIFO scheduling
+            if priority == 0 {
+                self.pool.spawn_fifo(task);
+            } else {
+                self.pool.spawn(task);
+            }
         }
     }
 

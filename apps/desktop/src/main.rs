@@ -286,7 +286,7 @@ impl App {
             timestamp: Instant::now(),
         });
 
-        // Request preloading of adjacent images
+        // Cancel stale preload tasks and submit fresh ones for adjacent images
         if let Some(dir) = &self.dir_list {
             let to_preload: Vec<(usize, PathBuf)> = preload_indices
                 .iter()
@@ -294,9 +294,7 @@ impl App {
                 .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
                 .collect();
 
-            if let Some(preloader) = &mut self.preloader
-                && !to_preload.is_empty()
-            {
+            if let Some(preloader) = &mut self.preloader {
                 preloader.request_preload(to_preload);
             }
         }
@@ -352,6 +350,9 @@ impl App {
                         "Preload response: failed [{index}] {}: {reason}",
                         path.display()
                     );
+                }
+                preloader::PreloadResponse::Cancelled { index } => {
+                    preloader.mark_complete(index);
                 }
             }
         }
