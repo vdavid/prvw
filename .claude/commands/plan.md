@@ -8,7 +8,7 @@ Plan the feature implementation we discussed.
 4. Use milestones if needed. Make sure to include the necessary docs updates roughly, testing (Unit? Integration? E2E?),
    and running all necessary checks.
 5. Leave notes about what can be executed in parallel, but only if it's extremely safe and needs no worktrees; we're
-   usually not in a hurry and sequential running is totally fine.
+   usually not in a hurry, and sequential running is totally fine.
 6. DO NOT enter "Plan mode" unless specifically asked to "Enter plan mode". Use docs/specs.
 7. Get an Opus agent to review the plan with fresh eyes, and point out any mistakes. Then fix up the plan based on that.
    Link the most crucial docs and design principles to the agent.

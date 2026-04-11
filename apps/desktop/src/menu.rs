@@ -1,7 +1,4 @@
-use muda::{
-    AboutMetadata, Menu, MenuEvent, MenuId, PredefinedMenuItem, Submenu,
-    accelerator::{Accelerator, Modifiers as MudaModifiers},
-};
+use muda::{AboutMetadata, Menu, MenuEvent, MenuId, PredefinedMenuItem, Submenu};
 
 /// Identifiers for custom menu actions.
 pub struct MenuIds {
@@ -46,47 +43,15 @@ pub fn create_menu_bar() -> MenuIds {
         .expect("Failed to build file menu");
 
     // View menu
+    // Note: all accelerators are disabled because muda 0.17 crashes with a ZeroWidth icon error
+    // when processing keyboard accelerators on macOS. All shortcuts are handled directly in the
+    // keyboard event handler in main.rs instead. The menu items are still clickable.
     let view_menu = Submenu::new("View", true);
-    let zoom_in = muda::MenuItem::new(
-        "Zoom in",
-        true,
-        Some(Accelerator::new(
-            Some(MudaModifiers::SUPER),
-            muda::accelerator::Code::Equal,
-        )),
-    );
-    let zoom_out = muda::MenuItem::new(
-        "Zoom out",
-        true,
-        Some(Accelerator::new(
-            Some(MudaModifiers::SUPER),
-            muda::accelerator::Code::Minus,
-        )),
-    );
-    let actual_size = muda::MenuItem::new(
-        "Actual size",
-        true,
-        Some(Accelerator::new(
-            Some(MudaModifiers::SUPER),
-            muda::accelerator::Code::Digit1,
-        )),
-    );
-    let fit_to_window = muda::MenuItem::new(
-        "Fit to window",
-        true,
-        Some(Accelerator::new(
-            Some(MudaModifiers::SUPER),
-            muda::accelerator::Code::Digit0,
-        )),
-    );
-    let fullscreen = muda::MenuItem::new(
-        "Fullscreen",
-        true,
-        Some(Accelerator::new(
-            Some(MudaModifiers::SUPER),
-            muda::accelerator::Code::KeyF,
-        )),
-    );
+    let zoom_in = muda::MenuItem::new("Zoom in", true, None);
+    let zoom_out = muda::MenuItem::new("Zoom out", true, None);
+    let actual_size = muda::MenuItem::new("Actual size", true, None);
+    let fit_to_window = muda::MenuItem::new("Fit to window", true, None);
+    let fullscreen = muda::MenuItem::new("Fullscreen", true, None);
     view_menu
         .append_items(&[
             &zoom_in,
@@ -100,9 +65,6 @@ pub fn create_menu_bar() -> MenuIds {
         .expect("Failed to build view menu");
 
     // Navigate menu
-    // Note: we don't register ArrowLeft/ArrowRight as muda accelerators because muda 0.17
-    // crashes with ZeroWidth icon error when processing bare arrow key accelerators on macOS.
-    // Navigation is handled directly in the keyboard event handler in main.rs instead.
     let nav_menu = Submenu::new("Navigate", true);
     let previous = muda::MenuItem::new("Previous", true, None);
     let next = muda::MenuItem::new("Next", true, None);
