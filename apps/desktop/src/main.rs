@@ -466,11 +466,8 @@ impl ApplicationHandler<AppCommand> for App {
             }
             AppCommand::SetFullscreen(on) => {
                 if let Some(win) = &self.window {
-                    let is_fs = window::is_fullscreen(win);
-                    if on != is_fs {
-                        window::toggle_fullscreen(win);
-                        self.update_shared_state();
-                    }
+                    window::set_fullscreen(win, on);
+                    self.update_shared_state();
                 }
             }
             AppCommand::OpenFile(path) => {

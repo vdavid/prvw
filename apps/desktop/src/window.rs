@@ -47,6 +47,15 @@ pub fn toggle_fullscreen(window: &Window) {
     }
 }
 
+/// Set fullscreen on or off directly.
+pub fn set_fullscreen(window: &Window, on: bool) {
+    if on {
+        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+    } else {
+        window.set_fullscreen(None);
+    }
+}
+
 /// Check if the window is currently fullscreen.
 pub fn is_fullscreen(window: &Window) -> bool {
     window.fullscreen().is_some()
