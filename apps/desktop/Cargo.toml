@@ -27,8 +27,13 @@ nom-exif = { version = "2.7.0", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSURL", "NSString", "NSThread"] }
+objc2-foundation = { version = "0.3", features = [
+    "NSAppleEventDescriptor",
+    "NSAppleEventManager",
+    "NSString",
+    "NSURL",
+    "objc2-core-services",
+] }
 
 [profile.dev.package.zune-jpeg]
 opt-level = 3

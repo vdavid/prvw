@@ -1,7 +1,7 @@
 mod directory;
 mod image_loader;
 #[cfg(target_os = "macos")]
-mod macos_delegate;
+mod macos_open_handler;
 mod menu;
 mod preloader;
 mod qa_server;
@@ -84,10 +84,10 @@ fn main() {
     let proxy = event_loop.create_proxy();
     let shared_state = Arc::new(Mutex::new(SharedAppState::default()));
 
-    // Register macOS delegate for Apple Events (file open when app is already running).
-    // Must be called after EventLoop::new() and before run_app(). Keep _delegate alive.
+    // Register Apple Event handler for file-open events (double-click while already running).
+    // Uses NSAppleEventManager, not NSApplicationDelegate (which would conflict with winit).
     #[cfg(target_os = "macos")]
-    let _delegate = macos_delegate::register(proxy.clone());
+    let _open_handler = macos_open_handler::register(proxy.clone());
 
     let mut app = App::new(file_path, proxy, Arc::clone(&shared_state));
     event_loop
