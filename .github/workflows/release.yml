@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            arch: x86_64
+          - target: universal-apple-darwin
+            arch: universal
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install mise
+        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+
+      - name: Install tools with mise
+        run: mise install
+
+      - name: Install x86_64 Rust target
+        if: matrix.arch != 'aarch64'
+        run: rustup target add x86_64-apple-darwin
+
+      - name: Import Apple certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+      - name: Set up notarization credentials
+        env:
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          mkdir -p ~/private_keys
+          echo -n "$APPLE_API_KEY_BASE64" | base64 --decode \
+            > ~/private_keys/AuthKey_${APPLE_API_KEY}.p8
+
+      - name: Build aarch64
+        if: matrix.arch == 'aarch64'
+        run: cargo build --release --target aarch64-apple-darwin
+        working-directory: ./apps/desktop
+
+      - name: Build x86_64
+        if: matrix.arch == 'x86_64'
+        run: cargo build --release --target x86_64-apple-darwin
+        working-directory: ./apps/desktop
+
+      - name: Build universal (both architectures + lipo)
+        if: matrix.arch == 'universal'
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create \
+            target/aarch64-apple-darwin/release/prvw \
+            target/x86_64-apple-darwin/release/prvw \
+            -output target/universal-apple-darwin/release/prvw
+        working-directory: ./apps/desktop
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create .app bundle
+        run: |
+          BINARY="apps/desktop/target/${{ matrix.target }}/release/prvw"
+          APP_BUNDLE="apps/desktop/target/${{ matrix.target }}/release/Prvw.app"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/prvw"
+          chmod +x "$APP_BUNDLE/Contents/MacOS/prvw"
+          sed "s/__VERSION__/$VERSION/g" apps/desktop/Info.plist > "$APP_BUNDLE/Contents/Info.plist"
+          cp apps/desktop/resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+
+      - name: Sign .app bundle
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          APP_BUNDLE="apps/desktop/target/${{ matrix.target }}/release/Prvw.app"
+          codesign \
+            --sign "$APPLE_SIGNING_IDENTITY" \
+            --identifier "com.veszelovszki.prvw" \
+            --options runtime \
+            --entitlements apps/desktop/Entitlements.plist \
+            --force \
+            --verbose \
+            --deep \
+            "$APP_BUNDLE"
+          codesign --verify --verbose=2 "$APP_BUNDLE"
+
+      - name: Create DMG
+        run: |
+          ./scripts/create-dmg.sh \
+            "apps/desktop/target/${{ matrix.target }}/release/prvw" \
+            "Prvw_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg" \
+            "${{ steps.version.outputs.version }}"
+
+      - name: Notarize DMG
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          xcrun notarytool submit \
+            "Prvw_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg" \
+            --key ~/private_keys/AuthKey_${APPLE_API_KEY}.p8 \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+
+      - name: Staple notarization ticket
+        run: |
+          xcrun stapler staple \
+            "Prvw_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: "Prvw_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg"
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain $RUNNER_TEMP/app-signing.keychain-db
+
+  release:
+    name: Create release
+    needs: [build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Download all DMG artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: dmg-*
+          merge-multiple: true
+          path: ./artifacts
+
+      - name: Extract changelog for this version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES=$(sed -n "/## \[$VERSION\]/,/## \[/p" CHANGELOG.md | sed '1d;$d' | sed '/./,$!d')
+          printf '%s\n' "$NOTES" > /tmp/notes.txt
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Prvw $GITHUB_REF_NAME" \
+            --notes-file /tmp/notes.txt \
+            ./artifacts/*.dmg
