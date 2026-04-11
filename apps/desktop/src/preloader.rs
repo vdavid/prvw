@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 const DEFAULT_MEMORY_BUDGET: usize = 512 * 1024 * 1024; // 512 MB
 const PRELOAD_AHEAD: usize = 2;
@@ -18,7 +19,12 @@ pub enum PreloadRequest {
 /// Messages sent from the preloader back to the main thread.
 pub enum PreloadResponse {
     /// An image was decoded and is ready.
-    Ready { index: usize, image: DecodedImage },
+    Ready {
+        index: usize,
+        image: DecodedImage,
+        decode_duration: Duration,
+        file_name: String,
+    },
     /// An image failed to decode.
     Failed {
         index: usize,
@@ -36,9 +42,28 @@ pub struct ImageCache {
     memory_budget: usize,
 }
 
-struct CacheEntry {
-    image: DecodedImage,
+pub struct CacheEntry {
+    pub image: DecodedImage,
+    pub decode_duration: Duration,
+    pub file_name: String,
     memory_cost: usize,
+}
+
+/// Snapshot of cache state for diagnostics.
+pub struct CacheDiagnostics {
+    pub total_memory: usize,
+    pub memory_budget: usize,
+    pub entries: Vec<CacheEntryDiagnostic>,
+}
+
+/// Diagnostics for a single cached image.
+pub struct CacheEntryDiagnostic {
+    pub index: usize,
+    pub file_name: String,
+    pub width: u32,
+    pub height: u32,
+    pub memory_bytes: usize,
+    pub decode_duration: Duration,
 }
 
 impl ImageCache {
@@ -62,7 +87,13 @@ impl ImageCache {
     }
 
     /// Insert a decoded image into the cache, evicting LRU entries if over budget.
-    pub fn insert(&mut self, index: usize, image: DecodedImage) {
+    pub fn insert(
+        &mut self,
+        index: usize,
+        image: DecodedImage,
+        decode_duration: Duration,
+        file_name: String,
+    ) {
         let cost = image_memory_cost(&image);
 
         // If this single image exceeds the budget, don't cache it
@@ -86,11 +117,35 @@ impl ImageCache {
             index,
             CacheEntry {
                 image,
+                decode_duration,
+                file_name,
                 memory_cost: cost,
             },
         );
         self.access_order.push(index);
         self.memory_used += cost;
+    }
+
+    /// Return diagnostics snapshot of the cache.
+    pub fn diagnostics(&self) -> CacheDiagnostics {
+        let mut entries: Vec<CacheEntryDiagnostic> = self
+            .entries
+            .iter()
+            .map(|(&index, entry)| CacheEntryDiagnostic {
+                index,
+                file_name: entry.file_name.clone(),
+                width: entry.image.width,
+                height: entry.image.height,
+                memory_bytes: entry.memory_cost,
+                decode_duration: entry.decode_duration,
+            })
+            .collect();
+        entries.sort_by_key(|e| e.index);
+        CacheDiagnostics {
+            total_memory: self.memory_used,
+            memory_budget: self.memory_budget,
+            entries,
+        }
     }
 
     pub fn contains(&self, index: usize) -> bool {
@@ -185,10 +240,25 @@ fn preloader_loop(rx: mpsc::Receiver<PreloadRequest>, tx: mpsc::Sender<PreloadRe
         match rx.recv() {
             Ok(PreloadRequest::Load(files)) => {
                 for (index, path) in files {
+                    let file_name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    let start = Instant::now();
                     match image_loader::load_image(&path) {
                         Ok(image) => {
-                            if tx.send(PreloadResponse::Ready { index, image }).is_err() {
-                                return; // Main thread dropped the receiver
+                            let decode_duration = start.elapsed();
+                            if tx
+                                .send(PreloadResponse::Ready {
+                                    index,
+                                    image,
+                                    decode_duration,
+                                    file_name,
+                                })
+                                .is_err()
+                            {
+                                return;
                             }
                         }
                         Err(reason) => {
@@ -224,10 +294,19 @@ mod tests {
         }
     }
 
+    fn insert_test_image(cache: &mut ImageCache, index: usize, width: u32, height: u32) {
+        cache.insert(
+            index,
+            make_image(width, height),
+            Duration::from_millis(10),
+            format!("test_{index}.png"),
+        );
+    }
+
     #[test]
     fn cache_insert_and_get() {
         let mut cache = ImageCache::new();
-        cache.insert(0, make_image(100, 100));
+        insert_test_image(&mut cache, 0, 100, 100);
         assert!(cache.contains(0));
         assert!(cache.get(0).is_some());
         assert_eq!(cache.memory_used(), 100 * 100 * 4);
@@ -239,7 +318,7 @@ mod tests {
         cache.memory_budget = 100 * 100 * 4 * 3; // Room for 3 images of 100x100
 
         for i in 0..4 {
-            cache.insert(i, make_image(100, 100));
+            insert_test_image(&mut cache, i, 100, 100);
         }
 
         // Should have evicted the oldest (index 0)
@@ -255,15 +334,15 @@ mod tests {
         let mut cache = ImageCache::new();
         cache.memory_budget = 100 * 100 * 4 * 3;
 
-        cache.insert(0, make_image(100, 100));
-        cache.insert(1, make_image(100, 100));
-        cache.insert(2, make_image(100, 100));
+        insert_test_image(&mut cache, 0, 100, 100);
+        insert_test_image(&mut cache, 1, 100, 100);
+        insert_test_image(&mut cache, 2, 100, 100);
 
         // Touch index 0 so it becomes most recently used
         let _ = cache.get(0);
 
         // Insert a 4th: should evict index 1 (oldest untouched)
-        cache.insert(3, make_image(100, 100));
+        insert_test_image(&mut cache, 3, 100, 100);
         assert!(cache.contains(0)); // Was touched, so kept
         assert!(!cache.contains(1)); // Evicted
         assert!(cache.contains(2));
@@ -274,7 +353,7 @@ mod tests {
     fn cache_retain_only() {
         let mut cache = ImageCache::new();
         for i in 0..5 {
-            cache.insert(i, make_image(10, 10));
+            insert_test_image(&mut cache, i, 10, 10);
         }
         cache.retain_only(&[1, 3]);
         assert_eq!(cache.len(), 2);
@@ -286,7 +365,21 @@ mod tests {
     fn cache_rejects_oversized_image() {
         let mut cache = ImageCache::new();
         cache.memory_budget = 100; // Very small
-        cache.insert(0, make_image(100, 100)); // Way over budget
+        insert_test_image(&mut cache, 0, 100, 100); // Way over budget
         assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn diagnostics_reports_all_entries() {
+        let mut cache = ImageCache::new();
+        insert_test_image(&mut cache, 2, 320, 240);
+        insert_test_image(&mut cache, 5, 640, 480);
+
+        let diag = cache.diagnostics();
+        assert_eq!(diag.entries.len(), 2);
+        assert_eq!(diag.entries[0].index, 2);
+        assert_eq!(diag.entries[0].width, 320);
+        assert_eq!(diag.entries[1].index, 5);
+        assert_eq!(diag.total_memory, 320 * 240 * 4 + 640 * 480 * 4);
     }
 }

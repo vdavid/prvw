@@ -9,9 +9,10 @@ mod window;
 
 use clap::Parser;
 use qa_server::{AppCommand, SharedAppState};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -53,6 +54,15 @@ fn main() {
         .expect("Event loop terminated unexpectedly");
 }
 
+/// A record of a single navigation event, for performance diagnostics.
+pub struct NavigationRecord {
+    pub from_index: usize,
+    pub to_index: usize,
+    pub was_cached: bool,
+    pub total_time: Duration,
+    pub timestamp: Instant,
+}
+
 /// Application state, created before the event loop starts.
 /// The window and renderer are initialized in `resumed()` (required by winit 0.30 on macOS).
 struct App {
@@ -78,6 +88,8 @@ struct App {
     event_loop_proxy: EventLoopProxy<AppCommand>,
     /// Handle to the QA server thread (kept alive for the app's lifetime)
     _qa_handle: Option<std::thread::JoinHandle<()>>,
+    /// Recent navigation records for performance diagnostics (newest last, cap 10).
+    navigation_history: VecDeque<NavigationRecord>,
 }
 
 impl App {
@@ -103,6 +115,7 @@ impl App {
             shared_state,
             event_loop_proxy,
             _qa_handle: None,
+            navigation_history: VecDeque::with_capacity(10),
         }
     }
 
@@ -163,6 +176,12 @@ impl App {
     }
 
     fn navigate(&mut self, forward: bool) {
+        let from_index = self
+            .dir_list
+            .as_ref()
+            .map(|d| d.current_index())
+            .unwrap_or(0);
+
         let moved = if let Some(dir) = &mut self.dir_list {
             if forward {
                 dir.go_next()
@@ -177,6 +196,8 @@ impl App {
             return;
         }
 
+        let nav_start = Instant::now();
+
         // Extract what we need from dir_list before mutable borrow
         let (current_path, current_index, total, preload_indices) = {
             let dir = self.dir_list.as_ref().unwrap();
@@ -189,6 +210,8 @@ impl App {
             )
         };
 
+        let was_cached = self.image_cache.contains(current_index);
+
         // Update window title
         if let Some(win) = &self.window {
             win.set_title(&window::window_title_with_position(
@@ -200,6 +223,19 @@ impl App {
 
         // Display the current image
         self.display_cached_or_load(current_index, current_path);
+
+        // Record navigation timing
+        let total_time = nav_start.elapsed();
+        if self.navigation_history.len() >= 10 {
+            self.navigation_history.pop_front();
+        }
+        self.navigation_history.push_back(NavigationRecord {
+            from_index,
+            to_index: current_index,
+            was_cached,
+            total_time,
+            timestamp: Instant::now(),
+        });
 
         // Request preloading of adjacent images
         if let Some(dir) = &self.dir_list {
@@ -241,9 +277,15 @@ impl App {
         };
         while let Ok(response) = preloader.response_rx.try_recv() {
             match response {
-                preloader::PreloadResponse::Ready { index, image } => {
+                preloader::PreloadResponse::Ready {
+                    index,
+                    image,
+                    decode_duration,
+                    file_name,
+                } => {
                     log::debug!("Preloaded image at index {index}");
-                    self.image_cache.insert(index, image);
+                    self.image_cache
+                        .insert(index, image, decode_duration, file_name);
                 }
                 preloader::PreloadResponse::Failed {
                     index,
@@ -316,6 +358,84 @@ impl App {
             state.current_index = dir.current_index();
             state.total_files = dir.len();
         }
+
+        state.diagnostics_text =
+            self.build_diagnostics_text(state.current_index);
+    }
+
+    /// Build human/agent-readable diagnostics text covering cache, navigation timing, and memory.
+    fn build_diagnostics_text(&self, current_index: usize) -> String {
+        let mut out = String::new();
+
+        // Cache diagnostics
+        let cache_diag = self.image_cache.diagnostics();
+        out.push_str("cache:\n");
+        out.push_str(&format!(
+            "  total_memory: {}\n",
+            format_bytes(cache_diag.total_memory)
+        ));
+        out.push_str(&format!(
+            "  entries: {} of {} budget\n",
+            cache_diag.entries.len(),
+            format_bytes(cache_diag.memory_budget)
+        ));
+        if !cache_diag.entries.is_empty() {
+            out.push_str("  images:\n");
+            for entry in &cache_diag.entries {
+                let current_marker = if entry.index == current_index {
+                    "  ← current"
+                } else {
+                    ""
+                };
+                out.push_str(&format!(
+                    "    [{}] {}  {}x{}  {}  decoded in {}ms{}\n",
+                    entry.index,
+                    entry.file_name,
+                    entry.width,
+                    entry.height,
+                    format_bytes(entry.memory_bytes),
+                    entry.decode_duration.as_millis(),
+                    current_marker,
+                ));
+            }
+        }
+
+        // Preloader status
+        out.push_str("\npreloader:\n");
+        out.push_str(&format!(
+            "  window: current ± {}\n",
+            preloader::preload_count()
+        ));
+
+        // Navigation history
+        out.push_str("\nrecent_navigations (newest first):\n");
+        if self.navigation_history.is_empty() {
+            out.push_str("  (none)\n");
+        } else {
+            let now = Instant::now();
+            for record in self.navigation_history.iter().rev() {
+                let ago = now.duration_since(record.timestamp);
+                let cached_str = if record.was_cached { "yes" } else { "no " };
+                out.push_str(&format!(
+                    "  {}→{}  cached: {}  display: {}ms  {:.1}s ago\n",
+                    record.from_index,
+                    record.to_index,
+                    cached_str,
+                    record.total_time.as_millis(),
+                    ago.as_secs_f64(),
+                ));
+            }
+        }
+
+        // Process memory via ps
+        let process_memory = get_process_rss_mb();
+        out.push_str(&format!(
+            "\nprocess_memory: {:.1} MB (cache: {})\n",
+            process_memory,
+            format_bytes(cache_diag.total_memory)
+        ));
+
+        out
     }
 
     /// Handle a key name from the QA server (web-style key names).
@@ -659,4 +779,36 @@ impl ApplicationHandler<AppCommand> for App {
             _ => {}
         }
     }
+}
+
+/// Format a byte count as a human-readable string (for example, "47.2 MB").
+fn format_bytes(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// Get the current process RSS in MB via `ps`. Returns 0.0 on failure.
+fn get_process_rss_mb() -> f64 {
+    let pid = std::process::id();
+    std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .and_then(|output| {
+            let text = String::from_utf8_lossy(&output.stdout);
+            text.trim().parse::<f64>().ok()
+        })
+        .map(|kb| kb / 1024.0)
+        .unwrap_or(0.0)
 }
