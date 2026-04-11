@@ -31,6 +31,9 @@ playwright-report/
 test-results/
 coverage/
 
+# Astro generated types
+.astro/
+
 # Build output
 build/
 dist/
