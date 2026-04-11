@@ -1,0 +1,10 @@
+[package]
+name = "jpeg-decode-bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zune-jpeg = { version = "0.5", features = ["x86", "neon", "std"] }
+zune-core = "0.5"
+turbojpeg = "1.4"
+rand = "0.9"
