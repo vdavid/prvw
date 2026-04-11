@@ -163,8 +163,7 @@ fn apply_orientation(width: u32, height: u32, rgba: &mut Vec<u8>, orientation: u
 /// Read a file in 64 KB chunks, checking a cancellation flag between chunks.
 fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let mut file =
-        std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let size = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
     let mut buf = Vec::with_capacity(size);
     let mut chunk = [0u8; 65536];
@@ -213,7 +212,8 @@ pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
 
     let result = result.map(|mut img| {
         let (old_w, old_h) = (img.width, img.height);
-        let (new_w, new_h) = apply_orientation(img.width, img.height, &mut img.rgba_data, orientation);
+        let (new_w, new_h) =
+            apply_orientation(img.width, img.height, &mut img.rgba_data, orientation);
         if (new_w, new_h) != (old_w, old_h) {
             log::debug!(
                 "Applied rotation: orientation {orientation} ({old_w}x{old_h} -> {new_w}x{new_h})"
@@ -252,10 +252,7 @@ pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
 /// JPEGs use zune-jpeg (SIMD-accelerated). Everything else goes through the `image` crate.
 /// Applies EXIF orientation correction automatically.
 /// Returns `Err("cancelled")` if the cancellation flag is set during the read or before decoding.
-pub fn load_image_cancellable(
-    path: &Path,
-    cancelled: &AtomicBool,
-) -> Result<DecodedImage, String> {
+pub fn load_image_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
@@ -277,7 +274,8 @@ pub fn load_image_cancellable(
 
     let result = result.map(|mut img| {
         let (old_w, old_h) = (img.width, img.height);
-        let (new_w, new_h) = apply_orientation(img.width, img.height, &mut img.rgba_data, orientation);
+        let (new_w, new_h) =
+            apply_orientation(img.width, img.height, &mut img.rgba_data, orientation);
         if (new_w, new_h) != (old_w, old_h) {
             log::debug!(
                 "Applied rotation: orientation {orientation} ({old_w}x{old_h} -> {new_w}x{new_h})"

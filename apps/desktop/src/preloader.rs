@@ -2,7 +2,7 @@ use crate::image_loader::{self, DecodedImage};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread::available_parallelism;
 use std::time::{Duration, Instant};
 
@@ -226,9 +226,7 @@ pub struct Preloader {
 
 impl Preloader {
     pub fn start() -> Self {
-        let num_threads = available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
+        let num_threads = available_parallelism().map(|n| n.get()).unwrap_or(4);
 
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
