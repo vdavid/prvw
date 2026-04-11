@@ -28,13 +28,22 @@ pub fn window_title_for_path(path: &Path) -> String {
         .to_string()
 }
 
-/// Build a window title with position info for navigation.
+/// Build a window title with position info: `3 / 60 – photo.jpg`
 pub fn window_title_with_position(path: &Path, current: usize, total: usize) -> String {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Prvw");
     if total > 1 {
-        format!("{name} ({}/{})", current + 1, total)
+        format!("{} / {} \u{2013} {name}", current + 1, total)
     } else {
         name.to_string()
+    }
+}
+
+/// Build a loading title: `3 / 60 – Loading...`
+pub fn window_title_loading(current: usize, total: usize) -> String {
+    if total > 1 {
+        format!("{} / {} \u{2013} Loading...", current + 1, total)
+    } else {
+        "Loading...".to_string()
     }
 }
 

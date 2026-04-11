@@ -195,7 +195,13 @@ impl App {
     }
 
     /// Display an image from the cache or load it fresh.
-    fn display_cached_or_load(&mut self, index: usize, path: PathBuf) {
+    fn display_cached_or_load(
+        &mut self,
+        index: usize,
+        path: PathBuf,
+        current_index: usize,
+        total: usize,
+    ) {
         let renderer = match &mut self.renderer {
             Some(r) => r,
             None => return,
@@ -213,9 +219,8 @@ impl App {
             renderer.update_transform(&self.view_state.transform());
             self.request_redraw();
         } else {
-            // Not cached yet: show "Loading..." and load directly
             if let Some(win) = &self.window {
-                win.set_title("Loading...");
+                win.set_title(&window::window_title_loading(current_index, total));
             }
             self.display_image(&path);
         }
@@ -271,7 +276,7 @@ impl App {
         }
 
         // Display the current image
-        self.display_cached_or_load(current_index, current_path);
+        self.display_cached_or_load(current_index, current_path, current_index, total);
 
         // Record navigation timing
         let total_time = nav_start.elapsed();
