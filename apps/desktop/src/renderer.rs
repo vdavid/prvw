@@ -254,14 +254,16 @@ impl Renderer {
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(transform));
     }
 
-    /// Handle window resize: reconfigure the surface.
+    /// Handle window resize: update stored dimensions and reconfigure the surface.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
         }
-        self.config.width = width;
-        self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+        if width != self.config.width || height != self.config.height {
+            self.config.width = width;
+            self.config.height = height;
+            self.surface.configure(&self.device, &self.config);
+        }
     }
 
     /// Render the current image. Returns false if no image is loaded.
@@ -279,7 +281,6 @@ impl Renderer {
                 return false;
             }
             other => {
-                // Occluded is normal during macOS window creation/transition
                 log::trace!("wgpu surface status: {other:?}");
                 return false;
             }

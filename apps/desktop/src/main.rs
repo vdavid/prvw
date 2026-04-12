@@ -812,10 +812,18 @@ impl ApplicationHandler<AppCommand> for App {
             WindowEvent::RedrawRequested => {
                 if self.needs_redraw {
                     log::trace!("Rendering frame");
-                    if let Some(renderer) = &self.renderer {
-                        renderer.render();
+                    let rendered = self
+                        .renderer
+                        .as_ref()
+                        .is_some_and(|renderer| renderer.render());
+                    if rendered {
+                        self.needs_redraw = false;
+                    } else {
+                        // Surface wasn't ready (Occluded, Lost). Try again next frame.
+                        if let Some(win) = &self.window {
+                            win.request_redraw();
+                        }
                     }
-                    self.needs_redraw = false;
                 }
             }
 
