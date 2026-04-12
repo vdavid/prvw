@@ -49,9 +49,6 @@ jobs:
 
           echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
 
-          # Save the current keychain search list so we can restore it on cleanup
-          security list-keychains -d user | tr -d '"' | tr '\n' ':' > $RUNNER_TEMP/original-keychains.txt
-
           security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
           security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
@@ -171,33 +168,10 @@ jobs:
       - name: Clean up keychain
         if: always()
         run: |
-          echo "Current keychain search list:"
-          security list-keychains -d user
-
-          echo "Deleting temp keychain..."
-          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || echo "Temp keychain already deleted"
-
-          echo "Restoring original keychain search list..."
-          if [ -f "$RUNNER_TEMP/original-keychains.txt" ]; then
-            echo "Backup file contents:"
-            cat "$RUNNER_TEMP/original-keychains.txt"
-            # Read colon-separated paths, trim whitespace
-            KEYCHAINS=()
-            IFS=':' read -ra PARTS < "$RUNNER_TEMP/original-keychains.txt"
-            for part in "${PARTS[@]}"; do
-              trimmed=$(echo "$part" | xargs)
-              if [ -n "$trimmed" ]; then
-                KEYCHAINS+=("$trimmed")
-              fi
-            done
-            echo "Restoring keychains: ${KEYCHAINS[*]}"
-            security list-keychains -d user -s "${KEYCHAINS[@]}"
-          else
-            echo "No backup file found, restoring login keychain"
-            security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
-          fi
-
-          echo "Final keychain search list:"
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
+          # Ensure login keychain is in the search list (self-hosted runner protection)
+          security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
+          echo "Keychain search list restored:"
           security list-keychains -d user
 
   release:
