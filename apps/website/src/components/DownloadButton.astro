@@ -15,6 +15,10 @@ const { variant, class: className = '' } = Astro.props
         data-download-link
         data-dmg-arm={dmgUrls.aarch64}
         data-dmg-intel={dmgUrls.x86_64}
+        data-umami-event="download"
+        data-umami-event-arch="universal"
+        data-umami-event-version={version}
+        data-umami-event-source={variant}
         class:list={[
             'download-split-btn__main',
             { glow: variant === 'hero' },
@@ -53,19 +57,19 @@ const { variant, class: className = '' } = Astro.props
     </button>
 
     <div class="download-split-btn__dropdown" role="menu" hidden data-download-dropdown>
-        <a href={dmgUrls.aarch64} role="menuitem" tabindex="-1" data-arch="aarch64" class="download-split-btn__option">
+        <a href={dmgUrls.aarch64} role="menuitem" tabindex="-1" data-arch="aarch64" class="download-split-btn__option" data-umami-event="download" data-umami-event-arch="aarch64" data-umami-event-version={version} data-umami-event-source="dropdown">
             <svg class="download-split-btn__option-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
             </svg>
             <span class="download-split-btn__option-name">Apple Silicon</span>
         </a>
-        <a href={dmgUrls.x86_64} role="menuitem" tabindex="-1" data-arch="x86_64" class="download-split-btn__option">
+        <a href={dmgUrls.x86_64} role="menuitem" tabindex="-1" data-arch="x86_64" class="download-split-btn__option" data-umami-event="download" data-umami-event-arch="x86_64" data-umami-event-version={version} data-umami-event-source="dropdown">
             <svg class="download-split-btn__option-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
             </svg>
             <span class="download-split-btn__option-name">Intel</span>
         </a>
-        <a href={dmgUrls.universal} role="menuitem" tabindex="-1" data-arch="universal" class="download-split-btn__option">
+        <a href={dmgUrls.universal} role="menuitem" tabindex="-1" data-arch="universal" class="download-split-btn__option" data-umami-event="download" data-umami-event-arch="universal" data-umami-event-version={version} data-umami-event-source="dropdown">
             <svg class="download-split-btn__option-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
             </svg>

@@ -104,6 +104,7 @@ const {
                     document.querySelectorAll('a[data-download-link]').forEach(function (el) {
                         var url = arch === 'aarch64' ? el.dataset.dmgArm : el.dataset.dmgIntel
                         if (url) el.href = url
+                        el.setAttribute('data-umami-event-arch', arch)
                     })
 
                     document.querySelectorAll('[data-download-arch-hint]').forEach(function (el) {
