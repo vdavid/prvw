@@ -70,12 +70,10 @@ jobs:
       - name: Build aarch64
         if: matrix.arch == 'aarch64'
         run: cargo build --release --target aarch64-apple-darwin
-        working-directory: ./apps/desktop
 
       - name: Build x86_64
         if: matrix.arch == 'x86_64'
         run: cargo build --release --target x86_64-apple-darwin
-        working-directory: ./apps/desktop
 
       - name: Build universal (both architectures + lipo)
         if: matrix.arch == 'universal'
@@ -87,7 +85,6 @@ jobs:
             target/aarch64-apple-darwin/release/prvw \
             target/x86_64-apple-darwin/release/prvw \
             -output target/universal-apple-darwin/release/prvw
-        working-directory: ./apps/desktop
 
       - name: Extract version from tag
         id: version
@@ -95,8 +92,8 @@ jobs:
 
       - name: Create .app bundle
         run: |
-          BINARY="apps/desktop/target/${{ matrix.target }}/release/prvw"
-          APP_BUNDLE="apps/desktop/target/${{ matrix.target }}/release/Prvw.app"
+          BINARY="target/${{ matrix.target }}/release/prvw"
+          APP_BUNDLE="target/${{ matrix.target }}/release/Prvw.app"
           VERSION="${{ steps.version.outputs.version }}"
 
           mkdir -p "$APP_BUNDLE/Contents/MacOS"
@@ -110,7 +107,7 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          APP_BUNDLE="apps/desktop/target/${{ matrix.target }}/release/Prvw.app"
+          APP_BUNDLE="target/${{ matrix.target }}/release/Prvw.app"
           codesign \
             --sign "$APPLE_SIGNING_IDENTITY" \
             --identifier "com.veszelovszki.prvw" \
@@ -125,7 +122,7 @@ jobs:
       - name: Create DMG
         run: |
           ./scripts/create-dmg.sh \
-            "apps/desktop/target/${{ matrix.target }}/release/prvw" \
+            "target/${{ matrix.target }}/release/prvw" \
             "Prvw_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg" \
             "${{ steps.version.outputs.version }}"
 

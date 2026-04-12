@@ -19,17 +19,17 @@ VERSION=$(grep '^version' "$DESKTOP_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)
 echo "Version: $VERSION"
 
 echo "Building release binary..."
-cd "$DESKTOP_DIR"
-cargo build --release
+cd "$PROJECT_ROOT"
+cargo build --release -p prvw
 
-BINARY="$DESKTOP_DIR/target/release/$BINARY_NAME"
+BINARY="$PROJECT_ROOT/target/release/$BINARY_NAME"
 if [[ ! -f "$BINARY" ]]; then
     echo "Build failed: binary not found at $BINARY"
     exit 1
 fi
 
 # Create .app bundle
-APP_BUNDLE="$DESKTOP_DIR/target/release/Prvw.app"
+APP_BUNDLE="$PROJECT_ROOT/target/release/Prvw.app"
 rm -rf "$APP_BUNDLE"
 
 echo "Creating .app bundle..."

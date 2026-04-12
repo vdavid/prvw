@@ -113,7 +113,6 @@ jobs:
 
       - name: Build
         run: cargo build
-        working-directory: ./apps/desktop
 
   # ===========================================
   # Website

@@ -46,7 +46,7 @@ echo "Releasing version $VERSION..."
 
 # Update version in Cargo.toml and sync Cargo.lock
 sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" apps/desktop/Cargo.toml
-(cd apps/desktop && cargo update --workspace --quiet)
+cargo update --workspace --quiet
 
 # Update CHANGELOG.md: replace [Unreleased] with the versioned heading
 TODAY=$(date +%Y-%m-%d)
