@@ -4,6 +4,34 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-04-12
+
+### Added
+
+- Multiple file args: `prvw photo1.jpg photo2.jpg` uses the provided files as the navigation set instead of scanning
+  the directory. Supports multi-select "Open With" from Finder
+  ([c49761d](https://github.com/vdavid/prvw/commit/c49761d))
+- Keyboard shortcuts: Space/] for next, Backspace/[ for previous, F/Enter for fullscreen, 1 for actual size
+  ([f0c24f8](https://github.com/vdavid/prvw/commit/f0c24f8))
+- Clickable menu items: About Prvw, View (zoom, fit, actual size, fullscreen), Navigate (prev/next). Fixed root cause
+  (Menu object must be kept alive to prevent dangling pointer in NSMenuItems)
+  ([7e9d0dd](https://github.com/vdavid/prvw/commit/7e9d0dd))
+- About dialog showing version, author, and website links
+- macOS window config: disabled system tab bar and native fullscreen (we have our own borderless fullscreen)
+- Poll menu events in `about_to_wait` for instant response (was delayed until next window event)
+- macOS .app bundle with Info.plist, file type associations (JPEG, PNG, GIF, WebP, BMP, TIFF), app icon
+- Apple Events handler via NSAppleEventManager for opening files while app is running
+- Release infrastructure: GitHub Actions workflow, signing, DMG creation, notarization
+- Root Cargo workspace (matching Cmdr's structure)
+
+### Fixed
+
+- Aspect ratio always preserved during window resize (rewrote view transform with single uniform scale)
+- Zoom: can't zoom out past fit-to-window, zoom pivot correct after resize
+- Pan clamped to image edges, re-clamped on window resize
+- Blank startup: retry render when wgpu surface is Occluded during window creation
+- CI: install libglib2.0-dev + libgtk-3-dev for winit on Ubuntu
+
 ## [0.2.0] - 2026-04-11
 
 ### Added
