@@ -10,7 +10,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const MANIFEST_URL: &str = "https://getprvw.com/latest.json";
+/// Override with PRVW_UPDATE_URL env var for testing.
+fn manifest_url() -> String {
+    std::env::var("PRVW_UPDATE_URL").unwrap_or_else(|_| "https://getprvw.com/latest.json".into())
+}
 const MOUNT_POINT: &str = "/tmp/prvw-update-mount";
 
 #[derive(Debug, Deserialize)]
@@ -64,8 +67,9 @@ fn run_update() -> Result<(), String> {
         .build()
         .map_err(|e| format!("Couldn't create HTTP client: {e}"))?;
 
+    let url = manifest_url();
     let manifest: UpdateManifest = client
-        .get(MANIFEST_URL)
+        .get(&url)
         .send()
         .map_err(|e| format!("Couldn't fetch update manifest: {e}"))?
         .json()
@@ -170,20 +174,30 @@ fn replace_app_bundle(source_app: &Path, dest_app: &Path) -> Result<(), String> 
         let _ = fs::remove_dir_all(&temp_app);
     }
 
-    // Try direct copy first
+    // Try direct copy first: cp new to temp, remove old, rename temp to dest.
+    // Using rm + rename instead of direct rename because fs::rename over a non-empty
+    // directory fails on macOS with ENOTEMPTY.
     match copy_app_recursive(source_app, &temp_app) {
-        Ok(()) => match fs::rename(&temp_app, dest_app) {
-            Ok(()) => Ok(()),
-            Err(e) => {
+        Ok(()) => {
+            // Remove the old bundle, then rename temp into its place
+            if let Err(e) = fs::remove_dir_all(dest_app) {
                 let _ = fs::remove_dir_all(&temp_app);
                 if is_permission_error(&e.to_string()) {
-                    log::info!("Direct rename denied, escalating with admin privileges");
-                    copy_with_admin_privileges(source_app, dest_app)
-                } else {
+                    log::info!("Direct remove denied, escalating with admin privileges");
+                    return copy_with_admin_privileges(source_app, dest_app);
+                }
+                return Err(format!("Couldn't remove old app bundle: {e}"));
+            }
+            match fs::rename(&temp_app, dest_app) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    // Old bundle is gone and rename failed: we're in trouble.
+                    // Try to recover by renaming temp back.
+                    log::error!("Rename failed after removing old bundle: {e}");
                     Err(format!("Couldn't rename temp app to destination: {e}"))
                 }
             }
-        },
+        }
         Err(e) => {
             let _ = fs::remove_dir_all(&temp_app);
             if is_permission_error(&e) {
