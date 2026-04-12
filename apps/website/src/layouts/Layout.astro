@@ -81,9 +81,86 @@ const {
                 background-color: #0f1419;
             }
         </style>
+
+        {/* Umami analytics — self-hosted, cookieless */}
+        {
+            import.meta.env.PUBLIC_UMAMI_WEBSITE_ID && (
+                <script
+                    defer
+                    src={`${import.meta.env.PUBLIC_UMAMI_HOST}/mami`}
+                    data-website-id={import.meta.env.PUBLIC_UMAMI_WEBSITE_ID}
+                />
+            )
+        }
     </head>
     <body class="min-h-screen">
         <slot />
+
+        <script is:inline>
+            ;(function () {
+                function applyArch(arch) {
+                    var label = arch === 'aarch64' ? 'Apple Silicon' : 'Intel'
+
+                    document.querySelectorAll('a[data-download-link]').forEach(function (el) {
+                        var url = arch === 'aarch64' ? el.dataset.dmgArm : el.dataset.dmgIntel
+                        if (url) el.href = url
+                    })
+
+                    document.querySelectorAll('[data-download-arch-hint]').forEach(function (el) {
+                        el.textContent = label + ' detected'
+                    })
+
+                    document.querySelectorAll('[data-download-dropdown] [data-arch]').forEach(function (el) {
+                        if (el.dataset.arch === arch) {
+                            el.dataset.recommended = 'true'
+                        }
+                    })
+                }
+
+                // Detect arch synchronously via WebGL renderer string.
+                // "Apple M1/M2/GPU" on Apple Silicon, "Intel/AMD" on Intel Macs.
+                // Falls back to localStorage cache from a previous async detection.
+                function detectArchSync() {
+                    try {
+                        var canvas = document.createElement('canvas')
+                        var gl = canvas.getContext('webgl')
+                        if (!gl) return null
+                        var ext = gl.getExtension('WEBGL_debug_renderer_info')
+                        if (!ext) return null
+                        var renderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)
+                        if (/Apple M|Apple GPU/.test(renderer)) return 'aarch64'
+                        if (/Intel|AMD/.test(renderer)) return 'x86_64'
+                    } catch { /* WebGL unavailable */ }
+                    return null
+                }
+
+                var syncArch = detectArchSync()
+                if (!syncArch) {
+                    try {
+                        syncArch = localStorage.getItem('prvw-arch')
+                    } catch {
+                        /* localStorage unavailable */
+                    }
+                }
+                if (syncArch) applyArch(syncArch)
+
+                // Detect arch async and update cache for next visit
+                if (!navigator.userAgentData) return
+                navigator.userAgentData
+                    .getHighEntropyValues(['architecture'])
+                    .then(function (ua) {
+                        var arch = ua.architecture === 'arm' ? 'aarch64' : ua.architecture === 'x86' ? 'x86_64' : null
+                        if (!arch) return
+                        try {
+                            localStorage.setItem('prvw-arch', arch)
+                        } catch {
+                            /* localStorage unavailable */
+                        }
+                        applyArch(arch)
+                    })
+                    .catch(function () {})
+            })()
+        </script>
     </body>
 </html>
 

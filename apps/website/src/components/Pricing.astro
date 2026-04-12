@@ -1,5 +1,5 @@
 ---
-
+import DownloadButton from './DownloadButton.astro'
 ---
 
 <section id="pricing" class="relative px-6 py-(--spacing-section) md:px-12">
@@ -49,12 +49,7 @@
                     </li>
                 </ul>
 
-                <a
-                    href="https://github.com/vdavid/prvw/releases"
-                    class="glow inline-flex w-full items-center justify-center rounded-lg bg-[var(--color-accent)] px-6 py-3 font-semibold text-[var(--color-accent-contrast)] transition-colors duration-200 hover:bg-[var(--color-accent-hover)]"
-                >
-                    Download
-                </a>
+                <DownloadButton variant="pricing" class="w-full" />
             </div>
 
             <!-- Commercial -->
