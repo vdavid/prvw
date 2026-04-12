@@ -4,6 +4,17 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-04-12
+
+### Added
+
+- Text rendering via glyphon (wgpu-native, cross-platform)
+- Onboarding screen when launched with no file: shows welcome, file association status, "Set as default viewer"
+- Header overlay in image view: filename, position, zoom level in the transparent title bar
+- Transparent titlebar with frosted glass effect on macOS (fullSizeContentView)
+- LSHandlerRank changed to Default (Prvw appears higher in "Open With" menus)
+- Styled DMG installer (icon positioning, window sizing via create-dmg)
+
 ## [0.4.0] - 2026-04-12
 
 ### Added
