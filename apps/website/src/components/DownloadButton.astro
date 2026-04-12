@@ -345,7 +345,7 @@ const { variant, class: className = '' } = Astro.props
 </style>
 
 <script>
-    document.addEventListener('astro:page-load', () => {
+    document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll<HTMLElement>('[data-download-split-btn]').forEach((wrapper) => {
             const chevron = wrapper.querySelector<HTMLButtonElement>('[data-download-chevron]')
             const dropdown = wrapper.querySelector<HTMLElement>('[data-download-dropdown]')
