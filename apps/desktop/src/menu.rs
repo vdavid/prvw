@@ -76,6 +76,7 @@ pub fn create_menu_bar() -> AppMenu {
     menu.append_items(&[&app_menu, &file_menu, &view_menu, &nav_menu])
         .expect("Failed to build menu bar");
 
+    #[cfg(target_os = "macos")]
     menu.init_for_nsapp();
 
     log::debug!("Menu bar created");

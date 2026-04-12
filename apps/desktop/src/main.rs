@@ -405,9 +405,9 @@ impl App {
     }
 
     fn show_about_dialog(&self) {
-        let version = env!("CARGO_PKG_VERSION");
         #[cfg(target_os = "macos")]
         {
+            let version = env!("CARGO_PKG_VERSION");
             use std::process::Command;
             let message = format!(
                 "Prvw {version}\\n\\nA fast image viewer for macOS.\\n\\nBy David Veszelovszki\\nhttps://veszelovszki.com\\n\\nhttps://getprvw.com"
