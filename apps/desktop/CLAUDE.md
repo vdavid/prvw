@@ -51,6 +51,16 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
   `bytemuck_derive::Pod` directly.
 - **zune-jpeg in debug builds**: zune-jpeg's SIMD is painfully slow without optimizations. `Cargo.toml` sets
   `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this.
+- **objc2 `Retained<>` lifetime with AppKit modals**: when creating AppKit views (NSTextField, NSButton, etc.) via
+  objc2 and adding them to a parent view with `addSubview`, the Rust `Retained<>` wrapper must stay alive for the
+  entire duration of the modal session. If it drops (goes out of scope), AppKit's autorelease pool cleanup will
+  segfault (use-after-free). Fix: collect all views in a `Vec<Retained<...>>` that lives alongside the modal loop.
+  This applies to `onboarding.rs` and any future native macOS dialogs. There is no compile-time check for this.
+- **Never run AppKit modals from inside winit's event loop.** Running `NSApplication::runModalForWindow` inside
+  winit's `resumed()` or `window_event()` creates a nested run loop inside winit's autorelease pool. When the modal
+  ends and an Apple Event arrives, the pool drains objects from the wrong scope, causing segfault. Fix: run native
+  modals BEFORE `EventLoop::new()` (like the onboarding dialog in `main()`), or use `EventLoopProxy` to defer the
+  modal to after the event loop exits.
 
 ## Dependencies
 

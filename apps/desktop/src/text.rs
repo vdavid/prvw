@@ -7,6 +7,8 @@ use glyphon::{
 };
 
 /// A block of text to render at a specific position.
+/// All coordinates and sizes are in **logical points** (not physical pixels).
+/// The text renderer scales them by the display scale factor automatically.
 pub struct TextBlock {
     pub text: String,
     pub x: f32,
@@ -49,6 +51,8 @@ impl GlyphonRenderer {
     /// Prepare and render text blocks into the given render pass.
     /// Call `prepare` before beginning the render pass, then `render` inside it.
     /// This method does both in sequence, so it must be called with an active render pass.
+    /// Prepare text for rendering. All `TextBlock` values are in logical points.
+    /// The `scale_factor` (from `window.scale_factor()`) converts them to physical pixels.
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -56,7 +60,10 @@ impl GlyphonRenderer {
         texts: &[TextBlock],
         screen_width: u32,
         screen_height: u32,
+        scale_factor: f64,
     ) {
+        let sf = scale_factor as f32;
+
         self.viewport.update(
             queue,
             Resolution {
@@ -65,16 +72,19 @@ impl GlyphonRenderer {
             },
         );
 
-        // Build a glyphon Buffer for each TextBlock
+        // Build a glyphon Buffer for each TextBlock.
+        // Font metrics are in logical points; glyphon's TextArea.scale handles the DPI scaling.
         let mut buffers: Vec<Buffer> = Vec::with_capacity(texts.len());
         for block in texts {
             let metrics = Metrics::new(block.font_size, block.line_height);
             let mut buffer = Buffer::new(&mut self.font_system, metrics);
-            let max_w = block.max_width.unwrap_or(screen_width as f32 - block.x);
+            let max_w = block
+                .max_width
+                .unwrap_or(screen_width as f32 / sf - block.x);
             buffer.set_size(
                 &mut self.font_system,
                 Some(max_w),
-                Some(screen_height as f32),
+                Some(screen_height as f32 / sf),
             );
             buffer.set_text(
                 &mut self.font_system,
@@ -87,7 +97,7 @@ impl GlyphonRenderer {
             buffers.push(buffer);
         }
 
-        // Build TextAreas referencing the buffers
+        // Build TextAreas. Positions are in logical points, `scale` converts to physical pixels.
         let text_areas: Vec<TextArea> = texts
             .iter()
             .zip(buffers.iter())
@@ -95,9 +105,9 @@ impl GlyphonRenderer {
                 let [r, g, b, a] = block.color;
                 TextArea {
                     buffer,
-                    left: block.x,
-                    top: block.y,
-                    scale: 1.0,
+                    left: block.x * sf,
+                    top: block.y * sf,
+                    scale: sf,
                     bounds: TextBounds {
                         left: 0,
                         top: 0,

@@ -88,6 +88,13 @@ Always use the checker script for compilation, linting, formatting, and tests. I
   them earlier crashes on macOS.
 - **Use `std::thread` for CPU-bound work, not `tokio`.** The preloader does CPU-bound image decoding. `std::thread` +
   channels is the right tool. `tokio` adds unnecessary weight and event-loop integration complexity with `winit`.
+- **Keep objc2 `Retained<>` wrappers alive during AppKit modal sessions.** When creating NSTextField, NSButton, or
+  other views via objc2 and running a modal window (`runModalForWindow`), store all `Retained<>` objects in a Vec
+  that lives for the modal's duration. Dropping them early causes segfault in autorelease pool cleanup. No
+  compile-time check exists for this. See `apps/desktop/CLAUDE.md` for details.
+- **Never run AppKit modals inside winit's event loop.** `runModalForWindow` inside `resumed()` or any winit
+  callback creates a nested run loop that segfaults on autorelease pool cleanup. Run native modals BEFORE
+  `EventLoop::new()` instead (see onboarding in `main()`).
 
 ## Workflow
 
