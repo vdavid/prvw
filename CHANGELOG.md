@@ -4,6 +4,25 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-04-12
+
+### Added
+
+- Auto-updater: background update check, DMG download, .app bundle replacement. Restart to use the new version.
+  PRVW_UPDATE_URL env var override for testing.
+- Direct download buttons on website with architecture detection (Apple Silicon / Intel / Universal)
+- PostHog session replay (cookieless, proxied through /ph/)
+- Umami download tracking with arch, version, and source properties
+- Sitemap via @astrojs/sitemap
+- UptimeRobot monitoring for getprvw.com
+- Terms and conditions and privacy policy pages
+- Deploy infrastructure: webhook, CI auto-deploy on push to main
+
+### Fixed
+
+- Download dropdown not opening (used DOMContentLoaded instead of astro:page-load)
+- Updater: fix .app replacement (fs::rename over non-empty dir fails on macOS)
+
 ## [0.3.0] - 2026-04-12
 
 ### Added
