@@ -57,6 +57,16 @@ The brand is **sky blue** (`#4da6ff`) with warm yellow sub-accents (`#ffc206`). 
 | `src/components/Footer.astro`     | Minimal footer with links         |
 | `src/styles/global.css`           | Tailwind v4 theme + global styles |
 
+## Analytics
+
+- **Umami** (`Layout.astro`): Cookieless page analytics (pageviews, referrers, geo). Self-hosted at
+  `anal.veszelovszki.com`. Script served at `/u/mami` (proxied through Caddy to avoid adblockers). The desktop app has
+  **no telemetry**.
+
+**Decision/Why**: We avoid cookies to not need a cookie consent banner. Umami is configured to work without cookies. If
+you add analytics tooling, preserve this property. The tracking script URL and website ID are set via
+`PUBLIC_UMAMI_HOST` and `PUBLIC_UMAMI_WEBSITE_ID` env vars (see `.env.example`).
+
 ## Gotchas
 
 - The `@ts-expect-error` in `astro.config.mjs` is for a Vite version mismatch between Astro and Tailwind. Doesn't
