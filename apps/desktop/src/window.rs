@@ -17,7 +17,51 @@ pub fn create_window(event_loop: &ActiveEventLoop, file_path: &Path) -> Arc<Wind
     let window = event_loop
         .create_window(attrs)
         .expect("Failed to create window");
-    Arc::new(window)
+    let window = Arc::new(window);
+
+    // Disable macOS tab bar and native fullscreen (we have our own borderless fullscreen).
+    // This removes "Show Tab Bar", "Show All Tabs", and the system "Enter Full Screen" from menus.
+    #[cfg(target_os = "macos")]
+    configure_macos_window(&window);
+
+    window
+}
+
+/// Set macOS-specific window properties via NSWindow.
+#[cfg(target_os = "macos")]
+fn configure_macos_window(window: &Window) {
+    use objc2::msg_send;
+    use objc2_app_kit::NSWindow;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = match window.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::AppKit(handle)) => handle,
+        _ => return,
+    };
+
+    let ns_view = handle.ns_view.as_ptr() as *const objc2::runtime::AnyObject;
+    let ns_window: *const NSWindow = unsafe { msg_send![ns_view, window] };
+    if ns_window.is_null() {
+        return;
+    }
+
+    unsafe {
+        let ns_window = &*ns_window;
+
+        // Disable tabbing: removes "Show Tab Bar" and "Show All Tabs" from View menu
+        // NSWindowTabbingMode.disallowed = 2
+        let _: () = msg_send![ns_window, setTabbingMode: 2i64];
+
+        // Remove native fullscreen from collection behavior.
+        // This removes the system "Enter Full Screen" menu item.
+        // We keep our own borderless fullscreen via winit (F / Enter / F11).
+        let behavior: u64 = msg_send![ns_window, collectionBehavior];
+        // NSWindowCollectionBehavior.fullScreenPrimary = 1 << 7 = 128
+        let new_behavior = behavior & !(1 << 7);
+        let _: () = msg_send![ns_window, setCollectionBehavior: new_behavior];
+    }
+
+    log::debug!("Configured macOS window: tabbing disabled, native fullscreen removed");
 }
 
 /// Build the window title from a file path (filename only, not the full path).

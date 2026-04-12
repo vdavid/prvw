@@ -7,16 +7,22 @@ pub struct MenuIds {
     pub zoom_out: MenuId,
     pub actual_size: MenuId,
     pub fit_to_window: MenuId,
+    pub fullscreen: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
 }
 
-/// Build the native menu bar and return the action IDs for matching events.
-///
-/// Note: muda 0.17 crashes with a ZeroWidth icon error when processing accelerators AND when
-/// rendering the built-in About panel on macOS. All shortcuts are handled in the keyboard event
-/// handler in main.rs. The About dialog is also handled manually (not via PredefinedMenuItem::about).
-pub fn create_menu_bar() -> MenuIds {
+/// The menu bar and its action IDs. The `Menu` must be kept alive for the entire app lifetime,
+/// otherwise the `MenuChild` objects backing the native NSMenuItems get freed and clicking
+/// any menu item crashes (dangling pointer to freed MenuChild).
+pub struct AppMenu {
+    /// Must stay alive. Dropping this frees the MenuChild backing data.
+    pub _menu: Menu,
+    pub ids: MenuIds,
+}
+
+/// Build the native menu bar. The caller MUST keep the returned `AppMenu` alive.
+pub fn create_menu_bar() -> AppMenu {
     let menu = Menu::new();
 
     // App menu (macOS puts the first menu under the app name)
@@ -40,12 +46,13 @@ pub fn create_menu_bar() -> MenuIds {
         .append_items(&[&PredefinedMenuItem::close_window(None)])
         .expect("Failed to build file menu");
 
-    // View menu (no fullscreen item, F key handles it directly)
+    // View menu
     let view_menu = Submenu::new("View", true);
     let zoom_in = MenuItem::new("Zoom in", true, None);
     let zoom_out = MenuItem::new("Zoom out", true, None);
     let actual_size = MenuItem::new("Actual size", true, None);
     let fit_to_window = MenuItem::new("Fit to window", true, None);
+    let fullscreen = MenuItem::new("Fullscreen", true, None);
     view_menu
         .append_items(&[
             &zoom_in,
@@ -53,6 +60,8 @@ pub fn create_menu_bar() -> MenuIds {
             &PredefinedMenuItem::separator(),
             &actual_size,
             &fit_to_window,
+            &PredefinedMenuItem::separator(),
+            &fullscreen,
         ])
         .expect("Failed to build view menu");
 
@@ -71,14 +80,18 @@ pub fn create_menu_bar() -> MenuIds {
 
     log::debug!("Menu bar created");
 
-    MenuIds {
-        about: about.id().clone(),
-        zoom_in: zoom_in.id().clone(),
-        zoom_out: zoom_out.id().clone(),
-        actual_size: actual_size.id().clone(),
-        fit_to_window: fit_to_window.id().clone(),
-        previous: previous.id().clone(),
-        next: next.id().clone(),
+    AppMenu {
+        _menu: menu,
+        ids: MenuIds {
+            about: about.id().clone(),
+            zoom_in: zoom_in.id().clone(),
+            zoom_out: zoom_out.id().clone(),
+            actual_size: actual_size.id().clone(),
+            fit_to_window: fit_to_window.id().clone(),
+            fullscreen: fullscreen.id().clone(),
+            previous: previous.id().clone(),
+            next: next.id().clone(),
+        },
     }
 }
 

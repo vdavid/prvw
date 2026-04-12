@@ -138,7 +138,7 @@ struct App {
     window: Option<Arc<Window>>,
     renderer: Option<renderer::Renderer>,
     view_state: view::ViewState,
-    menu_ids: Option<menu::MenuIds>,
+    app_menu: Option<menu::AppMenu>,
     dir_list: Option<directory::DirectoryList>,
     preloader: Option<preloader::Preloader>,
     image_cache: preloader::ImageCache,
@@ -158,6 +158,8 @@ struct App {
     _qa_handle: Option<std::thread::JoinHandle<()>>,
     /// Recent navigation records for performance diagnostics (newest last, cap 10).
     navigation_history: VecDeque<NavigationRecord>,
+    /// Current image dimensions (stored so resize can update the view without needing the cache).
+    current_image_size: Option<(u32, u32)>,
 }
 
 impl App {
@@ -173,7 +175,7 @@ impl App {
             window: None,
             renderer: None,
             view_state: view::ViewState::new(),
-            menu_ids: None,
+            app_menu: None,
             dir_list: None,
             preloader: None,
             image_cache: preloader::ImageCache::new(),
@@ -186,6 +188,7 @@ impl App {
             event_loop_proxy,
             _qa_handle: None,
             navigation_history: VecDeque::with_capacity(10),
+            current_image_size: None,
         }
     }
 
@@ -200,6 +203,7 @@ impl App {
 
         match image_loader::load_image(path) {
             Ok(image) => {
+                self.current_image_size = Some((image.width, image.height));
                 self.view_state.update_dimensions(
                     image.width,
                     image.height,
@@ -244,6 +248,7 @@ impl App {
         };
 
         if let Some(image) = self.image_cache.get(index) {
+            self.current_image_size = Some((image.width, image.height));
             self.view_state.update_dimensions(
                 image.width,
                 image.height,
@@ -400,63 +405,68 @@ impl App {
     }
 
     fn show_about_dialog(&self) {
-        if let Some(_win) = &self.window {
-            let version = env!("CARGO_PKG_VERSION");
-            // Use a native macOS alert as a modal dialog
-            #[cfg(target_os = "macos")]
-            {
-                use std::process::Command;
-                let message = format!(
-                    "Prvw {version}\n\n\
-                     A fast image viewer for macOS.\n\n\
-                     By David Veszelovszki\n\
-                     https://veszelovszki.com\n\n\
-                     https://getprvw.com"
-                );
-                // osascript displays a native modal dialog
-                let _ = Command::new("osascript")
-                    .args([
-                        "-e",
-                        &format!(
-                            "display dialog \"{}\" with title \"About Prvw\" buttons {{\"OK\"}} default button \"OK\" with icon note",
-                            message.replace('"', "\\\"").replace('\n', "\\n")
-                        ),
-                    ])
-                    .spawn();
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                win.set_title(&format!("Prvw {version} - https://getprvw.com"));
-            }
+        let version = env!("CARGO_PKG_VERSION");
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            let message = format!(
+                "Prvw {version}\\n\\nA fast image viewer for macOS.\\n\\nBy David Veszelovszki\\nhttps://veszelovszki.com\\n\\nhttps://getprvw.com"
+            );
+            let _ = Command::new("osascript")
+                .args([
+                    "-e",
+                    &format!(
+                        "display dialog \"{message}\" with title \"About Prvw\" buttons {{\"OK\"}} default button \"OK\" with icon note"
+                    ),
+                ])
+                .spawn();
         }
     }
 
-    fn handle_menu_event(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(ids) = &self.menu_ids else { return };
+    fn handle_menu_event(&mut self) {
+        let Some(app_menu) = &self.app_menu else {
+            return;
+        };
+        let ids = &app_menu.ids;
         let Some(event) = menu::poll_menu_event() else {
             return;
         };
 
+        log::debug!("Menu event received: {:?}", event.id());
+
         if event.id() == &ids.about {
+            log::debug!("Menu: About");
             self.show_about_dialog();
         } else if event.id() == &ids.zoom_in {
+            log::debug!("Menu: Zoom in");
             self.view_state.keyboard_zoom(true);
             self.update_transform_and_redraw();
         } else if event.id() == &ids.zoom_out {
+            log::debug!("Menu: Zoom out");
             self.view_state.keyboard_zoom(false);
             self.update_transform_and_redraw();
         } else if event.id() == &ids.actual_size {
+            log::debug!("Menu: Actual size");
             self.view_state.actual_size();
             self.update_transform_and_redraw();
         } else if event.id() == &ids.fit_to_window {
+            log::debug!("Menu: Fit to window");
             self.view_state.fit_to_window();
             self.update_transform_and_redraw();
+        } else if event.id() == &ids.fullscreen {
+            log::debug!("Menu: Fullscreen");
+            if let Some(win) = &self.window {
+                window::toggle_fullscreen(win);
+                self.update_shared_state();
+            }
         } else if event.id() == &ids.previous {
+            log::debug!("Menu: Previous");
             self.navigate(false);
         } else if event.id() == &ids.next {
+            log::debug!("Menu: Next");
             self.navigate(true);
         } else {
-            let _ = event_loop;
+            log::debug!("Menu: unhandled event {:?}", event.id());
         }
     }
 
@@ -638,7 +648,9 @@ impl ApplicationHandler<AppCommand> for App {
         self.renderer = Some(renderer::Renderer::new(win));
 
         // Create native menu bar
-        self.menu_ids = Some(menu::create_menu_bar());
+        // The AppMenu MUST be stored (not dropped) to keep the MenuChild backing data alive.
+        // Dropping it frees the native menu items' backing memory, causing a crash on click.
+        self.app_menu = Some(menu::create_menu_bar());
 
         // Build the navigation list: explicit file list (multi-select) or directory scan
         self.dir_list = if let Some(files) = self.explicit_files.take() {
@@ -763,10 +775,16 @@ impl ApplicationHandler<AppCommand> for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        // Poll preloader responses and menu events on every window event
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        // Poll menu events and preloader on every event loop iteration, not just window events.
+        // Without this, menu clicks would only be processed when the next window event fires
+        // (mouse move, key press, etc.), causing multi-second delays.
         self.poll_preloader();
-        self.handle_menu_event(event_loop);
+        self.handle_menu_event();
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        self.poll_preloader();
 
         match event {
             WindowEvent::CloseRequested => {
@@ -781,16 +799,9 @@ impl ApplicationHandler<AppCommand> for App {
                 log::debug!("Window resized to {}x{}", size.width, size.height);
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
-                    if let Some(dir) = &self.dir_list {
-                        // Re-derive view dimensions for the current image
-                        if let Some(image) = self.image_cache.get(dir.current_index()) {
-                            self.view_state.update_dimensions(
-                                image.width,
-                                image.height,
-                                size.width,
-                                size.height,
-                            );
-                        }
+                    if let Some((iw, ih)) = self.current_image_size {
+                        self.view_state
+                            .update_dimensions(iw, ih, size.width, size.height);
                     }
                     renderer.update_transform(&self.view_state.transform());
                 }
@@ -868,7 +879,7 @@ impl ApplicationHandler<AppCommand> for App {
                         self.view_state.fit_to_window();
                         self.update_transform_and_redraw();
                     }
-                    Key::Character("1") if super_pressed => {
+                    Key::Character("1") => {
                         self.view_state.actual_size();
                         self.update_transform_and_redraw();
                     }

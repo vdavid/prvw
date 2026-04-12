@@ -606,11 +606,13 @@ View
   Zoom in      +/Cmd+=
   Zoom out     -/Cmd+-
   ---
-  Actual size  Cmd+1
+  Actual size  1/Cmd+1
   Fit to window 0/Cmd+0
+  ---
+  Fullscreen   F/Enter/F11/Cmd+F
 Navigate
-  Previous     ←/[/Backspace
-  Next         →/]/Space
+  Previous ←   ←/[/Backspace
+  Next →        →/]/Space
 ";
 
 fn handle_get_state(
