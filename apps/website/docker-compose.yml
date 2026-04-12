@@ -1,0 +1,13 @@
+services:
+  getprvw-static:
+    build:
+      context: ../..
+      dockerfile: apps/website/Dockerfile
+    container_name: getprvw-static
+    restart: unless-stopped
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    external: true
