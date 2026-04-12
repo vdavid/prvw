@@ -92,6 +92,18 @@ const {
                 />
             )
         }
+
+        {/* PostHog session replay — cookieless (persistence: memory, no cookies) */}
+        {
+            import.meta.env.PUBLIC_POSTHOG_KEY && (
+                <script
+                    is:inline
+                    src="/scripts/posthog-init.js"
+                    data-ph-key={import.meta.env.PUBLIC_POSTHOG_KEY}
+                    data-ph-host={import.meta.env.PUBLIC_POSTHOG_HOST || 'https://eu.i.posthog.com'}
+                />
+            )
+        }
     </head>
     <body class="min-h-screen">
         <slot />
