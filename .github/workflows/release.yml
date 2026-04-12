@@ -126,9 +126,8 @@ jobs:
       - name: Create DMG
         run: |
           ./scripts/create-dmg.sh \
-            "target/${{ matrix.target }}/release/prvw" \
-            "Prvw_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg" \
-            "${{ steps.version.outputs.version }}"
+            "target/${{ matrix.target }}/release/Prvw.app" \
+            "Prvw_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg"
 
       - name: Notarize DMG
         env:
