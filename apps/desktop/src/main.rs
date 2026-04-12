@@ -6,6 +6,8 @@ mod menu;
 mod preloader;
 mod qa_server;
 mod renderer;
+#[cfg(target_os = "macos")]
+mod updater;
 mod view;
 mod window;
 
@@ -702,6 +704,10 @@ impl ApplicationHandler<AppCommand> for App {
             Arc::clone(&self.shared_state),
             self.event_loop_proxy.clone(),
         );
+
+        // Check for updates in the background
+        #[cfg(target_os = "macos")]
+        updater::check_and_update();
 
         // Force a redraw after everything is initialized. The initial display_image() call
         // may have been skipped because the surface was Occluded during window creation.

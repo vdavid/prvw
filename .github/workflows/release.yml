@@ -204,3 +204,47 @@ jobs:
             --title "Prvw $GITHUB_REF_NAME" \
             --notes-file /tmp/notes.txt \
             ./artifacts/*.dmg
+
+      - name: Generate latest.json
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          TAG="${GITHUB_REF_NAME}"
+          BASE_URL="https://github.com/${{ github.repository }}/releases/download/$TAG"
+
+          jq -n --indent 2 \
+            --arg version "$VERSION" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg base_url "$BASE_URL" \
+            '{
+              version: $version,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { url: "\($base_url)/Prvw_\($version)_aarch64.dmg" },
+                "darwin-x86_64": { url: "\($base_url)/Prvw_\($version)_x86_64.dmg" },
+                "darwin-universal": { url: "\($base_url)/Prvw_\($version)_universal.dmg" }
+              }
+            }' > /tmp/latest.json
+
+      - name: Commit latest.json to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin main
+          git checkout main
+
+          cp /tmp/latest.json apps/website/public/latest.json
+          git add apps/website/public/latest.json
+          git commit -m "Release: update latest.json for ${{ github.ref_name }} [skip ci]"
+          git pull --rebase origin main
+          git push origin main
+
+      - name: Trigger website deploy
+        run: |
+          PAYLOAD='{}'
+          SIGNATURE=$(echo -n "$PAYLOAD" | openssl dgst -sha256 -hmac "${{ secrets.DEPLOY_WEBHOOK_SECRET }}" | cut -d' ' -f2)
+
+          curl -f -X POST https://getprvw.com/hooks/deploy-website \
+              -H "Content-Type: application/json" \
+              -H "X-Hub-Signature-256: sha256=$SIGNATURE" \
+              -d "$PAYLOAD"
