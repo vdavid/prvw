@@ -140,7 +140,23 @@ jobs:
 
       - name: Staple notarization ticket
         run: |
-          xcrun stapler staple \
+          DMG="Prvw_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg"
+          MAX_ATTEMPTS=240  # 240 x 30s = 2 hours
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "Staple attempt $attempt/$MAX_ATTEMPTS..."
+            if xcrun stapler staple "$DMG" 2>&1; then
+              echo "Stapled successfully."
+              exit 0
+            fi
+            echo "Apple CDN not ready yet, waiting 30 seconds..."
+            sleep 30
+          done
+          echo "Stapling failed after $MAX_ATTEMPTS attempts (2 hours)."
+          exit 1
+
+      - name: Verify staple
+        run: |
+          xcrun stapler validate \
             "Prvw_${{ steps.version.outputs.version }}_${{ matrix.arch }}.dmg"
 
       - name: Upload DMG artifact
