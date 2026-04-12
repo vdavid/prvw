@@ -171,12 +171,34 @@ jobs:
       - name: Clean up keychain
         if: always()
         run: |
-          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
-          # Restore the original keychain search list (prevents login keychain from disappearing)
+          echo "Current keychain search list:"
+          security list-keychains -d user
+
+          echo "Deleting temp keychain..."
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || echo "Temp keychain already deleted"
+
+          echo "Restoring original keychain search list..."
           if [ -f "$RUNNER_TEMP/original-keychains.txt" ]; then
-            IFS=':' read -ra KEYCHAINS < "$RUNNER_TEMP/original-keychains.txt"
+            echo "Backup file contents:"
+            cat "$RUNNER_TEMP/original-keychains.txt"
+            # Read colon-separated paths, trim whitespace
+            KEYCHAINS=()
+            IFS=':' read -ra PARTS < "$RUNNER_TEMP/original-keychains.txt"
+            for part in "${PARTS[@]}"; do
+              trimmed=$(echo "$part" | xargs)
+              if [ -n "$trimmed" ]; then
+                KEYCHAINS+=("$trimmed")
+              fi
+            done
+            echo "Restoring keychains: ${KEYCHAINS[*]}"
             security list-keychains -d user -s "${KEYCHAINS[@]}"
+          else
+            echo "No backup file found, restoring login keychain"
+            security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
           fi
+
+          echo "Final keychain search list:"
+          security list-keychains -d user
 
   release:
     name: Create release
