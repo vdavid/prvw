@@ -8,11 +8,27 @@ const DEFAULT_WIDTH: f64 = 1024.0;
 const DEFAULT_HEIGHT: f64 = 768.0;
 
 /// Create the application window. Must be called in `resumed()`.
-pub fn create_window(event_loop: &ActiveEventLoop, file_path: &Path) -> Arc<Window> {
-    let title = window_title_for_path(file_path);
+/// When `onboarding` is true, the window is sized smaller for the welcome screen.
+pub fn create_window(
+    event_loop: &ActiveEventLoop,
+    file_path: &Path,
+    onboarding: bool,
+) -> Arc<Window> {
+    let title = if onboarding {
+        "Welcome to Prvw".to_string()
+    } else {
+        window_title_for_path(file_path)
+    };
+
+    let (width, height) = if onboarding {
+        (560.0, 400.0)
+    } else {
+        (DEFAULT_WIDTH, DEFAULT_HEIGHT)
+    };
+
     let attrs = WindowAttributes::default()
         .with_title(title)
-        .with_inner_size(LogicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT));
+        .with_inner_size(LogicalSize::new(width, height));
 
     let window = event_loop
         .create_window(attrs)
@@ -59,9 +75,18 @@ fn configure_macos_window(window: &Window) {
         // NSWindowCollectionBehavior.fullScreenPrimary = 1 << 7 = 128
         let new_behavior = behavior & !(1 << 7);
         let _: () = msg_send![ns_window, setCollectionBehavior: new_behavior];
+
+        // Transparent titlebar: content extends behind the title bar, giving the frosted
+        // glass look that apps like Finder and Safari use.
+        let _: () = msg_send![ns_window, setTitlebarAppearsTransparent: true];
+        // NSWindowStyleMask.fullSizeContentView = 1 << 15 = 32768
+        let mask: u64 = msg_send![ns_window, styleMask];
+        let _: () = msg_send![ns_window, setStyleMask: mask | (1u64 << 15)];
     }
 
-    log::debug!("Configured macOS window: tabbing disabled, native fullscreen removed");
+    log::debug!(
+        "Configured macOS window: tabbing disabled, native fullscreen removed, transparent titlebar"
+    );
 }
 
 /// Build the window title from a file path (filename only, not the full path).

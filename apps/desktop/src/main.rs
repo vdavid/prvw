@@ -8,6 +8,7 @@ mod onboarding;
 mod preloader;
 mod qa_server;
 mod renderer;
+mod text;
 #[cfg(target_os = "macos")]
 mod updater;
 mod view;
@@ -84,23 +85,30 @@ fn main() {
         })
         .collect();
 
-    if resolved_files.is_empty() {
-        #[cfg(target_os = "macos")]
-        if onboarding::is_app_bundle() {
-            onboarding::show_onboarding();
-            std::process::exit(0);
-        }
+    let onboarding_mode;
+    #[cfg(target_os = "macos")]
+    {
+        onboarding_mode = resolved_files.is_empty() && onboarding::is_app_bundle();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        onboarding_mode = false;
+    }
+
+    if resolved_files.is_empty() && !onboarding_mode {
         eprintln!("No valid image files provided");
         std::process::exit(1);
     }
 
-    if resolved_files.len() == 1 {
-        log::info!("Opening {}", resolved_files[0].display());
-    } else {
-        log::info!("Opening {} files", resolved_files.len());
+    if !onboarding_mode {
+        if resolved_files.len() == 1 {
+            log::info!("Opening {}", resolved_files[0].display());
+        } else {
+            log::info!("Opening {} files", resolved_files.len());
+        }
     }
 
-    let file_path = resolved_files[0].clone();
+    let file_path = resolved_files.first().cloned().unwrap_or_default();
 
     let event_loop = EventLoop::<AppCommand>::with_user_event()
         .build()
@@ -121,7 +129,13 @@ fn main() {
         None
     };
 
-    let mut app = App::new(file_path, explicit_files, proxy, Arc::clone(&shared_state));
+    let mut app = App::new(
+        file_path,
+        explicit_files,
+        proxy,
+        Arc::clone(&shared_state),
+        onboarding_mode,
+    );
     event_loop
         .run_app(&mut app)
         .expect("Event loop terminated unexpectedly");
@@ -168,6 +182,8 @@ struct App {
     navigation_history: VecDeque<NavigationRecord>,
     /// Current image dimensions (stored so resize can update the view without needing the cache).
     current_image_size: Option<(u32, u32)>,
+    /// When true, the app shows the onboarding welcome screen instead of an image.
+    onboarding_mode: bool,
 }
 
 impl App {
@@ -176,6 +192,7 @@ impl App {
         explicit_files: Option<Vec<PathBuf>>,
         event_loop_proxy: EventLoopProxy<AppCommand>,
         shared_state: Arc<Mutex<SharedAppState>>,
+        onboarding_mode: bool,
     ) -> Self {
         Self {
             file_path,
@@ -197,6 +214,7 @@ impl App {
             _qa_handle: None,
             navigation_history: VecDeque::with_capacity(10),
             current_image_size: None,
+            onboarding_mode,
         }
     }
 
@@ -375,6 +393,68 @@ impl App {
         if let Some(win) = &self.window {
             win.request_redraw();
         }
+    }
+
+    /// Build text blocks for the current frame. Returns onboarding text, header overlay,
+    /// or empty depending on the mode.
+    fn build_text_overlay(&self) -> Vec<text::TextBlock> {
+        let Some(renderer) = &self.renderer else {
+            return Vec::new();
+        };
+        let sw = renderer.surface_width();
+        let sh = renderer.surface_height();
+
+        if self.onboarding_mode {
+            #[cfg(target_os = "macos")]
+            return onboarding::onboarding_text_blocks(sw, sh);
+            #[cfg(not(target_os = "macos"))]
+            return Vec::new();
+        }
+
+        // Image viewing mode: header overlay in the transparent titlebar area.
+        // Show filename and position (for example, "3 / 60 - photo.jpg  |  150%").
+        self.build_header_text(sw)
+    }
+
+    /// Build header text blocks shown in the transparent titlebar area during image viewing.
+    fn build_header_text(&self, screen_width: u32) -> Vec<text::TextBlock> {
+        let Some(dir) = &self.dir_list else {
+            return Vec::new();
+        };
+
+        let filename = dir
+            .current()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Prvw");
+
+        let position = if dir.len() > 1 {
+            format!("{} / {} \u{2013} ", dir.current_index() + 1, dir.len())
+        } else {
+            String::new()
+        };
+
+        let zoom_pct = (self.view_state.zoom * 100.0).round() as i32;
+        let header = format!("{position}{filename}  |  {zoom_pct}%");
+
+        // Semi-transparent white, positioned in the titlebar area (about 12px from top,
+        // centered horizontally). On macOS with transparent titlebar, the standard title
+        // bar is ~28px tall. We render our text roughly centered in that area.
+        let header_color: [u8; 4] = [220, 220, 225, 200];
+
+        // Approximate center: estimate text width as ~7px per char at font size 13
+        let approx_text_width = header.len() as f32 * 7.0;
+        let x = ((screen_width as f32 - approx_text_width) / 2.0).max(80.0);
+
+        vec![text::TextBlock {
+            text: header,
+            x,
+            y: 6.0,
+            font_size: 13.0,
+            line_height: 18.0,
+            color: header_color,
+            max_width: Some(screen_width as f32 - 160.0),
+        }]
     }
 
     /// Drain preloader responses and cache the results.
@@ -649,11 +729,17 @@ impl ApplicationHandler<AppCommand> for App {
         }
 
         // Create window
-        let win = window::create_window(event_loop, &self.file_path);
+        let win = window::create_window(event_loop, &self.file_path, self.onboarding_mode);
         self.window = Some(win.clone());
 
         // Create renderer (wgpu surface must be created here, in resumed())
         self.renderer = Some(renderer::Renderer::new(win));
+
+        if self.onboarding_mode {
+            log::info!("Onboarding mode: showing welcome screen");
+            self.request_redraw();
+            return;
+        }
 
         // Create native menu bar
         // The AppMenu MUST be stored (not dropped) to keep the MenuChild backing data alive.
@@ -824,10 +910,11 @@ impl ApplicationHandler<AppCommand> for App {
             WindowEvent::RedrawRequested => {
                 if self.needs_redraw {
                     log::trace!("Rendering frame");
+                    let text_blocks = self.build_text_overlay();
                     let rendered = self
                         .renderer
-                        .as_ref()
-                        .is_some_and(|renderer| renderer.render());
+                        .as_mut()
+                        .is_some_and(|renderer| renderer.render(&text_blocks));
                     if rendered {
                         self.needs_redraw = false;
                     } else {
@@ -847,7 +934,10 @@ impl ApplicationHandler<AppCommand> for App {
                 let super_pressed = self.modifiers.super_key();
                 match event.logical_key.as_ref() {
                     Key::Named(NamedKey::Escape) => {
-                        if let Some(win) = &self.window {
+                        if self.onboarding_mode {
+                            log::info!("Exiting onboarding (Escape)");
+                            event_loop.exit();
+                        } else if let Some(win) = &self.window {
                             if window::is_fullscreen(win) {
                                 log::info!("Fullscreen off");
                                 window::toggle_fullscreen(win);
@@ -859,6 +949,15 @@ impl ApplicationHandler<AppCommand> for App {
                                 }
                                 event_loop.exit();
                             }
+                        }
+                    }
+                    // In onboarding mode, Enter sets Prvw as default viewer
+                    Key::Named(NamedKey::Enter) if self.onboarding_mode => {
+                        #[cfg(target_os = "macos")]
+                        {
+                            log::info!("Setting Prvw as default viewer");
+                            onboarding::set_as_default_viewer();
+                            self.request_redraw();
                         }
                     }
                     // Navigation: ←, →, Space, Backspace, [, ]

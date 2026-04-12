@@ -1,4 +1,5 @@
 use crate::image_loader::DecodedImage;
+use crate::text::{GlyphonRenderer, TextBlock};
 use crate::view::TransformUniform;
 use image::ImageEncoder;
 use std::sync::Arc;
@@ -16,6 +17,7 @@ pub struct Renderer {
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    text_renderer: GlyphonRenderer,
 }
 
 impl Renderer {
@@ -178,6 +180,8 @@ impl Renderer {
             cache: None,
         });
 
+        let text_renderer = GlyphonRenderer::new(&device, &queue, surface_format);
+
         Self {
             surface,
             device,
@@ -188,6 +192,7 @@ impl Renderer {
             bind_group_layout,
             uniform_buffer,
             sampler,
+            text_renderer,
         }
     }
 
@@ -266,12 +271,10 @@ impl Renderer {
         }
     }
 
-    /// Render the current image. Returns false if no image is loaded.
-    pub fn render(&self) -> bool {
-        let Some(bind_group) = &self.bind_group else {
-            return false;
-        };
-
+    /// Render the current image with optional text overlays. Returns false if the surface
+    /// isn't ready. When `text_blocks` is non-empty, text is rendered on top of the image
+    /// (or on top of the clear color if no image is loaded).
+    pub fn render(&mut self, text_blocks: &[TextBlock]) -> bool {
         let surface_texture = self.surface.get_current_texture();
         let output = match surface_texture {
             wgpu::CurrentSurfaceTexture::Success(tex)
@@ -285,6 +288,17 @@ impl Renderer {
                 return false;
             }
         };
+
+        // Prepare text before creating the render pass
+        if !text_blocks.is_empty() {
+            self.text_renderer.prepare(
+                &self.device,
+                &self.queue,
+                text_blocks,
+                self.config.width,
+                self.config.height,
+            );
+        }
 
         let view = output
             .texture
@@ -318,13 +332,26 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            pass.set_pipeline(&self.render_pipeline);
-            pass.set_bind_group(0, bind_group, &[]);
-            pass.draw(0..6, 0..1);
+            // Draw image if loaded
+            if let Some(bind_group) = &self.bind_group {
+                pass.set_pipeline(&self.render_pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
+
+            // Draw text overlay on top
+            if !text_blocks.is_empty() {
+                self.text_renderer.render(&mut pass);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
+        if !text_blocks.is_empty() {
+            self.text_renderer.trim();
+        }
+
         true
     }
 

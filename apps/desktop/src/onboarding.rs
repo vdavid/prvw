@@ -1,9 +1,10 @@
-//! No-args onboarding dialog for macOS.
+//! Onboarding screen rendered with wgpu + glyphon.
 //!
 //! When Prvw is launched without file arguments from a `.app` bundle (for example, by
-//! double-clicking in Finder), shows a native dialog explaining how to use the app and
-//! offers to set Prvw as the default image viewer.
+//! double-clicking in Finder), shows a welcome screen in the main window with text
+//! explaining how to use the app and an option to set Prvw as the default image viewer.
 
+use crate::text::TextBlock;
 use std::process::Command;
 
 /// UTIs for all image types Prvw supports.
@@ -63,7 +64,7 @@ if let uttype = UTType("{uti}"),
 
 /// Sets Prvw as the default handler for all supported image types.
 /// Uses `swift -e` to call LSSetDefaultRoleHandlerForContentType.
-fn set_as_default_viewer() {
+pub fn set_as_default_viewer() {
     let utis: Vec<&str> = SUPPORTED_UTIS.iter().map(|(uti, _)| *uti).collect();
     let uti_array = utis
         .iter()
@@ -90,14 +91,6 @@ print("Done", terminator: "")
         Ok(output) => {
             if output.status.success() {
                 log::info!("Set Prvw as default viewer for all supported image types");
-                // Show confirmation dialog
-                let _ = Command::new("osascript")
-                    .args([
-                        "-e",
-                        "display dialog \"Prvw is now the default image viewer.\" \
-                         with title \"Prvw\" buttons {\"OK\"} default button \"OK\" with icon note",
-                    ])
-                    .output();
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 log::error!("Failed to set default viewer: {stderr}");
@@ -107,54 +100,120 @@ print("Done", terminator: "")
     }
 }
 
-/// Shows the onboarding dialog and handles the user's response.
-/// Returns when the dialog is dismissed.
-pub fn show_onboarding() {
-    let version = env!("CARGO_PKG_VERSION");
-
-    // Build file association state lines
-    let mut handler_lines = String::new();
-    // Only query a couple of representative types to avoid slow startup
+/// Query current file association status for a couple of representative types.
+/// Returns a human-readable multiline string.
+pub fn query_handler_status() -> String {
+    let mut lines = String::new();
+    // Only query JPEG and PNG to avoid slow startup (each swift invocation takes ~0.5s)
     for &(uti, label) in &SUPPORTED_UTIS[..2] {
         let handler = get_default_handler(uti);
-        handler_lines.push_str(&format!("  {label} files open with: {handler}\\n"));
+        let marker = if handler.contains("Prvw") || handler.contains("prvw") {
+            " (you)"
+        } else {
+            ""
+        };
+        lines.push_str(&format!("  {label}: {handler}{marker}\n"));
     }
+    lines
+}
+
+/// Build the text blocks for the onboarding screen.
+pub fn onboarding_text_blocks(screen_width: u32, screen_height: u32) -> Vec<TextBlock> {
+    let version = env!("CARGO_PKG_VERSION");
+    let handler_status = query_handler_status();
 
     let location_tip = if !is_in_applications() {
-        "\\nTip: move Prvw.app to /Applications for the best experience.\\n"
+        "\nTip: move Prvw.app to /Applications for the best experience.\n"
     } else {
         ""
     };
 
-    let message = format!(
-        "Prvw v{version}\\n\
-         \\n\
-         A fast image viewer for macOS.\\n\
-         \\n\
-         To view images with Prvw, right-click any image\\n\
-         and choose \\\"Open With\\\" > \\\"Prvw\\\".\\n\
-         \\n\
-         Current state:\\n\
-         {handler_lines}\
-         {location_tip}"
-    );
+    let padding = 40.0;
+    let max_width = (screen_width as f32 - padding * 2.0).max(200.0);
+    let center_x = padding;
 
-    let script = format!(
-        "set result to button returned of (display dialog \"{message}\" \
-         with title \"Welcome to Prvw\" \
-         buttons {{\"Close\", \"Set as default viewer\"}} \
-         default button \"Close\" \
-         with icon note)\n\
-         return result"
-    );
+    // Light text color for dark background
+    let title_color: [u8; 4] = [255, 255, 255, 255];
+    let body_color: [u8; 4] = [200, 200, 210, 255];
+    let dim_color: [u8; 4] = [140, 140, 155, 255];
 
-    match Command::new("osascript").args(["-e", &script]).output() {
-        Ok(output) => {
-            let button = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if button == "Set as default viewer" {
-                set_as_default_viewer();
-            }
-        }
-        Err(e) => log::error!("Couldn't show onboarding dialog: {e}"),
+    let mut blocks = Vec::new();
+    let mut y = 50.0;
+
+    // Title
+    blocks.push(TextBlock {
+        text: format!("Prvw v{version}"),
+        x: center_x,
+        y,
+        font_size: 28.0,
+        line_height: 36.0,
+        color: title_color,
+        max_width: Some(max_width),
+    });
+    y += 48.0;
+
+    // Subtitle
+    blocks.push(TextBlock {
+        text: "A fast image viewer for macOS.".to_string(),
+        x: center_x,
+        y,
+        font_size: 16.0,
+        line_height: 22.0,
+        color: body_color,
+        max_width: Some(max_width),
+    });
+    y += 40.0;
+
+    // Usage instructions
+    blocks.push(TextBlock {
+        text: "To view images, right-click any image and choose\n\"Open With\" > \"Prvw\"."
+            .to_string(),
+        x: center_x,
+        y,
+        font_size: 14.0,
+        line_height: 20.0,
+        color: body_color,
+        max_width: Some(max_width),
+    });
+    y += 56.0;
+
+    // Current handlers
+    blocks.push(TextBlock {
+        text: format!("Current defaults:\n{handler_status}"),
+        x: center_x,
+        y,
+        font_size: 13.0,
+        line_height: 18.0,
+        color: dim_color,
+        max_width: Some(max_width),
+    });
+    y += 72.0;
+
+    // Location tip
+    if !location_tip.is_empty() {
+        blocks.push(TextBlock {
+            text: location_tip.trim().to_string(),
+            x: center_x,
+            y,
+            font_size: 13.0,
+            line_height: 18.0,
+            color: dim_color,
+            max_width: Some(max_width),
+        });
+        y += 30.0;
     }
+
+    // Action instructions at the bottom
+    let bottom_y = (screen_height as f32 - 50.0).max(y + 20.0);
+    blocks.push(TextBlock {
+        text: "Press Enter to set as default viewer, or Escape to close.".to_string(),
+        x: center_x,
+        y: bottom_y,
+        font_size: 14.0,
+        line_height: 20.0,
+        color: title_color,
+        max_width: Some(max_width),
+    });
+
+    blocks
 }
