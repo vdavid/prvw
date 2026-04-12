@@ -1,9 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Packages a signed .app bundle into a DMG with an Applications symlink.
+# Packages a signed .app bundle into a styled DMG with an Applications symlink.
+# Uses `create-dmg` (brew install create-dmg) for window styling.
 # Usage: ./scripts/create-dmg.sh <app_bundle_path> <output_dmg_path>
-# Example: ./scripts/create-dmg.sh target/release/Prvw.app Prvw_0.3.0_aarch64.dmg
+# Example: ./scripts/create-dmg.sh target/release/Prvw.app Prvw_0.4.0_aarch64.dmg
 
 APP_BUNDLE="${1:-}"
 OUTPUT_DMG="${2:-}"
@@ -18,26 +19,26 @@ if [[ ! -d "$APP_BUNDLE" ]]; then
     exit 1
 fi
 
-APP_NAME=$(basename "$APP_BUNDLE" .app)
+if ! command -v create-dmg &>/dev/null; then
+    echo "Error: create-dmg not found. Install it with: brew install create-dmg"
+    exit 1
+fi
 
-TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TEMP_DIR"' EXIT
-
-# Copy the signed .app bundle into the staging directory
-cp -R "$APP_BUNDLE" "$TEMP_DIR/"
-
-# Create Applications symlink for drag-to-install
-ln -s /Applications "$TEMP_DIR/Applications"
-
-# Remove existing DMG if present
+# Remove existing DMG if present (create-dmg refuses to overwrite)
 rm -f "$OUTPUT_DMG"
 
+APP_NAME=$(basename "$APP_BUNDLE")
+
 echo "Creating DMG: $OUTPUT_DMG..."
-hdiutil create \
-    -volname "$APP_NAME" \
-    -srcfolder "$TEMP_DIR" \
-    -ov \
-    -format UDZO \
-    "$OUTPUT_DMG"
+create-dmg \
+    --volname "Prvw" \
+    --window-size 600 400 \
+    --icon-size 100 \
+    --icon "$APP_NAME" 175 200 \
+    --app-drop-link 425 200 \
+    --no-internet-enable \
+    --hide-extension "$APP_NAME" \
+    "$OUTPUT_DMG" \
+    "$APP_BUNDLE"
 
 echo "Created DMG: $OUTPUT_DMG"

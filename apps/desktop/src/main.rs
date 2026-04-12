@@ -3,6 +3,8 @@ mod image_loader;
 #[cfg(target_os = "macos")]
 mod macos_open_handler;
 mod menu;
+#[cfg(target_os = "macos")]
+mod onboarding;
 mod preloader;
 mod qa_server;
 mod renderer;
@@ -27,7 +29,6 @@ use winit::window::{Window, WindowId};
 #[command(name = "prvw", about = "A fast, minimal image viewer")]
 struct Cli {
     /// Path(s) to image file(s) to open
-    #[arg(required = true)]
     files: Vec<PathBuf>,
 }
 
@@ -84,6 +85,11 @@ fn main() {
         .collect();
 
     if resolved_files.is_empty() {
+        #[cfg(target_os = "macos")]
+        if onboarding::is_app_bundle() {
+            onboarding::show_onboarding();
+            std::process::exit(0);
+        }
         eprintln!("No valid image files provided");
         std::process::exit(1);
     }

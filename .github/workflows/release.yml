@@ -34,6 +34,9 @@ jobs:
       - name: Install tools with mise
         run: mise install
 
+      - name: Install create-dmg
+        run: command -v create-dmg || brew install create-dmg
+
       - name: Install x86_64 Rust target
         if: matrix.arch != 'aarch64'
         run: rustup target add x86_64-apple-darwin

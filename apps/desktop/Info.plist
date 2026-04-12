@@ -45,7 +45,7 @@
                 <string>public.jpeg</string>
             </array>
             <key>LSHandlerRank</key>
-            <string>Alternate</string>
+            <string>Default</string>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -59,7 +59,7 @@
                 <string>public.png</string>
             </array>
             <key>LSHandlerRank</key>
-            <string>Alternate</string>
+            <string>Default</string>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -73,7 +73,7 @@
                 <string>com.compuserve.gif</string>
             </array>
             <key>LSHandlerRank</key>
-            <string>Alternate</string>
+            <string>Default</string>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -87,7 +87,7 @@
                 <string>public.webp</string>
             </array>
             <key>LSHandlerRank</key>
-            <string>Alternate</string>
+            <string>Default</string>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -101,7 +101,7 @@
                 <string>com.microsoft.bmp</string>
             </array>
             <key>LSHandlerRank</key>
-            <string>Alternate</string>
+            <string>Default</string>
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
@@ -116,7 +116,7 @@
                 <string>public.tiff</string>
             </array>
             <key>LSHandlerRank</key>
-            <string>Alternate</string>
+            <string>Default</string>
         </dict>
     </array>
 </dict>
