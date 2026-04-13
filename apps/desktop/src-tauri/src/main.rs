@@ -283,9 +283,6 @@ fn open_file(
     state.dir_list = directory::DirectoryList::from_file(&resolved);
     state.onboarding_mode = false;
 
-    // Start preloading adjacent images
-    start_preloading(&mut state);
-
     // Update window title
     let filename = resolved
         .file_name()
@@ -551,15 +548,8 @@ fn main() {
                 }
             }
 
-            // Start preloader — receiver is held by a dedicated thread (not behind the mutex)
-            let preload_rx = {
-                let state = app.state::<Mutex<AppState>>();
-                let mut state = state.lock().unwrap();
-                let (preloader, rx) = preloader::Preloader::start();
-                state.preloader = Some(preloader);
-                start_preloading(&mut state);
-                rx
-            };
+            // Image preloading is handled by the frontend (browser image cache).
+            // The Rust preloader module is retained for MCP screenshot support only.
 
             // Start MCP server
             let mcp_config = mcp::McpConfig::from_env();
@@ -608,21 +598,6 @@ fn main() {
                     log::info!("Update check disabled by user setting");
                 }
             }
-
-            // Preloader receiver thread — blocks on recv(), wakes only when a result arrives,
-            // stops automatically when the preloader's sender is dropped (app exit).
-            let preloader_handle = app.handle().clone();
-            std::thread::Builder::new()
-                .name("prvw-preload-recv".into())
-                .spawn(move || {
-                    while let Ok(response) = preload_rx.recv() {
-                        let state = preloader_handle.state::<Mutex<AppState>>();
-                        let mut state = state.lock().unwrap();
-                        handle_preload_response(&mut state, response);
-                    }
-                    log::debug!("Preloader receiver thread exiting");
-                })
-                .expect("Failed to spawn preloader receiver thread");
 
             Ok(())
         })
@@ -688,13 +663,12 @@ fn do_navigate(state: &mut AppState, forward: bool, window: &tauri::WebviewWindo
         .unwrap_or("Prvw");
     let _ = window.set_title(filename);
 
-    // Start preloading adjacent images
-    start_preloading(state);
-
     update_shared_state(state);
 }
 
 /// Kick off preloading for images adjacent to the current position.
+/// Currently unused (browser handles preloading), retained for potential future use.
+#[allow(dead_code)]
 fn start_preloading(state: &mut AppState) {
     let Some(dir) = &state.dir_list else { return };
     let preload_indices = dir.preload_range(preloader::preload_count());
@@ -713,6 +687,8 @@ fn start_preloading(state: &mut AppState) {
 }
 
 /// Process a single preload response (called by the receiver thread).
+/// Currently unused (browser handles preloading), retained for potential future use.
+#[allow(dead_code)]
 fn handle_preload_response(state: &mut AppState, response: preloader::PreloadResponse) {
     match response {
         preloader::PreloadResponse::Ready {
