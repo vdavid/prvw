@@ -217,7 +217,6 @@ fn format_cache_bytes(bytes: usize) -> String {
 pub struct Preloader {
     pool: rayon::ThreadPool,
     response_tx: mpsc::Sender<PreloadResponse>,
-    pub response_rx: mpsc::Receiver<PreloadResponse>,
     /// Indices currently being decoded (prevents duplicate work).
     in_flight: HashSet<usize>,
     /// Cancellation tokens for in-flight tasks.
@@ -225,7 +224,10 @@ pub struct Preloader {
 }
 
 impl Preloader {
-    pub fn start() -> Self {
+    /// Start the preloader. Returns the preloader and a receiver for decoded images.
+    /// The receiver is separate so it can be owned by a dedicated thread that blocks
+    /// on `recv()` without holding the AppState mutex.
+    pub fn start() -> (Self, mpsc::Receiver<PreloadResponse>) {
         let num_threads = available_parallelism().map(|n| n.get()).unwrap_or(4);
 
         let pool = rayon::ThreadPoolBuilder::new()
@@ -238,13 +240,15 @@ impl Preloader {
 
         let (response_tx, response_rx) = mpsc::channel();
 
-        Self {
-            pool,
-            response_tx,
+        (
+            Self {
+                pool,
+                response_tx,
+                in_flight: HashSet::new(),
+                cancellation_tokens: Vec::new(),
+            },
             response_rx,
-            in_flight: HashSet::new(),
-            cancellation_tokens: Vec::new(),
-        }
+        )
     }
 
     /// Cancel all in-flight tasks and submit new ones.

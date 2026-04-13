@@ -1,3 +1,6 @@
 [workspace]
-members = ["apps/desktop"]
+members = ["apps/desktop/src-tauri"]
 resolver = "3"
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3

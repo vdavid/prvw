@@ -10,11 +10,11 @@ import (
 
 // RunRustfmt formats Rust code.
 func RunRustfmt(ctx *CheckContext) (CheckResult, error) {
-	rustDir := filepath.Join(ctx.RootDir, "apps", "desktop")
+	rustDir := filepath.Join(ctx.RootDir, "apps", "desktop", "src-tauri")
 
 	// Skip if Cargo.toml doesn't exist yet
 	if _, err := os.Stat(filepath.Join(rustDir, "Cargo.toml")); os.IsNotExist(err) {
-		return Skipped("apps/desktop/Cargo.toml not found"), nil
+		return Skipped("apps/desktop/src-tauri/Cargo.toml not found"), nil
 	}
 
 	// Count .rs files for the message

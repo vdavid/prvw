@@ -7,6 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DESKTOP_DIR="$PROJECT_ROOT/apps/desktop"
+TAURI_DIR="$DESKTOP_DIR/src-tauri"
 BINARY_NAME="prvw"
 BUNDLE_ID="com.veszelovszki.prvw"
 SIGNING_IDENTITY="Developer ID Application: Rymdskottkarra AB (83H6YAQMNP)"
@@ -15,7 +16,7 @@ INFO_PLIST="$DESKTOP_DIR/Info.plist"
 ICON_PATH="$DESKTOP_DIR/resources/AppIcon.icns"
 
 # Extract version from Cargo.toml
-VERSION=$(grep '^version' "$DESKTOP_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+VERSION=$(grep '^version' "$TAURI_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
 echo "Version: $VERSION"
 
 echo "Building release binary..."

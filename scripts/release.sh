@@ -45,7 +45,7 @@ fi
 echo "Releasing version $VERSION..."
 
 # Update version in Cargo.toml and sync Cargo.lock
-sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" apps/desktop/Cargo.toml
+sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" apps/desktop/src-tauri/Cargo.toml
 cargo update --workspace --quiet
 
 # Update CHANGELOG.md: replace [Unreleased] with the versioned heading
@@ -55,7 +55,7 @@ sed -i '' "s/## \[Unreleased\]/## [$VERSION] - $TODAY/" CHANGELOG.md
 # Commit and tag (only files touched by this script)
 git add \
   CHANGELOG.md \
-  apps/desktop/Cargo.toml \
+  apps/desktop/src-tauri/Cargo.toml \
   Cargo.lock
 git commit -m "chore(release): v$VERSION"
 git tag "v$VERSION"

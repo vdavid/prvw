@@ -6,7 +6,7 @@
 - **Minimal chrome.** The image is 99% of the app. No sidebars, no toolbars, no floating panels. The viewer gets out of
   the way and lets you see your photos. Every UI element must earn its place.
 - **Platform-native, not generic.** The app should look and feel as if it was made specifically for macOS. Use native
-  menus via `muda`, respect system dark/light mode, follow macOS keyboard conventions (Cmd+Q, Cmd+W, Cmd+F for
+  menus via Tauri, respect system dark/light mode, follow macOS keyboard conventions (Cmd+Q, Cmd+W, Cmd+F for
   fullscreen). Cross-platform comes later, but never at the cost of native feel. When we go cross-platform, fork by OS
   (same approach as Cmdr).
 - **Keyboard-first.** Everything must work with the mouse, too, but all features should be fast and intuitive from the

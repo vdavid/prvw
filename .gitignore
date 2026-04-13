@@ -35,6 +35,9 @@ coverage/
 # Astro generated types
 .astro/
 
+# SvelteKit generated files
+.svelte-kit/
+
 # Build output
 build/
 dist/

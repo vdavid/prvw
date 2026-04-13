@@ -1,0 +1,15 @@
+# SvelteKit generated files
+.svelte-kit/
+
+# Rust code (handled by rustfmt)
+src-tauri/
+
+# Lock files
+pnpm-lock.yaml
+
+# Build output
+build/
+target/
+
+# Dependencies
+node_modules/

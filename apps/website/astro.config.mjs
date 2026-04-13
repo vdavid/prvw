@@ -15,6 +15,7 @@ export default defineConfig({
     server: {
       strictPort: true,
     },
+    // @ts-expect-error - @tailwindcss/vite uses vite 8 types, Astro bundles vite 6. Harmless at runtime.
     plugins: [tailwindcss()],
   },
 })

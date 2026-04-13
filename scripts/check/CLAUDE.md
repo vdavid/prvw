@@ -10,6 +10,7 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 ./scripts/check.sh --app desktop      # Desktop (Rust) only
 ./scripts/check.sh --check clippy     # Specific check
 ./scripts/check.sh --rust             # All Rust checks
+./scripts/check.sh --svelte           # All Svelte checks
 ./scripts/check.sh --go               # All Go checks
 ./scripts/check.sh --ci --fail-fast   # CI mode
 ```
@@ -41,6 +42,8 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 | `checks/common.go`          | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`) |
 | `checks/registry.go`        | `AllChecks`: canonical ordered list, lookup and validation functions    |
 | `checks/desktop-rust-*.go`  | Rust checks (rustfmt, clippy, cargo-test)                              |
+| `checks/desktop-svelte-*.go` | Svelte checks (oxfmt, prettier, eslint, stylelint, svelte-check, build) |
+| `checks/desktop-oxfmt.go`  | oxfmt formatting for the desktop frontend                              |
 | `checks/website-*.go`       | Website checks (prettier, eslint, typecheck, build)                    |
 | `checks/scripts-go-*.go`    | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests) |
 | `stats.go`                  | CSV stats logging (`~/prvw-check-log.csv`)                             |
@@ -63,8 +66,9 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 
 ## Apps and checks
 
-| App     | Tech | Checks                                                    |
-| ------- | ---- | --------------------------------------------------------- |
-| Desktop | Rust | rustfmt, clippy, cargo-test                               |
-| Website | Astro | prettier, eslint, typecheck, build                       |
-| Scripts | Go   | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests |
+| App     | Tech   | Checks                                                    |
+| ------- | ------ | --------------------------------------------------------- |
+| Desktop | Rust   | rustfmt, clippy, cargo-test                               |
+| Desktop | Svelte | oxfmt, prettier, eslint, stylelint, svelte-check, build   |
+| Website | Astro  | prettier, eslint, typecheck, build                        |
+| Scripts | Go     | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests |

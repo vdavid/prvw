@@ -1,80 +1,101 @@
 # Desktop app
 
-The Prvw desktop app: a GPU-accelerated image viewer using `winit` + `wgpu` + `muda`.
+The Prvw desktop app: a Tauri 2 image viewer with a Rust backend and Svelte 5 + SvelteKit frontend rendered in a
+webview.
 
 ## Architecture
 
-The app struct implements `winit::application::ApplicationHandler`. The event loop drives everything.
+The Rust backend (`src-tauri/`) handles image loading, decoding, preloading, directory scanning, menus, and the QA
+server. The frontend (`src/`) is a Svelte 5 + SvelteKit SPA (adapter-static, SSR disabled) that displays images via
+Tauri's asset protocol and handles zoom/pan/keyboard input in the browser. Vite serves the dev frontend on port 14200.
 
-| Module            | Responsibility                                              |
-| ----------------- | ----------------------------------------------------------- |
-| `main.rs`         | CLI parsing, event loop, `ApplicationHandler` impl          |
-| `window.rs`       | Window creation, fullscreen toggle, title formatting        |
-| `renderer.rs`     | wgpu surface, pipeline, texture upload, rendering           |
-| `image_loader.rs` | Decode image files to RGBA8 (zune-jpeg for JPEG, `image` crate for others) |
-| `view.rs`         | Zoom/pan math, transform uniform for GPU                    |
-| `menu.rs`         | Native macOS menu bar via `muda`, shortcut wiring           |
-| `directory.rs`    | Scan parent dir for images, sort, track position            |
-| `preloader.rs`    | Parallel background decoding (rayon pool), LRU cache (512 MB budget) |
-| `qa_server.rs`    | Embedded HTTP server for QA/E2E testing (state, commands, screenshots) |
-| `shader.wgsl`     | WGSL vertex/fragment shader for textured quad with 2D transform |
+### Rust backend (`src-tauri/src/`)
+
+| Module                  | Responsibility                                                             |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `main.rs`               | CLI parsing, Tauri app setup, command registration, Apple Event handler    |
+| `image_loader.rs`       | Decode image files to RGBA8 (zune-jpeg for JPEG, `image` crate for others) |
+| `view.rs`               | Zoom/pan math, fit-to-window calculations                                  |
+| `menu.rs`               | Native macOS menu bar via Tauri's menu API                                 |
+| `directory.rs`          | Scan parent dir for images, sort, track position                           |
+| `preloader.rs`          | Parallel background decoding (rayon pool), LRU cache (512 MB budget)       |
+| `mcp/`                  | MCP server for AI agent integration (tools, resources, JSON-RPC)           |
+| `onboarding.rs`         | macOS onboarding helpers (file associations, app bundle detection)         |
+| `settings.rs`           | Settings data types (updates_enabled, etc.)                                |
+| `updater.rs`            | Update checking logic                                                      |
+| `macos_open_handler.rs` | Apple Event handler for `open` events (double-click file in Finder)        |
+
+### Frontend (`src/`)
+
+SvelteKit SPA with adapter-static. SSR disabled in `+layout.ts`.
+
+| File/Dir                | Responsibility                                              |
+| ----------------------- | ----------------------------------------------------------- |
+| `app.html`              | SvelteKit shell template                                    |
+| `app.css`               | Design tokens (colors, spacing, fonts, radii) and CSS reset |
+| `routes/+layout.svelte` | Root layout, imports `app.css`                              |
+| `routes/+layout.ts`     | Disables SSR (`export const ssr = false`)                   |
+| `routes/+page.svelte`   | Main page (placeholder for now)                             |
+
+### Tooling (`scripts/`, config files)
+
+| File                       | Responsibility                                                            |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `scripts/tauri-wrapper.js` | Wraps `tauri` CLI: injects dev config, defaults to universal macOS binary |
+| `src-tauri/tauri.dev.json` | Dev-only Tauri overrides (`withGlobalTauri: true`)                        |
+| `vite.config.js`           | Vite + SvelteKit, port 1420                                               |
+| `svelte.config.js`         | adapter-static, vitePreprocess                                            |
+| `eslint.config.js`         | Flat ESLint config: TypeScript + Svelte, complexity max 15                |
+| `.stylelintrc.mjs`         | Enforces design tokens, no raw hex/px in components                       |
 
 ## Key patterns
 
-- **Surface lifecycle**: The wgpu surface and window are created in `resumed()`, not at startup. This is required by
-  winit 0.30 on macOS. Creating them earlier crashes.
-- **Render on demand**: The renderer only redraws when `needs_redraw` is true (set by zoom, pan, resize, or navigate).
-  No continuous render loop. CPU/GPU usage is near zero when idle.
+- **Tauri commands**: The frontend calls Rust functions via `invoke()`. Commands are registered in `main.rs` with
+  `.invoke_handler(tauri::generate_handler![...])`.
+- **Asset protocol**: Images are served to the webview via `asset://localhost/{path}`. The scope in `tauri.conf.json`
+  allows all paths. This avoids base64-encoding images over IPC.
+- **CSS zoom/pan**: The frontend handles zoom and pan with CSS transforms on the `<img>` element, keeping the rendering
+  in the webview's compositor rather than going through Rust.
+- **Browser preloading**: Adjacent images are preloaded by creating `Image()` objects in JS that fetch via the asset
+  protocol, warming the webview's cache.
 - **Preloader**: A rayon thread pool (min(4, cores-1) threads) decodes adjacent images in parallel, sending results back
   via `std::sync::mpsc`. An in-flight `HashSet` prevents duplicate work. The `ImageCache` uses LRU eviction with a 512
   MB memory budget.
-- **Error display**: Errors go to the window title bar, not as text overlay. Text rendering in pure wgpu needs glyphon,
-  which is overkill for v1.
-- **Transform**: Zoom and pan are a 2D affine transform applied to the quad's vertices in the vertex shader. No image
-  re-decode needed.
+- **Onboarding**: When launched with no files from a .app bundle, the frontend shows a welcome screen instead of the
+  image viewer.
+- **MCP server**: An Axum-based HTTP server on `127.0.0.1:19447` implementing JSON-RPC 2.0 (Model Context Protocol).
+  Tools emit Tauri events directly; resources read from `SharedAppState`. See `src-tauri/src/mcp/CLAUDE.md`.
 
-- **QA server**: An embedded HTTP server (raw `TcpListener`, no external crate) on a background thread. Agents and E2E
-  tests use it to query state, send commands, and capture screenshots. Port controlled by `PRVW_QA_PORT` env var
-  (default 19447, set to 0 to disable). Commands flow through `EventLoopProxy<AppCommand>` user events. Screenshots
-  use an offscreen wgpu render target + buffer readback + PNG encoding.
+## Decisions
+
+- **`withGlobalTauri` in dev overlay only**: Moved from `tauri.conf.json` to `tauri.dev.json` so production builds don't
+  expose the Tauri API on `window.__TAURI__`. The `tauri-wrapper.js` script injects the dev config automatically.
 
 ## Gotchas
 
-- **wgpu 29 API changes**: `Instance::new()` takes a value (not reference). `get_current_texture()` returns
-  `CurrentSurfaceTexture` enum (not `Result`). `PipelineLayoutDescriptor` uses `immediate_size` instead of
-  `push_constant_ranges`. `RenderPassColorAttachment` requires `depth_slice`. `mipmap_filter` uses `MipmapFilterMode`.
-- **winit 0.30 `ApplicationHandler`**: No closure-based `run`. The app struct implements the trait. State that depends on
-  the window (renderer, surface) must be `Option` and initialized in `resumed()`.
-- **muda menu**: `init_for_nsapp()` must be called after building the menu. Menu events are polled via
-  `MenuEvent::receiver().try_recv()`, not callbacks.
-- **bytemuck derives**: Use `bytemuck::Pod` and `bytemuck::Zeroable` (from the `derive` feature), not
-  `bytemuck_derive::Pod` directly.
-- **zune-jpeg in debug builds**: zune-jpeg's SIMD is painfully slow without optimizations. `Cargo.toml` sets
-  `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this.
-- **objc2 `Retained<>` lifetime with AppKit modals**: when creating AppKit views (NSTextField, NSButton, etc.) via
-  objc2 and adding them to a parent view with `addSubview`, the Rust `Retained<>` wrapper must stay alive for the
-  entire duration of the modal session. If it drops (goes out of scope), AppKit's autorelease pool cleanup will
-  segfault (use-after-free). Fix: collect all views in a `Vec<Retained<...>>` that lives alongside the modal loop.
-  This applies to `onboarding.rs` and any future native macOS dialogs. There is no compile-time check for this.
-- **Never run AppKit modals from inside winit's event loop.** Running `NSApplication::runModalForWindow` inside
-  winit's `resumed()` or `window_event()` creates a nested run loop inside winit's autorelease pool. When the modal
-  ends and an Apple Event arrives, the pool drains objects from the wrong scope, causing segfault. Fix: run native
-  modals BEFORE `EventLoop::new()` (like the onboarding dialog in `main()`), or use `EventLoopProxy` to defer the
-  modal to after the event loop exits.
+- **Never use `cargo run` or `cargo build` to run the app.** The Tauri binary without the embedded frontend is a white
+  screen. Use `pnpm tauri dev` (which runs Vite + Cargo together) or `pnpm tauri build` for release. `cargo check`,
+  `cargo test`, and `cargo clippy` are fine — they don't produce runnable binaries.
+- **zune-jpeg in debug builds**: zune-jpeg's SIMD is painfully slow without optimizations. The workspace `Cargo.toml`
+  sets `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this.
+- **Tauri asset protocol scope**: The `assetProtocol.scope.allow` in `tauri.conf.json` must include the paths you want
+  to serve. Currently set to `["**"]` (all paths).
+- **image crate version**: Pinned to 0.25.6 for compatibility. Check before upgrading.
 
 ## Dependencies
 
-| Crate       | Version | Purpose                                  |
-| ----------- | ------- | ---------------------------------------- |
-| winit       | 0.30.13 | Windowing and event handling             |
-| wgpu        | 29.0.1  | GPU rendering (Metal on macOS)           |
-| pollster    | 0.4.0   | Block on wgpu async calls                |
-| muda        | 0.17.2  | Native macOS menu bar                    |
-| image       | 0.25.10 | Image decoding (PNG, GIF, WebP, BMP, TIFF) and PNG encoding for screenshots |
-| zune-jpeg   | 0.5.15  | Fast JPEG decoding with SIMD (replaces `image` for JPEG) |
-| zune-core   | 0.5.1   | Decoder options for zune-jpeg                    |
-| rayon       | 1.11.0  | Thread pool for parallel preloading               |
-| clap        | 4.6.0   | CLI argument parsing                     |
-| log         | 0.4.29  | Logging facade                           |
-| env_logger  | 0.11.10 | Log output to stderr                     |
-| bytemuck    | 1.25.0  | Safe transmute for GPU uniform data      |
+| Crate              | Version | Purpose                                |
+| ------------------ | ------- | -------------------------------------- |
+| tauri              | 2.10.3  | App framework (webview, IPC, bundling) |
+| image              | 0.25.6  | Image decoding and PNG encoding        |
+| zune-jpeg          | 0.5.15  | Fast JPEG decoding with SIMD           |
+| zune-core          | 0.5.1   | Decoder options for zune-jpeg          |
+| rayon              | 1.11.0  | Thread pool for parallel preloading    |
+| clap               | 4.6.0   | CLI argument parsing                   |
+| serde              | 1.0.228 | Serialization for Tauri commands       |
+| nom-exif           | 2.7.0   | EXIF metadata parsing                  |
+| log                | 0.4.29  | Logging facade                         |
+| tauri-plugin-log   | 2.8.0   | Unified logging (Rust + webview console forwarding) |
+| tauri-plugin-store | 2.4.2   | Key-value settings persistence         |
+| axum               | 0.8.8   | MCP server HTTP transport              |
+| tokio              | 1.51.1  | Async runtime for axum                 |

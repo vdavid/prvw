@@ -11,11 +11,11 @@ import (
 
 // RunClippy runs Clippy linter with auto-fix.
 func RunClippy(ctx *CheckContext) (CheckResult, error) {
-	rustDir := filepath.Join(ctx.RootDir, "apps", "desktop")
+	rustDir := filepath.Join(ctx.RootDir, "apps", "desktop", "src-tauri")
 
 	// Skip if Cargo.toml doesn't exist yet
 	if _, err := os.Stat(filepath.Join(rustDir, "Cargo.toml")); os.IsNotExist(err) {
-		return Skipped("apps/desktop/Cargo.toml not found"), nil
+		return Skipped("apps/desktop/src-tauri/Cargo.toml not found"), nil
 	}
 
 	// In local mode, first run with --fix to auto-fix what we can

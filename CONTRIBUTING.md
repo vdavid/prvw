@@ -6,7 +6,7 @@ Welcome! Here's how to get around.
 
 - [Rust](https://rustup.rs/) (stable, managed by `rust-toolchain.toml` at repo root)
 - [mise](https://mise.jdx.dev/) for Go, Node, and pnpm versions (pinned in `.mise.toml`)
-- macOS (the app uses Metal for GPU rendering)
+- macOS (the app is a Tauri 2 desktop app targeting macOS)
 
 Run `mise install` once after cloning to set up the right tool versions.
 
@@ -15,21 +15,20 @@ Run `mise install` once after cloning to set up the right tool versions.
 Prvw needs an image file path as an argument:
 
 ```bash
-cd apps/desktop
+cd apps/desktop/src-tauri
 cargo run -- ~/Pictures/photo.jpg
 ```
 
 For a quick test with any image on your system:
 
 ```bash
-cd apps/desktop
+cd apps/desktop/src-tauri
 cargo run -- "$(find ~/Pictures -name '*.jpg' -o -name '*.png' | head -1)"
 ```
 
 Useful env vars:
 
 - `RUST_LOG=debug` for verbose logging
-- `RUST_LOG=prvw::renderer=debug` for GPU-specific logs
 - `RUST_LOG=prvw::preloader=debug` for preloading logs
 
 ## Running the website
@@ -61,10 +60,10 @@ The check runner catches formatting, linting, and test issues before you push:
 
 ```bash
 # All Rust tests
-cd apps/desktop && cargo test
+cd apps/desktop/src-tauri && cargo test
 
 # A specific test
-cd apps/desktop && cargo test view::tests::zoom_clamped
+cd apps/desktop/src-tauri && cargo test view::tests::zoom_clamped
 
 # All checks (includes tests)
 ./scripts/check.sh
@@ -77,7 +76,7 @@ cd apps/desktop && cargo test view::tests::zoom_clamped
 ./scripts/build-and-sign.sh
 
 # Build without signing
-cd apps/desktop && cargo build --release
+cd apps/desktop/src-tauri && cargo build --release
 ```
 
 The release binary lands in `target/release/prvw`.
@@ -85,7 +84,7 @@ The release binary lands in `target/release/prvw`.
 ## Project structure
 
 ```
-apps/desktop/     Rust desktop app (winit + wgpu + muda)
+apps/desktop/     Desktop app (Tauri 2: Rust backend + webview frontend)
 apps/website/     getprvw.com (Astro + Tailwind v4)
 scripts/check/    Go check runner (14 checks)
 docs/             Dev docs (architecture, style guide, design principles)

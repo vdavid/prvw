@@ -1,151 +1,169 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
 /* Self-hosted Inter font - eliminates Google Fonts round-trips for faster FCP */
 @font-face {
-  font-family: "Inter";
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url("/fonts/inter-latin-variable.woff2") format("woff2");
-  unicode-range:
-    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
-    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
-    U+2215, U+FEFF, U+FFFD;
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 100 900;
+    font-display: swap;
+    src: url('/fonts/inter-latin-variable.woff2') format('woff2');
+    unicode-range:
+        U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F,
+        U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 /* CSS-first Tailwind v4 configuration */
 @theme {
-  /* Colors - Sky blue dark palette */
-  --color-background: #0f1419;
-  --color-surface: #151c24;
-  --color-surface-elevated: #1c2530;
-  --color-border: #243040;
-  --color-border-subtle: #1a2332;
+    /* Colors - Sky blue dark palette */
+    --color-background: #0f1419;
+    --color-surface: #151c24;
+    --color-surface-elevated: #1c2530;
+    --color-border: #243040;
+    --color-border-subtle: #1a2332;
 
-  --color-text-primary: #f0f4f8;
-  --color-text-secondary: #8899aa;
-  --color-text-tertiary: #6b7d8e;
+    --color-text-primary: #f0f4f8;
+    --color-text-secondary: #8899aa;
+    --color-text-tertiary: #6b7d8e;
 
-  /* Accent - happy sky blue */
-  --color-accent: #4da6ff;
-  --color-accent-hover: #6bb8ff;
-  --color-accent-text: #4da6ff;
-  --color-accent-glow: rgba(77, 166, 255, 0.35);
-  --color-accent-contrast: #0f1419;
+    /* Accent - happy sky blue */
+    --color-accent: #4da6ff;
+    --color-accent-hover: #6bb8ff;
+    --color-accent-text: #4da6ff;
+    --color-accent-glow: rgba(77, 166, 255, 0.35);
+    --color-accent-contrast: #0f1419;
 
-  /* Sub-accent - warm yellow (sparingly) */
-  --color-sub-accent: #ffc206;
+    /* Sub-accent - warm yellow (sparingly) */
+    --color-sub-accent: #ffc206;
 
-  /* Fonts - Inter is self-hosted, monospace falls back to system */
-  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
-  --font-mono:
-    ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+    /* Fonts - Inter is self-hosted, monospace falls back to system */
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-mono: ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
 
-  /* Spacing */
-  --spacing-section: 6rem;
+    /* Spacing */
+    --spacing-section: 6rem;
 
-  /* Animation */
-  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
-  --duration-normal: 300ms;
-  --duration-slow: 500ms;
+    /* Animation */
+    --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+    --duration-normal: 300ms;
+    --duration-slow: 500ms;
 }
 
 /* Global styles */
 html {
-  scroll-behavior: smooth;
+    scroll-behavior: smooth;
 }
 
 body {
-  background-color: var(--color-background);
-  color: var(--color-text-primary);
-  font-family: var(--font-sans), sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
+    background-color: var(--color-background);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans), sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
 }
 
 /* Selection */
 ::selection {
-  background-color: var(--color-accent);
-  color: var(--color-accent-contrast);
+    background-color: var(--color-accent);
+    color: var(--color-accent-contrast);
 }
 
 /* Gradient text utility */
 .gradient-text {
-  background: linear-gradient(135deg, #fff 0%, #8899aa 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+    background: linear-gradient(135deg, #fff 0%, #8899aa 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) .gradient-text {
+    :root:not([data-theme='dark']) .gradient-text {
+        background: linear-gradient(135deg, #1a2433 0%, #5c6b7a 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+    }
+}
+
+:root[data-theme='light'] .gradient-text {
     background: linear-gradient(135deg, #1a2433 0%, #5c6b7a 100%);
     -webkit-background-clip: text;
     background-clip: text;
-  }
-}
-
-:root[data-theme="light"] .gradient-text {
-  background: linear-gradient(135deg, #1a2433 0%, #5c6b7a 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
 }
 
 /* Glow effect */
 .glow {
-  box-shadow: 0 0 40px var(--color-accent-glow);
-  transition: box-shadow var(--duration-normal);
+    box-shadow: 0 0 40px var(--color-accent-glow);
+    transition: box-shadow var(--duration-normal);
 }
 
 .glow:hover {
-  box-shadow:
-    0 0 60px var(--color-accent-glow),
-    0 0 20px var(--color-accent-glow);
+    box-shadow:
+        0 0 60px var(--color-accent-glow),
+        0 0 20px var(--color-accent-glow);
 }
 
 /* Blur in animation */
 @keyframes blur-in {
-  from {
-    opacity: 0;
-    filter: blur(10px);
-    transform: translateY(10px);
-  }
+    from {
+        opacity: 0;
+        filter: blur(10px);
+        transform: translateY(10px);
+    }
 
-  to {
-    opacity: 1;
-    filter: blur(0);
-    transform: translateY(0);
-  }
+    to {
+        opacity: 1;
+        filter: blur(0);
+        transform: translateY(0);
+    }
 }
 
 .animate-blur-in {
-  animation: blur-in 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation: blur-in 1s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* Stagger delays */
 .stagger-1 {
-  animation-delay: 0ms;
+    animation-delay: 0ms;
 }
 .stagger-2 {
-  animation-delay: 100ms;
+    animation-delay: 100ms;
 }
 .stagger-3 {
-  animation-delay: 200ms;
+    animation-delay: 200ms;
 }
 .stagger-4 {
-  animation-delay: 300ms;
+    animation-delay: 300ms;
 }
 .stagger-5 {
-  animation-delay: 400ms;
+    animation-delay: 400ms;
 }
 .stagger-6 {
-  animation-delay: 500ms;
+    animation-delay: 500ms;
 }
 
 /* Light mode tokens - system preference fallback (no explicit theme set) */
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
+    :root:not([data-theme='dark']) {
+        --color-background: #f8fafb;
+        --color-surface: #eef2f5;
+        --color-surface-elevated: #e4e9ed;
+        --color-border: #d0d8e0;
+        --color-border-subtle: #dce3ea;
+
+        --color-text-primary: #1a2433;
+        --color-text-secondary: #5c6b7a;
+        --color-text-tertiary: #7a8896;
+
+        --color-accent: #2b8ae6;
+        --color-accent-hover: #1a7ad6;
+        --color-accent-text: #1a6bc0;
+        --color-accent-glow: rgba(43, 138, 230, 0.3);
+        --color-accent-contrast: #ffffff;
+    }
+}
+
+/* Light mode tokens - explicit toggle override */
+:root[data-theme='light'] {
     --color-background: #f8fafb;
     --color-surface: #eef2f5;
     --color-surface-elevated: #e4e9ed;
@@ -161,38 +179,18 @@ body {
     --color-accent-text: #1a6bc0;
     --color-accent-glow: rgba(43, 138, 230, 0.3);
     --color-accent-contrast: #ffffff;
-  }
-}
-
-/* Light mode tokens - explicit toggle override */
-:root[data-theme="light"] {
-  --color-background: #f8fafb;
-  --color-surface: #eef2f5;
-  --color-surface-elevated: #e4e9ed;
-  --color-border: #d0d8e0;
-  --color-border-subtle: #dce3ea;
-
-  --color-text-primary: #1a2433;
-  --color-text-secondary: #5c6b7a;
-  --color-text-tertiary: #7a8896;
-
-  --color-accent: #2b8ae6;
-  --color-accent-hover: #1a7ad6;
-  --color-accent-text: #1a6bc0;
-  --color-accent-glow: rgba(43, 138, 230, 0.3);
-  --color-accent-contrast: #ffffff;
 }
 
 /* Reduced motion: disable decorative animations */
 @media (prefers-reduced-motion: reduce) {
-  html {
-    scroll-behavior: auto;
-  }
+    html {
+        scroll-behavior: auto;
+    }
 
-  .animate-blur-in {
-    animation: none;
-    opacity: 1;
-    transform: none;
-    filter: none;
-  }
+    .animate-blur-in {
+        animation: none;
+        opacity: 1;
+        transform: none;
+        filter: none;
+    }
 }

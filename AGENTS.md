@@ -2,11 +2,12 @@
 
 This file is for AI agents. Human contributors, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Prvw is a fast, minimal image viewer for macOS written in Rust (`winit` + `wgpu` + `muda`). Think ACDSee 2.41: open a
-pic, see it instantly, zoom/pan, arrow keys for next/prev (preloaded in background), ESC to close. Free forever for
-personal use (BSL license). Website at [getprvw.com](https://getprvw.com).
+Prvw is a fast, minimal image viewer for macOS built with Tauri 2 (Rust backend + webview frontend). Think ACDSee 2.41:
+open a pic, see it instantly, zoom/pan, arrow keys for next/prev (preloaded in background), ESC to close. Free forever
+for personal use (BSL license). Website at [getprvw.com](https://getprvw.com).
 
-- Desktop app: `cd apps/desktop && cargo run -- <image_path>`
+- Desktop app dev: `pnpm dev` (from repo root), or `cd apps/desktop && pnpm tauri dev`
+- Desktop app dev with a file: `pnpm dev -- -- /path/to/image.jpg`
 - Website dev: `cd apps/website && pnpm dev`
 
 ## Principles
@@ -37,7 +38,9 @@ These are general principles for the whole project. We live these:
 
 This is a monorepo:
 
-- `apps/desktop/` - The Rust desktop app (`winit` + `wgpu` + `muda`)
+- `apps/desktop/` - The desktop app (Tauri 2)
+  - `src-tauri/` - Rust backend (Tauri commands, image loading, preloader, menus)
+  - `src/` - Frontend (Svelte 5 + SvelteKit SPA rendered in webview)
 - `apps/website/` - getprvw.com marketing website (Astro + Tailwind v4)
 - `scripts/check/` - Go-based unified check runner
 - `docs/` - Dev docs
@@ -54,15 +57,16 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 - Specific checks: `./scripts/check.sh --check <name>` (for example, `--check clippy`, `--check rustfmt`). Use
   `--help` for the full list, or multiple `--check` flags.
 - All Rust checks: `./scripts/check.sh --rust`
+- All Svelte checks: `./scripts/check.sh --svelte`
 - All Go checks: `./scripts/check.sh --go`
 - All checks: `./scripts/check.sh`
-- Specific Rust tests by name: `cd apps/desktop && cargo test <test_name>`
+- Specific Rust tests by name: `cd apps/desktop/src-tauri && cargo test <test_name>`
 - CI: Runs on PRs and pushes to main for changed files. Full run: Actions -> CI -> "Run workflow".
 
 ## Debugging
 
-- **Logging**: Use `RUST_LOG=debug` or target specific modules with `RUST_LOG=prvw::renderer=debug`.
-- **GPU issues**: `wgpu` logs adapter/device info at `info` level. Check `RUST_LOG=wgpu=info` for GPU backend details.
+- **Logging**: Use `RUST_LOG=debug` or target specific modules like `RUST_LOG=prvw::preloader=debug`.
+- **Tauri**: Use `RUST_LOG=tauri=debug` for Tauri framework diagnostics. The webview's devtools can be opened from the app for frontend debugging.
 
 ## Where to put instructions
 
@@ -78,23 +82,19 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 - ❌ NEVER add dependencies without checking license compatibility and verifying the latest version from crates.io/npm.
   Never trust training data for versions.
 - ❌ Don't ignore linter warnings. Fix them or justify with a comment.
+- ❌ **NEVER build/run the Tauri app with raw `cargo build` or `cargo run`.** It produces a binary without the embedded
+  frontend (white screen). Always use `pnpm tauri dev` for development or `pnpm tauri build` for release builds. The
+  `beforeDevCommand`/`beforeBuildCommand` in `tauri.conf.json` runs the Vite dev server / frontend build — skipping it
+  breaks the app. `cargo check`, `cargo test`, and `cargo clippy` are fine (they don't produce runnable binaries).
 - We use [mise](https://mise.jdx.dev/) to manage tool versions (Go, Node, etc.), pinned in `.mise.toml`. Rust is managed
   by `rust-toolchain.toml` at repo root.
 
 ## Gotchas
 
-- **wgpu surface must be created in `resumed()`, not at startup.** `winit` 0.30 uses the `ApplicationHandler` trait.
-  The window and `wgpu` surface must be created inside `resumed()`, which fires after the event loop starts. Creating
-  them earlier crashes on macOS.
 - **Use `std::thread` for CPU-bound work, not `tokio`.** The preloader does CPU-bound image decoding. `std::thread` +
-  channels is the right tool. `tokio` adds unnecessary weight and event-loop integration complexity with `winit`.
-- **Keep objc2 `Retained<>` wrappers alive during AppKit modal sessions.** When creating NSTextField, NSButton, or
-  other views via objc2 and running a modal window (`runModalForWindow`), store all `Retained<>` objects in a Vec
-  that lives for the modal's duration. Dropping them early causes segfault in autorelease pool cleanup. No
-  compile-time check exists for this. See `apps/desktop/CLAUDE.md` for details.
-- **Never run AppKit modals inside winit's event loop.** `runModalForWindow` inside `resumed()` or any winit
-  callback creates a nested run loop that segfaults on autorelease pool cleanup. Run native modals BEFORE
-  `EventLoop::new()` instead (see onboarding in `main()`).
+  channels is the right tool. `tokio` adds unnecessary weight and complexity.
+- **Tauri asset protocol for local files.** Images are served to the webview via Tauri's asset protocol
+  (`asset://localhost/`), not by reading files from JS directly. The scope in `tauri.conf.json` must allow the paths.
 
 ## Workflow
 

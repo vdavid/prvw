@@ -5,9 +5,9 @@
 //! via `NSAppleEventManager` (not via NSApplicationDelegate, which would conflict with winit).
 //!
 //! The handler extracts file URLs from the event descriptor and sends them to the main
-//! event loop via `EventLoopProxy<AppCommand>`.
+//! app via `mpsc::Sender<AppCommand>`.
 
-use crate::qa_server::AppCommand;
+use crate::AppCommand;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::sel;
@@ -15,7 +15,7 @@ use objc2::{MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSObject, NSObjectProtocol};
 use std::cell::RefCell;
 use std::path::PathBuf;
-use winit::event_loop::EventLoopProxy;
+use std::sync::mpsc::Sender;
 
 // Apple Event constants (from CoreServices/AE headers)
 // kCoreEventClass = 'aevt' = 0x61657674
@@ -25,9 +25,9 @@ const K_AE_OPEN_DOCUMENTS: u32 = 0x6F64_6F63;
 // keyDirectObject = '----' = 0x2D2D2D2D
 const KEY_DIRECT_OBJECT: u32 = 0x2D2D_2D2D;
 
-// Thread-local storage for the event loop proxy.
+// Thread-local storage for the command sender.
 thread_local! {
-    static EVENT_PROXY: RefCell<Option<EventLoopProxy<AppCommand>>> = const { RefCell::new(None) };
+    static COMMAND_TX: RefCell<Option<Sender<AppCommand>>> = const { RefCell::new(None) };
 }
 
 define_class!(
@@ -69,9 +69,9 @@ define_class!(
                 let path = PathBuf::from(path_nsstring.to_string());
                 if path.is_file() {
                     log::info!("Apple Event: opening {}", path.display());
-                    EVENT_PROXY.with(|proxy| {
-                        if let Some(proxy) = proxy.borrow().as_ref() {
-                            let _ = proxy.send_event(AppCommand::OpenFile(path.clone()));
+                    COMMAND_TX.with(|tx| {
+                        if let Some(tx) = tx.borrow().as_ref() {
+                            let _ = tx.send(AppCommand::OpenFile(path.clone()));
                         }
                     });
                 }
@@ -87,11 +87,11 @@ impl PrvwOpenHandler {
     }
 }
 
-/// Register the Apple Event handler for `kAEOpenDocuments`. Must be called after
-/// `EventLoop::new()` and before `run_app()`. Returns the handler object (must be kept alive).
-pub fn register(proxy: EventLoopProxy<AppCommand>) -> Retained<PrvwOpenHandler> {
-    EVENT_PROXY.with(|p| {
-        *p.borrow_mut() = Some(proxy);
+/// Register the Apple Event handler for `kAEOpenDocuments`. Must be called on the main thread.
+/// Returns the handler object (must be kept alive).
+pub fn register(command_tx: Sender<AppCommand>) -> Retained<PrvwOpenHandler> {
+    COMMAND_TX.with(|tx| {
+        *tx.borrow_mut() = Some(command_tx);
     });
 
     let mtm =

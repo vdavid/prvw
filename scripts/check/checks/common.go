@@ -266,6 +266,72 @@ func Pluralize(count int, singular, plural string) string {
 	return plural
 }
 
+// runOxfmtCheck runs oxfmt formatting check/fix for a given directory.
+// extensions is optional — if nil, file count is parsed from oxfmt output instead of `find`.
+func runOxfmtCheck(ctx *CheckContext, dir string, extensions []string) (CheckResult, error) {
+	if ctx.CI {
+		checkCmd := exec.Command("pnpm", "exec", "oxfmt", "--check", ".")
+		checkCmd.Dir = dir
+		checkOutput, err := RunCommand(checkCmd, true)
+		fileCount := parseOxfmtFileCount(checkOutput)
+		if err != nil {
+			return CheckResult{}, fmt.Errorf("code is not formatted, run `pnpm exec oxfmt .` locally\n%s", indentOutput(checkOutput))
+		}
+		result := Success(fmt.Sprintf("%d %s already formatted", fileCount, Pluralize(fileCount, "file", "files")))
+		result.Total = fileCount
+		result.Issues = 0
+		result.Changes = 0
+		return result, nil
+	}
+
+	// Non-CI: check first, then format if needed
+	checkCmd := exec.Command("pnpm", "exec", "oxfmt", "--check", ".")
+	checkCmd.Dir = dir
+	checkOutput, checkErr := RunCommand(checkCmd, true)
+	fileCount := parseOxfmtFileCount(checkOutput)
+
+	if checkErr != nil {
+		fmtCmd := exec.Command("pnpm", "exec", "oxfmt", ".")
+		fmtCmd.Dir = dir
+		fmtOutput, err := RunCommand(fmtCmd, true)
+		if err != nil {
+			return CheckResult{}, fmt.Errorf("oxfmt formatting failed\n%s", indentOutput(fmtOutput))
+		}
+
+		var needsFormat int
+		for line := range strings.SplitSeq(strings.TrimSpace(checkOutput), "\n") {
+			if strings.TrimSpace(line) != "" && !strings.HasPrefix(line, "Checking") && !strings.HasPrefix(line, "Finished") && !strings.HasPrefix(line, "Format") {
+				needsFormat++
+			}
+		}
+
+		result := SuccessWithChanges(fmt.Sprintf("Formatted %d of %d %s", needsFormat, fileCount, Pluralize(fileCount, "file", "files")))
+		result.Total = fileCount
+		result.Issues = needsFormat
+		result.Changes = needsFormat
+		return result, nil
+	}
+
+	result := Success(fmt.Sprintf("%d %s already formatted", fileCount, Pluralize(fileCount, "file", "files")))
+	result.Total = fileCount
+	result.Issues = 0
+	result.Changes = 0
+	return result, nil
+}
+
+// parseOxfmtFileCount extracts the file count from oxfmt output like "Finished in 150ms on 25 files using 16 threads."
+func parseOxfmtFileCount(output string) int {
+	for line := range strings.SplitSeq(output, "\n") {
+		if strings.HasPrefix(line, "Finished in ") {
+			var count int
+			if _, err := fmt.Sscanf(line, "Finished in %s on %d files", new(string), &count); err == nil {
+				return count
+			}
+		}
+	}
+	return 0
+}
+
 // runESLintCheck runs ESLint check/fix for a given directory.
 // extensions are the file extensions to count (like []string{"*.ts", "*.astro", "*.js"}).
 // If requireConfig is true, skips when eslint.config.js is missing.

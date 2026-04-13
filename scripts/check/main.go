@@ -33,6 +33,7 @@ func (s *stringSlice) Set(value string) error {
 // cliFlags holds the parsed command-line flags.
 type cliFlags struct {
 	rustOnly    bool
+	svelteOnly  bool
 	goOnly      bool
 	appName     string
 	checkNames  []string
@@ -116,6 +117,8 @@ func parseFlags() *cliFlags {
 	var (
 		rustOnly    = flag.Bool("rust", false, "Run only Rust checks")
 		rustOnly2   = flag.Bool("rust-only", false, "Run only Rust checks")
+		svelteOnly  = flag.Bool("svelte", false, "Run only Svelte checks (desktop)")
+		svelteOnly2 = flag.Bool("svelte-only", false, "Run only Svelte checks (desktop)")
 		goOnly      = flag.Bool("go", false, "Run only Go checks (scripts)")
 		goOnly2     = flag.Bool("go-only", false, "Run only Go checks (scripts)")
 		appName     = flag.String("app", "", "Run checks for a specific app (desktop, website, scripts)")
@@ -139,6 +142,7 @@ func parseFlags() *cliFlags {
 
 	return &cliFlags{
 		rustOnly:    *rustOnly || *rustOnly2,
+		svelteOnly:  *svelteOnly || *svelteOnly2,
 		goOnly:      *goOnly || *goOnly2,
 		appName:     *appName,
 		checkNames:  checkNames,
@@ -154,7 +158,7 @@ func parseFlags() *cliFlags {
 // selectChecks determines which checks to run based on flags.
 // Flags are additive: --check clippy --rust runs clippy plus all Rust checks.
 func selectChecks(flags *cliFlags) ([]checks.CheckDefinition, error) {
-	hasFilter := len(flags.checkNames) > 0 || flags.appName != "" || flags.rustOnly || flags.goOnly
+	hasFilter := len(flags.checkNames) > 0 || flags.appName != "" || flags.rustOnly || flags.svelteOnly || flags.goOnly
 	if !hasFilter {
 		return checks.AllChecks, nil
 	}
@@ -186,6 +190,9 @@ func selectChecks(flags *cliFlags) ([]checks.CheckDefinition, error) {
 	}
 	if flags.rustOnly {
 		addUnique(checks.GetChecksByTech(checks.AppDesktop, "🦀 Rust"))
+	}
+	if flags.svelteOnly {
+		addUnique(checks.GetChecksByTech(checks.AppDesktop, "🎨 Svelte"))
 	}
 	if flags.goOnly {
 		addUnique(checks.GetChecksByTech(checks.AppScripts, "🐹 Go"))
@@ -260,6 +267,10 @@ func needsPnpmInstall(checksToRun []checks.CheckDefinition) bool {
 		if check.App == checks.AppWebsite {
 			return true
 		}
+		// Desktop Svelte checks also need pnpm
+		if check.App == checks.AppDesktop && check.Tech == "🎨 Svelte" {
+			return true
+		}
 	}
 	return false
 }
@@ -293,6 +304,7 @@ func showUsage() {
 	fmt.Println("OPTIONS:")
 	fmt.Println("    --app NAME               Run checks for a specific app (desktop, website, scripts)")
 	fmt.Println("    --rust, --rust-only      Run only Rust checks (desktop)")
+	fmt.Println("    --svelte, --svelte-only  Run only Svelte checks (desktop)")
 	fmt.Println("    --go, --go-only          Run only Go checks (scripts)")
 	fmt.Println("    --check ID               Run specific checks by ID (can be repeated or comma-separated)")
 	fmt.Println("    --ci                     Disable auto-fixing (for CI)")

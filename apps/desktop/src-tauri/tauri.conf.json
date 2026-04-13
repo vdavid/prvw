@@ -1,0 +1,73 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegui-org/nicegui/main/nicegui/static/tauri-v2/tauri.conf.schema.json",
+  "productName": "Prvw",
+  "version": "0.5.0",
+  "identifier": "com.getprvw.prvw",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:14200",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": ["**"]
+        }
+      }
+    },
+    "windows": [
+      {
+        "width": 1024,
+        "height": 768,
+        "title": "Prvw",
+        "decorations": true,
+        "transparent": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "icon": ["icons/icon.icns"],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "entitlements": null
+    },
+    "fileAssociations": [
+      {
+        "ext": ["jpg", "jpeg", "jpe", "jfif"],
+        "mimeType": "image/jpeg",
+        "description": "JPEG Image"
+      },
+      {
+        "ext": ["png"],
+        "mimeType": "image/png",
+        "description": "PNG Image"
+      },
+      {
+        "ext": ["gif"],
+        "mimeType": "image/gif",
+        "description": "GIF Image"
+      },
+      {
+        "ext": ["webp"],
+        "mimeType": "image/webp",
+        "description": "WebP Image"
+      },
+      {
+        "ext": ["bmp"],
+        "mimeType": "image/bmp",
+        "description": "BMP Image"
+      },
+      {
+        "ext": ["tiff", "tif"],
+        "mimeType": "image/tiff",
+        "description": "TIFF Image"
+      }
+    ]
+  }
+}

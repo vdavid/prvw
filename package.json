@@ -10,6 +10,7 @@
   },
   "scripts": {
     "preinstall": "npx only-allow pnpm",
+    "dev": "pnpm --filter @prvw/desktop tauri dev",
     "dev:website": "pnpm --filter @prvw/website dev",
     "build:website": "pnpm --filter @prvw/website build",
     "check": "./scripts/check.sh"

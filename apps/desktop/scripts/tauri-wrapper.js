@@ -1,0 +1,35 @@
+import { spawn } from 'child_process'
+
+// Get arguments passed to the script
+const args = process.argv.slice(2)
+
+// Check if the command is 'dev' or 'build'
+const isDev = args.includes('dev')
+const isBuild = args.includes('build')
+
+// Dev mode: inject dev config (withGlobalTauri etc.)
+if (isDev) {
+    const dashDashIndex = args.indexOf('--')
+    if (dashDashIndex >= 0) {
+        args.splice(dashDashIndex, 0, '-c', 'src-tauri/tauri.dev.json')
+    } else {
+        args.push('-c', 'src-tauri/tauri.dev.json')
+    }
+}
+
+// If build on macOS and no target specified, default to universal binary
+const isMacOS = process.platform === 'darwin'
+if (isBuild && isMacOS && !args.includes('--target') && !args.includes('-t')) {
+    args.push('--target', 'universal-apple-darwin')
+}
+
+// Spawn the tauri process via pnpm exec
+const tauriProcess = spawn('pnpm', ['exec', 'tauri', ...args], {
+    stdio: 'inherit',
+    env: process.env,
+})
+
+// Handle process exit
+tauriProcess.on('exit', (code) => {
+    process.exit(code ?? 0)
+})

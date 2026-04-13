@@ -34,6 +34,60 @@ var AllChecks = []CheckDefinition{
 		Run:         RunCargoTest,
 	},
 
+	// Desktop - Svelte checks
+	{
+		ID:          "desktop-svelte-oxfmt",
+		Nickname:    "oxfmt",
+		DisplayName: "oxfmt",
+		App:         AppDesktop,
+		Tech:        "🎨 Svelte",
+		DependsOn:   nil,
+		Run:         RunDesktopOxfmt,
+	},
+	{
+		ID:          "desktop-svelte-prettier",
+		DisplayName: "prettier",
+		App:         AppDesktop,
+		Tech:        "🎨 Svelte",
+		DependsOn:   []string{"desktop-svelte-oxfmt"},
+		Run:         RunDesktopSveltePrettier,
+	},
+	{
+		ID:          "desktop-svelte-eslint",
+		DisplayName: "eslint",
+		App:         AppDesktop,
+		Tech:        "🎨 Svelte",
+		DependsOn:   []string{"desktop-svelte-prettier"},
+		Run:         RunDesktopSvelteEslint,
+	},
+	{
+		ID:          "desktop-svelte-stylelint",
+		Nickname:    "stylelint",
+		DisplayName: "stylelint",
+		App:         AppDesktop,
+		Tech:        "🎨 Svelte",
+		DependsOn:   []string{"desktop-svelte-prettier"},
+		Run:         RunDesktopSvelteStylelint,
+	},
+	{
+		ID:          "desktop-svelte-check",
+		Nickname:    "svelte-check",
+		DisplayName: "svelte-check",
+		App:         AppDesktop,
+		Tech:        "🎨 Svelte",
+		DependsOn:   []string{"desktop-svelte-prettier"},
+		Run:         RunDesktopSvelteCheck,
+	},
+	{
+		ID:          "desktop-svelte-build",
+		Nickname:    "svelte-build",
+		DisplayName: "build",
+		App:         AppDesktop,
+		Tech:        "🎨 Svelte",
+		DependsOn:   []string{"desktop-svelte-check"},
+		Run:         RunDesktopSvelteBuild,
+	},
+
 	// Website - Astro checks
 	{
 		ID:          "website-prettier",

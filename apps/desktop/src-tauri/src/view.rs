@@ -1,11 +1,11 @@
 //! Tracks zoom level and pan offset for the current image view.
 //!
-//! The coordinate system: the window spans [-1, 1] in NDC on both axes. The image is rendered as a
-//! textured quad that's scaled to maintain its aspect ratio (letterboxed/pillarboxed as needed).
-//!
-//! `fit_scale` is a single uniform value that makes the image exactly fit the window (the largest
-//! scale where the entire image is visible). Zoom is relative to this: zoom=1.0 means fit-to-window,
+//! Zoom is relative to fit-to-window: zoom=1.0 means the image fits the window,
 //! zoom=2.0 means 2x magnification. The minimum zoom is 1.0 (can't zoom out past fit).
+//! Pan is in NDC-like coordinates: (0, 0) is centered.
+//!
+//! The QA server reads zoom/pan values for reporting. The actual rendering is handled
+//! by the Tauri webview (CSS transforms in the frontend).
 
 const MAX_ZOOM: f32 = 100.0;
 const ZOOM_STEP: f32 = 1.15; // ~15% per scroll tick
@@ -28,15 +28,6 @@ pub struct ViewState {
     /// Window dimensions in pixels.
     window_width: u32,
     window_height: u32,
-}
-
-/// The transform data sent to the GPU uniform buffer.
-/// Layout matches the shader's Transform struct.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct TransformUniform {
-    pub col0: [f32; 4], // (scale_x, 0, 0, scale_y)
-    pub col1: [f32; 4], // (translate_x, translate_y, 0, 0)
 }
 
 impl ViewState {
@@ -206,41 +197,6 @@ impl ViewState {
         self.pan_x = self.pan_x.clamp(-max_pan_x, max_pan_x);
         self.pan_y = self.pan_y.clamp(-max_pan_y, max_pan_y);
     }
-
-    /// Build the transform uniform to send to the GPU.
-    /// The scale preserves the image's aspect ratio: both axes are scaled uniformly,
-    /// with aspect correction applied so the image is never stretched.
-    pub fn transform(&self) -> TransformUniform {
-        // The image quad spans [-1, 1] on both axes (a square in NDC).
-        // We need to scale it to show the correct aspect ratio and fit the window.
-        //
-        // Step 1: aspect-correct the quad so it matches the image proportions.
-        // Step 2: scale it so it fits the window (the larger dimension fills the window).
-        // Step 3: apply user zoom.
-
-        let (sx, sy) = if self.image_aspect > self.window_aspect {
-            // Image wider than window: width fills window, height is smaller.
-            // sx = zoom (full width at zoom=1)
-            // sy = zoom * (window_aspect / image_aspect) (shorter)
-            (
-                self.zoom,
-                self.zoom * self.window_aspect / self.image_aspect,
-            )
-        } else {
-            // Image taller than window: height fills window, width is smaller.
-            // sx = zoom * (image_aspect / window_aspect) (narrower)
-            // sy = zoom (full height at zoom=1)
-            (
-                self.zoom * self.image_aspect / self.window_aspect,
-                self.zoom,
-            )
-        };
-
-        TransformUniform {
-            col0: [sx, 0.0, 0.0, sy],
-            col1: [self.pan_x, self.pan_y, 0.0, 0.0],
-        }
-    }
 }
 
 #[cfg(test)]
@@ -262,40 +218,34 @@ mod tests {
     #[test]
     fn update_dimensions_wider_image() {
         let mut view = ViewState::new();
+        // 1600x900 image (wide) in an 800x800 square window
         view.update_dimensions(1600, 900, 800, 800);
-        let t = view.transform();
-        // Width fills window (sx=1.0), height is shorter
-        assert!((t.col0[0] - 1.0).abs() < 0.01);
-        assert!(t.col0[3] < 1.0);
+        // image_aspect > window_aspect, so width is the limiting axis at zoom=1
+        assert_eq!(view.zoom, 1.0);
+        // Aspect ratio stored correctly
+        assert!((view.image_aspect - 1600.0 / 900.0).abs() < 0.01);
     }
 
     #[test]
     fn update_dimensions_taller_image() {
         let mut view = ViewState::new();
+        // 600x1200 image (tall) in an 800x800 square window
         view.update_dimensions(600, 1200, 800, 800);
-        let t = view.transform();
-        // Height fills window (sy=1.0), width is narrower
-        assert!(t.col0[0] < 1.0);
-        assert!((t.col0[3] - 1.0).abs() < 0.01);
+        assert_eq!(view.zoom, 1.0);
+        assert!((view.image_aspect - 0.5).abs() < 0.01);
     }
 
     #[test]
     fn aspect_ratio_preserved_after_resize() {
         let mut view = ViewState::new();
-        let image_aspect: f32 = 1600.0 / 900.0;
-
-        // 1600x900 image in a square window
+        // 1600x900 image in a square window, then resized
         view.update_dimensions(1600, 900, 800, 800);
-        let t1 = view.transform();
-        // The rendered aspect ratio (sx/sy * window_aspect) should match the image aspect
-        let rendered_aspect_1 = (t1.col0[0] / t1.col0[3]) * (800.0 / 800.0);
-        assert!((rendered_aspect_1 - image_aspect).abs() < 0.01);
+        let aspect_1 = view.image_aspect;
 
-        // Resize to wide window: aspect ratio should still be preserved
+        // Resize to wide window: image aspect should be unchanged
         view.update_dimensions(1600, 900, 1200, 600);
-        let t2 = view.transform();
-        let rendered_aspect_2 = (t2.col0[0] / t2.col0[3]) * (1200.0 / 600.0);
-        assert!((rendered_aspect_2 - image_aspect).abs() < 0.01);
+        let aspect_2 = view.image_aspect;
+        assert!((aspect_1 - aspect_2).abs() < 0.001);
     }
 
     #[test]
@@ -359,14 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn transform_at_zoom_2() {
+    fn zoom_value_persists() {
         let mut view = ViewState::new();
-        // Square image in square window: both scales should be zoom
         view.update_dimensions(800, 800, 800, 800);
         view.zoom = 2.0;
-        let t = view.transform();
-        assert!((t.col0[0] - 2.0).abs() < 0.01);
-        assert!((t.col0[3] - 2.0).abs() < 0.01);
+        assert!((view.zoom - 2.0).abs() < 0.01);
     }
 
     #[test]

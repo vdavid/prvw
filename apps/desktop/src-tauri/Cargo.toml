@@ -6,30 +6,29 @@ description = "A fast, minimal image viewer for macOS"
 license = "BUSL-1.1"
 
 [dependencies]
-winit = "0.30.13"
-wgpu = "29.0.1"
-pollster = "0.4.0"
-muda = "0.17.2"
-image = "0.25.10"
+tauri = { version = "2.10.3", features = ["macos-private-api", "protocol-asset"] }
+tauri-plugin-shell = "2.3.5"
+tauri-plugin-store = "2.4.2"
+image = "0.25.6"
 zune-jpeg = "0.5.15"
 zune-core = "0.5.1"
 rayon = "1.11.0"
 log = "0.4.29"
-env_logger = "0.11.10"
+tauri-plugin-log = "2.8.0"
 chrono = "0.4.44"
 clap = { version = "4.6.0", features = ["derive"] }
-bytemuck = { version = "1.25.0", features = ["derive"] }
-bytemuck_derive = "1.10.2"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 base64 = "0.22.1"
 nom-exif = { version = "2.7.0", default-features = false }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
-glyphon = { git = "https://github.com/grovesNL/glyphon.git", rev = "28f1cb9" }
+axum = { version = "0.8.8", default-features = false, features = ["http1", "json", "tokio"] }
+tokio = { version = "1.51.1", features = ["net", "rt", "macros", "sync"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSResponder"] }
 objc2-foundation = { version = "0.3", features = [
     "NSAppleEventDescriptor",
     "NSAppleEventManager",
@@ -38,8 +37,10 @@ objc2-foundation = { version = "0.3", features = [
     "objc2-core-services",
 ] }
 
-[profile.dev.package.zune-jpeg]
-opt-level = 3
+window-vibrancy = "0.7.1"
+
+[build-dependencies]
+tauri-build = "2.5.6"
 
 [dev-dependencies]
 tempfile = "3.27.0"

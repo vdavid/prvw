@@ -6,6 +6,7 @@ use std::time::Instant;
 use nom_exif::{EntryValue, ExifTag, MediaParser, MediaSource};
 
 /// Decoded image data ready for GPU upload.
+#[derive(Clone)]
 pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
@@ -193,6 +194,7 @@ fn is_jpeg_extension(ext: &str) -> bool {
 /// Decode an image file to RGBA8 pixel data.
 /// JPEGs use zune-jpeg (SIMD-accelerated). Everything else goes through the `image` crate.
 /// Applies EXIF orientation correction automatically.
+#[allow(dead_code)] // Convenience wrapper; only the cancellable variant is used currently
 pub fn load_image(path: &Path) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");

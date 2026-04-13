@@ -4,28 +4,29 @@ High-level map of Prvw's components. Each directory has (or will have) detailed 
 
 ## Desktop app (`apps/desktop/`)
 
-Pure Rust. No UI framework, no webview.
+Tauri 2 app: Rust backend + HTML/CSS/JS frontend in a webview.
 
-| Module            | Purpose                                                                                  |
-| ----------------- | ---------------------------------------------------------------------------------------- |
-| `main.rs`         | Entry point: CLI arg parsing, logging init, event loop creation                          |
-| `window.rs`       | Window management via `winit` (`ApplicationHandler` trait), fullscreen toggle, resize     |
-| `renderer.rs`     | `wgpu` surface, shader, texture upload, zoom/pan transform via uniform buffer             |
-| `image_loader.rs` | Image decoding (`image` crate) to RGBA8, GPU texture upload, format support              |
-| `view.rs`         | Zoom level, pan offset, fit-to-window, cursor-centered zoom math                         |
-| `menu.rs`         | Native macOS menus via `muda`, shortcut wiring                                           |
-| `directory.rs`    | Scan parent directory for image files, sort, track current position                      |
-| `preloader.rs`    | Background `std::thread` that keeps N adjacent images decoded in memory (LRU, bounded)   |
-| `shader.wgsl`     | WGSL shader for rendering a textured quad with 2D transform                              |
+| Path                       | Purpose                                                                   |
+| -------------------------- | ------------------------------------------------------------------------- |
+| `src-tauri/src/main.rs`    | Entry point: CLI parsing, Tauri app setup, command registration           |
+| `src-tauri/src/image_loader.rs` | Image decoding to RGBA8 (zune-jpeg for JPEG, `image` crate for others) |
+| `src-tauri/src/view.rs`    | Zoom/pan math, fit-to-window calculations                                |
+| `src-tauri/src/menu.rs`    | Native macOS menu bar via Tauri's menu API                               |
+| `src-tauri/src/directory.rs` | Scan parent directory for image files, sort, track current position     |
+| `src-tauri/src/preloader.rs` | Background rayon pool: parallel image decoding, LRU cache (512 MB)     |
+| `src-tauri/src/qa_server.rs` | Embedded HTTP server for QA/E2E testing                                |
+| `src/index.html`           | Frontend: page structure                                                  |
+| `src/style.css`            | Frontend: styling, CSS zoom/pan transforms                                |
+| `src/app.js`               | Frontend: Tauri IPC, keyboard/mouse handling, navigation                  |
 
 Key architecture decisions:
 
-- **`winit` 0.30 `ApplicationHandler` trait**: the app struct implements `ApplicationHandler`. The `wgpu` surface and
-  window are created in `resumed()`, not at startup (required for macOS correctness).
-- **Render-on-demand**: the renderer only redraws on window events (resize, zoom, pan, navigate). No continuous render
-  loop. This keeps CPU/GPU usage near zero when idle.
-- **`std::thread` + channels for preloading**: CPU-bound image decoding runs on `std::thread`, not `tokio`. Communication
-  via `std::sync::mpsc::channel`. This avoids async runtime weight and event-loop integration issues with `winit`.
+- **Tauri 2 with asset protocol**: Images are served to the webview via `asset://localhost/` instead of base64 encoding
+  over IPC. This keeps memory usage low and rendering fast.
+- **CSS zoom/pan**: Zoom and pan are handled with CSS transforms on the `<img>` element, staying in the webview's
+  compositor.
+- **`std::thread` + channels for preloading**: CPU-bound image decoding runs on `std::thread` (via rayon), not `tokio`.
+  Communication via `std::sync::mpsc::channel`. This avoids async runtime weight.
 
 ## Website (`apps/website/`)
 

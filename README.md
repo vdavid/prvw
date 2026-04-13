@@ -7,15 +7,15 @@ A fast, minimal image viewer for macOS. Inspired by ACDSee 2.41 (if you know, yo
 Open an image, see it instantly, zoom and pan with GPU acceleration, arrow keys for next/prev with background preloading.
 That's it. No bloat, no editing tools, no 200 MB of Electron.
 
-Built in Rust with `winit` + `wgpu` + `muda`. Native macOS menus, Metal rendering, ~5 MB binary.
+Built with Tauri 2 (Rust backend + webview frontend). Native macOS menus, fast rendering, small binary.
 
 ## What it does
 
 - **Instant display**: open an image, see it immediately. No splash screen, no loading bar.
-- **GPU-accelerated zoom and pan**: scroll to zoom (centered on cursor), click-drag to pan. Smooth and immediate.
+- **Smooth zoom and pan**: scroll to zoom (centered on cursor), click-drag to pan. Smooth and immediate.
 - **Background preloading**: adjacent images are decoded ahead of time. Left/Right arrow keys feel instant.
 - **Keyboard-first**: navigate, zoom, pan, fullscreen, quit, all from the keyboard.
-- **Native macOS menus**: real system menus with proper shortcuts via `muda`.
+- **Native macOS menus**: real system menus with proper shortcuts.
 - **Minimal chrome**: the image takes up 99% of the window. No sidebars, no toolbars, no distractions.
 - **Format support**: JPEG, PNG, GIF (first frame), WebP, BMP, TIFF.
 
@@ -25,8 +25,8 @@ Early development. Not usable yet.
 
 ## Tech stack
 
-Prvw is built with pure **Rust**: `winit` for windowing, `wgpu` for GPU-accelerated rendering (Metal on macOS), `muda`
-for native menus, and `image` for decoding. No UI framework, no webview.
+Prvw is built with **Tauri 2**: a Rust backend for image loading, decoding, and preloading, with an HTML/CSS/JS frontend
+rendered in a native webview. Native macOS menus via Tauri's menu API, fast JPEG decoding via zune-jpeg with SIMD.
 
 ## Pricing
 
@@ -39,7 +39,6 @@ Purchase at [getprvw.com](https://getprvw.com).
 
 Things I'd love to add eventually:
 
-- GPU-accelerated image pipeline (compute shaders for decode)
 - EXIF-aware auto-rotation
 - ICC color management
 - IPC daemon mode (instant open from [Cmdr](https://getcmdr.com))
