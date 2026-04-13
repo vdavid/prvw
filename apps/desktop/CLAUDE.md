@@ -5,9 +5,9 @@ webview.
 
 ## Architecture
 
-The Rust backend (`src-tauri/`) handles image loading, decoding, preloading, directory scanning, menus, and the QA
-server. The frontend (`src/`) is a Svelte 5 + SvelteKit SPA (adapter-static, SSR disabled) that displays images via
-Tauri's asset protocol and handles zoom/pan/keyboard input in the browser. Vite serves the dev frontend on port 14200.
+The Rust backend (`src-tauri/`) handles image loading, decoding, preloading, directory scanning, menus, the MCP server,
+and settings. The frontend (`src/`) is a Svelte 5 + SvelteKit SPA (adapter-static, SSR disabled) that displays images
+via Tauri's asset protocol and handles zoom/pan/keyboard input. Vite serves the dev frontend on port 14200.
 
 ### Rust backend (`src-tauri/src/`)
 
@@ -29,13 +29,20 @@ Tauri's asset protocol and handles zoom/pan/keyboard input in the browser. Vite 
 
 SvelteKit SPA with adapter-static. SSR disabled in `+layout.ts`.
 
-| File/Dir                | Responsibility                                              |
-| ----------------------- | ----------------------------------------------------------- |
-| `app.html`              | SvelteKit shell template                                    |
-| `app.css`               | Design tokens (colors, spacing, fonts, radii) and CSS reset |
-| `routes/+layout.svelte` | Root layout, imports `app.css`                              |
-| `routes/+layout.ts`     | Disables SSR (`export const ssr = false`)                   |
-| `routes/+page.svelte`   | Main page (placeholder for now)                             |
+| File/Dir                              | Responsibility                                                  |
+| ------------------------------------- | --------------------------------------------------------------- |
+| `app.html`                            | SvelteKit shell template                                        |
+| `app.css`                             | Design tokens (colors, spacing, fonts, radii), CSS reset, light/dark mode |
+| `routes/+layout.svelte`              | Root layout, imports `app.css`, initializes log bridge           |
+| `routes/+layout.ts`                  | Disables SSR (`export const ssr = false`)                       |
+| `routes/+page.svelte`               | Main page: routes to ImageViewer or Onboarding based on state   |
+| `routes/settings/+page.svelte`      | Settings page (rendered in a separate Tauri window)             |
+| `routes/about/+page.svelte`         | About page (rendered in a separate Tauri window)                |
+| `lib/components/ImageViewer.svelte`  | Image display, zoom/pan, navigation, keyboard/mouse handling    |
+| `lib/components/Header.svelte`       | Overlay: filename, position, zoom %. Imperatively updated.      |
+| `lib/components/Onboarding.svelte`   | Welcome screen, set-as-default-viewer                           |
+| `lib/tauri.ts`                        | Typed wrappers for Tauri `invoke()` commands                    |
+| `lib/log-bridge.ts`                   | Forwards `console.log` to Rust via `batch_fe_logs` command      |
 
 ### Tooling (`scripts/`, config files)
 
@@ -43,7 +50,7 @@ SvelteKit SPA with adapter-static. SSR disabled in `+layout.ts`.
 | -------------------------- | ------------------------------------------------------------------------- |
 | `scripts/tauri-wrapper.js` | Wraps `tauri` CLI: injects dev config, defaults to universal macOS binary |
 | `src-tauri/tauri.dev.json` | Dev-only Tauri overrides (`withGlobalTauri: true`)                        |
-| `vite.config.js`           | Vite + SvelteKit, port 1420                                               |
+| `vite.config.js`           | Vite + SvelteKit, port 14200                                              |
 | `svelte.config.js`         | adapter-static, vitePreprocess                                            |
 | `eslint.config.js`         | Flat ESLint config: TypeScript + Svelte, complexity max 15                |
 | `.stylelintrc.mjs`         | Enforces design tokens, no raw hex/px in components                       |
@@ -54,8 +61,14 @@ SvelteKit SPA with adapter-static. SSR disabled in `+layout.ts`.
   `.invoke_handler(tauri::generate_handler![...])`.
 - **Asset protocol**: Images are served to the webview via `asset://localhost/{path}`. The scope in `tauri.conf.json`
   allows all paths. This avoids base64-encoding images over IPC.
-- **CSS zoom/pan**: The frontend handles zoom and pan with CSS transforms on the `<img>` element, keeping the rendering
-  in the webview's compositor rather than going through Rust.
+- **Imperative DOM updates**: The `ImageViewer` and `Header` components update the DOM directly (setting
+  `imageEl.style.transform`, `imageEl.src`, `el.textContent`) after every state change. This is NOT a workaround for
+  bad architecture — Svelte 5's `$effect` and template reactivity don't re-fire after initial render in Tauri's
+  WKWebView. `$state` signals hold correct values, but effects and DOM bindings never re-run. The `updateUI()` function
+  is called after every zoom/pan/navigation mutation to push state to the DOM imperatively.
+- **Log bridge**: Frontend `console.log` calls are intercepted by `log-bridge.ts` and forwarded to Rust via the
+  `batch_fe_logs` Tauri command. Logs appear in the terminal with `FE:category` prefixes. Use `RUST_LOG=debug` to see
+  them. The bridge is initialized in `onMount` (not top-level) to avoid interfering with component initialization.
 - **Browser preloading**: Adjacent images are preloaded by creating `Image()` objects in JS that fetch via the asset
   protocol, warming the webview's cache.
 - **Preloader**: A rayon thread pool (min(4, cores-1) threads) decodes adjacent images in parallel, sending results back
@@ -70,9 +83,20 @@ SvelteKit SPA with adapter-static. SSR disabled in `+layout.ts`.
 
 - **`withGlobalTauri` in dev overlay only**: Moved from `tauri.conf.json` to `tauri.dev.json` so production builds don't
   expose the Tauri API on `window.__TAURI__`. The `tauri-wrapper.js` script injects the dev config automatically.
+- **Imperative DOM over Svelte reactivity**: Svelte 5's `$state`/`$effect` reactivity doesn't work in Tauri's WKWebView
+  on macOS. After extensive debugging (testing module-level state, `flushSync`, `requestAnimationFrame`, `onMount` vs
+  `$effect`, Svelte version downgrades), we confirmed: signals write correctly but effects and template bindings never
+  re-render after mount. Cmdr uses the same Svelte version and works — the root cause is unclear but may be related to
+  Tauri's WKWebView microtask scheduling. The imperative approach (`applyTransform()` + `header.update()`) is clean,
+  fast, and matches how the original vanilla JS worked.
 
 ## Gotchas
 
+- **Svelte 5 `$effect` doesn't re-fire in Tauri WKWebView.** `$state` signals update correctly, but `$effect` callbacks
+  and template bindings (`{expression}`, `style:`, prop passing) never re-render after the initial mount. Don't try to
+  fix this with `flushSync`, `requestAnimationFrame`, module-level state, or different lifecycle hooks — all were tested
+  and none work. Use imperative DOM updates (`el.style.x = ...`, `el.textContent = ...`) and call them explicitly after
+  every state mutation. See `ImageViewer.svelte`'s `updateUI()` pattern.
 - **Never use `cargo run` or `cargo build` to run the app.** The Tauri binary without the embedded frontend is a white
   screen. Use `pnpm tauri dev` (which runs Vite + Cargo together) or `pnpm tauri build` for release. `cargo check`,
   `cargo test`, and `cargo clippy` are fine — they don't produce runnable binaries.

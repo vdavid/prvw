@@ -63,4 +63,13 @@ export default tseslint.config(
             complexity: ['error', { max: 15 }],
         },
     },
+    // Allow imperative DOM manipulation in components that need it.
+    // Svelte 5's reactive template updates don't fire in Tauri's WKWebView,
+    // so these components update the DOM directly after state changes.
+    {
+        files: ['src/lib/components/Header.svelte', 'src/lib/components/ImageViewer.svelte'],
+        rules: {
+            'svelte/no-dom-manipulating': 'off',
+        },
+    },
 )

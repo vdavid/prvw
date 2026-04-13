@@ -4,20 +4,22 @@ High-level map of Prvw's components. Each directory has (or will have) detailed 
 
 ## Desktop app (`apps/desktop/`)
 
-Tauri 2 app: Rust backend + HTML/CSS/JS frontend in a webview.
+Tauri 2 app: Rust backend + Svelte 5/SvelteKit frontend in a webview.
 
-| Path                       | Purpose                                                                   |
-| -------------------------- | ------------------------------------------------------------------------- |
-| `src-tauri/src/main.rs`    | Entry point: CLI parsing, Tauri app setup, command registration           |
-| `src-tauri/src/image_loader.rs` | Image decoding to RGBA8 (zune-jpeg for JPEG, `image` crate for others) |
-| `src-tauri/src/view.rs`    | Zoom/pan math, fit-to-window calculations                                |
-| `src-tauri/src/menu.rs`    | Native macOS menu bar via Tauri's menu API                               |
-| `src-tauri/src/directory.rs` | Scan parent directory for image files, sort, track current position     |
-| `src-tauri/src/preloader.rs` | Background rayon pool: parallel image decoding, LRU cache (512 MB)     |
-| `src-tauri/src/qa_server.rs` | Embedded HTTP server for QA/E2E testing                                |
-| `src/index.html`           | Frontend: page structure                                                  |
-| `src/style.css`            | Frontend: styling, CSS zoom/pan transforms                                |
-| `src/app.js`               | Frontend: Tauri IPC, keyboard/mouse handling, navigation                  |
+| Path                              | Purpose                                                               |
+| --------------------------------- | --------------------------------------------------------------------- |
+| `src-tauri/src/main.rs`           | Entry point: CLI parsing, Tauri app setup, command registration       |
+| `src-tauri/src/image_loader.rs`   | Image decoding to RGBA8 (zune-jpeg for JPEG, `image` crate for rest) |
+| `src-tauri/src/menu.rs`           | Native macOS menu bar via Tauri's menu API                            |
+| `src-tauri/src/directory.rs`      | Scan parent directory for image files, sort, track position           |
+| `src-tauri/src/preloader.rs`      | Background rayon pool: parallel image decoding, LRU cache (512 MB)   |
+| `src-tauri/src/mcp/`              | MCP server for AI agent control (JSON-RPC 2.0, Axum HTTP)            |
+| `src-tauri/src/settings.rs`       | Settings types, disk persistence via tauri-plugin-store               |
+| `src-tauri/src/fe_log.rs`         | Frontend log bridge (receives batched logs from webview)              |
+| `src/lib/components/ImageViewer.svelte` | Image display, zoom/pan, navigation (imperative DOM)            |
+| `src/lib/components/Header.svelte`| Overlay: filename, position, zoom %                                   |
+| `src/lib/tauri.ts`                | Typed wrappers for Tauri IPC commands                                 |
+| `src/lib/log-bridge.ts`           | Forwards console.log to Rust via batch_fe_logs                        |
 
 Key architecture decisions:
 

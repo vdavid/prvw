@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { onMount, onDestroy } from 'svelte'
+
     interface Props {
         filePath: string | null
         index: number
@@ -8,44 +10,56 @@
 
     const { filePath, index, total, zoom }: Props = $props()
 
-    let visible = $state(true)
-    let hideTimer: ReturnType<typeof setTimeout> | null = $state(null)
+    // DOM refs for imperative updates (Svelte reactivity doesn't re-render in Tauri WKWebView).
+    // Intentionally NOT $state — we update these via bind:this and read them imperatively.
+    let headerEl = $state<HTMLDivElement | undefined>(undefined)
+    let filenameEl = $state<HTMLSpanElement | undefined>(undefined)
+    let positionEl = $state<HTMLSpanElement | undefined>(undefined)
+    let zoomEl = $state<HTMLSpanElement | undefined>(undefined)
 
-    const filename = $derived(filePath ? (filePath.split('/').pop() ?? '') : '')
-    const position = $derived(total > 0 ? `${index + 1} / ${total}` : '')
-    const zoomPercent = $derived(`${Math.round(zoom * 100)}%`)
+    let hideTimer: ReturnType<typeof setTimeout> | null = null
 
     function scheduleHide() {
         if (hideTimer) clearTimeout(hideTimer)
-        visible = true
+        headerEl?.classList.add('header--visible')
         hideTimer = setTimeout(() => {
-            visible = false
+            headerEl?.classList.remove('header--visible')
         }, 2000)
+    }
+
+    /** Imperative update called by ImageViewer after every state change.
+     * We manipulate the DOM directly because Svelte's reactive template updates
+     * don't fire in Tauri's WKWebView (see CLAUDE.md gotcha). */
+
+    export function update(fp: string | null, idx: number, tot: number, z: number) {
+        if (filenameEl) filenameEl.textContent = fp ? (fp.split('/').pop() ?? '') : ''
+        if (positionEl) positionEl.textContent = tot > 0 ? `${idx + 1} / ${tot}` : ''
+        if (zoomEl) zoomEl.textContent = `${Math.round(z * 100)}%`
+        scheduleHide()
     }
 
     function handleMouseMove() {
         scheduleHide()
     }
 
-    $effect(() => {
-        // Show header briefly whenever file changes
-        if (filePath) scheduleHide()
+    onMount(() => {
+        // Initial render
+        update(filePath, index, total, zoom)
+        window.addEventListener('mousemove', handleMouseMove)
     })
 
-    $effect(() => {
-        window.addEventListener('mousemove', handleMouseMove)
-        return () => window.removeEventListener('mousemove', handleMouseMove)
+    onDestroy(() => {
+        window.removeEventListener('mousemove', handleMouseMove)
+        if (hideTimer) clearTimeout(hideTimer)
     })
 </script>
 
 {#if filePath}
-    <div class="header" class:header--visible={visible}>
+    <div class="header header--visible" bind:this={headerEl}>
         <div class="header__info">
-            <span class="header__filename">{filename}</span>
-            {#if position}
-                <span class="header__position">{position}</span>
-            {/if}
-            <span class="header__zoom">{zoomPercent}</span>
+            <span class="header__filename" bind:this={filenameEl}></span>
+            <span class="header__position" bind:this={positionEl}></span>
+            <span class="header__zoom" bind:this={zoomEl}></span>
         </div>
     </div>
 {/if}
@@ -62,7 +76,6 @@
         opacity: 0;
         transition: opacity 0.3s ease;
         pointer-events: none;
-        /* Inset from edges for titlebar traffic lights */
         padding-top: var(--spacing-titlebar);
     }
 

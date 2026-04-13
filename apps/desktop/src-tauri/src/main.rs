@@ -340,7 +340,7 @@ pub(crate) fn do_open_dialog_window(
 
     #[cfg(target_os = "macos")]
     {
-        use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+        use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy};
         let _ = apply_vibrancy(
             &window,
             NSVisualEffectMaterial::UnderWindowBackground,
@@ -529,7 +529,7 @@ fn main() {
 
                 #[cfg(target_os = "macos")]
                 {
-                    use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial};
+                    use window_vibrancy::{NSVisualEffectMaterial, apply_vibrancy};
                     let _ = apply_vibrancy(
                         &window,
                         NSVisualEffectMaterial::UnderWindowBackground,

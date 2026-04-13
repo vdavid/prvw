@@ -42,6 +42,7 @@ async function flush() {
  * Keeps original console methods working (for browser devtools).
  * Category is extracted from the first arg if it matches [category] pattern.
  */
+/* eslint-disable no-console -- this function intentionally wraps console methods to forward to Rust */
 export function initLogBridge() {
     const origLog = console.log
     const origWarn = console.warn
@@ -79,3 +80,4 @@ export function initLogBridge() {
         addEntry('debug', category, message)
     }
 }
+/* eslint-enable no-console */
