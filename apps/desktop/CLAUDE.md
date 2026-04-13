@@ -84,18 +84,18 @@ SvelteKit SPA with adapter-static. SSR disabled in `+layout.ts`.
 
 ## Dependencies
 
-| Crate              | Version | Purpose                                |
-| ------------------ | ------- | -------------------------------------- |
-| tauri              | 2.10.3  | App framework (webview, IPC, bundling) |
-| image              | 0.25.6  | Image decoding and PNG encoding        |
-| zune-jpeg          | 0.5.15  | Fast JPEG decoding with SIMD           |
-| zune-core          | 0.5.1   | Decoder options for zune-jpeg          |
-| rayon              | 1.11.0  | Thread pool for parallel preloading    |
-| clap               | 4.6.0   | CLI argument parsing                   |
-| serde              | 1.0.228 | Serialization for Tauri commands       |
-| nom-exif           | 2.7.0   | EXIF metadata parsing                  |
-| log                | 0.4.29  | Logging facade                         |
+| Crate              | Version | Purpose                                             |
+| ------------------ | ------- | --------------------------------------------------- |
+| tauri              | 2.10.3  | App framework (webview, IPC, bundling)              |
+| image              | 0.25.6  | Image decoding and PNG encoding                     |
+| zune-jpeg          | 0.5.15  | Fast JPEG decoding with SIMD                        |
+| zune-core          | 0.5.1   | Decoder options for zune-jpeg                       |
+| rayon              | 1.11.0  | Thread pool for parallel preloading                 |
+| clap               | 4.6.0   | CLI argument parsing                                |
+| serde              | 1.0.228 | Serialization for Tauri commands                    |
+| nom-exif           | 2.7.0   | EXIF metadata parsing                               |
+| log                | 0.4.29  | Logging facade                                      |
 | tauri-plugin-log   | 2.8.0   | Unified logging (Rust + webview console forwarding) |
-| tauri-plugin-store | 2.4.2   | Key-value settings persistence         |
-| axum               | 0.8.8   | MCP server HTTP transport              |
-| tokio              | 1.51.1  | Async runtime for axum                 |
+| tauri-plugin-store | 2.4.2   | Key-value settings persistence                      |
+| axum               | 0.8.8   | MCP server HTTP transport                           |
+| tokio              | 1.51.1  | Async runtime for axum                              |

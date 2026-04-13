@@ -13,15 +13,16 @@ export default tseslint.config(
     prettierConfig,
     ...tseslint.configs.strict.map((config) => ({
         ...config,
-        files: ['**/*.{ts,tsx,svelte.ts,svelte}'],
+        files: ['**/*.{ts,tsx,svelte}', '**/*.svelte.ts'],
     })),
     ...svelte.configs['flat/recommended'],
     {
-        files: ['**/*.{ts,tsx,svelte.ts}'],
+        files: ['**/*.{ts,tsx}', '**/*.svelte.ts'],
         plugins: {
             '@typescript-eslint': tseslint.plugin,
         },
         languageOptions: {
+            parser: tseslint.parser,
             ecmaVersion: 'latest',
             sourceType: 'module',
             globals: {
