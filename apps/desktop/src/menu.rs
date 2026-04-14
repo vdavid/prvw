@@ -12,6 +12,7 @@ pub struct MenuIds {
     pub auto_fit_window: MenuId,
     pub enlarge_small_images: MenuId,
     pub fullscreen: MenuId,
+    pub refresh: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
 }
@@ -77,6 +78,7 @@ pub fn create_menu_bar() -> AppMenu {
         None,
     );
     let fullscreen = MenuItem::new("Fullscreen", true, None);
+    let refresh = MenuItem::new("Refresh", true, None);
     view_menu
         .append_items(&[
             &zoom_in,
@@ -88,6 +90,8 @@ pub fn create_menu_bar() -> AppMenu {
             &enlarge_small_images,
             &PredefinedMenuItem::separator(),
             &fullscreen,
+            &PredefinedMenuItem::separator(),
+            &refresh,
         ])
         .expect("Failed to build view menu");
 
@@ -124,6 +128,7 @@ pub fn create_menu_bar() -> AppMenu {
             auto_fit_window: auto_fit_id,
             enlarge_small_images: enlarge_small_id,
             fullscreen: fullscreen.id().clone(),
+            refresh: refresh.id().clone(),
             previous: previous.id().clone(),
             next: next.id().clone(),
         },

@@ -14,7 +14,10 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 use winit::event_loop::EventLoopProxy;
+
+use crate::settings;
 
 /// Global event loop proxy, set once in `resumed()`. Allows non-main-loop code (like the
 /// native Settings window delegate) to send commands into the event loop.
@@ -145,13 +148,19 @@ pub enum AppCommand {
         cursor_x: f32,
         cursor_y: f32,
     },
+    /// Re-display the current image (re-applies zoom, re-reads from cache/disk).
+    Refresh,
+
     /// Simulate a key press. Key name follows web conventions: "ArrowLeft", "Escape", "f", etc.
     SendKey(String),
     /// Capture a screenshot. The sender receives PNG bytes.
     TakeScreenshot(mpsc::Sender<Vec<u8>>),
+    /// Synchronization barrier — sends () back to confirm all prior commands were processed.
+    Sync(mpsc::Sender<()>),
 }
 
 const DEFAULT_PORT: u16 = 19447;
+const SYNC_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Start the QA HTTP server on a background thread. Returns `None` if disabled (port=0).
 pub fn start(
@@ -286,17 +295,19 @@ fn handle_request(
         ("GET", "/menu") => handle_get_menu(stream),
         ("GET", "/screenshot") => handle_get_screenshot(stream, proxy),
         ("GET", "/diagnostics") => handle_get_diagnostics(stream, state),
-        ("POST", "/key") => handle_post_key(stream, proxy, &body),
-        ("POST", "/navigate") => handle_post_navigate(stream, proxy, &body),
-        ("POST", "/zoom") => handle_post_zoom(stream, proxy, &body),
-        ("POST", "/fullscreen") => handle_post_fullscreen(stream, proxy, &body),
-        ("POST", "/auto-fit") => handle_post_auto_fit(stream, proxy, &body),
-        ("POST", "/enlarge-small") => handle_post_enlarge_small(stream, proxy, &body),
-        ("POST", "/open") => handle_post_open(stream, proxy, &body),
-        ("POST", "/window-geometry") => handle_post_window_geometry(stream, proxy, &body),
-        ("POST", "/scroll-zoom") => handle_post_scroll_zoom(stream, proxy, &body),
-        ("POST", "/zoom-in") => handle_post_zoom_in(stream, proxy),
-        ("POST", "/zoom-out") => handle_post_zoom_out(stream, proxy),
+        ("POST", "/key") => handle_post_key(stream, proxy, &body, state),
+        ("POST", "/navigate") => handle_post_navigate(stream, proxy, &body, state),
+        ("POST", "/zoom") => handle_post_zoom(stream, proxy, &body, state),
+        ("POST", "/fullscreen") => handle_post_fullscreen(stream, proxy, &body, state),
+        ("POST", "/auto-fit") => handle_post_auto_fit(stream, proxy, &body, state),
+        ("POST", "/enlarge-small") => handle_post_enlarge_small(stream, proxy, &body, state),
+        ("POST", "/open") => handle_post_open(stream, proxy, &body, state),
+        ("POST", "/window-geometry") => handle_post_window_geometry(stream, proxy, &body, state),
+        ("POST", "/scroll-zoom") => handle_post_scroll_zoom(stream, proxy, &body, state),
+        ("POST", "/zoom-in") => handle_post_zoom_in(stream, proxy, state),
+        ("POST", "/zoom-out") => handle_post_zoom_out(stream, proxy, state),
+        ("POST", "/refresh") => handle_post_refresh(stream, proxy, state),
+        ("GET", "/settings") => handle_get_settings(stream),
         _ => write_response(stream, 404, "text/plain", b"Not found", &[]),
     }
 }
@@ -506,6 +517,11 @@ fn mcp_tools_list() -> Result<Value, Value> {
                 "inputSchema": { "type": "object", "properties": {} }
             },
             {
+                "name": "refresh",
+                "description": "Re-display the current image, re-applying zoom and settings.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
                 "name": "screenshot",
                 "description": "Capture a screenshot of the current view. Returns a base64-encoded PNG image.",
                 "inputSchema": {
@@ -529,29 +545,27 @@ fn mcp_tools_call(
         "navigate" => {
             let direction = args["direction"].as_str().unwrap_or("");
             let forward = match direction {
-                "next" => true,
-                "prev" | "previous" => false,
+                "next" | "forward" => true,
+                "prev" | "previous" | "backward" => false,
                 _ => return Err(json_rpc_error(-32602, "direction must be 'next' or 'prev'")),
             };
-            proxy
-                .send_event(AppCommand::Navigate(forward))
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            // Brief pause to let the event loop process the navigation.
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let state_text = format_state_text(state);
-            Ok(mcp_text_content(&format!(
-                "Navigated {direction}.\n\n{state_text}"
-            )))
+            let state_json =
+                send_and_wait(proxy, AppCommand::Navigate(forward), state, SYNC_TIMEOUT)?;
+            let label = if forward { "next" } else { "prev" };
+            let mut content = mcp_text_content(&format!("Navigated {label}."));
+            content["state"] = state_json;
+            Ok(content)
         }
         "key" => {
             let key = args["key"].as_str().unwrap_or("").to_string();
             if key.is_empty() {
                 return Err(json_rpc_error(-32602, "key is required"));
             }
-            proxy
-                .send_event(AppCommand::SendKey(key.clone()))
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            Ok(mcp_text_content(&format!("Sent key: {key}")))
+            let state_json =
+                send_and_wait(proxy, AppCommand::SendKey(key.clone()), state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content(&format!("Sent key: {key}"));
+            content["state"] = state_json;
+            Ok(content)
         }
         "zoom" => {
             let level = args["level"].as_str().unwrap_or("");
@@ -568,10 +582,10 @@ fn mcp_tools_call(
                     }
                 },
             };
-            proxy
-                .send_event(cmd)
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            Ok(mcp_text_content(&format!("Zoom set to: {level}")))
+            let state_json = send_and_wait(proxy, cmd, state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content(&format!("Zoom set to: {level}"));
+            content["state"] = state_json;
+            Ok(content)
         }
         "fullscreen" => {
             let mode = args["mode"].as_str().unwrap_or("");
@@ -586,61 +600,75 @@ fn mcp_tools_call(
                     ));
                 }
             };
-            proxy
-                .send_event(cmd)
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            Ok(mcp_text_content(&format!("Fullscreen: {mode}")))
+            let state_json = send_and_wait(proxy, cmd, state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content(&format!("Fullscreen: {mode}"));
+            content["state"] = state_json;
+            Ok(content)
         }
         "open" => {
             let path_str = args["path"].as_str().unwrap_or("");
             if path_str.is_empty() {
                 return Err(json_rpc_error(-32602, "path is required"));
             }
-            proxy
-                .send_event(AppCommand::OpenFile(PathBuf::from(path_str)))
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            Ok(mcp_text_content(&format!("Opened: {path_str}")))
+            let state_json = send_and_wait(
+                proxy,
+                AppCommand::OpenFile(PathBuf::from(path_str)),
+                state,
+                SYNC_TIMEOUT,
+            )?;
+            let mut content = mcp_text_content(&format!("Opened: {path_str}"));
+            content["state"] = state_json;
+            Ok(content)
         }
         "auto_fit_window" => {
             let enabled = args["enabled"]
                 .as_bool()
                 .ok_or_else(|| json_rpc_error(-32602, "enabled must be a boolean"))?;
-            proxy
-                .send_event(AppCommand::SetAutoFitWindow(enabled))
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            let state_json = send_and_wait(
+                proxy,
+                AppCommand::SetAutoFitWindow(enabled),
+                state,
+                SYNC_TIMEOUT,
+            )?;
             let label = if enabled { "enabled" } else { "disabled" };
-            Ok(mcp_text_content(&format!("Auto-fit window: {label}")))
+            let mut content = mcp_text_content(&format!("Auto-fit window: {label}"));
+            content["state"] = state_json;
+            Ok(content)
         }
         "enlarge_small_images" => {
             let enabled = args["enabled"]
                 .as_bool()
                 .ok_or_else(|| json_rpc_error(-32602, "enabled must be a boolean"))?;
-            proxy
-                .send_event(AppCommand::SetEnlargeSmallImages(enabled))
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            let state_json = send_and_wait(
+                proxy,
+                AppCommand::SetEnlargeSmallImages(enabled),
+                state,
+                SYNC_TIMEOUT,
+            )?;
             let label = if enabled { "enabled" } else { "disabled" };
-            Ok(mcp_text_content(&format!("Enlarge small images: {label}")))
+            let mut content = mcp_text_content(&format!("Enlarge small images: {label}"));
+            content["state"] = state_json;
+            Ok(content)
         }
         "set_window_geometry" => {
             let x = args["x"].as_i64().map(|v| v as i32);
             let y = args["y"].as_i64().map(|v| v as i32);
             let width = args["width"].as_u64().map(|v| v as u32);
             let height = args["height"].as_u64().map(|v| v as u32);
-            proxy
-                .send_event(AppCommand::SetWindowGeometry {
+            let state_json = send_and_wait(
+                proxy,
+                AppCommand::SetWindowGeometry {
                     x,
                     y,
                     width,
                     height,
-                })
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let state_text = format_state_text(state);
-            Ok(mcp_text_content(&format!(
-                "Window geometry updated.\n\n{state_text}"
-            )))
+                },
+                state,
+                SYNC_TIMEOUT,
+            )?;
+            let mut content = mcp_text_content("Window geometry updated.");
+            content["state"] = state_json;
+            Ok(content)
         }
         "scroll_zoom" => {
             let delta = args["delta"]
@@ -655,34 +683,37 @@ fn mcp_tools_call(
                 .as_f64()
                 .ok_or_else(|| json_rpc_error(-32602, "cursor_y is required"))?
                 as f32;
-            proxy
-                .send_event(AppCommand::ScrollZoom {
+            let state_json = send_and_wait(
+                proxy,
+                AppCommand::ScrollZoom {
                     delta,
                     cursor_x: cx,
                     cursor_y: cy,
-                })
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let state_text = format_state_text(state);
-            Ok(mcp_text_content(&format!(
-                "Scroll zoom applied.\n\n{state_text}"
-            )))
+                },
+                state,
+                SYNC_TIMEOUT,
+            )?;
+            let mut content = mcp_text_content("Scroll zoom applied.");
+            content["state"] = state_json;
+            Ok(content)
         }
         "zoom_in" => {
-            proxy
-                .send_event(AppCommand::ZoomIn)
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let state_text = format_state_text(state);
-            Ok(mcp_text_content(&format!("Zoomed in.\n\n{state_text}")))
+            let state_json = send_and_wait(proxy, AppCommand::ZoomIn, state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content("Zoomed in.");
+            content["state"] = state_json;
+            Ok(content)
         }
         "zoom_out" => {
-            proxy
-                .send_event(AppCommand::ZoomOut)
-                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            let state_text = format_state_text(state);
-            Ok(mcp_text_content(&format!("Zoomed out.\n\n{state_text}")))
+            let state_json = send_and_wait(proxy, AppCommand::ZoomOut, state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content("Zoomed out.");
+            content["state"] = state_json;
+            Ok(content)
+        }
+        "refresh" => {
+            let state_json = send_and_wait(proxy, AppCommand::Refresh, state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content("Refreshed.");
+            content["state"] = state_json;
+            Ok(content)
         }
         "screenshot" => {
             let (tx, rx) = mpsc::channel();
@@ -717,8 +748,14 @@ fn mcp_resources_list() -> Result<Value, Value> {
             {
                 "uri": "prvw://state",
                 "name": "App state",
-                "description": "Current file, zoom, pan, fullscreen, window size.",
-                "mimeType": "text/plain"
+                "description": "Current file, zoom, pan, fullscreen, window size, image layout.",
+                "mimeType": "application/json"
+            },
+            {
+                "uri": "prvw://settings",
+                "name": "Settings",
+                "description": "Current settings (auto-update, auto-fit window, enlarge small images).",
+                "mimeType": "application/json"
             },
             {
                 "uri": "prvw://menu",
@@ -740,11 +777,28 @@ fn mcp_resources_read(params: &Value, state: &Arc<Mutex<SharedAppState>>) -> Res
     let uri = params["uri"].as_str().unwrap_or("");
     match uri {
         "prvw://state" => {
-            let text = format_state_text(state);
+            let state_json = format_state_json(state);
+            let text = serde_json::to_string_pretty(&state_json).unwrap_or_default();
             Ok(json!({
                 "contents": [{
                     "uri": uri,
-                    "mimeType": "text/plain",
+                    "mimeType": "application/json",
+                    "text": text
+                }]
+            }))
+        }
+        "prvw://settings" => {
+            let s = settings::Settings::load();
+            let settings_json = json!({
+                "auto_update": s.auto_update,
+                "auto_fit_window": s.auto_fit_window,
+                "enlarge_small_images": s.enlarge_small_images,
+            });
+            let text = serde_json::to_string_pretty(&settings_json).unwrap_or_default();
+            Ok(json!({
+                "contents": [{
+                    "uri": uri,
+                    "mimeType": "application/json",
                     "text": text
                 }]
             }))
@@ -782,58 +836,82 @@ fn mcp_text_content(text: &str) -> Value {
 // Simple HTTP handlers (unchanged)
 // ---------------------------------------------------------------------------
 
-/// Format app state as human-readable text. Shared between simple HTTP and MCP.
-fn format_state_text(state: &Arc<Mutex<SharedAppState>>) -> String {
+/// Format app state as a JSON value.
+fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
     let s = match state.lock() {
         Ok(s) => s,
-        Err(_) => return "(lock error)".to_string(),
+        Err(_) => return json!({"error": "lock error"}),
     };
 
-    let file_display = s
+    let file = s
         .current_file
         .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "(none)".to_string());
+        .map(|p| Value::String(p.display().to_string()))
+        .unwrap_or(Value::Null);
 
-    let zoom_label = if (s.zoom - 1.0).abs() < 0.005 {
-        " (fit to window)"
-    } else {
-        ""
-    };
+    json!({
+        "file": file,
+        "index": s.current_index + 1,
+        "total_files": s.total_files,
+        "zoom": s.zoom,
+        "pan_x": s.pan_x,
+        "pan_y": s.pan_y,
+        "fullscreen": s.fullscreen,
+        "auto_fit_window": s.auto_fit_window,
+        "enlarge_small_images": s.enlarge_small_images,
+        "window_width": s.window_width,
+        "window_height": s.window_height,
+        "image_width": s.image_width,
+        "image_height": s.image_height,
+        "image_render_x": s.image_render_x,
+        "image_render_y": s.image_render_y,
+        "image_render_width": s.image_render_width,
+        "image_render_height": s.image_render_height,
+        "min_zoom": s.min_zoom,
+        "title": s.window_title,
+    })
+}
 
-    let fullscreen_str = if s.fullscreen { "yes" } else { "no" };
-    let auto_fit_str = if s.auto_fit_window { "yes" } else { "no" };
-    let enlarge_str = if s.enlarge_small_images { "yes" } else { "no" };
+/// Send a command and wait for it to be processed by the event loop.
+/// Returns the updated state as JSON.
+fn send_and_wait(
+    proxy: &EventLoopProxy<AppCommand>,
+    command: AppCommand,
+    state: &Arc<Mutex<SharedAppState>>,
+    timeout: Duration,
+) -> Result<Value, Value> {
+    proxy
+        .send_event(command)
+        .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+    let (tx, rx) = mpsc::channel();
+    proxy
+        .send_event(AppCommand::Sync(tx))
+        .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+    rx.recv_timeout(timeout)
+        .map_err(|_| json_rpc_error(-32603, "Command timeout"))?;
+    Ok(format_state_json(state))
+}
 
-    format!(
-        "file: {file_display}\n\
-         index: {} of {}\n\
-         zoom: {:.2}{zoom_label}\n\
-         pan: ({:.2}, {:.2})\n\
-         fullscreen: {fullscreen_str}\n\
-         auto_fit_window: {auto_fit_str}\n\
-         enlarge_small_images: {enlarge_str}\n\
-         window: {}x{}\n\
-         image_native: {}x{}\n\
-         image_rendered: {:.0},{:.0} {:.0}x{:.0}\n\
-         min_zoom: {:.4}\n\
-         title: {}\n",
-        s.current_index + 1,
-        s.total_files,
-        s.zoom,
-        s.pan_x,
-        s.pan_y,
-        s.window_width,
-        s.window_height,
-        s.image_width,
-        s.image_height,
-        s.image_render_x,
-        s.image_render_y,
-        s.image_render_width,
-        s.image_render_height,
-        s.min_zoom,
-        s.window_title,
-    )
+/// Send a command via the event loop proxy and wait for processing, then return
+/// the state JSON as an HTTP response. Used by simple HTTP POST handlers.
+fn send_and_wait_http(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    command: AppCommand,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    proxy
+        .send_event(command)
+        .map_err(|e| format!("Event loop closed: {e}"))?;
+    let (tx, rx) = mpsc::channel();
+    proxy
+        .send_event(AppCommand::Sync(tx))
+        .map_err(|e| format!("Event loop closed: {e}"))?;
+    rx.recv_timeout(Duration::from_secs(2))
+        .map_err(|e| format!("Command timeout: {e}"))?;
+    let state_json = format_state_json(state);
+    let body = serde_json::to_string_pretty(&state_json).map_err(|e| e.to_string())?;
+    write_response(stream, 200, "application/json", body.as_bytes(), &[])
 }
 
 const MENU_TEXT: &str = "\
@@ -857,6 +935,8 @@ View
   Enlarge small images (toggle, disabled when auto-fit is on)
   ---
   Fullscreen   F/Enter/F11/Cmd+F
+  ---
+  Refresh
 Navigate
   Previous ←   ←/[/Backspace
   Next →        →/]/Space
@@ -866,8 +946,9 @@ fn handle_get_state(
     stream: &mut std::net::TcpStream,
     state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
-    let body = format_state_text(state);
-    write_response(stream, 200, "text/plain", body.as_bytes(), &[])
+    let state_json = format_state_json(state);
+    let body = serde_json::to_string_pretty(&state_json).map_err(|e| e.to_string())?;
+    write_response(stream, 200, "application/json", body.as_bytes(), &[])
 }
 
 fn handle_get_menu(stream: &mut std::net::TcpStream) -> Result<(), String> {
@@ -916,26 +997,25 @@ fn handle_post_key(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
     body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     let key = body.trim().to_string();
     if key.is_empty() {
         return write_response(stream, 400, "text/plain", b"Missing key name in body", &[]);
     }
-    proxy
-        .send_event(AppCommand::SendKey(key))
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+    send_and_wait_http(stream, proxy, AppCommand::SendKey(key), state)
 }
 
 fn handle_post_navigate(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
     body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     let direction = body.trim().to_lowercase();
     let forward = match direction.as_str() {
-        "next" => true,
-        "prev" | "previous" => false,
+        "next" | "forward" => true,
+        "prev" | "previous" | "backward" => false,
         _ => {
             return write_response(
                 stream,
@@ -946,16 +1026,14 @@ fn handle_post_navigate(
             );
         }
     };
-    proxy
-        .send_event(AppCommand::Navigate(forward))
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+    send_and_wait_http(stream, proxy, AppCommand::Navigate(forward), state)
 }
 
 fn handle_post_zoom(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
     body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     let value = body.trim().to_lowercase();
     let cmd = match value.as_str() {
@@ -974,16 +1052,14 @@ fn handle_post_zoom(
             }
         },
     };
-    proxy
-        .send_event(cmd)
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+    send_and_wait_http(stream, proxy, cmd, state)
 }
 
 fn handle_post_fullscreen(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
     body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     let value = body.trim().to_lowercase();
     let cmd = match value.as_str() {
@@ -1000,16 +1076,14 @@ fn handle_post_fullscreen(
             );
         }
     };
-    proxy
-        .send_event(cmd)
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+    send_and_wait_http(stream, proxy, cmd, state)
 }
 
 fn handle_post_auto_fit(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
     body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     let value = body.trim().to_lowercase();
     let enabled = match value.as_str() {
@@ -1025,16 +1099,14 @@ fn handle_post_auto_fit(
             );
         }
     };
-    proxy
-        .send_event(AppCommand::SetAutoFitWindow(enabled))
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+    send_and_wait_http(stream, proxy, AppCommand::SetAutoFitWindow(enabled), state)
 }
 
 fn handle_post_enlarge_small(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
     body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     let value = body.trim().to_lowercase();
     let enabled = match value.as_str() {
@@ -1050,86 +1122,107 @@ fn handle_post_enlarge_small(
             );
         }
     };
-    proxy
-        .send_event(AppCommand::SetEnlargeSmallImages(enabled))
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+    send_and_wait_http(
+        stream,
+        proxy,
+        AppCommand::SetEnlargeSmallImages(enabled),
+        state,
+    )
 }
 
 fn handle_post_open(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
     body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     let path_str = body.trim();
     if path_str.is_empty() {
         return write_response(stream, 400, "text/plain", b"Missing file path in body", &[]);
     }
     let path = PathBuf::from(path_str);
-    proxy
-        .send_event(AppCommand::OpenFile(path))
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+    send_and_wait_http(stream, proxy, AppCommand::OpenFile(path), state)
 }
 
 fn handle_post_window_geometry(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
     body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     let parsed: Value = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {e}"))?;
     let x = parsed["x"].as_i64().map(|v| v as i32);
     let y = parsed["y"].as_i64().map(|v| v as i32);
     let width = parsed["width"].as_u64().map(|v| v as u32);
     let height = parsed["height"].as_u64().map(|v| v as u32);
-    proxy
-        .send_event(AppCommand::SetWindowGeometry {
+    send_and_wait_http(
+        stream,
+        proxy,
+        AppCommand::SetWindowGeometry {
             x,
             y,
             width,
             height,
-        })
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+        },
+        state,
+    )
 }
 
 fn handle_post_scroll_zoom(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
     body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     let parsed: Value = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {e}"))?;
     let delta = parsed["delta"].as_f64().ok_or("missing 'delta'")? as f32;
     let cursor_x = parsed["cursor_x"].as_f64().ok_or("missing 'cursor_x'")? as f32;
     let cursor_y = parsed["cursor_y"].as_f64().ok_or("missing 'cursor_y'")? as f32;
-    proxy
-        .send_event(AppCommand::ScrollZoom {
+    send_and_wait_http(
+        stream,
+        proxy,
+        AppCommand::ScrollZoom {
             delta,
             cursor_x,
             cursor_y,
-        })
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+        },
+        state,
+    )
 }
 
 fn handle_post_zoom_in(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
-    proxy
-        .send_event(AppCommand::ZoomIn)
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+    send_and_wait_http(stream, proxy, AppCommand::ZoomIn, state)
 }
 
 fn handle_post_zoom_out(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
+    state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
-    proxy
-        .send_event(AppCommand::ZoomOut)
-        .map_err(|e| format!("Event loop closed: {e}"))?;
-    write_response(stream, 200, "text/plain", b"ok", &[])
+    send_and_wait_http(stream, proxy, AppCommand::ZoomOut, state)
+}
+
+fn handle_post_refresh(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    send_and_wait_http(stream, proxy, AppCommand::Refresh, state)
+}
+
+fn handle_get_settings(stream: &mut std::net::TcpStream) -> Result<(), String> {
+    let s = settings::Settings::load();
+    let settings_json = json!({
+        "auto_update": s.auto_update,
+        "auto_fit_window": s.auto_fit_window,
+        "enlarge_small_images": s.enlarge_small_images,
+    });
+    let body = serde_json::to_string_pretty(&settings_json).map_err(|e| e.to_string())?;
+    write_response(stream, 200, "application/json", body.as_bytes(), &[])
 }
 
 // ---------------------------------------------------------------------------

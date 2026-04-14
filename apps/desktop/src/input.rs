@@ -61,6 +61,8 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         None
     } else if id == &ids.fullscreen {
         Some(AppCommand::ToggleFullscreen)
+    } else if id == &ids.refresh {
+        Some(AppCommand::Refresh)
     } else if id == &ids.previous {
         Some(AppCommand::Navigate(false))
     } else if id == &ids.next {
@@ -81,6 +83,7 @@ pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
         "-" => Some(AppCommand::ZoomOut),
         "0" => Some(AppCommand::FitToWindow),
         "1" => Some(AppCommand::ActualSize),
+        "r" => Some(AppCommand::Refresh),
         _ => {
             log::debug!("QA server: unhandled key '{key_name}'");
             None

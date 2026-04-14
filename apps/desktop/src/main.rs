@@ -885,6 +885,12 @@ impl App {
                 self.view_state.scroll_zoom(delta, cursor_x, cursor_y);
                 self.update_transform_and_redraw();
             }
+            AppCommand::Refresh => {
+                if let Some(path) = self.dir_list.as_ref().map(|d| d.current().to_path_buf()) {
+                    self.display_image(&path);
+                    self.update_shared_state();
+                }
+            }
             AppCommand::TakeScreenshot(sender) => {
                 let png_bytes = if let Some(renderer) = &self.renderer {
                     renderer.capture_screenshot()
@@ -892,6 +898,10 @@ impl App {
                     Vec::new()
                 };
                 let _ = sender.send(png_bytes);
+            }
+            AppCommand::Sync(sender) => {
+                self.update_shared_state();
+                let _ = sender.send(());
             }
         }
     }
