@@ -8,7 +8,8 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 
 | Module            | Responsibility                                              |
 | ----------------- | ----------------------------------------------------------- |
-| `main.rs`         | CLI parsing, event loop, `ApplicationHandler` impl          |
+| `main.rs`         | CLI parsing, event loop, `ApplicationHandler` impl, command executor |
+| `input.rs`        | Maps keyboard, mouse, menu, and QA key events to `AppCommand`s |
 | `window.rs`       | Window creation, fullscreen toggle, auto-fit resize, title formatting |
 | `renderer.rs`     | wgpu surface, pipeline, texture upload, rendering           |
 | `image_loader.rs` | Decode image files to RGBA8 (zune-jpeg for JPEG, `image` crate for others) |
@@ -19,7 +20,7 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | `native_ui.rs`    | AppKit secondary windows (About, Onboarding, Settings) via objc2 |
 | `onboarding.rs`   | File association queries and default viewer registration helpers |
 | `settings.rs`     | Settings persistence (JSON file in app data dir, overridable via `PRVW_DATA_DIR` env var) |
-| `qa_server.rs`    | Embedded HTTP server for QA/E2E testing (state, commands, screenshots) |
+| `qa_server.rs`    | `AppCommand` enum, embedded HTTP/MCP server for QA/E2E, global event loop proxy |
 | `shader.wgsl`     | WGSL vertex/fragment shader for textured quad with 2D transform |
 
 ## Key patterns
@@ -35,6 +36,11 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
   which is overkill for v1.
 - **Transform**: Zoom and pan are a 2D affine transform applied to the quad's vertices in the vertex shader. No image
   re-decode needed.
+
+- **Command architecture**: All user actions are expressed as `AppCommand` variants (defined in `qa_server.rs`).
+  `input.rs` maps keyboard, menu, and QA key events to commands. `App::execute_command()` in `main.rs` is the single
+  place where each command's effect is implemented. Scroll zoom, mouse drag, and cursor tracking stay inline in
+  `window_event` since they're continuous input, not discrete commands.
 
 - **QA server**: An embedded HTTP server (raw `TcpListener`, no external crate) on a background thread. Agents and E2E
   tests use it to query state, send commands, and capture screenshots. Port controlled by `PRVW_QA_PORT` env var

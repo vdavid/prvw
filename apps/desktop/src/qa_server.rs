@@ -72,26 +72,47 @@ impl Default for SharedAppState {
     }
 }
 
-/// Commands sent from the HTTP server to the main event loop.
+/// Commands that drive all app behavior. Keyboard, mouse, menu, QA server, and MCP all
+/// map their inputs to these commands. The `user_event` handler in main.rs is the single
+/// place where each command's effect is implemented.
 pub enum AppCommand {
-    /// Simulate a key press. Key name follows web conventions: "ArrowLeft", "Escape", "f", etc.
-    SendKey(String),
+    // ── Navigation ───────────────────────────────────────────────────
     /// Navigate forward (true) or backward (false).
     Navigate(bool),
+    /// Open a specific file.
+    OpenFile(PathBuf),
+
+    // ── View ─────────────────────────────────────────────────────────
+    /// Zoom in one step (keyboard shortcut).
+    ZoomIn,
+    /// Zoom out one step (keyboard shortcut).
+    ZoomOut,
     /// Set absolute zoom level.
     SetZoom(f32),
     /// Reset zoom to fit the image in the window.
     FitToWindow,
     /// Set zoom to 1:1 pixel mapping.
     ActualSize,
+    /// Toggle between fit-to-window and actual size.
+    ToggleFit,
     /// Toggle fullscreen mode.
     ToggleFullscreen,
     /// Set fullscreen on or off explicitly.
     SetFullscreen(bool),
-    /// Open a specific file.
-    OpenFile(PathBuf),
     /// Set auto-fit window mode.
     SetAutoFitWindow(bool),
+
+    // ── App ──────────────────────────────────────────────────────────
+    /// Show the About window.
+    ShowAbout,
+    /// Show the Settings window.
+    ShowSettings,
+    /// Exit the application.
+    Exit,
+
+    // ── QA / MCP ─────────────────────────────────────────────────────
+    /// Simulate a key press. Key name follows web conventions: "ArrowLeft", "Escape", "f", etc.
+    SendKey(String),
     /// Capture a screenshot. The sender receives PNG bytes.
     TakeScreenshot(mpsc::Sender<Vec<u8>>),
 }

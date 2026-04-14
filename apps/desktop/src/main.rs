@@ -1,5 +1,6 @@
 mod directory;
 mod image_loader;
+mod input;
 #[cfg(target_os = "macos")]
 mod macos_open_handler;
 mod menu;
@@ -26,7 +27,7 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
 #[derive(Parser)]
@@ -536,55 +537,23 @@ impl App {
         let Some(app_menu) = &self.app_menu else {
             return;
         };
-        let ids = &app_menu.ids;
         let Some(event) = menu::poll_menu_event() else {
             return;
         };
 
-        log::debug!("Menu event received: {:?}", event.id());
-
-        if event.id() == &ids.about {
-            log::debug!("Menu: About");
-            self.show_about_dialog();
-        } else if event.id() == &ids.settings {
-            log::debug!("Menu: Settings");
-            self.show_settings_dialog();
-        } else if event.id() == &ids.zoom_in {
-            log::debug!("Menu: Zoom in");
-            self.view_state.keyboard_zoom(true);
-            self.update_transform_and_redraw();
-        } else if event.id() == &ids.zoom_out {
-            log::debug!("Menu: Zoom out");
-            self.view_state.keyboard_zoom(false);
-            self.update_transform_and_redraw();
-        } else if event.id() == &ids.actual_size {
-            log::debug!("Menu: Actual size");
-            self.view_state.actual_size();
-            self.update_transform_and_redraw();
-        } else if event.id() == &ids.fit_to_window {
-            log::debug!("Menu: Fit to window");
-            self.view_state.fit_to_window();
-            self.update_transform_and_redraw();
-        } else if event.id() == &ids.auto_fit_window {
-            // CheckMenuItem auto-toggles its visual state on click, so read its new state
+        // Auto-fit is special: CheckMenuItem auto-toggles on click, so we read its new state
+        if event.id() == &app_menu.ids.auto_fit_window {
             let enabled = app_menu.auto_fit_item.is_checked();
             log::debug!("Menu: Auto-fit window -> {enabled}");
-            // Route through the unified SetAutoFitWindow handler
             let _ = self
                 .event_loop_proxy
                 .send_event(AppCommand::SetAutoFitWindow(enabled));
-        } else if event.id() == &ids.fullscreen {
-            log::debug!("Menu: Fullscreen");
-            if let Some(win) = &self.window {
-                window::toggle_fullscreen(win);
-                self.update_shared_state();
-            }
-        } else if event.id() == &ids.previous {
-            log::debug!("Menu: Previous");
-            self.navigate(false);
-        } else if event.id() == &ids.next {
-            log::debug!("Menu: Next");
-            self.navigate(true);
+            return;
+        }
+
+        if let Some(command) = input::menu_to_command(&event, &app_menu.ids) {
+            log::debug!("Menu event: {:?}", event.id());
+            let _ = self.event_loop_proxy.send_event(command);
         } else {
             log::debug!("Menu: unhandled event {:?}", event.id());
         }
@@ -693,63 +662,117 @@ impl App {
         out
     }
 
-    /// Handle a key name from the QA server (web-style key names).
-    fn handle_qa_key(&mut self, event_loop: &ActiveEventLoop, key_name: &str) {
-        match key_name {
-            "ArrowLeft" | "Backspace" | "[" => self.navigate(false),
-            "ArrowRight" | " " | "Space" | "]" => self.navigate(true),
-            "Enter" => {
-                if let Some(win) = &self.window {
-                    window::toggle_fullscreen(win);
-                    self.update_shared_state();
+    /// Central command executor. All user actions — keyboard, mouse, menu, QA server —
+    /// are mapped to `AppCommand` and dispatched here.
+    fn execute_command(&mut self, event_loop: &ActiveEventLoop, command: AppCommand) {
+        match command {
+            AppCommand::SendKey(key_name) => {
+                if let Some(cmd) = input::qa_key_to_command(&key_name) {
+                    self.execute_command(event_loop, cmd);
                 }
             }
-            "Escape" => {
-                if let Some(win) = &self.window {
-                    if window::is_fullscreen(win) {
-                        log::info!("Fullscreen off");
-                        window::toggle_fullscreen(win);
-                        self.update_shared_state();
-                    } else {
-                        log::info!("Exiting (Escape via QA)");
-                        if let Some(preloader) = self.preloader.take() {
-                            preloader.shutdown();
-                        }
-                        event_loop.exit();
-                    }
-                }
-            }
-            "F11" => {
-                if let Some(win) = &self.window {
-                    window::toggle_fullscreen(win);
-                    self.update_shared_state();
-                }
-            }
-            "f" => {
-                // Cmd+F equivalent: toggle fullscreen
-                if let Some(win) = &self.window {
-                    window::toggle_fullscreen(win);
-                    self.update_shared_state();
-                }
-            }
-            "+" | "=" => {
+            AppCommand::Navigate(forward) => self.navigate(forward),
+            AppCommand::ZoomIn => {
                 self.view_state.keyboard_zoom(true);
                 self.update_transform_and_redraw();
             }
-            "-" => {
+            AppCommand::ZoomOut => {
                 self.view_state.keyboard_zoom(false);
                 self.update_transform_and_redraw();
             }
-            "0" => {
+            AppCommand::SetZoom(level) => {
+                self.view_state.zoom = level;
+                self.view_state.pan_x = 0.0;
+                self.view_state.pan_y = 0.0;
+                self.update_transform_and_redraw();
+            }
+            AppCommand::FitToWindow => {
                 self.view_state.fit_to_window();
                 self.update_transform_and_redraw();
             }
-            "1" => {
+            AppCommand::ActualSize => {
                 self.view_state.actual_size();
                 self.update_transform_and_redraw();
             }
-            _ => {
-                log::debug!("QA server: unhandled key '{key_name}'");
+            AppCommand::ToggleFit => {
+                self.view_state.toggle_fit();
+                self.update_transform_and_redraw();
+            }
+            AppCommand::ToggleFullscreen => {
+                if let Some(win) = &self.window {
+                    window::toggle_fullscreen(win);
+                    self.update_shared_state();
+                }
+            }
+            AppCommand::SetFullscreen(on) => {
+                if let Some(win) = &self.window {
+                    window::set_fullscreen(win, on);
+                    self.update_shared_state();
+                }
+            }
+            AppCommand::SetAutoFitWindow(enabled) => {
+                self.auto_fit_window = enabled;
+                log::debug!("Auto-fit window set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.auto_fit_window = enabled;
+                s.save();
+                if let Some(menu) = &self.app_menu {
+                    menu.auto_fit_item.set_checked(enabled);
+                }
+                if enabled
+                    && let (Some(win), Some((iw, ih))) = (&self.window, self.current_image_size)
+                {
+                    window::resize_to_fit_image(win, iw, ih);
+                }
+                self.update_shared_state();
+            }
+            AppCommand::ShowAbout => self.show_about_dialog(),
+            AppCommand::ShowSettings => self.show_settings_dialog(),
+            AppCommand::Exit => {
+                // Escape exits fullscreen first, then exits the app
+                if let Some(win) = &self.window
+                    && window::is_fullscreen(win)
+                {
+                    log::info!("Fullscreen off");
+                    window::set_fullscreen(win, false);
+                    self.update_shared_state();
+                    return;
+                }
+                log::info!("Exiting");
+                if let Some(preloader) = self.preloader.take() {
+                    preloader.shutdown();
+                }
+                event_loop.exit();
+            }
+            AppCommand::OpenFile(path) => {
+                let resolved = path.canonicalize().unwrap_or(path);
+                if resolved.is_file() {
+                    self.file_path = resolved.clone();
+                    self.dir_list = directory::DirectoryList::from_file(&resolved);
+                    self.display_image(&resolved);
+
+                    if let Some(dir) = &self.dir_list
+                        && let Some(win) = &self.window
+                    {
+                        win.set_title(&window::window_title_with_position(
+                            &resolved,
+                            dir.current_index(),
+                            dir.len(),
+                        ));
+                    }
+
+                    self.update_shared_state();
+                } else {
+                    log::warn!("OpenFile: not a file: {}", resolved.display());
+                }
+            }
+            AppCommand::TakeScreenshot(sender) => {
+                let png_bytes = if let Some(renderer) = &self.renderer {
+                    renderer.capture_screenshot()
+                } else {
+                    Vec::new()
+                };
+                let _ = sender.send(png_bytes);
             }
         }
     }
@@ -839,87 +862,7 @@ impl ApplicationHandler<AppCommand> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, command: AppCommand) {
-        match command {
-            AppCommand::SendKey(key_name) => {
-                self.handle_qa_key(event_loop, &key_name);
-            }
-            AppCommand::Navigate(forward) => {
-                self.navigate(forward);
-            }
-            AppCommand::SetZoom(level) => {
-                self.view_state.zoom = level;
-                self.view_state.pan_x = 0.0;
-                self.view_state.pan_y = 0.0;
-                self.update_transform_and_redraw();
-            }
-            AppCommand::FitToWindow => {
-                self.view_state.fit_to_window();
-                self.update_transform_and_redraw();
-            }
-            AppCommand::ActualSize => {
-                self.view_state.actual_size();
-                self.update_transform_and_redraw();
-            }
-            AppCommand::ToggleFullscreen => {
-                if let Some(win) = &self.window {
-                    window::toggle_fullscreen(win);
-                    self.update_shared_state();
-                }
-            }
-            AppCommand::SetFullscreen(on) => {
-                if let Some(win) = &self.window {
-                    window::set_fullscreen(win, on);
-                    self.update_shared_state();
-                }
-            }
-            AppCommand::SetAutoFitWindow(enabled) => {
-                self.auto_fit_window = enabled;
-                log::debug!("Auto-fit window set to: {enabled}");
-                let mut s = settings::Settings::load();
-                s.auto_fit_window = enabled;
-                s.save();
-                // Sync menu checkmark
-                if let Some(menu) = &self.app_menu {
-                    menu.auto_fit_item.set_checked(enabled);
-                }
-                if enabled
-                    && let (Some(win), Some((iw, ih))) = (&self.window, self.current_image_size)
-                {
-                    window::resize_to_fit_image(win, iw, ih);
-                }
-                self.update_shared_state();
-            }
-            AppCommand::OpenFile(path) => {
-                let resolved = path.canonicalize().unwrap_or(path);
-                if resolved.is_file() {
-                    self.file_path = resolved.clone();
-                    self.dir_list = directory::DirectoryList::from_file(&resolved);
-                    self.display_image(&resolved);
-
-                    if let Some(dir) = &self.dir_list
-                        && let Some(win) = &self.window
-                    {
-                        win.set_title(&window::window_title_with_position(
-                            &resolved,
-                            dir.current_index(),
-                            dir.len(),
-                        ));
-                    }
-
-                    self.update_shared_state();
-                } else {
-                    log::warn!("QA /open: not a file: {}", resolved.display());
-                }
-            }
-            AppCommand::TakeScreenshot(sender) => {
-                let png_bytes = if let Some(renderer) = &self.renderer {
-                    renderer.capture_screenshot()
-                } else {
-                    Vec::new()
-                };
-                let _ = sender.send(png_bytes);
-            }
-        }
+        self.execute_command(event_loop, command);
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
@@ -967,7 +910,6 @@ impl ApplicationHandler<AppCommand> for App {
                     if rendered {
                         self.needs_redraw = false;
                     } else {
-                        // Surface wasn't ready (Occluded, Lost). Try again next frame.
                         if let Some(win) = &self.window {
                             win.request_redraw();
                         }
@@ -980,69 +922,14 @@ impl ApplicationHandler<AppCommand> for App {
             }
 
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                let super_pressed = self.modifiers.super_key();
-                match event.logical_key.as_ref() {
-                    Key::Named(NamedKey::Escape) => {
-                        if let Some(win) = &self.window {
-                            if window::is_fullscreen(win) {
-                                log::info!("Fullscreen off");
-                                window::toggle_fullscreen(win);
-                                self.update_shared_state();
-                            } else {
-                                log::info!("Exiting (Escape)");
-                                if let Some(preloader) = self.preloader.take() {
-                                    preloader.shutdown();
-                                }
-                                event_loop.exit();
-                            }
-                        }
-                    }
-                    // Navigation: ←, →, Space, Backspace, [, ]
-                    Key::Named(NamedKey::ArrowLeft)
-                    | Key::Named(NamedKey::Backspace)
-                    | Key::Character("[") => self.navigate(false),
-                    Key::Named(NamedKey::ArrowRight)
-                    | Key::Named(NamedKey::Space)
-                    | Key::Character("]") => self.navigate(true),
-                    // Fullscreen: F, Cmd+F, Enter, Opt+Enter, F11
-                    Key::Named(NamedKey::F11)
-                    | Key::Named(NamedKey::Enter)
-                    | Key::Character("f") => {
-                        if let Some(win) = &self.window {
-                            let entering = !window::is_fullscreen(win);
-                            log::info!("Fullscreen {}", if entering { "on" } else { "off" });
-                            window::toggle_fullscreen(win);
-                            self.update_shared_state();
-                        }
-                    }
-                    Key::Character("=") | Key::Character("+") if super_pressed => {
-                        self.view_state.keyboard_zoom(true);
-                        self.update_transform_and_redraw();
-                    }
-                    Key::Character("-") if super_pressed => {
-                        self.view_state.keyboard_zoom(false);
-                        self.update_transform_and_redraw();
-                    }
-                    Key::Character("=") | Key::Character("+") => {
-                        self.view_state.keyboard_zoom(true);
-                        self.update_transform_and_redraw();
-                    }
-                    Key::Character("-") => {
-                        self.view_state.keyboard_zoom(false);
-                        self.update_transform_and_redraw();
-                    }
-                    Key::Character("0") => {
-                        self.view_state.fit_to_window();
-                        self.update_transform_and_redraw();
-                    }
-                    Key::Character("1") => {
-                        self.view_state.actual_size();
-                        self.update_transform_and_redraw();
-                    }
-                    _ => {}
+                if let Some(command) =
+                    input::key_to_command(event.logical_key.as_ref(), &self.modifiers)
+                {
+                    self.execute_command(event_loop, command);
                 }
             }
 
+            // Scroll zoom: cursor-centered, not a discrete command
             WindowEvent::MouseWheel { delta, .. } => {
                 let scroll_y = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
@@ -1055,6 +942,7 @@ impl ApplicationHandler<AppCommand> for App {
                 }
             }
 
+            // Mouse drag for panning
             WindowEvent::CursorMoved { position, .. } => {
                 let prev = self.last_mouse_pos;
                 self.last_mouse_pos = (position.x, position.y);
@@ -1067,6 +955,7 @@ impl ApplicationHandler<AppCommand> for App {
                 }
             }
 
+            // Click / double-click / drag tracking
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
@@ -1077,9 +966,7 @@ impl ApplicationHandler<AppCommand> for App {
                     if let Some(last) = self.last_click_time
                         && now.duration_since(last).as_millis() < 400
                     {
-                        // Double-click: toggle fit-to-window vs actual size
-                        self.view_state.toggle_fit();
-                        self.update_transform_and_redraw();
+                        self.execute_command(event_loop, AppCommand::ToggleFit);
                         self.last_click_time = None;
                         self.drag_start = None;
                         return;
