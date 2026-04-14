@@ -1,5 +1,5 @@
 use muda::accelerator::{Accelerator, Code, Modifiers};
-use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
 /// Identifiers for custom menu actions.
 pub struct MenuIds {
@@ -9,6 +9,7 @@ pub struct MenuIds {
     pub zoom_out: MenuId,
     pub actual_size: MenuId,
     pub fit_to_window: MenuId,
+    pub auto_fit_window: MenuId,
     pub fullscreen: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
@@ -21,6 +22,8 @@ pub struct AppMenu {
     /// Must stay alive. Dropping this frees the MenuChild backing data.
     pub _menu: Menu,
     pub ids: MenuIds,
+    /// Kept so we can update the checkmark from outside (e.g., when settings window toggles it).
+    pub auto_fit_item: CheckMenuItem,
 }
 
 /// Build the native menu bar. The caller MUST keep the returned `AppMenu` alive.
@@ -60,6 +63,8 @@ pub fn create_menu_bar() -> AppMenu {
     let zoom_out = MenuItem::new("Zoom out", true, None);
     let actual_size = MenuItem::new("Actual size", true, None);
     let fit_to_window = MenuItem::new("Fit to window", true, None);
+    let auto_fit_checked = crate::settings::Settings::load().auto_fit_window;
+    let auto_fit_window = CheckMenuItem::new("Auto-fit window", true, auto_fit_checked, None);
     let fullscreen = MenuItem::new("Fullscreen", true, None);
     view_menu
         .append_items(&[
@@ -68,6 +73,7 @@ pub fn create_menu_bar() -> AppMenu {
             &PredefinedMenuItem::separator(),
             &actual_size,
             &fit_to_window,
+            &auto_fit_window,
             &PredefinedMenuItem::separator(),
             &fullscreen,
         ])
@@ -89,7 +95,10 @@ pub fn create_menu_bar() -> AppMenu {
 
     log::debug!("Menu bar created");
 
+    let auto_fit_id = auto_fit_window.id().clone();
+
     AppMenu {
+        auto_fit_item: auto_fit_window,
         _menu: menu,
         ids: MenuIds {
             about: about.id().clone(),
@@ -98,6 +107,7 @@ pub fn create_menu_bar() -> AppMenu {
             zoom_out: zoom_out.id().clone(),
             actual_size: actual_size.id().clone(),
             fit_to_window: fit_to_window.id().clone(),
+            auto_fit_window: auto_fit_id,
             fullscreen: fullscreen.id().clone(),
             previous: previous.id().clone(),
             next: next.id().clone(),

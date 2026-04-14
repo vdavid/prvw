@@ -386,7 +386,7 @@ pub fn show_about_window(parent_ns_window: *const NSWindow) {
         &mut retained_views,
     );
 
-    let ok_button = make_close_button("OK", &window, mtm);
+    let ok_button = make_close_button("Close", &window, mtm);
 
     // Hidden ESC button to close with Escape key
     let esc_button = make_escape_button(&window, mtm);
@@ -986,7 +986,7 @@ define_class!(
     unsafe impl NSObjectProtocol for SettingsDelegate {}
 
     impl SettingsDelegate {
-        /// Called when the NSSwitch toggle is flipped. Reads the sender's state and saves settings.
+        /// Called when the auto-update NSSwitch is flipped.
         #[unsafe(method(toggleAutoUpdate:))]
         fn toggle_auto_update(&self, sender: &NSSwitch) {
             let on = sender.state() == NSControlStateValueOn;
@@ -994,6 +994,16 @@ define_class!(
             let mut settings = crate::settings::Settings::load();
             settings.auto_update = on;
             settings.save();
+        }
+
+        /// Called when the auto-fit window NSSwitch is flipped.
+        /// Sends a command through the event loop so the App updates its state, the menu
+        /// checkmark, and persists the setting — all in one place.
+        #[unsafe(method(toggleAutoFitWindow:))]
+        fn toggle_auto_fit_window(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            log::debug!("Auto-fit window toggled via settings: {on}");
+            crate::qa_server::send_command(crate::qa_server::AppCommand::SetAutoFitWindow(on));
         }
     }
 );
@@ -1026,7 +1036,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::FullSizeContentView;
 
-    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 200.0));
+    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 260.0));
 
     let window = unsafe {
         let window = NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -1086,14 +1096,45 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     toggle_row.addArrangedSubview(label_ref);
     toggle_row.addArrangedSubview(toggle_ref);
 
-    // Description label
+    // Auto-update description label
     let desc_label = make_label("Check for updates when Prvw starts.", 12.0, mtm);
     desc_label.setAlignment(NSTextAlignment(0)); // NSTextAlignmentLeft
     let secondary_color = NSColor::secondaryLabelColor();
     desc_label.setTextColor(Some(&secondary_color));
 
+    // ── Auto-fit window toggle ───────────────────────────────────────
+
+    let auto_fit_label = make_label("Auto-fit window", 14.0, mtm);
+    auto_fit_label.setAlignment(NSTextAlignment(0));
+
+    let auto_fit_toggle = NSSwitch::new(mtm);
+    let auto_fit_state = if settings.auto_fit_window {
+        NSControlStateValueOn
+    } else {
+        NSControlStateValueOff
+    };
+    auto_fit_toggle.setState(auto_fit_state);
+
+    unsafe {
+        auto_fit_toggle.setTarget(Some(&delegate as &AnyObject));
+        auto_fit_toggle.setAction(Some(sel!(toggleAutoFitWindow:)));
+    }
+
+    let auto_fit_label_ref = unsafe { as_view::<NSTextField>(&auto_fit_label) };
+    let auto_fit_toggle_ref = unsafe { as_view::<NSSwitch>(&auto_fit_toggle) };
+
+    let auto_fit_row = NSStackView::new(mtm);
+    auto_fit_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    auto_fit_row.setSpacing(12.0);
+    auto_fit_row.addArrangedSubview(auto_fit_label_ref);
+    auto_fit_row.addArrangedSubview(auto_fit_toggle_ref);
+
+    let auto_fit_desc_label = make_label("Resize the window to match each image.", 12.0, mtm);
+    auto_fit_desc_label.setAlignment(NSTextAlignment(0));
+    auto_fit_desc_label.setTextColor(Some(&secondary_color));
+
     // OK button
-    let ok_button = make_close_button("OK", &window, mtm);
+    let ok_button = make_close_button("Close", &window, mtm);
 
     // Hidden ESC button to close with Escape key
     let esc_button = make_escape_button(&window, mtm);
@@ -1102,15 +1143,24 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
     let toggle_row_ref = unsafe { as_view::<NSStackView>(&toggle_row) };
     let desc_ref = unsafe { as_view::<NSTextField>(&desc_label) };
+    let auto_fit_row_ref = unsafe { as_view::<NSStackView>(&auto_fit_row) };
+    let auto_fit_desc_ref = unsafe { as_view::<NSTextField>(&auto_fit_desc_label) };
     let button_ref = unsafe { as_view::<NSButton>(&ok_button) };
 
-    let views: Vec<&NSView> = vec![toggle_row_ref, desc_ref, button_ref];
+    let views: Vec<&NSView> = vec![
+        toggle_row_ref,
+        desc_ref,
+        auto_fit_row_ref,
+        auto_fit_desc_ref,
+        button_ref,
+    ];
 
     let stack = make_vertical_stack(&views, 8.0, mtm);
     stack.setAlignment(NSLayoutAttribute::Leading);
 
-    // Extra spacing before the OK button
-    stack.setCustomSpacing_afterView(24.0, desc_ref);
+    // Visual grouping: extra spacing between setting groups and before OK
+    stack.setCustomSpacing_afterView(16.0, desc_ref);
+    stack.setCustomSpacing_afterView(24.0, auto_fit_desc_ref);
 
     // Set the stack as the window's content view with padding
     unsafe {
@@ -1172,6 +1222,10 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(toggle_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(desc_label) });
+    retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_label) });
+    retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_desc_label) });
     retained_views.push(unsafe { Retained::cast_unchecked(ok_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(esc_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(stack) });

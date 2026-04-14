@@ -172,6 +172,8 @@ struct App {
     navigation_history: VecDeque<NavigationRecord>,
     /// Current image dimensions (stored so resize can update the view without needing the cache).
     current_image_size: Option<(u32, u32)>,
+    /// Whether the window auto-resizes to fit each loaded image.
+    auto_fit_window: bool,
 }
 
 impl App {
@@ -201,6 +203,7 @@ impl App {
             _qa_handle: None,
             navigation_history: VecDeque::with_capacity(10),
             current_image_size: None,
+            auto_fit_window: settings::Settings::load().auto_fit_window,
         }
     }
 
@@ -216,6 +219,17 @@ impl App {
         match image_loader::load_image(path) {
             Ok(image) => {
                 self.current_image_size = Some((image.width, image.height));
+
+                // Resize window to match image (if enabled and not fullscreen).
+                // Use the returned physical size directly — request_inner_size is async,
+                // so window.inner_size() would still return the OLD size.
+                if self.auto_fit_window
+                    && let Some(win) = &self.window
+                    && let Some(size) = window::resize_to_fit_image(win, image.width, image.height)
+                {
+                    renderer.resize(size.width, size.height);
+                }
+
                 self.view_state.update_dimensions(
                     image.width,
                     image.height,
@@ -261,6 +275,14 @@ impl App {
 
         if let Some(image) = self.image_cache.get(index) {
             self.current_image_size = Some((image.width, image.height));
+
+            if self.auto_fit_window
+                && let Some(win) = &self.window
+                && let Some(size) = window::resize_to_fit_image(win, image.width, image.height)
+            {
+                renderer.resize(size.width, size.height);
+            }
+
             self.view_state.update_dimensions(
                 image.width,
                 image.height,
@@ -543,6 +565,14 @@ impl App {
             log::debug!("Menu: Fit to window");
             self.view_state.fit_to_window();
             self.update_transform_and_redraw();
+        } else if event.id() == &ids.auto_fit_window {
+            // CheckMenuItem auto-toggles its visual state on click, so read its new state
+            let enabled = app_menu.auto_fit_item.is_checked();
+            log::debug!("Menu: Auto-fit window -> {enabled}");
+            // Route through the unified SetAutoFitWindow handler
+            let _ = self
+                .event_loop_proxy
+                .send_event(AppCommand::SetAutoFitWindow(enabled));
         } else if event.id() == &ids.fullscreen {
             log::debug!("Menu: Fullscreen");
             if let Some(win) = &self.window {
@@ -569,6 +599,7 @@ impl App {
         state.zoom = self.view_state.zoom;
         state.pan_x = self.view_state.pan_x;
         state.pan_y = self.view_state.pan_y;
+        state.auto_fit_window = self.auto_fit_window;
 
         if let Some(win) = &self.window {
             let size = win.inner_size();
@@ -730,6 +761,9 @@ impl ApplicationHandler<AppCommand> for App {
             return; // Already initialized
         }
 
+        // Register the event loop proxy globally so native UI delegates can send commands
+        qa_server::set_event_loop_proxy(self.event_loop_proxy.clone());
+
         // Create window
         let win = window::create_window(event_loop, &self.file_path);
         self.window = Some(win.clone());
@@ -837,6 +871,23 @@ impl ApplicationHandler<AppCommand> for App {
                     window::set_fullscreen(win, on);
                     self.update_shared_state();
                 }
+            }
+            AppCommand::SetAutoFitWindow(enabled) => {
+                self.auto_fit_window = enabled;
+                log::debug!("Auto-fit window set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.auto_fit_window = enabled;
+                s.save();
+                // Sync menu checkmark
+                if let Some(menu) = &self.app_menu {
+                    menu.auto_fit_item.set_checked(enabled);
+                }
+                if enabled
+                    && let (Some(win), Some((iw, ih))) = (&self.window, self.current_image_size)
+                {
+                    window::resize_to_fit_image(win, iw, ih);
+                }
+                self.update_shared_state();
             }
             AppCommand::OpenFile(path) => {
                 let resolved = path.canonicalize().unwrap_or(path);

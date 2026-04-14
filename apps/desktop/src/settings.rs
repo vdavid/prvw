@@ -1,6 +1,9 @@
 //! Settings persistence.
 //!
-//! Loads/saves user preferences from `~/Library/Application Support/com.veszelovszki.prvw/settings.json`.
+//! Loads/saves user preferences from the app data directory:
+//! - Production: `~/Library/Application Support/com.veszelovszki.prvw/settings.json`
+//! - Dev/test: override with `PRVW_DATA_DIR` env var
+//!
 //! The settings file is the source of truth — no in-memory cache or Arc/Mutex needed.
 
 use serde::{Deserialize, Serialize};
@@ -11,6 +14,9 @@ use std::path::PathBuf;
 pub struct Settings {
     #[serde(default = "default_true")]
     pub auto_update: bool,
+
+    #[serde(default = "default_true")]
+    pub auto_fit_window: bool,
 }
 
 fn default_true() -> bool {
@@ -19,7 +25,10 @@ fn default_true() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { auto_update: true }
+        Self {
+            auto_update: true,
+            auto_fit_window: true,
+        }
     }
 }
 
@@ -56,9 +65,18 @@ impl Settings {
     }
 }
 
-fn settings_path() -> PathBuf {
+/// The app data directory. Controlled by `PRVW_DATA_DIR` env var (for dev/test isolation),
+/// falling back to `~/Library/Application Support/com.veszelovszki.prvw/`.
+pub fn data_dir() -> PathBuf {
+    if let Ok(custom) = std::env::var("PRVW_DATA_DIR") {
+        return PathBuf::from(custom);
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join("Library/Application Support/com.veszelovszki.prvw/settings.json")
+    PathBuf::from(home).join("Library/Application Support/com.veszelovszki.prvw")
+}
+
+fn settings_path() -> PathBuf {
+    data_dir().join("settings.json")
 }
 
 #[cfg(test)]
@@ -66,19 +84,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_when_file_missing() {
-        let settings = Settings::load();
+    fn defaults_are_correct() {
+        let settings = Settings::default();
         assert!(settings.auto_update);
+        assert!(settings.auto_fit_window);
     }
 
     #[test]
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        let settings = Settings { auto_update: false };
+        let settings = Settings {
+            auto_update: false,
+            auto_fit_window: false,
+        };
         fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
 
         let loaded: Settings = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!loaded.auto_update);
+        assert!(!loaded.auto_fit_window);
+    }
+
+    #[test]
+    fn missing_field_gets_default() {
+        // Old settings files without auto_fit_window should default to true
+        let json = r#"{"auto_update": false}"#;
+        let loaded: Settings = serde_json::from_str(json).unwrap();
+        assert!(!loaded.auto_update);
+        assert!(loaded.auto_fit_window);
     }
 }

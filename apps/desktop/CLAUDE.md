@@ -9,7 +9,7 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | Module            | Responsibility                                              |
 | ----------------- | ----------------------------------------------------------- |
 | `main.rs`         | CLI parsing, event loop, `ApplicationHandler` impl          |
-| `window.rs`       | Window creation, fullscreen toggle, title formatting        |
+| `window.rs`       | Window creation, fullscreen toggle, auto-fit resize, title formatting |
 | `renderer.rs`     | wgpu surface, pipeline, texture upload, rendering           |
 | `image_loader.rs` | Decode image files to RGBA8 (zune-jpeg for JPEG, `image` crate for others) |
 | `view.rs`         | Zoom/pan math, transform uniform for GPU                    |
@@ -18,7 +18,7 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | `preloader.rs`    | Parallel background decoding (rayon pool), LRU cache (512 MB budget) |
 | `native_ui.rs`    | AppKit secondary windows (About, Onboarding, Settings) via objc2 |
 | `onboarding.rs`   | File association queries and default viewer registration helpers |
-| `settings.rs`     | Settings persistence (`~/Library/Application Support/com.veszelovszki.prvw/settings.json`) |
+| `settings.rs`     | Settings persistence (JSON file in app data dir, overridable via `PRVW_DATA_DIR` env var) |
 | `qa_server.rs`    | Embedded HTTP server for QA/E2E testing (state, commands, screenshots) |
 | `shader.wgsl`     | WGSL vertex/fragment shader for textured quad with 2D transform |
 
@@ -50,8 +50,13 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
     timer is invalidated and views are dropped.
   - **About and Settings** are non-modal: `makeKeyAndOrderFront` + `mem::forget` the retained views. A deduplication
     guard (`is_window_already_open`) prevents stacking. FIXME: views leak on close/reopen (see code comments).
-  - **Settings** uses a `define_class!` delegate (`SettingsDelegate`) for the NSSwitch toggle action, saving to
-    `settings.json` immediately on change.
+  - **Settings** uses a `define_class!` delegate (`SettingsDelegate`) for the NSSwitch toggle actions. Toggles
+    apply immediately (no confirm step) — the button is "Close", not "OK". Changes route through
+    `AppCommand::SetAutoFitWindow` / disk write so the menu checkmarks and app state stay in sync.
+
+- **Global event loop proxy** (`qa_server.rs`): A `OnceLock<EventLoopProxy<AppCommand>>` is set once in `resumed()`.
+  This lets non-event-loop code (like the native Settings delegate) send commands into the main loop. Used by
+  `send_command()` — the same mechanism the QA server uses, just without needing a reference to the proxy.
 
 - **File associations** (`onboarding.rs`): Uses `LSCopyDefaultRoleHandlerForContentType` and
   `LSSetDefaultRoleHandlerForContentType` via objc2-core-services FFI. No Swift scripts — direct C calls, near-instant.
@@ -82,6 +87,9 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 - **`define_class!` methods get an implicit `_cmd: Sel` parameter.** Plain helper methods defined inside
   `define_class!` are treated as ObjC methods and receive an implicit selector argument. To define a plain Rust
   helper, put it in a separate `impl` block outside the macro, or use a free function.
+- **`request_inner_size` is async on macOS.** After calling `window.request_inner_size()`, `window.inner_size()`
+  still returns the OLD size. The `Resized` event arrives later. To avoid a frame of wrong proportions,
+  `resize_to_fit_image` computes and returns the physical size so callers can pass it directly to `renderer.resize()`.
 - **`msg_send!` return types must match the ObjC method signature exactly.** `setActivationPolicy:` returns `BOOL`,
   not `void`. Writing `let _: () = msg_send![...]` for a method that returns `BOOL` panics at runtime with
   "expected return to have type code 'B', but found 'v'". Always check Apple's docs for the return type.

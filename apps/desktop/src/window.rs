@@ -1,11 +1,17 @@
 use std::path::Path;
 use std::sync::Arc;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window, WindowAttributes};
 
 const DEFAULT_WIDTH: f64 = 1024.0;
 const DEFAULT_HEIGHT: f64 = 768.0;
+
+/// Minimum window dimension (pixels) when auto-fitting to image size.
+const MIN_WINDOW_DIM: f64 = 200.0;
+
+/// Maximum fraction of the monitor's work area to use when auto-fitting.
+const MAX_SCREEN_FRACTION: f64 = 0.9;
 
 /// Create the application window. Must be called in `resumed()`.
 pub fn create_window(event_loop: &ActiveEventLoop, file_path: &Path) -> Arc<Window> {
@@ -124,4 +130,73 @@ pub fn set_fullscreen(window: &Window, on: bool) {
 /// Check if the window is currently fullscreen.
 pub fn is_fullscreen(window: &Window) -> bool {
     window.fullscreen().is_some()
+}
+
+/// Resize the window to fit the given image dimensions, then center it on screen.
+///
+/// Returns the physical size the window was set to, so the caller can update the renderer
+/// immediately (without waiting for the async `Resized` event).
+///
+/// The window size is the image size clamped to:
+/// - minimum 200px in each dimension
+/// - maximum 90% of the monitor's work area in each dimension
+///
+/// Returns `None` if the window is fullscreen (no resize performed).
+pub fn resize_to_fit_image(
+    window: &Window,
+    image_width: u32,
+    image_height: u32,
+) -> Option<PhysicalSize<u32>> {
+    if is_fullscreen(window) {
+        return None;
+    }
+
+    let scale_factor = window.scale_factor();
+
+    // Get the monitor's work area (excluding dock/menu bar)
+    let (max_w, max_h) = window
+        .current_monitor()
+        .map(|m| {
+            let size = m.size().to_logical::<f64>(scale_factor);
+            (
+                size.width * MAX_SCREEN_FRACTION,
+                size.height * MAX_SCREEN_FRACTION,
+            )
+        })
+        .unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));
+
+    // Apply the minimum floor first, then scale down proportionally to fit within the
+    // screen cap. Scaling must happen on the un-clamped dimensions to preserve aspect ratio —
+    // clamping first would make both axes fit independently, losing the ratio.
+    let img_w = (image_width as f64).max(MIN_WINDOW_DIM);
+    let img_h = (image_height as f64).max(MIN_WINDOW_DIM);
+    let scale = (max_w / img_w).min(max_h / img_h).min(1.0);
+    let final_w = (img_w * scale).max(MIN_WINDOW_DIM);
+    let final_h = (img_h * scale).max(MIN_WINDOW_DIM);
+
+    let new_size = LogicalSize::new(final_w, final_h);
+    let physical_size = new_size.to_physical::<u32>(scale_factor);
+
+    let _ = window.request_inner_size(new_size);
+
+    log::debug!(
+        "Auto-fit window: {}x{} image -> {}x{} logical ({}x{} physical)",
+        image_width,
+        image_height,
+        final_w as u32,
+        final_h as u32,
+        physical_size.width,
+        physical_size.height
+    );
+
+    // Center the window on the current monitor
+    if let Some(monitor) = window.current_monitor() {
+        let monitor_pos = monitor.position().to_logical::<f64>(scale_factor);
+        let monitor_size = monitor.size().to_logical::<f64>(scale_factor);
+        let x = monitor_pos.x + (monitor_size.width - final_w) / 2.0;
+        let y = monitor_pos.y + (monitor_size.height - final_h) / 2.0;
+        window.set_outer_position(LogicalPosition::new(x, y));
+    }
+
+    Some(physical_size)
 }

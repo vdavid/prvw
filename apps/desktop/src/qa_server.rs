@@ -13,8 +13,26 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use winit::event_loop::EventLoopProxy;
+
+/// Global event loop proxy, set once in `resumed()`. Allows non-main-loop code (like the
+/// native Settings window delegate) to send commands into the event loop.
+static EVENT_LOOP_PROXY: OnceLock<EventLoopProxy<AppCommand>> = OnceLock::new();
+
+/// Store the event loop proxy so it's accessible from native UI delegates.
+pub fn set_event_loop_proxy(proxy: EventLoopProxy<AppCommand>) {
+    let _ = EVENT_LOOP_PROXY.set(proxy);
+}
+
+/// Send a command through the global event loop proxy. Returns false if the proxy
+/// hasn't been set or the event loop is closed.
+pub fn send_command(command: AppCommand) -> bool {
+    EVENT_LOOP_PROXY
+        .get()
+        .and_then(|p| p.send_event(command).ok())
+        .is_some()
+}
 
 /// Snapshot of app state, updated by the main thread on every state change.
 #[derive(Clone, Debug)]
@@ -29,6 +47,8 @@ pub struct SharedAppState {
     pub window_width: u32,
     pub window_height: u32,
     pub window_title: String,
+    /// Whether auto-fit window is enabled.
+    pub auto_fit_window: bool,
     /// Pre-formatted diagnostics text, updated by the main thread.
     pub diagnostics_text: String,
 }
@@ -46,6 +66,7 @@ impl Default for SharedAppState {
             window_width: 0,
             window_height: 0,
             window_title: String::new(),
+            auto_fit_window: true,
             diagnostics_text: String::new(),
         }
     }
@@ -69,6 +90,8 @@ pub enum AppCommand {
     SetFullscreen(bool),
     /// Open a specific file.
     OpenFile(PathBuf),
+    /// Set auto-fit window mode.
+    SetAutoFitWindow(bool),
     /// Capture a screenshot. The sender receives PNG bytes.
     TakeScreenshot(mpsc::Sender<Vec<u8>>),
 }
@@ -212,6 +235,7 @@ fn handle_request(
         ("POST", "/navigate") => handle_post_navigate(stream, proxy, &body),
         ("POST", "/zoom") => handle_post_zoom(stream, proxy, &body),
         ("POST", "/fullscreen") => handle_post_fullscreen(stream, proxy, &body),
+        ("POST", "/auto-fit") => handle_post_auto_fit(stream, proxy, &body),
         ("POST", "/open") => handle_post_open(stream, proxy, &body),
         _ => write_response(stream, 404, "text/plain", b"Not found", &[]),
     }
@@ -358,6 +382,20 @@ fn mcp_tools_list() -> Result<Value, Value> {
                 }
             },
             {
+                "name": "auto_fit_window",
+                "description": "Control the auto-fit window setting. When enabled, the window resizes to match each loaded image.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "true to enable, false to disable."
+                        }
+                    },
+                    "required": ["enabled"]
+                }
+            },
+            {
                 "name": "screenshot",
                 "description": "Capture a screenshot of the current view. Returns a base64-encoded PNG image.",
                 "inputSchema": {
@@ -452,6 +490,17 @@ fn mcp_tools_call(
                 .send_event(AppCommand::OpenFile(PathBuf::from(path_str)))
                 .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
             Ok(mcp_text_content(&format!("Opened: {path_str}")))
+        }
+        "auto_fit_window" => {
+            let enabled = args["enabled"]
+                .as_bool()
+                .ok_or_else(|| json_rpc_error(-32602, "enabled must be a boolean"))?;
+            proxy
+                .send_event(AppCommand::SetAutoFitWindow(enabled))
+                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let label = if enabled { "enabled" } else { "disabled" };
+            Ok(mcp_text_content(&format!("Auto-fit window: {label}")))
         }
         "screenshot" => {
             let (tx, rx) = mpsc::channel();
@@ -571,6 +620,7 @@ fn format_state_text(state: &Arc<Mutex<SharedAppState>>) -> String {
     };
 
     let fullscreen_str = if s.fullscreen { "yes" } else { "no" };
+    let auto_fit_str = if s.auto_fit_window { "yes" } else { "no" };
 
     format!(
         "file: {file_display}\n\
@@ -578,6 +628,7 @@ fn format_state_text(state: &Arc<Mutex<SharedAppState>>) -> String {
          zoom: {:.2}{zoom_label}\n\
          pan: ({:.2}, {:.2})\n\
          fullscreen: {fullscreen_str}\n\
+         auto_fit_window: {auto_fit_str}\n\
          window: {}x{}\n\
          title: {}\n",
         s.current_index + 1,
@@ -608,6 +659,7 @@ View
   ---
   Actual size  1/Cmd+1
   Fit to window 0/Cmd+0
+  Auto-fit window (toggle)
   ---
   Fullscreen   F/Enter/F11/Cmd+F
 Navigate
@@ -755,6 +807,31 @@ fn handle_post_fullscreen(
     };
     proxy
         .send_event(cmd)
+        .map_err(|e| format!("Event loop closed: {e}"))?;
+    write_response(stream, 200, "text/plain", b"ok", &[])
+}
+
+fn handle_post_auto_fit(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+) -> Result<(), String> {
+    let value = body.trim().to_lowercase();
+    let enabled = match value.as_str() {
+        "on" | "true" | "1" => true,
+        "off" | "false" | "0" => false,
+        _ => {
+            return write_response(
+                stream,
+                400,
+                "text/plain",
+                b"Body must be 'on'/'off', 'true'/'false', or '1'/'0'",
+                &[],
+            );
+        }
+    };
+    proxy
+        .send_event(AppCommand::SetAutoFitWindow(enabled))
         .map_err(|e| format!("Event loop closed: {e}"))?;
     write_response(stream, 200, "text/plain", b"ok", &[])
 }
