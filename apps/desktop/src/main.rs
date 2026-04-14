@@ -8,6 +8,7 @@ mod menu;
 mod native_ui;
 #[cfg(target_os = "macos")]
 mod onboarding;
+mod pixels;
 mod preloader;
 mod qa_server;
 mod renderer;
@@ -177,6 +178,9 @@ struct App {
     auto_fit_window: bool,
     /// Whether small images are enlarged to fill the window.
     enlarge_small_images: bool,
+    /// Current display scale factor (Retina = 2.0). Updated on window creation and
+    /// `ScaleFactorChanged` events. Defaults to 2.0 before the window exists.
+    scale_factor: f64,
 }
 
 impl App {
@@ -209,6 +213,7 @@ impl App {
             current_image_size: None,
             auto_fit_window: initial_settings.auto_fit_window,
             enlarge_small_images: initial_settings.enlarge_small_images,
+            scale_factor: 2.0,
         }
     }
 
@@ -270,15 +275,10 @@ impl App {
         let desired_h = ih as f64 * new_zoom as f64 / scale;
 
         // Cap at screen bounds, floor at minimum
-        let (max_w, max_h) = win
-            .current_monitor()
-            .map(|m| {
-                let s = m.size().to_logical::<f64>(scale);
-                (
-                    s.width * window::MAX_SCREEN_FRACTION,
-                    s.height * window::MAX_SCREEN_FRACTION,
-                )
-            })
+        let monitor_bounds = window::MonitorBounds::from_window(win);
+        let (max_w, max_h) = monitor_bounds
+            .as_ref()
+            .map(|b| b.max_window_size())
             .unwrap_or((desired_w, desired_h));
 
         let final_w = desired_w.clamp(window::MIN_WINDOW_DIM, max_w);
@@ -343,33 +343,14 @@ impl App {
         };
 
         // Screen boundary: the window must not go MORE off-screen than it was before.
-        let (final_x, final_y) = if let Some(m) = win.current_monitor() {
-            let mp = m.position().to_logical::<f64>(scale);
-            let ms = m.size().to_logical::<f64>(scale);
-
-            // Current off-screen margins using outer frame dimensions.
-            let off_left = (mp.x - win_pos.x).max(0.0);
-            let off_right = ((win_pos.x + outer_w) - (mp.x + ms.width)).max(0.0);
-            let off_top = (mp.y - win_pos.y).max(0.0);
-            let off_bottom = ((win_pos.y + outer_h) - (mp.y + ms.height)).max(0.0);
-
-            // Allowed range: new margins <= old margins.
-            let min_x = mp.x - off_left;
-            let max_x = mp.x + ms.width + off_right - new_outer_w;
-            let min_y = mp.y - off_top;
-            let max_y = mp.y + ms.height + off_bottom - new_outer_h;
-
-            let fx = if min_x <= max_x {
-                target_x.clamp(min_x, max_x)
-            } else {
-                (min_x + max_x) / 2.0
-            };
-            let fy = if min_y <= max_y {
-                target_y.clamp(min_y, max_y)
-            } else {
-                (min_y + max_y) / 2.0
-            };
-            (fx, fy)
+        let (final_x, final_y) = if let Some(bounds) = &monitor_bounds {
+            window::clamp_to_screen(
+                (target_x, target_y),
+                (new_outer_w, new_outer_h),
+                (win_pos.x, win_pos.y),
+                (outer_w, outer_h),
+                bounds,
+            )
         } else {
             (target_x, target_y)
         };
@@ -619,12 +600,7 @@ impl App {
             return Vec::new();
         };
 
-        let scale_factor = self
-            .window
-            .as_ref()
-            .map(|w| w.scale_factor())
-            .unwrap_or(2.0);
-        let logical_width = rend.surface_width() as f32 / scale_factor as f32;
+        let logical_width = rend.logical_width();
 
         let filename = dir
             .current()
@@ -645,15 +621,10 @@ impl App {
         let zoom_pct = (self.view_state.zoom * 100.0).round() as i32;
         let zoom_text = format!("{zoom_pct}%");
 
-        let text_color: [u8; 4] = [255, 255, 255, 240];
-        let pill = text::PillStyle {
-            color: [0.0, 0.0, 0.0, 0.55],
-            padding_x: 8.0,
-            padding_y: 4.0,
-            corner_radius: 5.0,
-        };
-        let font_size = 13.5;
-        let line_height = 18.5;
+        let pill_color: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
+        let pad_x = 8.0;
+        let pad_y = 4.0;
+        let radius = 5.0;
         let title_x = 80.0; // Right of the traffic lights
         let title_y = 3.0; // Aligned with the native title bar text
         let zoom_margin = 7.0; // Equidistant from top and right edge
@@ -663,49 +634,19 @@ impl App {
         let zoom_budget = 70.0; // space reserved for zoom pill (for title truncation)
         let gap = 12.0; // minimum space between title and zoom pills
         let title_max_render =
-            logical_width - title_x - zoom_budget - pill.padding_x * 2.0 - zoom_margin - gap;
+            logical_width - title_x - zoom_budget - pad_x * 2.0 - zoom_margin - gap;
 
         vec![
             // Left: filename with position
-            text::TextBlock {
-                text: title,
-                x: title_x + pill.padding_x,
-                y: title_y + pill.padding_y,
-                font_size,
-                line_height,
-                color: text_color,
-                max_width: None,
-                bold: true,
-                shadow: false,
-                max_render_width: Some(title_max_render),
-                pill: Some(text::PillStyle {
-                    color: pill.color,
-                    padding_x: pill.padding_x,
-                    padding_y: pill.padding_y,
-                    corner_radius: pill.corner_radius,
-                }),
-                align_right: false,
-            },
+            text::TextBlock::new(title, title_x + pad_x, title_y + pad_y)
+                .bold()
+                .max_render_width(title_max_render)
+                .pill(pill_color, pad_x, pad_y, radius),
             // Right: zoom percentage (right-aligned — grows left for larger values)
-            text::TextBlock {
-                text: zoom_text,
-                x: zoom_right_edge,
-                y: title_y + pill.padding_y,
-                font_size,
-                line_height,
-                color: text_color,
-                max_width: None,
-                bold: true,
-                shadow: false,
-                max_render_width: None,
-                pill: Some(text::PillStyle {
-                    color: pill.color,
-                    padding_x: pill.padding_x,
-                    padding_y: pill.padding_y,
-                    corner_radius: pill.corner_radius,
-                }),
-                align_right: true,
-            },
+            text::TextBlock::new(zoom_text, zoom_right_edge, title_y + pad_y)
+                .bold()
+                .align_right()
+                .pill(pill_color, pad_x, pad_y, radius),
         ]
     }
 
@@ -1168,6 +1109,7 @@ impl ApplicationHandler<AppCommand> for App {
 
         // Create window
         let win = window::create_window(event_loop, &self.file_path);
+        self.scale_factor = win.scale_factor();
         self.window = Some(win.clone());
 
         // Create renderer (wgpu surface must be created here, in resumed())
@@ -1365,6 +1307,14 @@ impl ApplicationHandler<AppCommand> for App {
                     self.drag_start = None;
                 }
             },
+
+            WindowEvent::ScaleFactorChanged {
+                scale_factor: new_scale,
+                ..
+            } => {
+                self.scale_factor = new_scale;
+                log::debug!("Scale factor changed to {new_scale}");
+            }
 
             _ => {}
         }

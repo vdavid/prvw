@@ -50,6 +50,16 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
   "Fit to window" (0 key) always sets zoom=`fit_zoom`. "Actual size" (1 key) always sets zoom=1.0. The zoom % in the
   titlebar is the actual pixel scale (100% = native size). Background is always black.
 
+- **Coordinate conventions**: Two coordinate systems are used throughout:
+  - **Logical pixels** (f64): UI layout coordinates, independent of display scaling. Used for window position
+    (`outer_position`), window content size in `MonitorBounds`, `TextBlock` coordinates, and `MeasuredPill`
+    positions. 1 logical pixel = 1 point on macOS.
+  - **Physical pixels** (u32): Actual GPU surface pixels. Used for `surface_width()`/`surface_height()`, wgpu texture
+    sizes, and `PhysicalSize` from winit. On Retina displays, 1 logical = 2 physical.
+  The `scale_factor` (stored on `App`, also on `Renderer`) converts between them. `Renderer::logical_width()` is a
+  convenience for `surface_width / scale_factor`. When in doubt, check the function signature: winit's `LogicalSize`
+  and `PhysicalSize` types make the system explicit at API boundaries.
+
 - **Command architecture**: All user actions are expressed as `AppCommand` variants (defined in `qa_server.rs`).
   `input.rs` maps keyboard, menu, and QA key events to commands. `App::execute_command()` in `main.rs` is the single
   place where each command's effect is implemented. Scroll zoom, mouse drag, and cursor tracking stay inline in

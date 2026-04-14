@@ -1,6 +1,7 @@
 //! Text rendering via glyphon. Wraps font system, atlas, and renderer into a single API
 //! that the main renderer can call to draw text overlays (header bar).
 
+use crate::pixels::LogicalF32;
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
@@ -11,19 +12,19 @@ use glyphon::{
 /// The text renderer scales them by the display scale factor automatically.
 pub struct TextBlock {
     pub text: String,
-    pub x: f32,
-    pub y: f32,
+    pub x: LogicalF32,
+    pub y: LogicalF32,
     pub font_size: f32,
     pub line_height: f32,
     pub color: [u8; 4], // RGBA
-    pub max_width: Option<f32>,
+    pub max_width: Option<LogicalF32>,
     pub bold: bool,
     /// Drop shadow: renders the text twice — dark shadow offset by 1px, then the main color on top.
     /// This guarantees readability on any background without a backdrop blur or pill.
     pub shadow: bool,
     /// Maximum rendered width in logical pixels. If text exceeds this, truncate with
     /// middle ellipsis: "long_filen…photo.jpg". None = no truncation.
-    pub max_render_width: Option<f32>,
+    pub max_render_width: Option<LogicalF32>,
     /// If set, draw a semi-transparent pill (rounded rect) behind the text.
     pub pill: Option<PillStyle>,
     /// If set, `x` is the RIGHT edge of the pill (text + padding), and the block is
@@ -39,14 +40,64 @@ pub struct PillStyle {
 }
 
 /// A measured pill rect, computed from actual text width after shaping.
-#[allow(dead_code)]
 pub struct MeasuredPill {
-    pub x: f32,      // logical pts
-    pub y: f32,      // logical pts
-    pub width: f32,  // logical pts
-    pub height: f32, // logical pts
+    pub x: LogicalF32,      // logical pts
+    pub y: LogicalF32,      // logical pts
+    pub width: LogicalF32,  // logical pts
+    pub height: LogicalF32, // logical pts
     pub color: [f32; 4],
     pub corner_radius: f32,
+}
+
+impl TextBlock {
+    /// Create a text block with sensible defaults. Font: 13.5pt, white, not bold, no shadow/pill/truncation.
+    pub fn new(text: impl Into<String>, x: LogicalF32, y: LogicalF32) -> Self {
+        Self {
+            text: text.into(),
+            x,
+            y,
+            font_size: 13.5,
+            line_height: 18.5,
+            color: [255, 255, 255, 240],
+            max_width: None,
+            bold: false,
+            shadow: false,
+            max_render_width: None,
+            pill: None,
+            align_right: false,
+        }
+    }
+
+    pub fn bold(mut self) -> Self {
+        self.bold = true;
+        self
+    }
+
+    pub fn pill(
+        mut self,
+        color: [f32; 4],
+        padding_x: f32,
+        padding_y: f32,
+        corner_radius: f32,
+    ) -> Self {
+        self.pill = Some(PillStyle {
+            color,
+            padding_x,
+            padding_y,
+            corner_radius,
+        });
+        self
+    }
+
+    pub fn max_render_width(mut self, width: f32) -> Self {
+        self.max_render_width = Some(width);
+        self
+    }
+
+    pub fn align_right(mut self) -> Self {
+        self.align_right = true;
+        self
+    }
 }
 
 /// Measure the rendered width of shaped text in logical points.

@@ -1,3 +1,4 @@
+use crate::pixels::LogicalF64;
 use std::path::Path;
 use std::sync::Arc;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
@@ -137,6 +138,77 @@ pub fn is_fullscreen(window: &Window) -> bool {
     window.fullscreen().is_some()
 }
 
+/// Monitor work area in logical pixels.
+pub struct MonitorBounds {
+    pub x: LogicalF64,
+    pub y: LogicalF64,
+    pub width: LogicalF64,
+    pub height: LogicalF64,
+}
+
+impl MonitorBounds {
+    /// Get the current monitor's bounds in logical pixels. Returns `None` if no monitor.
+    pub fn from_window(window: &Window) -> Option<Self> {
+        let scale = window.scale_factor();
+        window.current_monitor().map(|m| {
+            let pos = m.position().to_logical::<f64>(scale);
+            let size = m.size().to_logical::<f64>(scale);
+            Self {
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+            }
+        })
+    }
+
+    /// Maximum window size (90% of monitor in each dimension).
+    pub fn max_window_size(&self) -> (LogicalF64, LogicalF64) {
+        (
+            self.width * MAX_SCREEN_FRACTION,
+            self.height * MAX_SCREEN_FRACTION,
+        )
+    }
+}
+
+/// Clamp a new window position so it doesn't go MORE off-screen than the old position.
+///
+/// - `target`: desired (x, y) for the new position
+/// - `new_size`: (width, height) of the new outer frame
+/// - `old_pos`: (x, y) of the current outer frame
+/// - `old_size`: (width, height) of the current outer frame
+///
+/// Returns the clamped (x, y).
+pub fn clamp_to_screen(
+    target: (LogicalF64, LogicalF64),
+    new_size: (LogicalF64, LogicalF64),
+    old_pos: (LogicalF64, LogicalF64),
+    old_size: (LogicalF64, LogicalF64),
+    bounds: &MonitorBounds,
+) -> (LogicalF64, LogicalF64) {
+    let off_left = (bounds.x - old_pos.0).max(0.0);
+    let off_right = ((old_pos.0 + old_size.0) - (bounds.x + bounds.width)).max(0.0);
+    let off_top = (bounds.y - old_pos.1).max(0.0);
+    let off_bottom = ((old_pos.1 + old_size.1) - (bounds.y + bounds.height)).max(0.0);
+
+    let min_x = bounds.x - off_left;
+    let max_x = bounds.x + bounds.width + off_right - new_size.0;
+    let min_y = bounds.y - off_top;
+    let max_y = bounds.y + bounds.height + off_bottom - new_size.1;
+
+    let fx = if min_x <= max_x {
+        target.0.clamp(min_x, max_x)
+    } else {
+        (min_x + max_x) / 2.0
+    };
+    let fy = if min_y <= max_y {
+        target.1.clamp(min_y, max_y)
+    } else {
+        (min_y + max_y) / 2.0
+    };
+    (fx, fy)
+}
+
 /// Resize the window to fit the given image dimensions, then center it on screen.
 ///
 /// Returns the physical size the window was set to, so the caller can update the renderer
@@ -159,15 +231,8 @@ pub fn resize_to_fit_image(
     let scale_factor = window.scale_factor();
 
     // Get the monitor's work area (excluding dock/menu bar)
-    let (max_w, max_h) = window
-        .current_monitor()
-        .map(|m| {
-            let size = m.size().to_logical::<f64>(scale_factor);
-            (
-                size.width * MAX_SCREEN_FRACTION,
-                size.height * MAX_SCREEN_FRACTION,
-            )
-        })
+    let (max_w, max_h) = MonitorBounds::from_window(window)
+        .map(|b| b.max_window_size())
         .unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));
 
     // Apply the minimum floor first, then scale down proportionally to fit within the
@@ -195,11 +260,9 @@ pub fn resize_to_fit_image(
     );
 
     // Center the window on the current monitor
-    if let Some(monitor) = window.current_monitor() {
-        let monitor_pos = monitor.position().to_logical::<f64>(scale_factor);
-        let monitor_size = monitor.size().to_logical::<f64>(scale_factor);
-        let x = monitor_pos.x + (monitor_size.width - final_w) / 2.0;
-        let y = monitor_pos.y + (monitor_size.height - final_h) / 2.0;
+    if let Some(bounds) = MonitorBounds::from_window(window) {
+        let x = bounds.x + (bounds.width - final_w) / 2.0;
+        let y = bounds.y + (bounds.height - final_h) / 2.0;
         window.set_outer_position(LogicalPosition::new(x, y));
     }
 

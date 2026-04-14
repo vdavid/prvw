@@ -1,4 +1,5 @@
 use crate::image_loader::DecodedImage;
+use crate::pixels::LogicalF32;
 use crate::text::{GlyphonRenderer, TextBlock};
 use crate::view::TransformUniform;
 use image::ImageEncoder;
@@ -617,5 +618,17 @@ impl Renderer {
 
     pub fn surface_height(&self) -> u32 {
         self.config.height
+    }
+
+    pub fn logical_width(&self) -> LogicalF32 {
+        self.config.width as f32 / self.scale_factor as f32
+    }
+
+    #[expect(
+        dead_code,
+        reason = "symmetric with logical_width, will be used as more code adopts logical coordinates"
+    )]
+    pub fn logical_height(&self) -> LogicalF32 {
+        self.config.height as f32 / self.scale_factor as f32
     }
 }
