@@ -69,6 +69,7 @@ pub struct GlyphonRenderer {
 impl GlyphonRenderer {
     /// Create a new text renderer. Call once during renderer init.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        #[allow(unused_mut)] // mut needed on macOS for load_font_source
         let mut font_system = FontSystem::new();
 
         // Load the macOS system font (SF Pro) directly from disk. fontdb's automatic

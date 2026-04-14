@@ -30,6 +30,7 @@ pub fn set_event_loop_proxy(proxy: EventLoopProxy<AppCommand>) {
 
 /// Send a command through the global event loop proxy. Returns false if the proxy
 /// hasn't been set or the event loop is closed.
+#[cfg(target_os = "macos")] // Called from native_ui.rs (macOS-only Settings delegate)
 pub fn send_command(command: AppCommand) -> bool {
     EVENT_LOOP_PROXY
         .get()
