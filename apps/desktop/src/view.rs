@@ -8,7 +8,7 @@
 //! zoom=2.0 means 2x magnification. The minimum zoom is 1.0 (can't zoom out past fit).
 
 const MAX_ZOOM: f32 = 100.0;
-const ZOOM_STEP: f32 = 1.15; // ~15% per scroll tick
+const ZOOM_STEP: f32 = 1.05; // ~5% per scroll tick
 const KEYBOARD_ZOOM_STEP: f32 = 1.25;
 
 #[derive(Debug, Clone)]
