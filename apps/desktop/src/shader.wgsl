@@ -54,7 +54,23 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     return output;
 }
 
+// Checkerboard pattern for transparent image regions (Photoshop-style).
+// Computed in screen-space so it doesn't move when zooming/panning.
+fn checkerboard(screen_pos: vec2<f32>) -> vec3<f32> {
+    let square_size = 8.0;
+    let checker = (floor(screen_pos.x / square_size) + floor(screen_pos.y / square_size)) % 2.0;
+    // Light gray / dark gray, like Photoshop
+    return select(vec3<f32>(0.4, 0.4, 0.4), vec3<f32>(0.25, 0.25, 0.25), checker == 0.0);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    return textureSample(t_diffuse, s_diffuse, input.tex_coords);
+    let color = textureSample(t_diffuse, s_diffuse, input.tex_coords);
+    if color.a >= 1.0 {
+        return color;
+    }
+    // Blend image over checkerboard using standard alpha compositing
+    let bg = checkerboard(input.position.xy);
+    let blended = color.rgb * color.a + bg * (1.0 - color.a);
+    return vec4<f32>(blended, 1.0);
 }
