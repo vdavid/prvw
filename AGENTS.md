@@ -101,9 +101,10 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 
 - **Always read** [style-guide.md](docs/style-guide.md) before touching code. Especially sentence case!
 - Cover your code with tests until you're confident. Don't go overboard.
-- **Run `./scripts/check.sh` before every commit.** It takes ~12 seconds and catches formatting, linting, and test
-  failures that CI will reject. Non-CI mode auto-formats; CI mode only checks. Don't skip this. Never `tail`, `head`,
-  or truncate the checker output. Its output is already concise.
+- **Run `./scripts/check.sh` before every commit.** It takes ~10 seconds (14 checks across Rust, Go, and Astro) and
+  catches formatting, linting, and test failures that CI will reject. Run all checks, not just `--rust`. Non-CI mode
+  auto-formats; CI mode only checks. Don't skip this. Never `tail`, `head`, or truncate the checker output. Its output
+  is already concise.
 - **Don't commit unless explicitly asked.** Make changes, verify they work, then wait for the user to say "commit".
 
 Happy coding! :)
