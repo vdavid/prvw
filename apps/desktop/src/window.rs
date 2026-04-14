@@ -8,27 +8,12 @@ const DEFAULT_WIDTH: f64 = 1024.0;
 const DEFAULT_HEIGHT: f64 = 768.0;
 
 /// Create the application window. Must be called in `resumed()`.
-/// When `onboarding` is true, the window is sized smaller for the welcome screen.
-pub fn create_window(
-    event_loop: &ActiveEventLoop,
-    file_path: &Path,
-    onboarding: bool,
-) -> Arc<Window> {
-    let title = if onboarding {
-        "Welcome to Prvw".to_string()
-    } else {
-        window_title_for_path(file_path)
-    };
-
-    let (width, height) = if onboarding {
-        (560.0, 400.0)
-    } else {
-        (DEFAULT_WIDTH, DEFAULT_HEIGHT)
-    };
+pub fn create_window(event_loop: &ActiveEventLoop, file_path: &Path) -> Arc<Window> {
+    let title = window_title_for_path(file_path);
 
     let attrs = WindowAttributes::default()
         .with_title(title)
-        .with_inner_size(LogicalSize::new(width, height));
+        .with_inner_size(LogicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT));
 
     let window = event_loop
         .create_window(attrs)

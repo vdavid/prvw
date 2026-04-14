@@ -16,6 +16,9 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | `menu.rs`         | Native macOS menu bar via `muda`, shortcut wiring           |
 | `directory.rs`    | Scan parent dir for images, sort, track position            |
 | `preloader.rs`    | Parallel background decoding (rayon pool), LRU cache (512 MB budget) |
+| `native_ui.rs`    | AppKit secondary windows (About, Onboarding, Settings) via objc2 |
+| `onboarding.rs`   | File association queries and default viewer registration helpers |
+| `settings.rs`     | Settings persistence (`~/Library/Application Support/com.veszelovszki.prvw/settings.json`) |
 | `qa_server.rs`    | Embedded HTTP server for QA/E2E testing (state, commands, screenshots) |
 | `shader.wgsl`     | WGSL vertex/fragment shader for textured quad with 2D transform |
 
@@ -38,6 +41,21 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
   (default 19447, set to 0 to disable). Commands flow through `EventLoopProxy<AppCommand>` user events. Screenshots
   use an offscreen wgpu render target + buffer readback + PNG encoding.
 
+- **Native secondary windows** (`native_ui.rs`): About, Onboarding, and Settings windows are built with AppKit via
+  objc2. All use `NSStackView` for layout, `NSVisualEffectView` for frosted glass, and transparent titlebars.
+  - **Onboarding** runs as a modal (`runModalForWindow`) BEFORE `EventLoop::new()`. Uses a state/render separation
+    pattern: `OnboardingState` (pure data, no UI refs) computes current state from system queries, and `OnboardingUI`
+    (widget pointers) has a single `render()` method that applies state to all widgets. An `NSTimer` polls every second,
+    and the delegate's button handler both use `OnboardingState::current()` + `ui.render()`. After the modal exits, the
+    timer is invalidated and views are dropped.
+  - **About and Settings** are non-modal: `makeKeyAndOrderFront` + `mem::forget` the retained views. A deduplication
+    guard (`is_window_already_open`) prevents stacking. FIXME: views leak on close/reopen (see code comments).
+  - **Settings** uses a `define_class!` delegate (`SettingsDelegate`) for the NSSwitch toggle action, saving to
+    `settings.json` immediately on change.
+
+- **File associations** (`onboarding.rs`): Uses `LSCopyDefaultRoleHandlerForContentType` and
+  `LSSetDefaultRoleHandlerForContentType` via objc2-core-services FFI. No Swift scripts — direct C calls, near-instant.
+
 ## Gotchas
 
 - **wgpu 29 API changes**: `Instance::new()` takes a value (not reference). `get_current_texture()` returns
@@ -55,12 +73,18 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
   objc2 and adding them to a parent view with `addSubview`, the Rust `Retained<>` wrapper must stay alive for the
   entire duration of the modal session. If it drops (goes out of scope), AppKit's autorelease pool cleanup will
   segfault (use-after-free). Fix: collect all views in a `Vec<Retained<...>>` that lives alongside the modal loop.
-  This applies to `onboarding.rs` and any future native macOS dialogs. There is no compile-time check for this.
+  This applies to `native_ui.rs` and any future native macOS dialogs. There is no compile-time check for this.
 - **Never run AppKit modals from inside winit's event loop.** Running `NSApplication::runModalForWindow` inside
   winit's `resumed()` or `window_event()` creates a nested run loop inside winit's autorelease pool. When the modal
   ends and an Apple Event arrives, the pool drains objects from the wrong scope, causing segfault. Fix: run native
   modals BEFORE `EventLoop::new()` (like the onboarding dialog in `main()`), or use `EventLoopProxy` to defer the
   modal to after the event loop exits.
+- **`define_class!` methods get an implicit `_cmd: Sel` parameter.** Plain helper methods defined inside
+  `define_class!` are treated as ObjC methods and receive an implicit selector argument. To define a plain Rust
+  helper, put it in a separate `impl` block outside the macro, or use a free function.
+- **`msg_send!` return types must match the ObjC method signature exactly.** `setActivationPolicy:` returns `BOOL`,
+  not `void`. Writing `let _: () = msg_send![...]` for a method that returns `BOOL` panics at runtime with
+  "expected return to have type code 'B', but found 'v'". Always check Apple's docs for the return type.
 
 ## Dependencies
 
@@ -78,3 +102,5 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | log         | 0.4.29  | Logging facade                           |
 | env_logger  | 0.11.10 | Log output to stderr                     |
 | bytemuck    | 1.25.0  | Safe transmute for GPU uniform data      |
+| objc2-core-foundation | 0.3 | CFString for CoreServices FFI       |
+| objc2-core-services   | 0.3 | File association APIs (LSSetDefaultRoleHandler, etc.) |

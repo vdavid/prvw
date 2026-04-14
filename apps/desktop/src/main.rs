@@ -4,10 +4,13 @@ mod image_loader;
 mod macos_open_handler;
 mod menu;
 #[cfg(target_os = "macos")]
+mod native_ui;
+#[cfg(target_os = "macos")]
 mod onboarding;
 mod preloader;
 mod qa_server;
 mod renderer;
+mod settings;
 mod text;
 #[cfg(target_os = "macos")]
 mod updater;
@@ -85,27 +88,20 @@ fn main() {
         })
         .collect();
 
-    let onboarding_mode;
-    #[cfg(target_os = "macos")]
-    {
-        onboarding_mode = resolved_files.is_empty() && onboarding::is_app_bundle();
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        onboarding_mode = false;
-    }
-
-    if resolved_files.is_empty() && !onboarding_mode {
-        eprintln!("No valid image files provided");
-        std::process::exit(1);
+    // No files passed: show the native onboarding window and exit.
+    // This runs BEFORE EventLoop::new() to avoid nested run loop segfaults
+    // (see AGENTS.md gotcha on AppKit modals).
+    if resolved_files.is_empty() {
+        log::info!("No files passed, showing onboarding window");
+        #[cfg(target_os = "macos")]
+        native_ui::show_onboarding_window();
+        return;
     }
 
-    if !onboarding_mode {
-        if resolved_files.len() == 1 {
-            log::info!("Opening {}", resolved_files[0].display());
-        } else {
-            log::info!("Opening {} files", resolved_files.len());
-        }
+    if resolved_files.len() == 1 {
+        log::info!("Opening {}", resolved_files[0].display());
+    } else {
+        log::info!("Opening {} files", resolved_files.len());
     }
 
     let file_path = resolved_files.first().cloned().unwrap_or_default();
@@ -129,13 +125,7 @@ fn main() {
         None
     };
 
-    let mut app = App::new(
-        file_path,
-        explicit_files,
-        proxy,
-        Arc::clone(&shared_state),
-        onboarding_mode,
-    );
+    let mut app = App::new(file_path, explicit_files, proxy, Arc::clone(&shared_state));
     event_loop
         .run_app(&mut app)
         .expect("Event loop terminated unexpectedly");
@@ -182,8 +172,6 @@ struct App {
     navigation_history: VecDeque<NavigationRecord>,
     /// Current image dimensions (stored so resize can update the view without needing the cache).
     current_image_size: Option<(u32, u32)>,
-    /// When true, the app shows the onboarding welcome screen instead of an image.
-    onboarding_mode: bool,
 }
 
 impl App {
@@ -192,7 +180,6 @@ impl App {
         explicit_files: Option<Vec<PathBuf>>,
         event_loop_proxy: EventLoopProxy<AppCommand>,
         shared_state: Arc<Mutex<SharedAppState>>,
-        onboarding_mode: bool,
     ) -> Self {
         Self {
             file_path,
@@ -214,7 +201,6 @@ impl App {
             _qa_handle: None,
             navigation_history: VecDeque::with_capacity(10),
             current_image_size: None,
-            onboarding_mode,
         }
     }
 
@@ -395,25 +381,13 @@ impl App {
         }
     }
 
-    /// Build text blocks for the current frame. Returns onboarding text, header overlay,
-    /// or empty depending on the mode.
+    /// Build text blocks for the header overlay in the transparent titlebar area.
+    /// Shows filename, position, and zoom level (for example, "3 / 60 - photo.jpg  |  150%").
     fn build_text_overlay(&self) -> Vec<text::TextBlock> {
         let Some(renderer) = &self.renderer else {
             return Vec::new();
         };
-        let sw = renderer.surface_width();
-        let sh = renderer.surface_height();
-
-        if self.onboarding_mode {
-            #[cfg(target_os = "macos")]
-            return onboarding::onboarding_text_blocks(sw, sh);
-            #[cfg(not(target_os = "macos"))]
-            return Vec::new();
-        }
-
-        // Image viewing mode: header overlay in the transparent titlebar area.
-        // Show filename and position (for example, "3 / 60 - photo.jpg  |  150%").
-        self.build_header_text(sw)
+        self.build_header_text(renderer.surface_width())
     }
 
     /// Build header text blocks shown in the transparent titlebar area during image viewing.
@@ -492,22 +466,47 @@ impl App {
         }
     }
 
+    fn show_settings_dialog(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            use objc2::msg_send;
+            use objc2_app_kit::NSWindow;
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+            let mut parent_ptr: *const NSWindow = std::ptr::null();
+            if let Some(win) = &self.window
+                && let Ok(RawWindowHandle::AppKit(handle)) = win.window_handle().map(|h| h.as_raw())
+            {
+                let ns_view = handle.ns_view.as_ptr() as *const objc2::runtime::AnyObject;
+                let ns_win: *const NSWindow = unsafe { msg_send![ns_view, window] };
+                if !ns_win.is_null() {
+                    parent_ptr = ns_win;
+                }
+            }
+
+            native_ui::show_settings_window(parent_ptr);
+        }
+    }
+
     fn show_about_dialog(&self) {
         #[cfg(target_os = "macos")]
         {
-            let version = env!("CARGO_PKG_VERSION");
-            use std::process::Command;
-            let message = format!(
-                "Prvw {version}\\n\\nA fast image viewer for macOS.\\n\\nBy David Veszelovszki\\nhttps://veszelovszki.com\\n\\nhttps://getprvw.com"
-            );
-            let _ = Command::new("osascript")
-                .args([
-                    "-e",
-                    &format!(
-                        "display dialog \"{message}\" with title \"About Prvw\" buttons {{\"OK\"}} default button \"OK\" with icon note"
-                    ),
-                ])
-                .spawn();
+            use objc2::msg_send;
+            use objc2_app_kit::NSWindow;
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+            let mut parent_ptr: *const NSWindow = std::ptr::null();
+            if let Some(win) = &self.window
+                && let Ok(RawWindowHandle::AppKit(handle)) = win.window_handle().map(|h| h.as_raw())
+            {
+                let ns_view = handle.ns_view.as_ptr() as *const objc2::runtime::AnyObject;
+                let ns_win: *const NSWindow = unsafe { msg_send![ns_view, window] };
+                if !ns_win.is_null() {
+                    parent_ptr = ns_win;
+                }
+            }
+
+            native_ui::show_about_window(parent_ptr);
         }
     }
 
@@ -525,6 +524,9 @@ impl App {
         if event.id() == &ids.about {
             log::debug!("Menu: About");
             self.show_about_dialog();
+        } else if event.id() == &ids.settings {
+            log::debug!("Menu: Settings");
+            self.show_settings_dialog();
         } else if event.id() == &ids.zoom_in {
             log::debug!("Menu: Zoom in");
             self.view_state.keyboard_zoom(true);
@@ -729,17 +731,11 @@ impl ApplicationHandler<AppCommand> for App {
         }
 
         // Create window
-        let win = window::create_window(event_loop, &self.file_path, self.onboarding_mode);
+        let win = window::create_window(event_loop, &self.file_path);
         self.window = Some(win.clone());
 
         // Create renderer (wgpu surface must be created here, in resumed())
         self.renderer = Some(renderer::Renderer::new(win));
-
-        if self.onboarding_mode {
-            log::info!("Onboarding mode: showing welcome screen");
-            self.request_redraw();
-            return;
-        }
 
         // Create native menu bar
         // The AppMenu MUST be stored (not dropped) to keep the MenuChild backing data alive.
@@ -797,9 +793,11 @@ impl ApplicationHandler<AppCommand> for App {
             self.event_loop_proxy.clone(),
         );
 
-        // Check for updates in the background
+        // Check for updates in the background (if enabled in settings)
         #[cfg(target_os = "macos")]
-        updater::check_and_update();
+        if settings::Settings::load().auto_update {
+            updater::check_and_update();
+        }
 
         // Force a redraw after everything is initialized. The initial display_image() call
         // may have been skipped because the surface was Occluded during window creation.
@@ -934,10 +932,7 @@ impl ApplicationHandler<AppCommand> for App {
                 let super_pressed = self.modifiers.super_key();
                 match event.logical_key.as_ref() {
                     Key::Named(NamedKey::Escape) => {
-                        if self.onboarding_mode {
-                            log::info!("Exiting onboarding (Escape)");
-                            event_loop.exit();
-                        } else if let Some(win) = &self.window {
+                        if let Some(win) = &self.window {
                             if window::is_fullscreen(win) {
                                 log::info!("Fullscreen off");
                                 window::toggle_fullscreen(win);
@@ -949,15 +944,6 @@ impl ApplicationHandler<AppCommand> for App {
                                 }
                                 event_loop.exit();
                             }
-                        }
-                    }
-                    // In onboarding mode, Enter sets Prvw as default viewer
-                    Key::Named(NamedKey::Enter) if self.onboarding_mode => {
-                        #[cfg(target_os = "macos")]
-                        {
-                            log::info!("Setting Prvw as default viewer");
-                            onboarding::set_as_default_viewer();
-                            self.request_redraw();
                         }
                     }
                     // Navigation: ←, →, Space, Backspace, [, ]

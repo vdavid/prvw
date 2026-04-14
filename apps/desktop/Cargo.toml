@@ -29,14 +29,43 @@ glyphon = { git = "https://github.com/grovesNL/glyphon.git", rev = "28f1cb9" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSResponder"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSButton",
+    "NSButtonCell",
+    "NSCell",
+    "NSColor",
+    "NSControl",
+    "NSCursor",
+    "NSFont",
+    "NSGraphics",
+    "NSImage",
+    "NSImageView",
+    "NSLayoutConstraint",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSStackView",
+    "NSSwitch",
+    "NSText",
+    "NSTextField",
+    "NSTrackingArea",
+    "NSUserInterfaceLayout",
+    "NSView",
+    "NSVisualEffectView",
+    "NSWindow",
+    "objc2-core-foundation",
+] }
 objc2-foundation = { version = "0.3", features = [
     "NSAppleEventDescriptor",
     "NSAppleEventManager",
+    "NSArray",
+    "NSBundle",
     "NSString",
     "NSURL",
     "objc2-core-services",
 ] }
+objc2-core-foundation = { version = "0.3", features = ["CFString"] }
+objc2-core-services = { version = "0.3", features = ["LSInfo"] }
 
 [profile.dev.package.zune-jpeg]
 opt-level = 3

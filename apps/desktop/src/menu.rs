@@ -1,8 +1,10 @@
+use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
 /// Identifiers for custom menu actions.
 pub struct MenuIds {
     pub about: MenuId,
+    pub settings: MenuId,
     pub zoom_in: MenuId,
     pub zoom_out: MenuId,
     pub actual_size: MenuId,
@@ -28,9 +30,15 @@ pub fn create_menu_bar() -> AppMenu {
     // App menu (macOS puts the first menu under the app name)
     let app_menu = Submenu::new("Prvw", true);
     let about = MenuItem::new("About Prvw", true, None);
+    let settings = MenuItem::new(
+        "Settings\u{2026}",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)),
+    );
     app_menu
         .append_items(&[
             &about,
+            &settings,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::hide(None),
             &PredefinedMenuItem::hide_others(None),
@@ -85,6 +93,7 @@ pub fn create_menu_bar() -> AppMenu {
         _menu: menu,
         ids: MenuIds {
             about: about.id().clone(),
+            settings: settings.id().clone(),
             zoom_in: zoom_in.id().clone(),
             zoom_out: zoom_out.id().clone(),
             actual_size: actual_size.id().clone(),

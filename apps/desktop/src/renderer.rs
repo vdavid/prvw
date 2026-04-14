@@ -18,6 +18,7 @@ pub struct Renderer {
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
     text_renderer: GlyphonRenderer,
+    scale_factor: f64,
 }
 
 impl Renderer {
@@ -29,6 +30,7 @@ impl Renderer {
 
     async fn init_async(window: Arc<Window>) -> Self {
         let size = window.inner_size();
+        let scale_factor = window.scale_factor();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             flags: wgpu::InstanceFlags::default(),
@@ -193,6 +195,7 @@ impl Renderer {
             uniform_buffer,
             sampler,
             text_renderer,
+            scale_factor,
         }
     }
 
@@ -297,6 +300,7 @@ impl Renderer {
                 text_blocks,
                 self.config.width,
                 self.config.height,
+                self.scale_factor,
             );
         }
 

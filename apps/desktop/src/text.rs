@@ -1,5 +1,5 @@
 //! Text rendering via glyphon. Wraps font system, atlas, and renderer into a single API
-//! that the main renderer can call to draw text overlays (header bar, onboarding screen).
+//! that the main renderer can call to draw text overlays (header bar).
 
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
