@@ -4,6 +4,49 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Auto-fit window: window resizes to match each loaded image, centered on screen. Clamped to min 200px, max 90% of
+  monitor, proportionally scaled. Toggle in View menu and Settings window
+  ([6a8e03d](https://github.com/vdavid/prvw/commit/6a8e03d))
+- Auto-fit zoom: when auto-fit is on, zooming in/out resizes the window to match the zoomed image. Cursor pivot stays
+  fixed when growing, symmetric shrink when reducing. Screen boundary preserved
+  ([6c4764f](https://github.com/vdavid/prvw/commit/6c4764f))
+- Enlarge small images toggle (off by default): small images display at native pixel size instead of being stretched to
+  fill the window. Toggle in View menu and Settings window, disabled when auto-fit is on
+  ([c2c73c8](https://github.com/vdavid/prvw/commit/c2c73c8))
+- Checkerboard background for transparent images (Photoshop-style, screen-space so it doesn't zoom)
+  ([d481774](https://github.com/vdavid/prvw/commit/d481774))
+- Custom overlay text with pill backgrounds: SF Pro system font (bold, 13.5pt), semi-transparent rounded rectangles
+  sized from actual measured text width, middle truncation for long filenames (`prefix…suffix`), right-aligned zoom
+  percentage. Native title bar text hidden
+  ([d0006fc](https://github.com/vdavid/prvw/commit/d0006fc))
+- Native AppKit windows for About (with icon, links), Settings (toggles with live apply), and Onboarding (file
+  association setup with live polling). Frosted glass backgrounds, ESC-to-close, deduplication guard
+  ([644132b](https://github.com/vdavid/prvw/commit/644132b))
+- Settings persistence with `PRVW_DATA_DIR` env var override for dev/test isolation
+- View > Refresh menu item (R key)
+- MCP server improvements: JSON state responses, synchronous command completion, `prvw://settings` resource,
+  `set_window_geometry`, `scroll_zoom`, `zoom_in`/`zoom_out` tools, window position in state
+  ([593cac9](https://github.com/vdavid/prvw/commit/593cac9),
+  [c2c73c8](https://github.com/vdavid/prvw/commit/c2c73c8))
+
+### Changed
+
+- Zoom model: now absolute (1.0 = one image pixel per screen pixel). Zoom % in titlebar shows actual pixel scale.
+  Enables auto-fit zoom without feedback loops
+  ([3b2f51e](https://github.com/vdavid/prvw/commit/3b2f51e))
+- Scroll zoom slowed to 5% per tick (was 15%)
+  ([d2ce180](https://github.com/vdavid/prvw/commit/d2ce180))
+- Input handling unified through `AppCommand`: all keyboard, menu, and QA key events mapped in one place (`input.rs`).
+  Central `execute_command()` handler
+  ([4dbf326](https://github.com/vdavid/prvw/commit/4dbf326))
+- Background color changed from dark gray to black
+- Settings window buttons changed from "OK" to "Close" (toggles apply immediately)
+- File association setup uses direct CoreServices FFI instead of `swift -e` scripts (near-instant)
+
 ## [0.5.0] - 2026-04-12
 
 ### Added
