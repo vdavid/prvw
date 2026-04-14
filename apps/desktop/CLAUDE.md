@@ -37,6 +37,17 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 - **Transform**: Zoom and pan are a 2D affine transform applied to the quad's vertices in the vertex shader. No image
   re-decode needed.
 
+- **Image display and zoom rules**: On image load, `apply_initial_zoom()` decides the initial zoom and zoom floor
+  (`min_zoom`). The rules by setting combination:
+  - **Auto-fit ON** (enlarge ignored): window resizes to image. `min_zoom=1.0`, initial zoom=1.0 (image fills window).
+  - **Auto-fit OFF, Enlarge ON**: window stays. `min_zoom=1.0`, initial zoom=1.0 (small images enlarged to fit).
+  - **Auto-fit OFF, Enlarge OFF, large image** (actual_size_zoom >= 1.0): `min_zoom=1.0`, initial zoom=1.0 (fit).
+  - **Auto-fit OFF, Enlarge OFF, small image** (actual_size_zoom < 1.0): `min_zoom=actual_size_zoom`, initial
+    zoom=actual_size_zoom (image at native pixel size, centered, black around it).
+  The user can always zoom in from the initial zoom. Zooming out stops at `min_zoom`. Explicit "Fit to window" (0 key)
+  always sets zoom=1.0 regardless of `min_zoom`, so the user can manually enlarge a small image. "Actual size" (1 key)
+  sets zoom to the 1:1 pixel value (can be < 1.0 for small images). Background is always black.
+
 - **Command architecture**: All user actions are expressed as `AppCommand` variants (defined in `qa_server.rs`).
   `input.rs` maps keyboard, menu, and QA key events to commands. `App::execute_command()` in `main.rs` is the single
   place where each command's effect is implemented. Scroll zoom, mouse drag, and cursor tracking stay inline in

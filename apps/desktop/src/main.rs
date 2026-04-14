@@ -175,6 +175,8 @@ struct App {
     current_image_size: Option<(u32, u32)>,
     /// Whether the window auto-resizes to fit each loaded image.
     auto_fit_window: bool,
+    /// Whether small images are enlarged to fill the window.
+    enlarge_small_images: bool,
 }
 
 impl App {
@@ -184,6 +186,7 @@ impl App {
         event_loop_proxy: EventLoopProxy<AppCommand>,
         shared_state: Arc<Mutex<SharedAppState>>,
     ) -> Self {
+        let initial_settings = settings::Settings::load();
         Self {
             file_path,
             explicit_files,
@@ -204,22 +207,49 @@ impl App {
             _qa_handle: None,
             navigation_history: VecDeque::with_capacity(10),
             current_image_size: None,
-            auto_fit_window: settings::Settings::load().auto_fit_window,
+            auto_fit_window: initial_settings.auto_fit_window,
+            enlarge_small_images: initial_settings.enlarge_small_images,
+        }
+    }
+
+    /// Recalculate the zoom floor based on current image/window/settings state.
+    /// Called on image load, window resize, and setting changes. Does NOT change the
+    /// current zoom level (only reclamps if it's below the new floor).
+    fn update_min_zoom(&mut self) {
+        let actual_zoom = self.view_state.actual_size_zoom();
+        let allow_sub_fit =
+            actual_zoom < 1.0 && !self.enlarge_small_images && !self.auto_fit_window;
+        self.view_state
+            .set_min_zoom(if allow_sub_fit { actual_zoom } else { 1.0 });
+    }
+
+    /// Choose the right initial zoom for a newly loaded image.
+    /// Sets both the zoom floor and the starting zoom level.
+    fn apply_initial_zoom(&mut self) {
+        self.update_min_zoom();
+        let actual_zoom = self.view_state.actual_size_zoom();
+        let is_small = actual_zoom < 1.0;
+
+        if is_small && !self.enlarge_small_images && !self.auto_fit_window {
+            self.view_state.actual_size();
+        } else {
+            self.view_state.fit_to_window();
         }
     }
 
     /// Load and display an image, updating the renderer and view state.
     fn display_image(&mut self, path: &Path) {
-        let renderer = match &mut self.renderer {
-            Some(r) => r,
-            None => return,
-        };
+        if self.renderer.is_none() {
+            return;
+        }
 
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
         match image_loader::load_image(path) {
             Ok(image) => {
                 self.current_image_size = Some((image.width, image.height));
+
+                let renderer = self.renderer.as_mut().unwrap();
 
                 // Resize window to match image (if enabled and not fullscreen).
                 // Use the returned physical size directly — request_inner_size is async,
@@ -237,9 +267,13 @@ impl App {
                     renderer.surface_width(),
                     renderer.surface_height(),
                 );
-                self.view_state.fit_to_window();
                 renderer.set_image(&image);
-                renderer.update_transform(&self.view_state.transform());
+                // Drop the renderer borrow before apply_initial_zoom (which borrows &mut self)
+                self.apply_initial_zoom();
+                self.renderer
+                    .as_ref()
+                    .unwrap()
+                    .update_transform(&self.view_state.transform());
                 self.request_redraw();
 
                 if let Some(dir) = &self.dir_list {
@@ -269,13 +303,14 @@ impl App {
         current_index: usize,
         total: usize,
     ) {
-        let renderer = match &mut self.renderer {
-            Some(r) => r,
-            None => return,
-        };
+        if self.renderer.is_none() {
+            return;
+        }
 
         if let Some(image) = self.image_cache.get(index) {
             self.current_image_size = Some((image.width, image.height));
+
+            let renderer = self.renderer.as_mut().unwrap();
 
             if self.auto_fit_window
                 && let Some(win) = &self.window
@@ -290,9 +325,12 @@ impl App {
                 renderer.surface_width(),
                 renderer.surface_height(),
             );
-            self.view_state.fit_to_window();
             renderer.set_image(image);
-            renderer.update_transform(&self.view_state.transform());
+            self.apply_initial_zoom();
+            self.renderer
+                .as_ref()
+                .unwrap()
+                .update_transform(&self.view_state.transform());
             self.request_redraw();
         } else {
             if let Some(win) = &self.window {
@@ -541,13 +579,21 @@ impl App {
             return;
         };
 
-        // Auto-fit is special: CheckMenuItem auto-toggles on click, so we read its new state
+        // CheckMenuItems auto-toggle on click, so we read their new state directly
         if event.id() == &app_menu.ids.auto_fit_window {
             let enabled = app_menu.auto_fit_item.is_checked();
             log::debug!("Menu: Auto-fit window -> {enabled}");
             let _ = self
                 .event_loop_proxy
                 .send_event(AppCommand::SetAutoFitWindow(enabled));
+            return;
+        }
+        if event.id() == &app_menu.ids.enlarge_small_images {
+            let enabled = app_menu.enlarge_small_item.is_checked();
+            log::debug!("Menu: Enlarge small images -> {enabled}");
+            let _ = self
+                .event_loop_proxy
+                .send_event(AppCommand::SetEnlargeSmallImages(enabled));
             return;
         }
 
@@ -569,6 +615,7 @@ impl App {
         state.pan_x = self.view_state.pan_x;
         state.pan_y = self.view_state.pan_y;
         state.auto_fit_window = self.auto_fit_window;
+        state.enlarge_small_images = self.enlarge_small_images;
 
         if let Some(win) = &self.window {
             let size = win.inner_size();
@@ -583,6 +630,17 @@ impl App {
             state.current_index = dir.current_index();
             state.total_files = dir.len();
         }
+
+        if let Some((iw, ih)) = self.current_image_size {
+            state.image_width = iw;
+            state.image_height = ih;
+        }
+        state.min_zoom = self.view_state.min_zoom_value();
+        let (rx, ry, rw, rh) = self.view_state.rendered_rect();
+        state.image_render_x = rx;
+        state.image_render_y = ry;
+        state.image_render_width = rw;
+        state.image_render_height = rh;
 
         state.diagnostics_text = self.build_diagnostics_text(state.current_index);
     }
@@ -681,9 +739,7 @@ impl App {
                 self.update_transform_and_redraw();
             }
             AppCommand::SetZoom(level) => {
-                self.view_state.zoom = level;
-                self.view_state.pan_x = 0.0;
-                self.view_state.pan_y = 0.0;
+                self.view_state.set_zoom(level);
                 self.update_transform_and_redraw();
             }
             AppCommand::FitToWindow => {
@@ -718,13 +774,30 @@ impl App {
                 s.save();
                 if let Some(menu) = &self.app_menu {
                     menu.auto_fit_item.set_checked(enabled);
+                    // "Enlarge small images" is irrelevant when auto-fit is on
+                    menu.enlarge_small_item.set_enabled(!enabled);
                 }
                 if enabled
                     && let (Some(win), Some((iw, ih))) = (&self.window, self.current_image_size)
                 {
                     window::resize_to_fit_image(win, iw, ih);
                 }
-                self.update_shared_state();
+                // Re-apply zoom: auto-fit changes whether min_zoom can go below 1.0
+                self.apply_initial_zoom();
+                self.update_transform_and_redraw();
+            }
+            AppCommand::SetEnlargeSmallImages(enabled) => {
+                self.enlarge_small_images = enabled;
+                log::debug!("Enlarge small images set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.enlarge_small_images = enabled;
+                s.save();
+                if let Some(menu) = &self.app_menu {
+                    menu.enlarge_small_item.set_checked(enabled);
+                }
+                // Re-apply zoom: toggling this changes whether small images enlarge or not
+                self.apply_initial_zoom();
+                self.update_transform_and_redraw();
             }
             AppCommand::ShowAbout => self.show_about_dialog(),
             AppCommand::ShowSettings => self.show_settings_dialog(),
@@ -765,6 +838,52 @@ impl App {
                 } else {
                     log::warn!("OpenFile: not a file: {}", resolved.display());
                 }
+            }
+            AppCommand::SetWindowGeometry {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if let Some(win) = &self.window {
+                    if let Some(w) = width
+                        && let Some(h) = height
+                    {
+                        let _ = win
+                            .request_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
+                    }
+                    if x.is_some() || y.is_some() {
+                        let current = win.outer_position().unwrap_or_default();
+                        let new_x = x.unwrap_or(current.x);
+                        let new_y = y.unwrap_or(current.y);
+                        win.set_outer_position(winit::dpi::LogicalPosition::new(
+                            new_x as f64,
+                            new_y as f64,
+                        ));
+                    }
+                    if let Some(renderer) = &mut self.renderer {
+                        let size = win.inner_size();
+                        renderer.resize(size.width, size.height);
+                        if let Some((iw, ih)) = self.current_image_size {
+                            self.view_state
+                                .update_dimensions(iw, ih, size.width, size.height);
+                        }
+                    }
+                    self.update_min_zoom();
+                    if let Some(renderer) = &self.renderer {
+                        renderer.update_transform(&self.view_state.transform());
+                    }
+                    self.request_redraw();
+                    self.update_shared_state();
+                }
+            }
+            AppCommand::ScrollZoom {
+                delta,
+                cursor_x,
+                cursor_y,
+            } => {
+                self.view_state.scroll_zoom(delta, cursor_x, cursor_y);
+                self.update_transform_and_redraw();
             }
             AppCommand::TakeScreenshot(sender) => {
                 let png_bytes = if let Some(renderer) = &self.renderer {
@@ -893,6 +1012,10 @@ impl ApplicationHandler<AppCommand> for App {
                         self.view_state
                             .update_dimensions(iw, ih, size.width, size.height);
                     }
+                }
+                // Recalculate zoom floor — image-to-window ratio changed
+                self.update_min_zoom();
+                if let Some(renderer) = &self.renderer {
                     renderer.update_transform(&self.view_state.transform());
                 }
                 self.request_redraw();

@@ -17,6 +17,9 @@ pub struct Settings {
 
     #[serde(default = "default_true")]
     pub auto_fit_window: bool,
+
+    #[serde(default)]
+    pub enlarge_small_images: bool,
 }
 
 fn default_true() -> bool {
@@ -28,6 +31,7 @@ impl Default for Settings {
         Self {
             auto_update: true,
             auto_fit_window: true,
+            enlarge_small_images: false,
         }
     }
 }
@@ -88,6 +92,7 @@ mod tests {
         let settings = Settings::default();
         assert!(settings.auto_update);
         assert!(settings.auto_fit_window);
+        assert!(!settings.enlarge_small_images);
     }
 
     #[test]
@@ -97,20 +102,22 @@ mod tests {
         let settings = Settings {
             auto_update: false,
             auto_fit_window: false,
+            enlarge_small_images: true,
         };
         fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
 
         let loaded: Settings = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert!(!loaded.auto_update);
         assert!(!loaded.auto_fit_window);
+        assert!(loaded.enlarge_small_images);
     }
 
     #[test]
     fn missing_field_gets_default() {
-        // Old settings files without auto_fit_window should default to true
         let json = r#"{"auto_update": false}"#;
         let loaded: Settings = serde_json::from_str(json).unwrap();
         assert!(!loaded.auto_update);
         assert!(loaded.auto_fit_window);
+        assert!(!loaded.enlarge_small_images);
     }
 }

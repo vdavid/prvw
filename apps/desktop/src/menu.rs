@@ -10,6 +10,7 @@ pub struct MenuIds {
     pub actual_size: MenuId,
     pub fit_to_window: MenuId,
     pub auto_fit_window: MenuId,
+    pub enlarge_small_images: MenuId,
     pub fullscreen: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
@@ -24,6 +25,7 @@ pub struct AppMenu {
     pub ids: MenuIds,
     /// Kept so we can update the checkmark from outside (e.g., when settings window toggles it).
     pub auto_fit_item: CheckMenuItem,
+    pub enlarge_small_item: CheckMenuItem,
 }
 
 /// Build the native menu bar. The caller MUST keep the returned `AppMenu` alive.
@@ -33,7 +35,7 @@ pub fn create_menu_bar() -> AppMenu {
     // App menu (macOS puts the first menu under the app name)
     let app_menu = Submenu::new("Prvw", true);
     let about = MenuItem::new("About Prvw", true, None);
-    let settings = MenuItem::new(
+    let settings_item = MenuItem::new(
         "Settings\u{2026}",
         true,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)),
@@ -41,7 +43,7 @@ pub fn create_menu_bar() -> AppMenu {
     app_menu
         .append_items(&[
             &about,
-            &settings,
+            &settings_item,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::hide(None),
             &PredefinedMenuItem::hide_others(None),
@@ -63,8 +65,17 @@ pub fn create_menu_bar() -> AppMenu {
     let zoom_out = MenuItem::new("Zoom out", true, None);
     let actual_size = MenuItem::new("Actual size", true, None);
     let fit_to_window = MenuItem::new("Fit to window", true, None);
-    let auto_fit_checked = crate::settings::Settings::load().auto_fit_window;
-    let auto_fit_window = CheckMenuItem::new("Auto-fit window", true, auto_fit_checked, None);
+    let settings = crate::settings::Settings::load();
+    let auto_fit_window =
+        CheckMenuItem::new("Auto-fit window", true, settings.auto_fit_window, None);
+    // Disabled when auto-fit is on (irrelevant — window matches image anyway)
+    let enlarge_enabled = !settings.auto_fit_window;
+    let enlarge_small_images = CheckMenuItem::new(
+        "Enlarge small images",
+        enlarge_enabled,
+        settings.enlarge_small_images,
+        None,
+    );
     let fullscreen = MenuItem::new("Fullscreen", true, None);
     view_menu
         .append_items(&[
@@ -74,6 +85,7 @@ pub fn create_menu_bar() -> AppMenu {
             &actual_size,
             &fit_to_window,
             &auto_fit_window,
+            &enlarge_small_images,
             &PredefinedMenuItem::separator(),
             &fullscreen,
         ])
@@ -96,18 +108,21 @@ pub fn create_menu_bar() -> AppMenu {
     log::debug!("Menu bar created");
 
     let auto_fit_id = auto_fit_window.id().clone();
+    let enlarge_small_id = enlarge_small_images.id().clone();
 
     AppMenu {
         auto_fit_item: auto_fit_window,
+        enlarge_small_item: enlarge_small_images,
         _menu: menu,
         ids: MenuIds {
             about: about.id().clone(),
-            settings: settings.id().clone(),
+            settings: settings_item.id().clone(),
             zoom_in: zoom_in.id().clone(),
             zoom_out: zoom_out.id().clone(),
             actual_size: actual_size.id().clone(),
             fit_to_window: fit_to_window.id().clone(),
             auto_fit_window: auto_fit_id,
+            enlarge_small_images: enlarge_small_id,
             fullscreen: fullscreen.id().clone(),
             previous: previous.id().clone(),
             next: next.id().clone(),

@@ -44,6 +44,7 @@ This is a monorepo:
   - `architecture.md` - Map of all subsystems
   - `style-guide.md` - Writing, code, and design style rules
   - `design-principles.md` - Product design values
+  - `mcp-server.md` - MCP/QA server tool and resource reference
   - `specs/` - Feature specs and plans
 - Feature-level docs live in **colocated `CLAUDE.md` files** next to the code.
 

@@ -1005,6 +1005,15 @@ define_class!(
             log::debug!("Auto-fit window toggled via settings: {on}");
             crate::qa_server::send_command(crate::qa_server::AppCommand::SetAutoFitWindow(on));
         }
+
+        #[unsafe(method(toggleEnlargeSmallImages:))]
+        fn toggle_enlarge_small_images(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            log::debug!("Enlarge small images toggled via settings: {on}");
+            crate::qa_server::send_command(
+                crate::qa_server::AppCommand::SetEnlargeSmallImages(on),
+            );
+        }
     }
 );
 
@@ -1036,7 +1045,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::FullSizeContentView;
 
-    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 260.0));
+    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 330.0));
 
     let window = unsafe {
         let window = NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -1133,7 +1142,44 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     auto_fit_desc_label.setAlignment(NSTextAlignment(0));
     auto_fit_desc_label.setTextColor(Some(&secondary_color));
 
-    // OK button
+    // ── Enlarge small images toggle ──────────────────────────────────
+
+    let enlarge_label = make_label("Enlarge small images", 14.0, mtm);
+    enlarge_label.setAlignment(NSTextAlignment(0));
+
+    let enlarge_toggle = NSSwitch::new(mtm);
+    let enlarge_state = if settings.enlarge_small_images {
+        NSControlStateValueOn
+    } else {
+        NSControlStateValueOff
+    };
+    enlarge_toggle.setState(enlarge_state);
+    // Disabled when auto-fit is on
+    enlarge_toggle.setEnabled(!settings.auto_fit_window);
+
+    unsafe {
+        enlarge_toggle.setTarget(Some(&delegate as &AnyObject));
+        enlarge_toggle.setAction(Some(sel!(toggleEnlargeSmallImages:)));
+    }
+
+    let enlarge_label_ref = unsafe { as_view::<NSTextField>(&enlarge_label) };
+    let enlarge_toggle_ref = unsafe { as_view::<NSSwitch>(&enlarge_toggle) };
+
+    let enlarge_row = NSStackView::new(mtm);
+    enlarge_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    enlarge_row.setSpacing(12.0);
+    enlarge_row.addArrangedSubview(enlarge_label_ref);
+    enlarge_row.addArrangedSubview(enlarge_toggle_ref);
+
+    let enlarge_desc_label = make_label(
+        "Scale up images smaller than the window. Off by default to avoid pixelation.",
+        12.0,
+        mtm,
+    );
+    enlarge_desc_label.setAlignment(NSTextAlignment(0));
+    enlarge_desc_label.setTextColor(Some(&secondary_color));
+
+    // Close button
     let ok_button = make_close_button("Close", &window, mtm);
 
     // Hidden ESC button to close with Escape key
@@ -1145,6 +1191,8 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     let desc_ref = unsafe { as_view::<NSTextField>(&desc_label) };
     let auto_fit_row_ref = unsafe { as_view::<NSStackView>(&auto_fit_row) };
     let auto_fit_desc_ref = unsafe { as_view::<NSTextField>(&auto_fit_desc_label) };
+    let enlarge_row_ref = unsafe { as_view::<NSStackView>(&enlarge_row) };
+    let enlarge_desc_ref = unsafe { as_view::<NSTextField>(&enlarge_desc_label) };
     let button_ref = unsafe { as_view::<NSButton>(&ok_button) };
 
     let views: Vec<&NSView> = vec![
@@ -1152,15 +1200,18 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         desc_ref,
         auto_fit_row_ref,
         auto_fit_desc_ref,
+        enlarge_row_ref,
+        enlarge_desc_ref,
         button_ref,
     ];
 
     let stack = make_vertical_stack(&views, 8.0, mtm);
     stack.setAlignment(NSLayoutAttribute::Leading);
 
-    // Visual grouping: extra spacing between setting groups and before OK
+    // Visual grouping: extra spacing between setting groups and before Close
     stack.setCustomSpacing_afterView(16.0, desc_ref);
-    stack.setCustomSpacing_afterView(24.0, auto_fit_desc_ref);
+    stack.setCustomSpacing_afterView(16.0, auto_fit_desc_ref);
+    stack.setCustomSpacing_afterView(24.0, enlarge_desc_ref);
 
     // Set the stack as the window's content view with padding
     unsafe {
@@ -1226,6 +1277,10 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_desc_label) });
+    retained_views.push(unsafe { Retained::cast_unchecked(enlarge_label) });
+    retained_views.push(unsafe { Retained::cast_unchecked(enlarge_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(enlarge_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(enlarge_desc_label) });
     retained_views.push(unsafe { Retained::cast_unchecked(ok_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(esc_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(stack) });

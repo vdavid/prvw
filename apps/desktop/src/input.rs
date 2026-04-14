@@ -55,9 +55,9 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         Some(AppCommand::ActualSize)
     } else if id == &ids.fit_to_window {
         Some(AppCommand::FitToWindow)
-    } else if id == &ids.auto_fit_window {
-        // CheckMenuItem auto-toggles on click; we don't know the new state here,
-        // so we return None and let the caller handle it (it needs the CheckMenuItem ref).
+    } else if id == &ids.auto_fit_window || id == &ids.enlarge_small_images {
+        // CheckMenuItems auto-toggle on click; we return None and let the caller
+        // handle it (it needs the CheckMenuItem ref to read the new state).
         None
     } else if id == &ids.fullscreen {
         Some(AppCommand::ToggleFullscreen)

@@ -47,8 +47,17 @@ pub struct SharedAppState {
     pub window_width: u32,
     pub window_height: u32,
     pub window_title: String,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub image_render_x: f32,
+    pub image_render_y: f32,
+    pub image_render_width: f32,
+    pub image_render_height: f32,
+    pub min_zoom: f32,
     /// Whether auto-fit window is enabled.
     pub auto_fit_window: bool,
+    /// Whether small images are enlarged to fill the window.
+    pub enlarge_small_images: bool,
     /// Pre-formatted diagnostics text, updated by the main thread.
     pub diagnostics_text: String,
 }
@@ -66,7 +75,15 @@ impl Default for SharedAppState {
             window_width: 0,
             window_height: 0,
             window_title: String::new(),
+            image_width: 0,
+            image_height: 0,
+            image_render_x: 0.0,
+            image_render_y: 0.0,
+            image_render_width: 0.0,
+            image_render_height: 0.0,
+            min_zoom: 1.0,
             auto_fit_window: true,
+            enlarge_small_images: false,
             diagnostics_text: String::new(),
         }
     }
@@ -101,6 +118,8 @@ pub enum AppCommand {
     SetFullscreen(bool),
     /// Set auto-fit window mode.
     SetAutoFitWindow(bool),
+    /// Set enlarge-small-images mode.
+    SetEnlargeSmallImages(bool),
 
     // ── App ──────────────────────────────────────────────────────────
     /// Show the About window.
@@ -110,7 +129,22 @@ pub enum AppCommand {
     /// Exit the application.
     Exit,
 
+    // ── Window ───────────────────────────────────────────────────────
+    /// Reposition and/or resize the window. All fields optional.
+    SetWindowGeometry {
+        x: Option<i32>,
+        y: Option<i32>,
+        width: Option<u32>,
+        height: Option<u32>,
+    },
+
     // ── QA / MCP ─────────────────────────────────────────────────────
+    /// Scroll-wheel zoom at a specific cursor position.
+    ScrollZoom {
+        delta: f32,
+        cursor_x: f32,
+        cursor_y: f32,
+    },
     /// Simulate a key press. Key name follows web conventions: "ArrowLeft", "Escape", "f", etc.
     SendKey(String),
     /// Capture a screenshot. The sender receives PNG bytes.
@@ -257,7 +291,12 @@ fn handle_request(
         ("POST", "/zoom") => handle_post_zoom(stream, proxy, &body),
         ("POST", "/fullscreen") => handle_post_fullscreen(stream, proxy, &body),
         ("POST", "/auto-fit") => handle_post_auto_fit(stream, proxy, &body),
+        ("POST", "/enlarge-small") => handle_post_enlarge_small(stream, proxy, &body),
         ("POST", "/open") => handle_post_open(stream, proxy, &body),
+        ("POST", "/window-geometry") => handle_post_window_geometry(stream, proxy, &body),
+        ("POST", "/scroll-zoom") => handle_post_scroll_zoom(stream, proxy, &body),
+        ("POST", "/zoom-in") => handle_post_zoom_in(stream, proxy),
+        ("POST", "/zoom-out") => handle_post_zoom_out(stream, proxy),
         _ => write_response(stream, 404, "text/plain", b"Not found", &[]),
     }
 }
@@ -417,6 +456,56 @@ fn mcp_tools_list() -> Result<Value, Value> {
                 }
             },
             {
+                "name": "enlarge_small_images",
+                "description": "Control whether small images are enlarged to fill the window. Ignored when auto-fit window is on.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "true to enable, false to disable."
+                        }
+                    },
+                    "required": ["enabled"]
+                }
+            },
+            {
+                "name": "set_window_geometry",
+                "description": "Set the window position and/or size. All parameters are optional — only provided values are changed.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "x": { "type": "integer", "description": "Window left edge in screen pixels." },
+                        "y": { "type": "integer", "description": "Window top edge in screen pixels." },
+                        "width": { "type": "integer", "description": "Window content width in logical pixels." },
+                        "height": { "type": "integer", "description": "Window content height in logical pixels." }
+                    }
+                }
+            },
+            {
+                "name": "scroll_zoom",
+                "description": "Simulate a scroll-wheel zoom at a specific cursor position. Positive delta zooms in, negative zooms out.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "delta": { "type": "number", "description": "Scroll delta. Positive = zoom in, negative = zoom out." },
+                        "cursor_x": { "type": "number", "description": "Cursor X position in window pixels." },
+                        "cursor_y": { "type": "number", "description": "Cursor Y position in window pixels." }
+                    },
+                    "required": ["delta", "cursor_x", "cursor_y"]
+                }
+            },
+            {
+                "name": "zoom_in",
+                "description": "Zoom in by one keyboard step (25%), centered on the window.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "zoom_out",
+                "description": "Zoom out by one keyboard step (25%), centered on the window.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
                 "name": "screenshot",
                 "description": "Capture a screenshot of the current view. Returns a base64-encoded PNG image.",
                 "inputSchema": {
@@ -522,6 +611,78 @@ fn mcp_tools_call(
             std::thread::sleep(std::time::Duration::from_millis(50));
             let label = if enabled { "enabled" } else { "disabled" };
             Ok(mcp_text_content(&format!("Auto-fit window: {label}")))
+        }
+        "enlarge_small_images" => {
+            let enabled = args["enabled"]
+                .as_bool()
+                .ok_or_else(|| json_rpc_error(-32602, "enabled must be a boolean"))?;
+            proxy
+                .send_event(AppCommand::SetEnlargeSmallImages(enabled))
+                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let label = if enabled { "enabled" } else { "disabled" };
+            Ok(mcp_text_content(&format!("Enlarge small images: {label}")))
+        }
+        "set_window_geometry" => {
+            let x = args["x"].as_i64().map(|v| v as i32);
+            let y = args["y"].as_i64().map(|v| v as i32);
+            let width = args["width"].as_u64().map(|v| v as u32);
+            let height = args["height"].as_u64().map(|v| v as u32);
+            proxy
+                .send_event(AppCommand::SetWindowGeometry {
+                    x,
+                    y,
+                    width,
+                    height,
+                })
+                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let state_text = format_state_text(state);
+            Ok(mcp_text_content(&format!(
+                "Window geometry updated.\n\n{state_text}"
+            )))
+        }
+        "scroll_zoom" => {
+            let delta = args["delta"]
+                .as_f64()
+                .ok_or_else(|| json_rpc_error(-32602, "delta is required"))?
+                as f32;
+            let cx = args["cursor_x"]
+                .as_f64()
+                .ok_or_else(|| json_rpc_error(-32602, "cursor_x is required"))?
+                as f32;
+            let cy = args["cursor_y"]
+                .as_f64()
+                .ok_or_else(|| json_rpc_error(-32602, "cursor_y is required"))?
+                as f32;
+            proxy
+                .send_event(AppCommand::ScrollZoom {
+                    delta,
+                    cursor_x: cx,
+                    cursor_y: cy,
+                })
+                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let state_text = format_state_text(state);
+            Ok(mcp_text_content(&format!(
+                "Scroll zoom applied.\n\n{state_text}"
+            )))
+        }
+        "zoom_in" => {
+            proxy
+                .send_event(AppCommand::ZoomIn)
+                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let state_text = format_state_text(state);
+            Ok(mcp_text_content(&format!("Zoomed in.\n\n{state_text}")))
+        }
+        "zoom_out" => {
+            proxy
+                .send_event(AppCommand::ZoomOut)
+                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let state_text = format_state_text(state);
+            Ok(mcp_text_content(&format!("Zoomed out.\n\n{state_text}")))
         }
         "screenshot" => {
             let (tx, rx) = mpsc::channel();
@@ -642,6 +803,7 @@ fn format_state_text(state: &Arc<Mutex<SharedAppState>>) -> String {
 
     let fullscreen_str = if s.fullscreen { "yes" } else { "no" };
     let auto_fit_str = if s.auto_fit_window { "yes" } else { "no" };
+    let enlarge_str = if s.enlarge_small_images { "yes" } else { "no" };
 
     format!(
         "file: {file_display}\n\
@@ -650,7 +812,11 @@ fn format_state_text(state: &Arc<Mutex<SharedAppState>>) -> String {
          pan: ({:.2}, {:.2})\n\
          fullscreen: {fullscreen_str}\n\
          auto_fit_window: {auto_fit_str}\n\
+         enlarge_small_images: {enlarge_str}\n\
          window: {}x{}\n\
+         image_native: {}x{}\n\
+         image_rendered: {:.0},{:.0} {:.0}x{:.0}\n\
+         min_zoom: {:.4}\n\
          title: {}\n",
         s.current_index + 1,
         s.total_files,
@@ -659,6 +825,13 @@ fn format_state_text(state: &Arc<Mutex<SharedAppState>>) -> String {
         s.pan_y,
         s.window_width,
         s.window_height,
+        s.image_width,
+        s.image_height,
+        s.image_render_x,
+        s.image_render_y,
+        s.image_render_width,
+        s.image_render_height,
+        s.min_zoom,
         s.window_title,
     )
 }
@@ -681,6 +854,7 @@ View
   Actual size  1/Cmd+1
   Fit to window 0/Cmd+0
   Auto-fit window (toggle)
+  Enlarge small images (toggle, disabled when auto-fit is on)
   ---
   Fullscreen   F/Enter/F11/Cmd+F
 Navigate
@@ -857,6 +1031,31 @@ fn handle_post_auto_fit(
     write_response(stream, 200, "text/plain", b"ok", &[])
 }
 
+fn handle_post_enlarge_small(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+) -> Result<(), String> {
+    let value = body.trim().to_lowercase();
+    let enabled = match value.as_str() {
+        "on" | "true" | "1" => true,
+        "off" | "false" | "0" => false,
+        _ => {
+            return write_response(
+                stream,
+                400,
+                "text/plain",
+                b"Body must be 'on'/'off', 'true'/'false', or '1'/'0'",
+                &[],
+            );
+        }
+    };
+    proxy
+        .send_event(AppCommand::SetEnlargeSmallImages(enabled))
+        .map_err(|e| format!("Event loop closed: {e}"))?;
+    write_response(stream, 200, "text/plain", b"ok", &[])
+}
+
 fn handle_post_open(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
@@ -869,6 +1068,66 @@ fn handle_post_open(
     let path = PathBuf::from(path_str);
     proxy
         .send_event(AppCommand::OpenFile(path))
+        .map_err(|e| format!("Event loop closed: {e}"))?;
+    write_response(stream, 200, "text/plain", b"ok", &[])
+}
+
+fn handle_post_window_geometry(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+) -> Result<(), String> {
+    let parsed: Value = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {e}"))?;
+    let x = parsed["x"].as_i64().map(|v| v as i32);
+    let y = parsed["y"].as_i64().map(|v| v as i32);
+    let width = parsed["width"].as_u64().map(|v| v as u32);
+    let height = parsed["height"].as_u64().map(|v| v as u32);
+    proxy
+        .send_event(AppCommand::SetWindowGeometry {
+            x,
+            y,
+            width,
+            height,
+        })
+        .map_err(|e| format!("Event loop closed: {e}"))?;
+    write_response(stream, 200, "text/plain", b"ok", &[])
+}
+
+fn handle_post_scroll_zoom(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+) -> Result<(), String> {
+    let parsed: Value = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {e}"))?;
+    let delta = parsed["delta"].as_f64().ok_or("missing 'delta'")? as f32;
+    let cursor_x = parsed["cursor_x"].as_f64().ok_or("missing 'cursor_x'")? as f32;
+    let cursor_y = parsed["cursor_y"].as_f64().ok_or("missing 'cursor_y'")? as f32;
+    proxy
+        .send_event(AppCommand::ScrollZoom {
+            delta,
+            cursor_x,
+            cursor_y,
+        })
+        .map_err(|e| format!("Event loop closed: {e}"))?;
+    write_response(stream, 200, "text/plain", b"ok", &[])
+}
+
+fn handle_post_zoom_in(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+) -> Result<(), String> {
+    proxy
+        .send_event(AppCommand::ZoomIn)
+        .map_err(|e| format!("Event loop closed: {e}"))?;
+    write_response(stream, 200, "text/plain", b"ok", &[])
+}
+
+fn handle_post_zoom_out(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+) -> Result<(), String> {
+    proxy
+        .send_event(AppCommand::ZoomOut)
         .map_err(|e| format!("Event loop closed: {e}"))?;
     write_response(stream, 200, "text/plain", b"ok", &[])
 }
