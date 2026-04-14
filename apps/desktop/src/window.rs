@@ -7,11 +7,11 @@ use winit::window::{Fullscreen, Window, WindowAttributes};
 const DEFAULT_WIDTH: f64 = 1024.0;
 const DEFAULT_HEIGHT: f64 = 768.0;
 
-/// Minimum window dimension (pixels) when auto-fitting to image size.
-const MIN_WINDOW_DIM: f64 = 200.0;
+/// Minimum window dimension (logical pixels) when auto-fitting to image size.
+pub const MIN_WINDOW_DIM: f64 = 200.0;
 
 /// Maximum fraction of the monitor's work area to use when auto-fitting.
-const MAX_SCREEN_FRACTION: f64 = 0.9;
+pub const MAX_SCREEN_FRACTION: f64 = 0.9;
 
 /// Create the application window. Must be called in `resumed()`.
 pub fn create_window(event_loop: &ActiveEventLoop, file_path: &Path) -> Arc<Window> {

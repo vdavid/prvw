@@ -40,7 +40,10 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 - **Zoom model**: Zoom is absolute: `zoom=1.0` means 1 image pixel = 1 screen pixel. `fit_zoom()` computes the zoom
   that makes the image exactly fit the window (< 1.0 for large images, > 1.0 for small ones). The zoom floor
   (`min_zoom`) prevents zooming out past fit. On image load, `apply_initial_zoom()` sets the floor and starting zoom:
-  - **Auto-fit ON** (enlarge ignored): window resizes to image. `min_zoom=fit_zoom`, initial zoom=`fit_zoom`.
+  - **Auto-fit ON** (enlarge ignored): window resizes to image. `min_zoom` = zoom at which window hits 200px minimum.
+    On zoom in/out, the window resizes to match (`auto_fit_after_zoom`): desired size = image * zoom, capped at 90%
+    screen, floored at 200px. The cursor pivot stays at the same screen pixel. When the window hits the screen cap,
+    the leftover zoom is handled by panning within the fixed-size window.
   - **Auto-fit OFF, Enlarge ON**: `min_zoom=fit_zoom`, initial zoom=`fit_zoom` (small images enlarged).
   - **Auto-fit OFF, Enlarge OFF, large image** (`fit_zoom < 1.0`): `min_zoom=fit_zoom`, initial zoom=`fit_zoom`.
   - **Auto-fit OFF, Enlarge OFF, small image** (`fit_zoom > 1.0`): `min_zoom=1.0`, initial zoom=1.0 (native pixels).
