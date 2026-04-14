@@ -1,12 +1,10 @@
 //! Tracks zoom level and pan offset for the current image view.
 //!
-//! The coordinate system: the window spans [-1, 1] in NDC on both axes. The image is rendered as a
-//! textured quad that's scaled to maintain its aspect ratio (letterboxed/pillarboxed as needed).
-//!
-//! `fit_scale` is a single uniform value that makes the image exactly fit the window (the largest
-//! scale where the entire image is visible). Zoom is relative to this: zoom=1.0 means fit-to-window,
-//! zoom=2.0 means 2x magnification. The minimum zoom defaults to 1.0 but can be lowered to
-//! allow small images to display at their native pixel size without enlargement.
+//! Zoom is absolute: 1.0 = one image pixel per screen pixel (actual size).
+//! Values below 1.0 shrink the image, above 1.0 magnify it. The minimum zoom
+//! is the fit-to-window level (the zoom that makes the image exactly fill the window).
+//! For small images where fit-to-window would enlarge, min_zoom can be set to 1.0
+//! so the image stays at native pixel size.
 
 const MAX_ZOOM: f32 = 100.0;
 const ZOOM_STEP: f32 = 1.05; // ~5% per scroll tick
@@ -14,18 +12,14 @@ const KEYBOARD_ZOOM_STEP: f32 = 1.25;
 
 #[derive(Debug, Clone)]
 pub struct ViewState {
-    /// Current zoom multiplier relative to fit-to-window. 1.0 = image fits the window.
+    /// Absolute zoom: 1.0 = one image pixel per screen pixel.
     pub zoom: f32,
     /// Pan offset in NDC. (0, 0) = centered.
     pub pan_x: f32,
     pub pan_y: f32,
-    /// Minimum zoom level. Defaults to 1.0 (fit-to-window). Lowered for small images
-    /// when "Enlarge small images" is off, so they can display at native pixel size.
+    /// Minimum zoom level (the zoom that fits the image in the window, or 1.0 for
+    /// small images when enlargement is disabled).
     min_zoom: f32,
-    /// Image aspect ratio (width / height).
-    image_aspect: f32,
-    /// Window aspect ratio (width / height).
-    window_aspect: f32,
     /// Image dimensions in pixels.
     image_width: u32,
     image_height: u32,
@@ -50,8 +44,6 @@ impl ViewState {
             pan_x: 0.0,
             pan_y: 0.0,
             min_zoom: 1.0,
-            image_aspect: 1.0,
-            window_aspect: 1.0,
             image_width: 1,
             image_height: 1,
             window_width: 1,
@@ -59,7 +51,7 @@ impl ViewState {
         }
     }
 
-    /// Recalculate the fit-to-window scale. Call when the image or window size changes.
+    /// Update image and window dimensions. Call when the image or window size changes.
     pub fn update_dimensions(
         &mut self,
         image_width: u32,
@@ -71,42 +63,33 @@ impl ViewState {
         self.image_height = image_height;
         self.window_width = window_width;
         self.window_height = window_height;
-
-        self.image_aspect = image_width as f32 / image_height as f32;
-        self.window_aspect = window_width as f32 / window_height as f32;
-
-        // Re-clamp pan: a resize can make a previously-valid pan position invalid
-        // (for example, shrinking the window while the image is off-center).
         self.clamp_pan();
     }
 
-    /// Reset to fit-to-window (zoom 1.0, centered).
+    /// The zoom level at which the image exactly fits the window (both axes visible).
+    pub fn fit_zoom(&self) -> f32 {
+        if self.image_width == 0
+            || self.image_height == 0
+            || self.window_width == 0
+            || self.window_height == 0
+        {
+            return 1.0;
+        }
+        let scale_x = self.window_width as f32 / self.image_width as f32;
+        let scale_y = self.window_height as f32 / self.image_height as f32;
+        scale_x.min(scale_y)
+    }
+
+    /// Set zoom to fit the image in the window, centered.
     pub fn fit_to_window(&mut self) {
-        self.zoom = 1.0;
+        self.zoom = self.fit_zoom();
         self.pan_x = 0.0;
         self.pan_y = 0.0;
     }
 
-    /// Compute the zoom level that gives 1:1 pixel mapping (image pixel = screen pixel).
-    /// Can be < 1.0 for small images (meaning the image is smaller than fit-to-window).
-    pub fn actual_size_zoom(&self) -> f32 {
-        if self.window_width == 0 || self.window_height == 0 {
-            return 1.0;
-        }
-        // At zoom=1.0, the image fits the window. For actual size, we need
-        // 1 image pixel = 1 screen pixel.
-        let visible_width = if self.image_aspect > self.window_aspect {
-            self.image_width as f32
-        } else {
-            self.window_aspect * self.image_height as f32
-        };
-        visible_width / self.window_width as f32
-    }
-
-    /// Set zoom to show the image at its native pixel size.
+    /// Set zoom to 1:1 pixel mapping (actual size), centered.
     pub fn actual_size(&mut self) {
-        let actual_zoom = self.actual_size_zoom();
-        self.zoom = actual_zoom.clamp(self.min_zoom, MAX_ZOOM);
+        self.zoom = 1.0_f32.clamp(self.min_zoom, MAX_ZOOM);
         self.pan_x = 0.0;
         self.pan_y = 0.0;
     }
@@ -128,16 +111,7 @@ impl ViewState {
 
     /// Toggle between fit-to-window and actual size.
     pub fn toggle_fit(&mut self) {
-        if self.window_width == 0 || self.window_height == 0 {
-            return;
-        }
-        let visible_width = if self.image_aspect > self.window_aspect {
-            self.image_width as f32
-        } else {
-            self.window_aspect * self.image_height as f32
-        };
-        let actual_zoom = visible_width / self.window_width as f32;
-        if (self.zoom - actual_zoom).abs() < 0.01 {
+        if (self.zoom - 1.0).abs() < 0.01 {
             self.fit_to_window();
         } else {
             self.actual_size();
@@ -145,7 +119,6 @@ impl ViewState {
     }
 
     /// Zoom by scroll wheel, centered on the cursor position.
-    /// `cursor_x` and `cursor_y` are in pixels from top-left of the window.
     pub fn scroll_zoom(&mut self, delta: f32, cursor_x: f32, cursor_y: f32) {
         let factor = if delta > 0.0 {
             ZOOM_STEP
@@ -174,7 +147,7 @@ impl ViewState {
             return;
         }
 
-        // Convert cursor position to NDC (-1..1), accounting for aspect ratio
+        // Convert cursor position to NDC (-1..1)
         let ndc_x = (cursor_x / self.window_width as f32) * 2.0 - 1.0;
         let ndc_y = -((cursor_y / self.window_height as f32) * 2.0 - 1.0);
 
@@ -198,26 +171,14 @@ impl ViewState {
     }
 
     /// Clamp pan so the image edges don't leave the window.
-    /// At fit-to-window (zoom=1.0), the image exactly fills one axis, so pan is 0.
-    /// When zoomed in, the image can be panned but not past its edges.
     fn clamp_pan(&mut self) {
-        let (sx, sy) = if self.image_aspect > self.window_aspect {
-            (
-                self.zoom,
-                self.zoom * self.window_aspect / self.image_aspect,
-            )
-        } else {
-            (
-                self.zoom * self.image_aspect / self.window_aspect,
-                self.zoom,
-            )
-        };
+        // Compute the NDC half-extents of the image quad.
+        // sx = (image_width * zoom) / window_width, sy = (image_height * zoom) / window_height
+        let sx = self.image_width as f32 * self.zoom / self.window_width as f32;
+        let sy = self.image_height as f32 * self.zoom / self.window_height as f32;
 
-        // The image spans [-sx, sx] in NDC (before pan). The window spans [-1, 1].
-        // With pan, the image spans [-sx + pan, sx + pan].
         // When zoomed in (sx > 1): keep image edges covering the window.
-        // When zoomed out (sx <= 1): center the image — no panning allowed on that axis,
-        // because a small image floating off-center looks broken.
+        // When zoomed out (sx <= 1): center the image — no panning on that axis.
         let max_pan_x = if sx > 1.0 { sx - 1.0 } else { 0.0 };
         let max_pan_y = if sy > 1.0 { sy - 1.0 } else { 0.0 };
 
@@ -226,33 +187,13 @@ impl ViewState {
     }
 
     /// Build the transform uniform to send to the GPU.
-    /// The scale preserves the image's aspect ratio: both axes are scaled uniformly,
-    /// with aspect correction applied so the image is never stretched.
     pub fn transform(&self) -> TransformUniform {
-        // The image quad spans [-1, 1] on both axes (a square in NDC).
-        // We need to scale it to show the correct aspect ratio and fit the window.
-        //
-        // Step 1: aspect-correct the quad so it matches the image proportions.
-        // Step 2: scale it so it fits the window (the larger dimension fills the window).
-        // Step 3: apply user zoom.
-
-        let (sx, sy) = if self.image_aspect > self.window_aspect {
-            // Image wider than window: width fills window, height is smaller.
-            // sx = zoom (full width at zoom=1)
-            // sy = zoom * (window_aspect / image_aspect) (shorter)
-            (
-                self.zoom,
-                self.zoom * self.window_aspect / self.image_aspect,
-            )
-        } else {
-            // Image taller than window: height fills window, width is smaller.
-            // sx = zoom * (image_aspect / window_aspect) (narrower)
-            // sy = zoom (full height at zoom=1)
-            (
-                self.zoom * self.image_aspect / self.window_aspect,
-                self.zoom,
-            )
-        };
+        // The image quad spans [-1, 1] on both axes in NDC.
+        // Scale it so that `zoom` image pixels = `zoom` screen pixels.
+        // sx = (image_width * zoom) / window_width
+        // sy = (image_height * zoom) / window_height
+        let sx = self.image_width as f32 * self.zoom / self.window_width as f32;
+        let sy = self.image_height as f32 * self.zoom / self.window_height as f32;
 
         TransformUniform {
             col0: [sx, 0.0, 0.0, sy],
@@ -285,35 +226,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fit_to_window_resets_zoom_and_pan() {
+    fn fit_to_window_computes_correct_zoom() {
         let mut view = ViewState::new();
-        view.zoom = 3.0;
-        view.pan_x = 0.5;
-        view.pan_y = -0.3;
+        // 1600x900 image in 800x800 window: fit zoom = 800/1600 = 0.5
+        view.update_dimensions(1600, 900, 800, 800);
         view.fit_to_window();
-        assert_eq!(view.zoom, 1.0);
+        assert!((view.zoom - 0.5).abs() < 0.01);
         assert_eq!(view.pan_x, 0.0);
         assert_eq!(view.pan_y, 0.0);
     }
 
     #[test]
-    fn update_dimensions_wider_image() {
+    fn actual_size_is_zoom_1() {
         let mut view = ViewState::new();
-        view.update_dimensions(1600, 900, 800, 800);
-        let t = view.transform();
-        // Width fills window (sx=1.0), height is shorter
-        assert!((t.col0[0] - 1.0).abs() < 0.01);
-        assert!(t.col0[3] < 1.0);
+        view.update_dimensions(1600, 900, 800, 600);
+        view.set_min_zoom(0.1);
+        view.actual_size();
+        assert!((view.zoom - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn update_dimensions_taller_image() {
+    fn fit_zoom_for_wider_image() {
         let mut view = ViewState::new();
+        // 1600x900 in 800x800: limited by width, fit = 800/1600 = 0.5
+        view.update_dimensions(1600, 900, 800, 800);
+        assert!((view.fit_zoom() - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn fit_zoom_for_taller_image() {
+        let mut view = ViewState::new();
+        // 600x1200 in 800x800: limited by height, fit = 800/1200 = 0.667
         view.update_dimensions(600, 1200, 800, 800);
+        assert!((view.fit_zoom() - 0.667).abs() < 0.01);
+    }
+
+    #[test]
+    fn transform_at_fit_fills_one_axis() {
+        let mut view = ViewState::new();
+        // 1600x900 in 800x800: at fit (zoom=0.5), width fills window
+        view.update_dimensions(1600, 900, 800, 800);
+        view.fit_to_window();
         let t = view.transform();
-        // Height fills window (sy=1.0), width is narrower
-        assert!(t.col0[0] < 1.0);
-        assert!((t.col0[3] - 1.0).abs() < 0.01);
+        // sx = 1600 * 0.5 / 800 = 1.0 (fills width)
+        assert!((t.col0[0] - 1.0).abs() < 0.01);
+        // sy = 900 * 0.5 / 800 = 0.5625 (shorter)
+        assert!(t.col0[3] < 1.0);
     }
 
     #[test]
@@ -321,15 +279,14 @@ mod tests {
         let mut view = ViewState::new();
         let image_aspect: f32 = 1600.0 / 900.0;
 
-        // 1600x900 image in a square window
         view.update_dimensions(1600, 900, 800, 800);
+        view.fit_to_window();
         let t1 = view.transform();
-        // The rendered aspect ratio (sx/sy * window_aspect) should match the image aspect
         let rendered_aspect_1 = (t1.col0[0] / t1.col0[3]) * (800.0 / 800.0);
         assert!((rendered_aspect_1 - image_aspect).abs() < 0.01);
 
-        // Resize to wide window: aspect ratio should still be preserved
         view.update_dimensions(1600, 900, 1200, 600);
+        view.fit_to_window();
         let t2 = view.transform();
         let rendered_aspect_2 = (t2.col0[0] / t2.col0[3]) * (1200.0 / 600.0);
         assert!((rendered_aspect_2 - image_aspect).abs() < 0.01);
@@ -339,12 +296,12 @@ mod tests {
     fn zoom_clamped_to_fit_minimum() {
         let mut view = ViewState::new();
         view.update_dimensions(800, 600, 800, 600);
-        // Zoom out a lot
+        view.fit_to_window();
+        view.set_min_zoom(view.fit_zoom());
         for _ in 0..200 {
             view.keyboard_zoom(false);
         }
-        // Should never go below 1.0 (fit to window)
-        assert!((view.zoom - 1.0).abs() < f32::EPSILON);
+        assert!((view.zoom - view.fit_zoom()).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -361,6 +318,7 @@ mod tests {
     fn keyboard_zoom_in_increases_zoom() {
         let mut view = ViewState::new();
         view.update_dimensions(800, 600, 800, 600);
+        view.fit_to_window();
         let original = view.zoom;
         view.keyboard_zoom(true);
         assert!(view.zoom > original);
@@ -370,7 +328,7 @@ mod tests {
     fn pan_moves_offset_when_zoomed_in() {
         let mut view = ViewState::new();
         view.update_dimensions(800, 600, 800, 600);
-        // Must zoom in to have room to pan
+        // zoom=3 means 3x actual pixels — image is much bigger than window
         view.zoom = 3.0;
         view.pan(100.0, 0.0);
         assert!(view.pan_x > 0.0);
@@ -378,10 +336,11 @@ mod tests {
     }
 
     #[test]
-    fn pan_clamped_at_fit_zoom() {
+    fn pan_clamped_when_image_smaller_than_window() {
         let mut view = ViewState::new();
-        view.update_dimensions(800, 800, 800, 800);
-        // At zoom=1.0 with square image in square window, no room to pan
+        // 200x200 image in 800x800 window at zoom=1.0 (actual size): image is smaller
+        view.update_dimensions(200, 200, 800, 800);
+        view.zoom = 1.0;
         view.pan(100.0, 0.0);
         assert!((view.pan_x).abs() < f32::EPSILON);
     }
@@ -390,72 +349,67 @@ mod tests {
     fn scroll_zoom_at_center_preserves_pan() {
         let mut view = ViewState::new();
         view.update_dimensions(800, 600, 800, 600);
+        view.fit_to_window();
         view.scroll_zoom(1.0, 400.0, 300.0);
         assert!(view.pan_x.abs() < 0.01);
         assert!(view.pan_y.abs() < 0.01);
     }
 
     #[test]
-    fn transform_at_zoom_2() {
+    fn transform_at_actual_size() {
         let mut view = ViewState::new();
-        // Square image in square window: both scales should be zoom
+        // 800x800 image in 800x800 window at zoom=1.0: sx = sy = 1.0
         view.update_dimensions(800, 800, 800, 800);
-        view.zoom = 2.0;
+        view.zoom = 1.0;
         let t = view.transform();
-        assert!((t.col0[0] - 2.0).abs() < 0.01);
-        assert!((t.col0[3] - 2.0).abs() < 0.01);
+        assert!((t.col0[0] - 1.0).abs() < 0.01);
+        assert!((t.col0[3] - 1.0).abs() < 0.01);
     }
 
     #[test]
     fn toggle_fit_switches_between_fit_and_actual() {
         let mut view = ViewState::new();
         view.update_dimensions(1600, 900, 800, 600);
-        assert_eq!(view.zoom, 1.0);
+        view.set_min_zoom(0.1);
+        view.fit_to_window();
+        let fit = view.zoom;
+        assert!(fit < 1.0); // fit zoom for a large image is < 1.0
         view.toggle_fit();
-        assert!(view.zoom > 1.0);
+        assert!((view.zoom - 1.0).abs() < 0.01); // toggled to actual size
         view.toggle_fit();
-        assert_eq!(view.zoom, 1.0);
+        assert!((view.zoom - fit).abs() < 0.01); // toggled back to fit
     }
 
     #[test]
-    fn actual_size_zoom_below_one_for_small_images() {
+    fn small_image_min_zoom_at_actual_size() {
         let mut view = ViewState::new();
-        // 200x200 image in 800x800 window: actual size is 0.25
+        // 200x200 in 800x800: fit_zoom = 800/200 = 4.0, actual = 1.0
         view.update_dimensions(200, 200, 800, 800);
-        let z = view.actual_size_zoom();
-        assert!((z - 0.25).abs() < 0.01);
-    }
-
-    #[test]
-    fn min_zoom_allows_small_image_actual_size() {
-        let mut view = ViewState::new();
-        view.update_dimensions(200, 200, 800, 800);
-        let z = view.actual_size_zoom();
-        view.set_min_zoom(z);
+        // With enlarge off, min_zoom = 1.0 (don't enlarge)
+        view.set_min_zoom(1.0);
         view.actual_size();
-        assert!((view.zoom - 0.25).abs() < 0.01);
-    }
-
-    #[test]
-    fn zoom_out_stops_at_min_zoom() {
-        let mut view = ViewState::new();
-        view.update_dimensions(200, 200, 800, 800);
-        view.set_min_zoom(view.actual_size_zoom());
-        view.actual_size();
-        // Zoom out a lot — should not go below min_zoom
-        for _ in 0..200 {
+        assert!((view.zoom - 1.0).abs() < f32::EPSILON);
+        // Can't zoom out past 1.0
+        for _ in 0..100 {
             view.keyboard_zoom(false);
         }
-        assert!((view.zoom - view.actual_size_zoom()).abs() < f32::EPSILON);
+        assert!((view.zoom - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
-    fn set_min_zoom_reclamps_current_zoom() {
+    fn small_image_fit_zooms_above_one() {
         let mut view = ViewState::new();
+        // 200x200 in 800x800: fit_zoom = 4.0
         view.update_dimensions(200, 200, 800, 800);
-        view.set_min_zoom(0.25);
-        view.zoom = 0.1; // artificially low
-        view.set_min_zoom(0.25);
-        assert!((view.zoom - 0.25).abs() < f32::EPSILON);
+        view.fit_to_window();
+        assert!((view.zoom - 4.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn set_min_zoom_reclamps() {
+        let mut view = ViewState::new();
+        view.zoom = 0.5;
+        view.set_min_zoom(1.0);
+        assert!((view.zoom - 1.0).abs() < f32::EPSILON);
     }
 }

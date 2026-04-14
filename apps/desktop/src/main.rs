@@ -216,24 +216,28 @@ impl App {
     /// Called on image load, window resize, and setting changes. Does NOT change the
     /// current zoom level (only reclamps if it's below the new floor).
     fn update_min_zoom(&mut self) {
-        let actual_zoom = self.view_state.actual_size_zoom();
-        let allow_sub_fit =
-            actual_zoom < 1.0 && !self.enlarge_small_images && !self.auto_fit_window;
-        self.view_state
-            .set_min_zoom(if allow_sub_fit { actual_zoom } else { 1.0 });
+        let fit = self.view_state.fit_zoom();
+        let is_small = fit > 1.0; // fit_zoom > 1.0 means the image is smaller than the window
+        if is_small && !self.enlarge_small_images && !self.auto_fit_window {
+            // Small image, enlarge off: floor at actual size (1.0), don't enlarge
+            self.view_state.set_min_zoom(1.0);
+        } else {
+            // Large image or enlarge on: floor at fit-to-window
+            self.view_state.set_min_zoom(fit);
+        }
     }
 
     /// Choose the right initial zoom for a newly loaded image.
     /// Sets both the zoom floor and the starting zoom level.
     fn apply_initial_zoom(&mut self) {
         self.update_min_zoom();
-        let actual_zoom = self.view_state.actual_size_zoom();
-        let is_small = actual_zoom < 1.0;
+        let fit = self.view_state.fit_zoom();
+        let is_small = fit > 1.0;
 
         if is_small && !self.enlarge_small_images && !self.auto_fit_window {
-            self.view_state.actual_size();
+            self.view_state.actual_size(); // show at native pixel size
         } else {
-            self.view_state.fit_to_window();
+            self.view_state.fit_to_window(); // fill the window
         }
     }
 
