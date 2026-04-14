@@ -73,6 +73,11 @@ fn configure_macos_window(window: &Window) {
         // NSWindowStyleMask.fullSizeContentView = 1 << 15 = 32768
         let mask: u64 = msg_send![ns_window, styleMask];
         let _: () = msg_send![ns_window, setStyleMask: mask | (1u64 << 15)];
+
+        // Hide the native title text. The title string is still set (for Mission Control
+        // and accessibility) but not drawn — we render our own overlay instead.
+        // NSWindowTitleVisibility.hidden = 1
+        let _: () = msg_send![ns_window, setTitleVisibility: 1i64];
     }
 
     log::debug!(

@@ -609,20 +609,22 @@ impl App {
         }
     }
 
-    /// Build text blocks for the header overlay in the transparent titlebar area.
-    /// Shows filename, position, and zoom level (for example, "3 / 60 - photo.jpg  |  150%").
+    /// Build text blocks for the header overlay. Pills are computed from actual text
+    /// measurements during prepare() — no manual rect computation needed here.
     fn build_text_overlay(&self) -> Vec<text::TextBlock> {
-        let Some(renderer) = &self.renderer else {
+        let Some(rend) = &self.renderer else {
             return Vec::new();
         };
-        self.build_header_text(renderer.surface_width())
-    }
-
-    /// Build header text blocks shown in the transparent titlebar area during image viewing.
-    fn build_header_text(&self, screen_width: u32) -> Vec<text::TextBlock> {
         let Some(dir) = &self.dir_list else {
             return Vec::new();
         };
+
+        let scale_factor = self
+            .window
+            .as_ref()
+            .map(|w| w.scale_factor())
+            .unwrap_or(2.0);
+        let logical_width = rend.surface_width() as f32 / scale_factor as f32;
 
         let filename = dir
             .current()
@@ -630,33 +632,81 @@ impl App {
             .and_then(|n| n.to_str())
             .unwrap_or("Prvw");
 
-        let position = if dir.len() > 1 {
-            format!("{} / {} \u{2013} ", dir.current_index() + 1, dir.len())
+        let title = if dir.len() > 1 {
+            format!(
+                "{} / {} \u{2013} {filename}",
+                dir.current_index() + 1,
+                dir.len()
+            )
         } else {
-            String::new()
+            filename.to_string()
         };
 
         let zoom_pct = (self.view_state.zoom * 100.0).round() as i32;
-        let header = format!("{position}{filename}  |  {zoom_pct}%");
+        let zoom_text = format!("{zoom_pct}%");
 
-        // Semi-transparent white, positioned in the titlebar area (about 12px from top,
-        // centered horizontally). On macOS with transparent titlebar, the standard title
-        // bar is ~28px tall. We render our text roughly centered in that area.
-        let header_color: [u8; 4] = [220, 220, 225, 200];
+        let text_color: [u8; 4] = [255, 255, 255, 240];
+        let pill = text::PillStyle {
+            color: [0.0, 0.0, 0.0, 0.55],
+            padding_x: 8.0,
+            padding_y: 4.0,
+            corner_radius: 5.0,
+        };
+        let font_size = 13.5;
+        let line_height = 18.5;
+        let title_x = 80.0; // Right of the traffic lights
+        let title_y = 3.0; // Aligned with the native title bar text
+        let zoom_margin = 7.0; // Equidistant from top and right edge
 
-        // Approximate center: estimate text width as ~7px per char at font size 13
-        let approx_text_width = header.len() as f32 * 7.0;
-        let x = ((screen_width as f32 - approx_text_width) / 2.0).max(80.0);
+        // The zoom pill is right-aligned: x = the right edge of the pill.
+        let zoom_right_edge = logical_width - zoom_margin;
+        let zoom_budget = 70.0; // space reserved for zoom pill (for title truncation)
+        let gap = 12.0; // minimum space between title and zoom pills
+        let title_max_render =
+            logical_width - title_x - zoom_budget - pill.padding_x * 2.0 - zoom_margin - gap;
 
-        vec![text::TextBlock {
-            text: header,
-            x,
-            y: 6.0,
-            font_size: 13.0,
-            line_height: 18.0,
-            color: header_color,
-            max_width: Some(screen_width as f32 - 160.0),
-        }]
+        vec![
+            // Left: filename with position
+            text::TextBlock {
+                text: title,
+                x: title_x + pill.padding_x,
+                y: title_y + pill.padding_y,
+                font_size,
+                line_height,
+                color: text_color,
+                max_width: None,
+                bold: true,
+                shadow: false,
+                max_render_width: Some(title_max_render),
+                pill: Some(text::PillStyle {
+                    color: pill.color,
+                    padding_x: pill.padding_x,
+                    padding_y: pill.padding_y,
+                    corner_radius: pill.corner_radius,
+                }),
+                align_right: false,
+            },
+            // Right: zoom percentage (right-aligned — grows left for larger values)
+            text::TextBlock {
+                text: zoom_text,
+                x: zoom_right_edge,
+                y: title_y + pill.padding_y,
+                font_size,
+                line_height,
+                color: text_color,
+                max_width: None,
+                bold: true,
+                shadow: false,
+                max_render_width: None,
+                pill: Some(text::PillStyle {
+                    color: pill.color,
+                    padding_x: pill.padding_x,
+                    padding_y: pill.padding_y,
+                    corner_radius: pill.corner_radius,
+                }),
+                align_right: true,
+            },
+        ]
     }
 
     /// Drain preloader responses and cache the results.

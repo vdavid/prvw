@@ -6,6 +6,15 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+/// GPU-side uniform for the overlay shader.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct OverlayUniform {
+    pos: [f32; 4],    // x, y, width, height in physical pixels
+    color: [f32; 4],  // RGBA 0..1
+    params: [f32; 4], // corner_radius, screen_w, screen_h, 0
+}
+
 /// Owns all wgpu state: device, queue, surface, pipeline, texture, and uniform buffer.
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
@@ -18,6 +27,8 @@ pub struct Renderer {
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
     text_renderer: GlyphonRenderer,
+    overlay_pipeline: wgpu::RenderPipeline,
+    overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
     scale_factor: f64,
 }
 
@@ -182,6 +193,89 @@ impl Renderer {
             cache: None,
         });
 
+        // Overlay pipeline for drawing semi-transparent rounded-rectangle pills behind text
+        let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("overlay shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("overlay.wgsl").into()),
+        });
+
+        let overlay_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("overlay bind group layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let empty_uniform = OverlayUniform {
+            pos: [0.0; 4],
+            color: [0.0; 4],
+            params: [0.0; 4],
+        };
+        let overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)> = (0..8)
+            .map(|i| {
+                let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("overlay uniform {i}")),
+                    contents: bytemuck::bytes_of(&empty_uniform),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!("overlay bind group {i}")),
+                    layout: &overlay_bind_group_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    }],
+                });
+                (buffer, bind_group)
+            })
+            .collect();
+
+        let overlay_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("overlay pipeline layout"),
+                bind_group_layouts: &[Some(&overlay_bind_group_layout)],
+                immediate_size: 0,
+            });
+
+        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("overlay pipeline"),
+            layout: Some(&overlay_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &overlay_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &overlay_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let text_renderer = GlyphonRenderer::new(&device, &queue, surface_format);
 
         Self {
@@ -195,6 +289,8 @@ impl Renderer {
             uniform_buffer,
             sampler,
             text_renderer,
+            overlay_pipeline,
+            overlay_buffers,
             scale_factor,
         }
     }
@@ -275,8 +371,7 @@ impl Renderer {
     }
 
     /// Render the current image with optional text overlays. Returns false if the surface
-    /// isn't ready. When `text_blocks` is non-empty, text is rendered on top of the image
-    /// (or on top of the clear color if no image is loaded).
+    /// isn't ready. Pill backgrounds are computed from actual text measurements.
     pub fn render(&mut self, text_blocks: &[TextBlock]) -> bool {
         let surface_texture = self.surface.get_current_texture();
         let output = match surface_texture {
@@ -292,8 +387,8 @@ impl Renderer {
             }
         };
 
-        // Prepare text before creating the render pass
-        if !text_blocks.is_empty() {
+        // Prepare text and get measured pill rects (computed from actual shaped text width)
+        let measured_pills = if !text_blocks.is_empty() {
             self.text_renderer.prepare(
                 &self.device,
                 &self.queue,
@@ -301,7 +396,29 @@ impl Renderer {
                 self.config.width,
                 self.config.height,
                 self.scale_factor,
-            );
+            )
+        } else {
+            Vec::new()
+        };
+
+        // Write pill overlay uniforms BEFORE the render pass so they take effect
+        let sf = self.scale_factor as f32;
+        for (i, pill) in measured_pills.iter().enumerate() {
+            if i >= self.overlay_buffers.len() {
+                break;
+            }
+            let uniform = OverlayUniform {
+                pos: [pill.x * sf, pill.y * sf, pill.width * sf, pill.height * sf],
+                color: pill.color,
+                params: [
+                    pill.corner_radius * sf,
+                    self.config.width as f32,
+                    self.config.height as f32,
+                    0.0,
+                ],
+            };
+            self.queue
+                .write_buffer(&self.overlay_buffers[i].0, 0, bytemuck::bytes_of(&uniform));
         }
 
         let view = output
@@ -335,6 +452,13 @@ impl Renderer {
             if let Some(bind_group) = &self.bind_group {
                 pass.set_pipeline(&self.render_pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
+                pass.draw(0..6, 0..1);
+            }
+
+            // Draw pill backgrounds (between image and text), each with its own bind group
+            for i in 0..measured_pills.len().min(self.overlay_buffers.len()) {
+                pass.set_pipeline(&self.overlay_pipeline);
+                pass.set_bind_group(0, &self.overlay_buffers[i].1, &[]);
                 pass.draw(0..6, 0..1);
             }
 
