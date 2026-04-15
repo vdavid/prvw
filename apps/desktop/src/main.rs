@@ -8,6 +8,7 @@ mod menu;
 mod native_ui;
 #[cfg(target_os = "macos")]
 mod onboarding;
+#[allow(dead_code)] // Conversion methods are part of the API even when not yet used.
 mod pixels;
 mod preloader;
 mod qa_server;
@@ -20,6 +21,7 @@ mod view;
 mod window;
 
 use clap::Parser;
+use pixels::{Logical, Physical};
 use qa_server::{AppCommand, SharedAppState};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -164,8 +166,8 @@ struct App {
     /// Keyboard modifier state (Cmd, Shift, etc.)
     modifiers: ModifiersState,
     /// Mouse drag tracking
-    drag_start: Option<(f64, f64)>,
-    last_mouse_pos: (f64, f64),
+    drag_start: Option<(Logical<f64>, Logical<f64>)>,
+    last_mouse_pos: (Logical<f64>, Logical<f64>),
     /// Double-click detection
     last_click_time: Option<Instant>,
     /// Whether we need to re-render next frame
@@ -215,7 +217,7 @@ impl App {
             image_cache: preloader::ImageCache::new(),
             modifiers: ModifiersState::empty(),
             drag_start: None,
-            last_mouse_pos: (0.0, 0.0),
+            last_mouse_pos: (Logical(0.0), Logical(0.0)),
             last_click_time: None,
             needs_redraw: false,
             shared_state,
@@ -238,11 +240,10 @@ impl App {
         if self.auto_fit_window {
             // With auto-fit, the window tracks zoom. The floor is the zoom that would
             // make the window hit the minimum size (200px logical per axis).
-            if let (Some((iw, ih)), Some(win)) = (self.current_image_size, &self.window) {
-                let min_physical = window::MIN_WINDOW_DIM * win.scale_factor();
+            if let Some((iw, ih)) = self.current_image_size {
                 let max_dim = iw.max(ih) as f64;
                 self.view_state
-                    .set_min_zoom((min_physical / max_dim) as f32);
+                    .set_min_zoom((window::MIN_WINDOW_DIM / max_dim) as f32);
             }
             return;
         }
@@ -256,21 +257,26 @@ impl App {
         }
     }
 
-    /// Window center in physical pixels (for auto-fit pivot when zooming via keyboard/menu).
-    fn window_center_physical(&self) -> (f64, f64) {
+    /// Window center in logical pixels (for auto-fit pivot when zooming via keyboard/menu).
+    fn window_center_logical(&self) -> (Logical<f64>, Logical<f64>) {
         self.window
             .as_ref()
             .map(|w| {
-                let s = w.inner_size();
-                (s.width as f64 / 2.0, s.height as f64 / 2.0)
+                let s = w.inner_size().to_logical::<f64>(w.scale_factor());
+                (Logical(s.width / 2.0), Logical(s.height / 2.0))
             })
-            .unwrap_or((0.0, 0.0))
+            .unwrap_or((Logical(0.0), Logical(0.0)))
     }
 
     /// After a zoom change with auto-fit ON, resize the window to match the zoomed image.
-    /// `pivot_win_x/y` is the cursor position in window pixels — the screen pixel under the
-    /// cursor should stay over the same image content after the resize.
-    fn auto_fit_after_zoom(&mut self, old_zoom: f32, pivot_win_x: f64, pivot_win_y: f64) {
+    /// `pivot_win_x/y` is the cursor position in logical window pixels — the screen pixel under
+    /// the cursor should stay over the same image content after the resize.
+    fn auto_fit_after_zoom(
+        &mut self,
+        old_zoom: f32,
+        pivot_win_x: Logical<f64>,
+        pivot_win_y: Logical<f64>,
+    ) {
         let Some((iw, ih)) = self.current_image_size else {
             return;
         };
@@ -284,15 +290,18 @@ impl App {
         let new_zoom = self.view_state.zoom;
         let scale = win.scale_factor();
 
-        // Desired window = image * zoom (in physical pixels), converted to logical
-        let desired_w = iw as f64 * new_zoom as f64 / scale;
-        let desired_h = ih as f64 * new_zoom as f64 / scale;
+        // Desired window = image * zoom (already in logical pixels with the new zoom model)
+        let desired_w = iw as f64 * new_zoom as f64;
+        let desired_h = ih as f64 * new_zoom as f64;
 
         // Cap at screen bounds, floor at minimum
         let monitor_bounds = window::MonitorBounds::from_window(win);
         let (max_w, max_h) = monitor_bounds
             .as_ref()
-            .map(|b| b.max_window_size())
+            .map(|b| {
+                let (w, h) = b.max_window_size();
+                (w.0, h.0)
+            })
             .unwrap_or((desired_w, desired_h));
 
         let final_w = desired_w.clamp(window::MIN_WINDOW_DIM, max_w);
@@ -336,17 +345,19 @@ impl App {
         // Positioning strategy:
         // - Growing: use pivot (keeps cursor over the same image content — feels natural)
         // - Shrinking or same size: center the reduction (stable, no drift)
+        let pivot_x = pivot_win_x.0;
+        let pivot_y = pivot_win_y.0;
         let (target_x, target_y) = if growing {
             // Pivot: the cursor's screen position should stay over the same image content.
-            // The pivot is in physical window pixels; convert to logical for position math.
+            // The pivot is in logical window pixels.
             // Add chrome_h to pivot_y because outer_position.y is the frame top, but
             // the cursor is relative to the content area (below the titlebar).
-            let screen_x = win_pos.x + pivot_win_x / scale;
-            let screen_y = win_pos.y + chrome_h + pivot_win_y / scale;
+            let screen_x = win_pos.x + pivot_x;
+            let screen_y = win_pos.y + chrome_h + pivot_y;
             let ratio = new_zoom as f64 / old_zoom as f64;
             (
-                screen_x - (pivot_win_x / scale) * ratio,
-                screen_y - (chrome_h + pivot_win_y / scale) * ratio,
+                screen_x - pivot_x * ratio,
+                screen_y - (chrome_h + pivot_y) * ratio,
             )
         } else {
             // Shrink symmetrically around the window center (outer frame center)
@@ -358,13 +369,14 @@ impl App {
 
         // Screen boundary: the window must not go MORE off-screen than it was before.
         let (final_x, final_y) = if let Some(bounds) = &monitor_bounds {
-            window::clamp_to_screen(
-                (target_x, target_y),
-                (new_outer_w, new_outer_h),
-                (win_pos.x, win_pos.y),
-                (outer_w, outer_h),
+            let (fx, fy) = window::clamp_to_screen(
+                (Logical(target_x), Logical(target_y)),
+                (Logical(new_outer_w), Logical(new_outer_h)),
+                (Logical(win_pos.x), Logical(win_pos.y)),
+                (Logical(outer_w), Logical(outer_h)),
                 bounds,
-            )
+            );
+            (fx.0, fy.0)
         } else {
             (target_x, target_y)
         };
@@ -376,10 +388,14 @@ impl App {
 
         // Update renderer with the new size immediately (request_inner_size is async)
         if let Some(renderer) = &mut self.renderer {
-            renderer.resize(physical.width, physical.height);
+            renderer.resize(Physical(physical.width), Physical(physical.height));
             if let Some((iw, ih)) = self.current_image_size {
-                self.view_state
-                    .update_dimensions(iw, ih, physical.width, physical.height);
+                self.view_state.update_dimensions(
+                    iw,
+                    ih,
+                    renderer.logical_width(),
+                    renderer.logical_height(),
+                );
             }
             renderer.update_transform(&self.view_state.transform());
         }
@@ -496,14 +512,14 @@ impl App {
                     && let Some(win) = &self.window
                     && let Some(size) = window::resize_to_fit_image(win, image.width, image.height)
                 {
-                    renderer.resize(size.width, size.height);
+                    renderer.resize(Physical(size.width), Physical(size.height));
                 }
 
                 self.view_state.update_dimensions(
                     image.width,
                     image.height,
-                    renderer.surface_width(),
-                    renderer.surface_height(),
+                    renderer.logical_width(),
+                    renderer.logical_height(),
                 );
                 renderer.set_image(&image);
                 // Drop the renderer borrow before apply_initial_zoom (which borrows &mut self)
@@ -554,14 +570,14 @@ impl App {
                 && let Some(win) = &self.window
                 && let Some(size) = window::resize_to_fit_image(win, image.width, image.height)
             {
-                renderer.resize(size.width, size.height);
+                renderer.resize(Physical(size.width), Physical(size.height));
             }
 
             self.view_state.update_dimensions(
                 image.width,
                 image.height,
-                renderer.surface_width(),
-                renderer.surface_height(),
+                renderer.logical_width(),
+                renderer.logical_height(),
             );
             renderer.set_image(image);
             self.apply_initial_zoom();
@@ -712,17 +728,17 @@ impl App {
         let zoom_text = format!("{zoom_pct}%");
 
         let pill_color: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
-        let pad_x = 8.0;
-        let pad_y = 4.0;
-        let radius = 5.0;
-        let title_x = 80.0; // Right of the traffic lights
-        let title_y = 3.0; // Aligned with the native title bar text
-        let zoom_margin = 7.0; // Equidistant from top and right edge
+        let pad_x = Logical(8.0_f32);
+        let pad_y = Logical(4.0_f32);
+        let radius = Logical(5.0_f32);
+        let title_x = Logical(80.0_f32); // Right of the traffic lights
+        let title_y = Logical(3.0_f32); // Aligned with the native title bar text
+        let zoom_margin = Logical(7.0_f32); // Equidistant from top and right edge
 
         // The zoom pill is right-aligned: x = the right edge of the pill.
         let zoom_right_edge = logical_width - zoom_margin;
-        let zoom_budget = 70.0; // space reserved for zoom pill (for title truncation)
-        let gap = 12.0; // minimum space between title and zoom pills
+        let zoom_budget = Logical(70.0_f32); // space reserved for zoom pill (for title truncation)
+        let gap = Logical(12.0_f32); // minimum space between title and zoom pills
         let title_max_render =
             logical_width - title_x - zoom_budget - pad_x * 2.0 - zoom_margin - gap;
 
@@ -866,13 +882,16 @@ impl App {
         state.enlarge_small_images = self.enlarge_small_images;
 
         if let Some(win) = &self.window {
-            let size = win.inner_size();
-            let pos = win.outer_position().unwrap_or_default();
-            let logical_pos = pos.to_logical::<f64>(win.scale_factor());
+            let sf = win.scale_factor();
+            let logical_size = win.inner_size().to_logical::<f64>(sf);
+            let logical_pos = win
+                .outer_position()
+                .unwrap_or_default()
+                .to_logical::<f64>(sf);
             state.window_x = logical_pos.x;
             state.window_y = logical_pos.y;
-            state.window_width = size.width;
-            state.window_height = size.height;
+            state.window_width = logical_size.width as u32;
+            state.window_height = logical_size.height as u32;
             state.fullscreen = window::is_fullscreen(win);
             state.window_title = win.title();
         }
@@ -889,10 +908,10 @@ impl App {
         }
         state.min_zoom = self.view_state.min_zoom_value();
         let (rx, ry, rw, rh) = self.view_state.rendered_rect();
-        state.image_render_x = rx;
-        state.image_render_y = ry;
-        state.image_render_width = rw;
-        state.image_render_height = rh;
+        state.image_render_x = rx.0;
+        state.image_render_y = ry.0;
+        state.image_render_width = rw.0;
+        state.image_render_height = rh.0;
 
         state.diagnostics_text = self.build_diagnostics_text(state.current_index);
     }
@@ -986,7 +1005,7 @@ impl App {
                 let old_zoom = self.view_state.zoom;
                 self.view_state.keyboard_zoom(true);
                 if self.auto_fit_window {
-                    let (cx, cy) = self.window_center_physical();
+                    let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
@@ -995,7 +1014,7 @@ impl App {
                 let old_zoom = self.view_state.zoom;
                 self.view_state.keyboard_zoom(false);
                 if self.auto_fit_window {
-                    let (cx, cy) = self.window_center_physical();
+                    let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
@@ -1004,7 +1023,7 @@ impl App {
                 let old_zoom = self.view_state.zoom;
                 self.view_state.set_zoom(level);
                 if self.auto_fit_window {
-                    let (cx, cy) = self.window_center_physical();
+                    let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
@@ -1013,7 +1032,7 @@ impl App {
                 let old_zoom = self.view_state.zoom;
                 self.view_state.fit_to_window();
                 if self.auto_fit_window {
-                    let (cx, cy) = self.window_center_physical();
+                    let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
@@ -1022,7 +1041,7 @@ impl App {
                 let old_zoom = self.view_state.zoom;
                 self.view_state.actual_size();
                 if self.auto_fit_window {
-                    let (cx, cy) = self.window_center_physical();
+                    let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
@@ -1158,10 +1177,14 @@ impl App {
                     }
                     if let Some(renderer) = &mut self.renderer {
                         let size = win.inner_size();
-                        renderer.resize(size.width, size.height);
+                        renderer.resize(Physical(size.width), Physical(size.height));
                         if let Some((iw, ih)) = self.current_image_size {
-                            self.view_state
-                                .update_dimensions(iw, ih, size.width, size.height);
+                            self.view_state.update_dimensions(
+                                iw,
+                                ih,
+                                renderer.logical_width(),
+                                renderer.logical_height(),
+                            );
                         }
                     }
                     self.update_min_zoom();
@@ -1178,9 +1201,14 @@ impl App {
                 cursor_y,
             } => {
                 let old_zoom = self.view_state.zoom;
-                self.view_state.scroll_zoom(delta, cursor_x, cursor_y);
+                self.view_state
+                    .scroll_zoom(delta, Logical(cursor_x), Logical(cursor_y));
                 if self.auto_fit_window {
-                    self.auto_fit_after_zoom(old_zoom, cursor_x as f64, cursor_y as f64);
+                    self.auto_fit_after_zoom(
+                        old_zoom,
+                        Logical(cursor_x as f64),
+                        Logical(cursor_y as f64),
+                    );
                 }
                 self.update_transform_and_redraw();
             }
@@ -1273,10 +1301,14 @@ impl ApplicationHandler<AppCommand> for App {
             WindowEvent::Resized(size) => {
                 log::debug!("Window resized to {}x{}", size.width, size.height);
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.resize(size.width, size.height);
+                    renderer.resize(Physical(size.width), Physical(size.height));
                     if let Some((iw, ih)) = self.current_image_size {
-                        self.view_state
-                            .update_dimensions(iw, ih, size.width, size.height);
+                        self.view_state.update_dimensions(
+                            iw,
+                            ih,
+                            renderer.logical_width(),
+                            renderer.logical_height(),
+                        );
                     }
                 }
                 // Recalculate zoom floor — image-to-window ratio changed
@@ -1327,7 +1359,8 @@ impl ApplicationHandler<AppCommand> for App {
                 if scroll_y.abs() > f32::EPSILON {
                     let old_zoom = self.view_state.zoom;
                     let (cx, cy) = self.last_mouse_pos;
-                    self.view_state.scroll_zoom(scroll_y, cx as f32, cy as f32);
+                    self.view_state
+                        .scroll_zoom(scroll_y, cx.as_f32(), cy.as_f32());
                     if self.auto_fit_window {
                         self.auto_fit_after_zoom(old_zoom, cx, cy);
                     }
@@ -1335,15 +1368,17 @@ impl ApplicationHandler<AppCommand> for App {
                 }
             }
 
-            // Mouse drag for panning
+            // Mouse drag for panning (convert to logical pixels)
             WindowEvent::CursorMoved { position, .. } => {
+                let sf = self.scale_factor;
+                let logical = (Logical(position.x / sf), Logical(position.y / sf));
                 let prev = self.last_mouse_pos;
-                self.last_mouse_pos = (position.x, position.y);
+                self.last_mouse_pos = logical;
 
                 if self.drag_start.is_some() {
-                    let dx = position.x - prev.0;
-                    let dy = position.y - prev.1;
-                    self.view_state.pan(dx as f32, dy as f32);
+                    let dx = logical.0 - prev.0;
+                    let dy = logical.1 - prev.1;
+                    self.view_state.pan(dx.as_f32(), dy.as_f32());
                     self.update_transform_and_redraw();
                 }
             }

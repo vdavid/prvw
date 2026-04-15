@@ -1,7 +1,7 @@
 //! Text rendering via glyphon. Wraps font system, atlas, and renderer into a single API
 //! that the main renderer can call to draw text overlays (header bar).
 
-use crate::pixels::LogicalF32;
+use crate::pixels::Logical;
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
@@ -12,19 +12,19 @@ use glyphon::{
 /// The text renderer scales them by the display scale factor automatically.
 pub struct TextBlock {
     pub text: String,
-    pub x: LogicalF32,
-    pub y: LogicalF32,
+    pub x: Logical<f32>,
+    pub y: Logical<f32>,
     pub font_size: f32,
     pub line_height: f32,
     pub color: [u8; 4], // RGBA
-    pub max_width: Option<LogicalF32>,
+    pub max_width: Option<Logical<f32>>,
     pub bold: bool,
     /// Drop shadow: renders the text twice — dark shadow offset by 1px, then the main color on top.
     /// This guarantees readability on any background without a backdrop blur or pill.
     pub shadow: bool,
     /// Maximum rendered width in logical pixels. If text exceeds this, truncate with
     /// middle ellipsis: "long_filen…photo.jpg". None = no truncation.
-    pub max_render_width: Option<LogicalF32>,
+    pub max_render_width: Option<Logical<f32>>,
     /// If set, draw a semi-transparent pill (rounded rect) behind the text.
     pub pill: Option<PillStyle>,
     /// If set, `x` is the RIGHT edge of the pill (text + padding), and the block is
@@ -33,25 +33,25 @@ pub struct TextBlock {
 }
 
 pub struct PillStyle {
-    pub color: [f32; 4],    // RGBA, each 0..1
-    pub padding_x: f32,     // horizontal padding in logical pts
-    pub padding_y: f32,     // vertical padding in logical pts
-    pub corner_radius: f32, // in logical pts
+    pub color: [f32; 4],             // RGBA, each 0..1
+    pub padding_x: Logical<f32>,     // horizontal padding in logical pts
+    pub padding_y: Logical<f32>,     // vertical padding in logical pts
+    pub corner_radius: Logical<f32>, // in logical pts
 }
 
 /// A measured pill rect, computed from actual text width after shaping.
 pub struct MeasuredPill {
-    pub x: LogicalF32,      // logical pts
-    pub y: LogicalF32,      // logical pts
-    pub width: LogicalF32,  // logical pts
-    pub height: LogicalF32, // logical pts
+    pub x: Logical<f32>,      // logical pts
+    pub y: Logical<f32>,      // logical pts
+    pub width: Logical<f32>,  // logical pts
+    pub height: Logical<f32>, // logical pts
     pub color: [f32; 4],
-    pub corner_radius: f32,
+    pub corner_radius: Logical<f32>,
 }
 
 impl TextBlock {
     /// Create a text block with sensible defaults. Font: 13.5pt, white, not bold, no shadow/pill/truncation.
-    pub fn new(text: impl Into<String>, x: LogicalF32, y: LogicalF32) -> Self {
+    pub fn new(text: impl Into<String>, x: Logical<f32>, y: Logical<f32>) -> Self {
         Self {
             text: text.into(),
             x,
@@ -76,9 +76,9 @@ impl TextBlock {
     pub fn pill(
         mut self,
         color: [f32; 4],
-        padding_x: f32,
-        padding_y: f32,
-        corner_radius: f32,
+        padding_x: Logical<f32>,
+        padding_y: Logical<f32>,
+        corner_radius: Logical<f32>,
     ) -> Self {
         self.pill = Some(PillStyle {
             color,
@@ -89,7 +89,7 @@ impl TextBlock {
         self
     }
 
-    pub fn max_render_width(mut self, width: f32) -> Self {
+    pub fn max_render_width(mut self, width: Logical<f32>) -> Self {
         self.max_render_width = Some(width);
         self
     }
@@ -267,7 +267,7 @@ impl GlyphonRenderer {
 
         let mut measured_pills: Vec<MeasuredPill> = Vec::new();
         // Per-block x offset (for right-aligned blocks, shifted left by measured text width)
-        let mut x_offsets: Vec<f32> = Vec::with_capacity(texts.len());
+        let mut x_offsets: Vec<Logical<f32>> = Vec::with_capacity(texts.len());
 
         // Build a glyphon Buffer for each TextBlock.
         // Blocks with shadow=true get a second buffer for the shadow copy.
@@ -279,7 +279,7 @@ impl GlyphonRenderer {
                     // x is the right edge — the text can use most of the screen width
                     block.x
                 } else {
-                    screen_width as f32 / sf - block.x
+                    Logical(screen_width as f32 / sf) - block.x
                 }
             });
             let attrs = if block.bold {
@@ -290,12 +290,14 @@ impl GlyphonRenderer {
                 Attrs::new().family(Family::Name("System Font"))
             };
 
+            let max_render_w_raw = block.max_render_width.map(|w| w.0);
+
             // Shadow buffer (identical text, rendered first at an offset)
             if block.shadow {
                 let mut shadow_buf = Buffer::new(&mut self.font_system, metrics);
                 shadow_buf.set_size(
                     &mut self.font_system,
-                    Some(max_w),
+                    Some(max_w.0),
                     Some(screen_height as f32 / sf),
                 );
                 Self::shape_and_truncate(
@@ -303,7 +305,7 @@ impl GlyphonRenderer {
                     &mut shadow_buf,
                     &block.text,
                     &attrs,
-                    block.max_render_width,
+                    max_render_w_raw,
                 );
                 buffers.push(shadow_buf);
             }
@@ -311,7 +313,7 @@ impl GlyphonRenderer {
             let mut buffer = Buffer::new(&mut self.font_system, metrics);
             buffer.set_size(
                 &mut self.font_system,
-                Some(max_w),
+                Some(max_w.0),
                 Some(screen_height as f32 / sf),
             );
             Self::shape_and_truncate(
@@ -319,14 +321,18 @@ impl GlyphonRenderer {
                 &mut buffer,
                 &block.text,
                 &attrs,
-                block.max_render_width,
+                max_render_w_raw,
             );
 
             // Measure actual text width and compute position adjustments.
-            let text_width = measure_text_width(&buffer);
+            let text_width = Logical(measure_text_width(&buffer));
             let actual_x = if block.align_right {
                 // x is the right edge — shift left by text width + pill padding
-                let pad = block.pill.as_ref().map(|s| s.padding_x).unwrap_or(0.0);
+                let pad = block
+                    .pill
+                    .as_ref()
+                    .map(|s| s.padding_x)
+                    .unwrap_or(Logical(0.0));
                 block.x - text_width - pad
             } else {
                 block.x
@@ -338,7 +344,7 @@ impl GlyphonRenderer {
                     x: actual_x - style.padding_x,
                     y: block.y - style.padding_y,
                     width: text_width + style.padding_x * 2.0,
-                    height: block.line_height + style.padding_y * 2.0,
+                    height: Logical(block.line_height) + style.padding_y * 2.0,
                     color: style.color,
                     corner_radius: style.corner_radius,
                 });
@@ -361,8 +367,8 @@ impl GlyphonRenderer {
             if block.shadow {
                 text_areas.push(TextArea {
                     buffer: &buffers[buf_idx],
-                    left: (actual_x + 0.5) * sf,
-                    top: (block.y + 0.5) * sf,
+                    left: (actual_x.0 + 0.5) * sf,
+                    top: (block.y.0 + 0.5) * sf,
                     scale: sf,
                     bounds,
                     default_color: Color::rgba(0, 0, 0, 180),
@@ -373,8 +379,8 @@ impl GlyphonRenderer {
             let [r, g, b, a] = block.color;
             text_areas.push(TextArea {
                 buffer: &buffers[buf_idx],
-                left: actual_x * sf,
-                top: block.y * sf,
+                left: actual_x.0 * sf,
+                top: block.y.0 * sf,
                 scale: sf,
                 bounds,
                 default_color: Color::rgba(r, g, b, a),

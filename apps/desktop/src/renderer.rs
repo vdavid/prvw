@@ -1,5 +1,5 @@
 use crate::image_loader::DecodedImage;
-use crate::pixels::LogicalF32;
+use crate::pixels::{Logical, Physical};
 use crate::text::{GlyphonRenderer, TextBlock};
 use crate::view::TransformUniform;
 use image::ImageEncoder;
@@ -360,13 +360,13 @@ impl Renderer {
     }
 
     /// Handle window resize: update stored dimensions and reconfigure the surface.
-    pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
+    pub fn resize(&mut self, width: Physical<u32>, height: Physical<u32>) {
+        if width.0 == 0 || height.0 == 0 {
             return;
         }
-        if width != self.config.width || height != self.config.height {
-            self.config.width = width;
-            self.config.height = height;
+        if width.0 != self.config.width || height.0 != self.config.height {
+            self.config.width = width.0;
+            self.config.height = height.0;
             self.surface.configure(&self.device, &self.config);
         }
     }
@@ -409,10 +409,15 @@ impl Renderer {
                 break;
             }
             let uniform = OverlayUniform {
-                pos: [pill.x * sf, pill.y * sf, pill.width * sf, pill.height * sf],
+                pos: [
+                    pill.x.0 * sf,
+                    pill.y.0 * sf,
+                    pill.width.0 * sf,
+                    pill.height.0 * sf,
+                ],
                 color: pill.color,
                 params: [
-                    pill.corner_radius * sf,
+                    pill.corner_radius.0 * sf,
                     self.config.width as f32,
                     self.config.height as f32,
                     0.0,
@@ -612,23 +617,11 @@ impl Renderer {
         png_bytes
     }
 
-    pub fn surface_width(&self) -> u32 {
-        self.config.width
+    pub fn logical_width(&self) -> Logical<f32> {
+        Physical(self.config.width).to_logical_f32(self.scale_factor)
     }
 
-    pub fn surface_height(&self) -> u32 {
-        self.config.height
-    }
-
-    pub fn logical_width(&self) -> LogicalF32 {
-        self.config.width as f32 / self.scale_factor as f32
-    }
-
-    #[expect(
-        dead_code,
-        reason = "symmetric with logical_width, will be used as more code adopts logical coordinates"
-    )]
-    pub fn logical_height(&self) -> LogicalF32 {
-        self.config.height as f32 / self.scale_factor as f32
+    pub fn logical_height(&self) -> Logical<f32> {
+        Physical(self.config.height).to_logical_f32(self.scale_factor)
     }
 }
