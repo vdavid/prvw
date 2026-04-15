@@ -153,6 +153,14 @@ fn run_update() -> Result<(), String> {
 
     result?;
 
+    // Force LaunchServices to re-read the new Info.plist. Without this, macOS caches
+    // the old document type registrations and won't recognize new file formats added
+    // in this update.
+    let _ = Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
+        .args(["-f"])
+        .arg(&bundle_path)
+        .output();
+
     log::info!(
         "Update installed: v{}. Restart to use it.",
         manifest.version
