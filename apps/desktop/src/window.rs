@@ -1,7 +1,10 @@
-use crate::pixels::Logical;
+use crate::pixels::{
+    Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
+    to_logical_size,
+};
 use std::path::Path;
 use std::sync::Arc;
-use winit::dpi::{LogicalPosition, LogicalSize, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Fullscreen, Window, WindowAttributes};
 
@@ -151,13 +154,13 @@ impl MonitorBounds {
     pub fn from_window(window: &Window) -> Option<Self> {
         let scale = window.scale_factor();
         window.current_monitor().map(|m| {
-            let pos = m.position().to_logical::<f64>(scale);
-            let size = m.size().to_logical::<f64>(scale);
+            let (x, y) = from_logical_pos(m.position().to_logical::<f64>(scale));
+            let (width, height) = from_logical_size(m.size().to_logical::<f64>(scale));
             Self {
-                x: Logical(pos.x),
-                y: Logical(pos.y),
-                width: Logical(size.width),
-                height: Logical(size.height),
+                x,
+                y,
+                width,
+                height,
             }
         })
     }
@@ -254,8 +257,8 @@ pub fn resize_to_fit_image(
     let final_w = (img_w * scale).max(MIN_WINDOW_DIM);
     let final_h = (img_h * scale).max(MIN_WINDOW_DIM);
 
-    let new_size = LogicalSize::new(final_w, final_h);
-    let physical_size = new_size.to_physical::<u32>(scale_factor);
+    let new_size = to_logical_size(Logical(final_w), Logical(final_h));
+    let (pw, ph) = from_physical_size(new_size.to_physical::<u32>(scale_factor));
 
     let _ = window.request_inner_size(new_size);
 
@@ -265,16 +268,16 @@ pub fn resize_to_fit_image(
         image_height,
         final_w as u32,
         final_h as u32,
-        physical_size.width,
-        physical_size.height
+        pw.0,
+        ph.0
     );
 
     // Center the window on the current monitor
     if let Some(bounds) = MonitorBounds::from_window(window) {
-        let x = bounds.x.0 + (bounds.width.0 - final_w) / 2.0;
-        let y = bounds.y.0 + (bounds.height.0 - final_h) / 2.0;
-        window.set_outer_position(LogicalPosition::new(x, y));
+        let cx = Logical(bounds.x.0 + (bounds.width.0 - final_w) / 2.0);
+        let cy = Logical(bounds.y.0 + (bounds.height.0 - final_h) / 2.0);
+        window.set_outer_position(to_logical_pos(cx, cy));
     }
 
-    Some(physical_size)
+    Some(PhysicalSize::new(pw.0, ph.0))
 }

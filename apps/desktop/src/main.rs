@@ -20,7 +20,10 @@ mod view;
 mod window;
 
 use clap::Parser;
-use pixels::{Logical, Physical};
+use pixels::{
+    Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
+    to_logical_size,
+};
 use qa_server::{AppCommand, SharedAppState};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -261,8 +264,9 @@ impl App {
         self.window
             .as_ref()
             .map(|w| {
-                let s = w.inner_size().to_logical::<f64>(w.scale_factor());
-                (Logical(s.width / 2.0), Logical(s.height / 2.0))
+                let (lw, lh) =
+                    from_logical_size(w.inner_size().to_logical::<f64>(w.scale_factor()));
+                (lw * 0.5, lh * 0.5)
             })
             .unwrap_or((Logical(0.0), Logical(0.0)))
     }
@@ -316,78 +320,74 @@ impl App {
             self.view_state.pan_y = 0.0;
         }
 
-        let win_pos = win
-            .outer_position()
-            .unwrap_or_default()
-            .to_logical::<f64>(scale);
+        let (win_pos_x, win_pos_y) = from_logical_pos(
+            win.outer_position()
+                .unwrap_or_default()
+                .to_logical::<f64>(scale),
+        );
         // Position math uses outer_position, so we need outer dimensions.
         // The titlebar adds height to the outer frame vs the inner content area.
-        let outer_w = win.outer_size().to_logical::<f64>(scale).width;
-        let outer_h = win.outer_size().to_logical::<f64>(scale).height;
-        let inner_w = win.inner_size().to_logical::<f64>(scale).width;
-        let inner_h = win.inner_size().to_logical::<f64>(scale).height;
+        let (outer_w, outer_h) = from_logical_size(win.outer_size().to_logical::<f64>(scale));
+        let (inner_w, inner_h) = from_logical_size(win.inner_size().to_logical::<f64>(scale));
         let chrome_w = outer_w - inner_w; // typically 0 on macOS
         let chrome_h = outer_h - inner_h; // titlebar height
 
         // The new outer size after request_inner_size(final_w, final_h)
-        let new_outer_w = final_w + chrome_w;
-        let new_outer_h = final_h + chrome_h;
+        let new_outer_w = Logical(final_w) + chrome_w;
+        let new_outer_h = Logical(final_h) + chrome_h;
 
         // If the window size isn't changing, skip entirely to avoid sub-pixel drift from
         // rounding between logical/physical coordinates.
-        if (new_outer_w - outer_w).abs() < 1.5 && (new_outer_h - outer_h).abs() < 1.5 {
+        if (new_outer_w - outer_w).0.abs() < 1.5 && (new_outer_h - outer_h).0.abs() < 1.5 {
             return;
         }
 
-        let growing = new_outer_w > outer_w + 0.5 || new_outer_h > outer_h + 0.5;
+        let growing = new_outer_w.0 > outer_w.0 + 0.5 || new_outer_h.0 > outer_h.0 + 0.5;
 
         // Positioning strategy:
         // - Growing: use pivot (keeps cursor over the same image content — feels natural)
         // - Shrinking or same size: center the reduction (stable, no drift)
-        let pivot_x = pivot_win_x.0;
-        let pivot_y = pivot_win_y.0;
         let (target_x, target_y) = if growing {
             // Pivot: the cursor's screen position should stay over the same image content.
             // The pivot is in logical window pixels.
             // Add chrome_h to pivot_y because outer_position.y is the frame top, but
             // the cursor is relative to the content area (below the titlebar).
-            let screen_x = win_pos.x + pivot_x;
-            let screen_y = win_pos.y + chrome_h + pivot_y;
+            let screen_x = win_pos_x + pivot_win_x;
+            let screen_y = win_pos_y + chrome_h + pivot_win_y;
             let ratio = new_zoom as f64 / old_zoom as f64;
             (
-                screen_x - pivot_x * ratio,
-                screen_y - (chrome_h + pivot_y) * ratio,
+                screen_x - pivot_win_x * ratio,
+                screen_y - (chrome_h + pivot_win_y) * ratio,
             )
         } else {
             // Shrink symmetrically around the window center (outer frame center)
             (
-                win_pos.x + (outer_w - new_outer_w) / 2.0,
-                win_pos.y + (outer_h - new_outer_h) / 2.0,
+                win_pos_x + (outer_w - new_outer_w) * 0.5,
+                win_pos_y + (outer_h - new_outer_h) * 0.5,
             )
         };
 
         // Screen boundary: the window must not go MORE off-screen than it was before.
         let (final_x, final_y) = if let Some(bounds) = &monitor_bounds {
-            let (fx, fy) = window::clamp_to_screen(
-                (Logical(target_x), Logical(target_y)),
-                (Logical(new_outer_w), Logical(new_outer_h)),
-                (Logical(win_pos.x), Logical(win_pos.y)),
-                (Logical(outer_w), Logical(outer_h)),
+            window::clamp_to_screen(
+                (target_x, target_y),
+                (new_outer_w, new_outer_h),
+                (win_pos_x, win_pos_y),
+                (outer_w, outer_h),
                 bounds,
-            );
-            (fx.0, fy.0)
+            )
         } else {
             (target_x, target_y)
         };
 
-        let new_size = winit::dpi::LogicalSize::new(final_w, final_h);
-        let physical = new_size.to_physical::<u32>(scale);
+        let new_size = to_logical_size(Logical(final_w), Logical(final_h));
+        let (pw, ph) = from_physical_size(new_size.to_physical::<u32>(scale));
         let _ = win.request_inner_size(new_size);
-        win.set_outer_position(winit::dpi::LogicalPosition::new(final_x, final_y));
+        win.set_outer_position(to_logical_pos(final_x, final_y));
 
         // Update renderer with the new size immediately (request_inner_size is async)
         if let Some(renderer) = &mut self.renderer {
-            renderer.resize(Physical(physical.width), Physical(physical.height));
+            renderer.resize(pw, ph);
             if let Some((iw, ih)) = self.current_image_size {
                 self.view_state.update_dimensions(
                     iw,
@@ -511,7 +511,8 @@ impl App {
                     && let Some(win) = &self.window
                     && let Some(size) = window::resize_to_fit_image(win, image.width, image.height)
                 {
-                    renderer.resize(Physical(size.width), Physical(size.height));
+                    let (pw, ph) = from_physical_size(size);
+                    renderer.resize(pw, ph);
                 }
 
                 self.view_state.update_dimensions(
@@ -569,7 +570,8 @@ impl App {
                 && let Some(win) = &self.window
                 && let Some(size) = window::resize_to_fit_image(win, image.width, image.height)
             {
-                renderer.resize(Physical(size.width), Physical(size.height));
+                let (pw, ph) = from_physical_size(size);
+                renderer.resize(pw, ph);
             }
 
             self.view_state.update_dimensions(
@@ -882,15 +884,16 @@ impl App {
 
         if let Some(win) = &self.window {
             let sf = win.scale_factor();
-            let logical_size = win.inner_size().to_logical::<f64>(sf);
-            let logical_pos = win
-                .outer_position()
-                .unwrap_or_default()
-                .to_logical::<f64>(sf);
-            state.window_x = logical_pos.x;
-            state.window_y = logical_pos.y;
-            state.window_width = logical_size.width as u32;
-            state.window_height = logical_size.height as u32;
+            let (lw, lh) = from_logical_size(win.inner_size().to_logical::<f64>(sf));
+            let (lx, ly) = from_logical_pos(
+                win.outer_position()
+                    .unwrap_or_default()
+                    .to_logical::<f64>(sf),
+            );
+            state.window_x = lx.0;
+            state.window_y = ly.0;
+            state.window_width = lw.0 as u32;
+            state.window_height = lh.0 as u32;
             state.fullscreen = window::is_fullscreen(win);
             state.window_title = win.title();
         }
@@ -1162,21 +1165,23 @@ impl App {
                     if let Some(w) = width
                         && let Some(h) = height
                     {
-                        let _ = win
-                            .request_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64));
+                        let _ = win.request_inner_size(to_logical_size(
+                            Logical(w as f64),
+                            Logical(h as f64),
+                        ));
                     }
                     if x.is_some() || y.is_some() {
                         let current = win.outer_position().unwrap_or_default();
                         let new_x = x.unwrap_or(current.x);
                         let new_y = y.unwrap_or(current.y);
-                        win.set_outer_position(winit::dpi::LogicalPosition::new(
-                            new_x as f64,
-                            new_y as f64,
+                        win.set_outer_position(to_logical_pos(
+                            Logical(new_x as f64),
+                            Logical(new_y as f64),
                         ));
                     }
                     if let Some(renderer) = &mut self.renderer {
-                        let size = win.inner_size();
-                        renderer.resize(Physical(size.width), Physical(size.height));
+                        let (pw, ph) = from_physical_size(win.inner_size());
+                        renderer.resize(pw, ph);
                         if let Some((iw, ih)) = self.current_image_size {
                             self.view_state.update_dimensions(
                                 iw,
@@ -1300,7 +1305,8 @@ impl ApplicationHandler<AppCommand> for App {
             WindowEvent::Resized(size) => {
                 log::debug!("Window resized to {}x{}", size.width, size.height);
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.resize(Physical(size.width), Physical(size.height));
+                    let (pw, ph) = from_physical_size(size);
+                    renderer.resize(pw, ph);
                     if let Some((iw, ih)) = self.current_image_size {
                         self.view_state.update_dimensions(
                             iw,

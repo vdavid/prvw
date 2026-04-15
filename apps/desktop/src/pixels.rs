@@ -17,35 +17,9 @@ pub struct Physical<T>(pub T);
 
 // ── Conversion ───────────────────────────────────────────────────────────
 
-impl Logical<f32> {
-    #[allow(dead_code)] // Completes the type API — used when logical→physical conversion is needed
-    pub fn to_physical(self, scale_factor: f64) -> Physical<f32> {
-        Physical(self.0 * scale_factor as f32)
-    }
-}
-
 impl Logical<f64> {
-    #[allow(dead_code)]
-    pub fn to_physical(self, scale_factor: f64) -> Physical<f64> {
-        Physical(self.0 * scale_factor)
-    }
-
     pub fn as_f32(self) -> Logical<f32> {
         Logical(self.0 as f32)
-    }
-}
-
-impl Physical<f32> {
-    #[allow(dead_code)]
-    pub fn to_logical(self, scale_factor: f64) -> Logical<f32> {
-        Logical(self.0 / scale_factor as f32)
-    }
-}
-
-impl Physical<f64> {
-    #[allow(dead_code)]
-    pub fn to_logical(self, scale_factor: f64) -> Logical<f64> {
-        Logical(self.0 / scale_factor)
     }
 }
 
@@ -53,6 +27,35 @@ impl Physical<u32> {
     pub fn to_logical_f32(self, scale_factor: f64) -> Logical<f32> {
         Logical(self.0 as f32 / scale_factor as f32)
     }
+}
+
+// ── Winit interop ────────────────────────────────────────────────────────
+
+use winit::dpi;
+
+/// Extract logical width and height from a winit `LogicalSize`.
+pub fn from_logical_size(s: dpi::LogicalSize<f64>) -> (Logical<f64>, Logical<f64>) {
+    (Logical(s.width), Logical(s.height))
+}
+
+/// Extract logical x and y from a winit `LogicalPosition`.
+pub fn from_logical_pos(p: dpi::LogicalPosition<f64>) -> (Logical<f64>, Logical<f64>) {
+    (Logical(p.x), Logical(p.y))
+}
+
+/// Extract physical width and height from a winit `PhysicalSize`.
+pub fn from_physical_size(s: dpi::PhysicalSize<u32>) -> (Physical<u32>, Physical<u32>) {
+    (Physical(s.width), Physical(s.height))
+}
+
+/// Create a winit `LogicalSize` from logical width and height.
+pub fn to_logical_size(w: Logical<f64>, h: Logical<f64>) -> dpi::LogicalSize<f64> {
+    dpi::LogicalSize::new(w.0, h.0)
+}
+
+/// Create a winit `LogicalPosition` from logical x and y.
+pub fn to_logical_pos(x: Logical<f64>, y: Logical<f64>) -> dpi::LogicalPosition<f64> {
+    dpi::LogicalPosition::new(x.0, y.0)
 }
 
 // ── Debug / Display ──────────────────────────────────────────────────────
