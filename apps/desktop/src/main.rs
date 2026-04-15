@@ -90,17 +90,11 @@ fn main() {
         })
         .collect();
 
-    // No files passed: show the native onboarding window and exit.
-    // This runs BEFORE EventLoop::new() to avoid nested run loop segfaults
-    // (see AGENTS.md gotcha on AppKit modals).
-    if resolved_files.is_empty() {
-        log::info!("No files passed, showing onboarding window");
-        #[cfg(target_os = "macos")]
-        native_ui::show_onboarding_window();
-        return;
-    }
+    let waiting_for_file = resolved_files.is_empty();
 
-    if resolved_files.len() == 1 {
+    if waiting_for_file {
+        log::info!("No files on CLI, waiting for Apple Event (Finder double-click)");
+    } else if resolved_files.len() == 1 {
         log::info!("Opening {}", resolved_files[0].display());
     } else {
         log::info!("Opening {} files", resolved_files.len());
@@ -116,8 +110,10 @@ fn main() {
     let proxy = event_loop.create_proxy();
     let shared_state = Arc::new(Mutex::new(SharedAppState::default()));
 
-    // Register Apple Event handler for file-open events (double-click while already running).
-    // Uses NSAppleEventManager, not NSApplicationDelegate (which would conflict with winit).
+    // Register Apple Event handler for file-open events.
+    // For Finder double-click (app not running): macOS sends kAEOpenDocuments AFTER
+    // the event loop starts — this is the primary way we receive files.
+    // For Finder double-click (app already running): same Apple Event to the running instance.
     #[cfg(target_os = "macos")]
     let _open_handler = macos_open_handler::register(proxy.clone());
 
@@ -127,7 +123,13 @@ fn main() {
         None
     };
 
-    let mut app = App::new(file_path, explicit_files, proxy, Arc::clone(&shared_state));
+    let mut app = App::new(
+        file_path,
+        explicit_files,
+        waiting_for_file,
+        proxy,
+        Arc::clone(&shared_state),
+    );
     event_loop
         .run_app(&mut app)
         .expect("Event loop terminated unexpectedly");
@@ -181,12 +183,19 @@ struct App {
     /// Current display scale factor (Retina = 2.0). Updated on window creation and
     /// `ScaleFactorChanged` events. Defaults to 2.0 before the window exists.
     scale_factor: f64,
+    /// True when launched with no CLI files (Finder double-click or Dock launch).
+    /// The app waits for an Apple Event before creating the main window.
+    waiting_for_file: bool,
+    /// When waiting_for_file: the time we started waiting. After 500ms with no file,
+    /// show the onboarding window.
+    wait_start: Option<Instant>,
 }
 
 impl App {
     fn new(
         file_path: PathBuf,
         explicit_files: Option<Vec<PathBuf>>,
+        waiting_for_file: bool,
         event_loop_proxy: EventLoopProxy<AppCommand>,
         shared_state: Arc<Mutex<SharedAppState>>,
     ) -> Self {
@@ -214,6 +223,8 @@ impl App {
             auto_fit_window: initial_settings.auto_fit_window,
             enlarge_small_images: initial_settings.enlarge_small_images,
             scale_factor: 2.0,
+            waiting_for_file,
+            wait_start: None,
         }
     }
 
@@ -383,6 +394,82 @@ impl App {
         } else {
             self.view_state.fit_to_window(); // fill the window
         }
+    }
+
+    /// Initialize the full viewer: window, renderer, menu, preloader, initial image.
+    /// Called from resumed() (CLI files) or OpenFile handler (Apple Event after waiting).
+    fn initialize_viewer(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return; // Already initialized
+        }
+
+        event_loop.set_control_flow(ControlFlow::Wait);
+
+        // Create window
+        let win = window::create_window(event_loop, &self.file_path);
+        self.scale_factor = win.scale_factor();
+        self.window = Some(win.clone());
+
+        // Create renderer (wgpu surface must be created here, in resumed())
+        self.renderer = Some(renderer::Renderer::new(win));
+
+        // Create native menu bar
+        self.app_menu = Some(menu::create_menu_bar());
+
+        // Build the navigation list
+        self.dir_list = if let Some(files) = self.explicit_files.take() {
+            Some(directory::DirectoryList::from_explicit(files))
+        } else {
+            directory::DirectoryList::from_file(&self.file_path)
+        };
+
+        // Start preloader thread pool
+        let mut preloader = preloader::Preloader::start();
+
+        // Load and display the initial image
+        let initial_path = self.file_path.clone();
+        self.display_image(&initial_path);
+
+        if let Some(dir) = &self.dir_list {
+            let current_index = dir.current_index();
+            let total = dir.len();
+
+            if let Some(win) = &self.window {
+                win.set_title(&window::window_title_with_position(
+                    &self.file_path,
+                    current_index,
+                    total,
+                ));
+            }
+
+            let to_preload: Vec<(usize, PathBuf)> = dir
+                .preload_range(preloader::preload_count())
+                .iter()
+                .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
+                .collect();
+
+            if !to_preload.is_empty() {
+                preloader.request_preload(to_preload);
+            }
+        }
+
+        self.preloader = Some(preloader);
+        self.update_shared_state();
+
+        // Start QA server if not already running (it starts early when waiting_for_file)
+        if self._qa_handle.is_none() {
+            self._qa_handle = qa_server::start(
+                Arc::clone(&self.shared_state),
+                self.event_loop_proxy.clone(),
+            );
+        }
+
+        #[cfg(target_os = "macos")]
+        if settings::Settings::load().auto_update {
+            updater::check_and_update();
+        }
+
+        self.request_redraw();
     }
 
     /// Load and display an image, updating the renderer and view state.
@@ -1006,25 +1093,43 @@ impl App {
             }
             AppCommand::OpenFile(path) => {
                 let resolved = path.canonicalize().unwrap_or(path);
-                if resolved.is_file() {
-                    self.file_path = resolved.clone();
-                    self.dir_list = directory::DirectoryList::from_file(&resolved);
-                    self.display_image(&resolved);
-
-                    if let Some(dir) = &self.dir_list
-                        && let Some(win) = &self.window
-                    {
-                        win.set_title(&window::window_title_with_position(
-                            &resolved,
-                            dir.current_index(),
-                            dir.len(),
-                        ));
-                    }
-
-                    self.update_shared_state();
-                } else {
+                if !resolved.is_file() {
                     log::warn!("OpenFile: not a file: {}", resolved.display());
+                    return;
                 }
+
+                // If we were waiting for a file (Finder double-click), initialize the app now
+                if self.waiting_for_file {
+                    log::info!("File received via Apple Event, initializing viewer");
+                    self.waiting_for_file = false;
+                    self.wait_start = None;
+                    self.file_path = resolved.clone();
+
+                    // Close the onboarding window if it's showing
+                    #[cfg(target_os = "macos")]
+                    native_ui::close_onboarding_window();
+
+                    // Initialize the full viewer (window, renderer, etc.) via resumed()
+                    // by switching control flow — resumed() will be called next
+                    self.initialize_viewer(event_loop);
+                    return;
+                }
+
+                self.file_path = resolved.clone();
+                self.dir_list = directory::DirectoryList::from_file(&resolved);
+                self.display_image(&resolved);
+
+                if let Some(dir) = &self.dir_list
+                    && let Some(win) = &self.window
+                {
+                    win.set_title(&window::window_title_with_position(
+                        &resolved,
+                        dir.current_index(),
+                        dir.len(),
+                    ));
+                }
+
+                self.update_shared_state();
             }
             AppCommand::SetWindowGeometry {
                 x,
@@ -1100,93 +1205,49 @@ impl App {
 
 impl ApplicationHandler<AppCommand> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return; // Already initialized
-        }
-
         // Register the event loop proxy globally so native UI delegates can send commands
         qa_server::set_event_loop_proxy(self.event_loop_proxy.clone());
 
-        // Create window
-        let win = window::create_window(event_loop, &self.file_path);
-        self.scale_factor = win.scale_factor();
-        self.window = Some(win.clone());
-
-        // Create renderer (wgpu surface must be created here, in resumed())
-        self.renderer = Some(renderer::Renderer::new(win));
-
-        // Create native menu bar
-        // The AppMenu MUST be stored (not dropped) to keep the MenuChild backing data alive.
-        // Dropping it frees the native menu items' backing memory, causing a crash on click.
-        self.app_menu = Some(menu::create_menu_bar());
-
-        // Build the navigation list: explicit file list (multi-select) or directory scan
-        self.dir_list = if let Some(files) = self.explicit_files.take() {
-            Some(directory::DirectoryList::from_explicit(files))
-        } else {
-            directory::DirectoryList::from_file(&self.file_path)
-        };
-
-        // Start preloader thread pool
-        let mut preloader = preloader::Preloader::start();
-
-        // Load and display the initial image
-        let initial_path = self.file_path.clone();
-        self.display_image(&initial_path);
-
-        // Cache the initial image and request preloading of adjacent images
-        if let Some(dir) = &self.dir_list {
-            let current_index = dir.current_index();
-            let total = dir.len();
-
-            // Update window title with position
-            if let Some(win) = &self.window {
-                win.set_title(&window::window_title_with_position(
-                    &self.file_path,
-                    current_index,
-                    total,
-                ));
+        if self.waiting_for_file {
+            // No file yet (Finder double-click or Dock launch). Start the QA server and
+            // wait for an Apple Event. The onboarding timer is checked in about_to_wait().
+            if self.wait_start.is_none() {
+                self.wait_start = Some(Instant::now());
+                // Start QA server early so agents can send OpenFile commands
+                if self._qa_handle.is_none() {
+                    self._qa_handle = qa_server::start(
+                        Arc::clone(&self.shared_state),
+                        self.event_loop_proxy.clone(),
+                    );
+                }
+                // Use Poll so about_to_wait fires continuously and can check the timer
+                event_loop.set_control_flow(ControlFlow::Poll);
             }
-
-            // Request preloading of adjacent images
-            let to_preload: Vec<(usize, PathBuf)> = dir
-                .preload_range(preloader::preload_count())
-                .iter()
-                .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
-                .collect();
-
-            if !to_preload.is_empty() {
-                preloader.request_preload(to_preload);
-            }
+            return;
         }
 
-        self.preloader = Some(preloader);
-
-        // Populate shared state before starting the QA server
-        self.update_shared_state();
-
-        // Start the QA HTTP server
-        self._qa_handle = qa_server::start(
-            Arc::clone(&self.shared_state),
-            self.event_loop_proxy.clone(),
-        );
-
-        // Check for updates in the background (if enabled in settings)
-        #[cfg(target_os = "macos")]
-        if settings::Settings::load().auto_update {
-            updater::check_and_update();
-        }
-
-        // Force a redraw after everything is initialized. The initial display_image() call
-        // may have been skipped because the surface was Occluded during window creation.
-        self.request_redraw();
+        self.initialize_viewer(event_loop);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, command: AppCommand) {
         self.execute_command(event_loop, command);
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Onboarding timer: if we've been waiting 500ms with no file, show onboarding.
+        if self.waiting_for_file {
+            if let Some(start) = self.wait_start
+                && start.elapsed() >= Duration::from_millis(500)
+            {
+                log::info!("No Apple Event after 500ms, showing onboarding");
+                self.wait_start = None; // Don't fire again
+                event_loop.set_control_flow(ControlFlow::Wait);
+                #[cfg(target_os = "macos")]
+                native_ui::show_onboarding_window_non_modal();
+            }
+            return;
+        }
+
         // Poll menu events and preloader on every event loop iteration, not just window events.
         // Without this, menu clicks would only be processed when the next window event fires
         // (mouse move, key press, etc.), causing multi-second delays.
