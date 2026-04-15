@@ -190,6 +190,8 @@ struct App {
     auto_fit_window: bool,
     /// Whether small images are enlarged to fill the window.
     enlarge_small_images: bool,
+    /// Whether to use the display's ICC profile (Level 2) or sRGB (Level 1).
+    color_match_display: bool,
     /// Current display scale factor (Retina = 2.0). Updated on window creation and
     /// `ScaleFactorChanged` events. Defaults to 2.0 before the window exists.
     scale_factor: f64,
@@ -235,6 +237,7 @@ impl App {
             current_image_size: None,
             auto_fit_window: initial_settings.auto_fit_window,
             enlarge_small_images: initial_settings.enlarge_small_images,
+            color_match_display: initial_settings.color_match_display,
             scale_factor: 2.0,
             waiting_for_file,
             wait_start: None,
@@ -440,7 +443,7 @@ impl App {
 
         // Detect the display's ICC profile and configure the Metal layer colorspace
         #[cfg(target_os = "macos")]
-        {
+        if self.color_match_display {
             if let Some(icc) = display_profile::get_display_icc(&win) {
                 display_profile::set_layer_colorspace(&win, &icc);
                 self.display_icc = icc;
@@ -913,6 +916,14 @@ impl App {
                 .send_event(AppCommand::SetEnlargeSmallImages(enabled));
             return;
         }
+        if event.id() == &app_menu.ids.color_match_display {
+            let enabled = app_menu.color_match_item.is_checked();
+            log::debug!("Menu: Color match display -> {enabled}");
+            let _ = self
+                .event_loop_proxy
+                .send_event(AppCommand::SetColorMatchDisplay(enabled));
+            return;
+        }
 
         if let Some(command) = input::menu_to_command(&event, &app_menu.ids) {
             log::debug!("Menu event: {:?}", event.id());
@@ -1148,6 +1159,42 @@ impl App {
                 // Re-apply zoom: toggling this changes whether small images enlarge or not
                 self.apply_initial_zoom();
                 self.update_transform_and_redraw();
+            }
+            AppCommand::SetColorMatchDisplay(enabled) => {
+                self.color_match_display = enabled;
+                log::info!("Color match display set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.color_match_display = enabled;
+                s.save();
+                if let Some(menu) = &self.app_menu {
+                    menu.color_match_item.set_checked(enabled);
+                }
+
+                // Switch between display profile (L2) and sRGB (L1)
+                #[cfg(target_os = "macos")]
+                if enabled {
+                    if let Some(win) = &self.window
+                        && let Some(icc) = display_profile::get_display_icc(win) {
+                            display_profile::set_layer_colorspace(win, &icc);
+                            self.display_icc = icc;
+                        }
+                } else {
+                    self.display_icc = color::srgb_icc_bytes().to_vec();
+                    // Reset the layer colorspace to sRGB
+                    if let Some(win) = &self.window {
+                        display_profile::set_layer_colorspace(win, &self.display_icc);
+                    }
+                }
+
+                // Flush cache and re-decode with the new target profile
+                self.image_cache.clear();
+                if let Some(preloader) = &mut self.preloader {
+                    preloader.set_display_icc(self.display_icc.clone());
+                }
+                if let Some(dir) = &self.dir_list {
+                    let path = dir.current().to_path_buf();
+                    self.display_image(&path);
+                }
             }
             AppCommand::DisplayChanged => {
                 #[cfg(target_os = "macos")]
