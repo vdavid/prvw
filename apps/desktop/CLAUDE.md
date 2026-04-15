@@ -111,11 +111,19 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
       P3-on-P3, sRGB-on-sRGB, etc.). Images without an embedded profile are assumed sRGB.
     - This is **Level 2** (source → display profile). Level 1 was source → sRGB.
     - **Display profile detection**: `CGDisplayCopyColorSpace()` + `CGColorSpaceCopyICCData()` via CoreGraphics FFI.
-      Matches the window's current monitor to a `CGDirectDisplayID` by comparing screen positions.
+      Gets the `CGDirectDisplayID` from `[[NSWindow screen] deviceDescription][@"NSScreenNumber"]` — the authoritative
+      source that `NSWindowDidChangeScreenNotification` updates. Don't use winit's `current_monitor()` + position
+      matching — it's unreliable and silently falls back to the main display.
     - **CAMetalLayer colorspace**: Set via `[layer setColorspace:]` so the macOS compositor knows our output color space.
       This avoids changing the texture format (`Rgba8UnormSrgb`) or shader, because P3 and sRGB share the same EOTF.
     - **Screen change detection**: `NSWindowDidChangeScreenNotification` observer fires `AppCommand::DisplayChanged`,
       which re-queries the display profile, flushes the image cache, and re-decodes the current image.
+    - **Menu toggles**: Two View menu items control ICC behavior. "ICC color management" (Cmd+Shift+I) toggles L1
+      on/off — when off, no transforms run and `target_icc` is empty (check in `transform_icc`). "Color match display"
+      (Cmd+Shift+C) toggles L2 — when off, target is sRGB; when on, target is the display profile. The L2 toggle is
+      grayed out when L1 is off. Both are persisted in `settings.json`. The shared logic lives in `effective_display_icc()`
+      (computes the target ICC bytes from both flags) and `apply_icc_settings()` (sets the layer colorspace, flushes
+      cache, re-decodes). `DisplayChanged` also calls `apply_icc_settings()`.
     - Full decision log with all 8 decisions and evidence: [docs/notes/icc-level-2-display-color-management.md](../../docs/notes/icc-level-2-display-color-management.md)
     - **Why moxcms over lcms2** (decided 2026-04-15):
 

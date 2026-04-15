@@ -282,9 +282,10 @@ impl App {
         }
         #[cfg(target_os = "macos")]
         if self.color_match_display
-            && let Some(icc) = display_profile::get_display_icc(window) {
-                return icc;
-            }
+            && let Some(icc) = display_profile::get_display_icc(window)
+        {
+            return icc;
+        }
         // Suppress unused variable warning on non-macOS
         let _ = window;
         color::srgb_icc_bytes().to_vec()
@@ -850,9 +851,10 @@ impl App {
 
         #[cfg(target_os = "macos")]
         if let Some(win) = &self.window
-            && !self.display_icc.is_empty() {
-                display_profile::set_layer_colorspace(win, &self.display_icc);
-            }
+            && !self.display_icc.is_empty()
+        {
+            display_profile::set_layer_colorspace(win, &self.display_icc);
+        }
 
         self.image_cache.clear();
         if let Some(preloader) = &mut self.preloader {

@@ -17,9 +17,6 @@ type CFDataRef = *const std::ffi::c_void;
 type CGDirectDisplayID = u32;
 
 unsafe extern "C" {
-    /// Get the list of active displays.
-    fn CGGetActiveDisplayList(max: u32, displays: *mut CGDirectDisplayID, count: *mut u32) -> i32;
-
     /// Get the main display ID.
     fn CGMainDisplayID() -> CGDirectDisplayID;
 
@@ -177,33 +174,51 @@ unsafe fn set_colorspace_on_layer(layer: *const AnyObject, icc_bytes: &[u8]) {
     }
 }
 
-/// Figure out which CGDirectDisplayID the window is currently on.
-/// Uses the window's current monitor position to match against active displays.
+/// Get the CGDirectDisplayID for the display the window is currently on.
+/// Uses `[[NSWindow screen] deviceDescription][@"NSScreenNumber"]` which is the authoritative
+/// source — it's exactly what `NSWindowDidChangeScreenNotification` updates.
 fn display_id_for_window(window: &Window) -> CGDirectDisplayID {
-    // Try to match via monitor position. winit gives us the monitor's position and name,
-    // and CoreGraphics gives us display IDs with positions. Match by origin coordinates.
-    if let Some(monitor) = window.current_monitor() {
-        let pos = monitor.position();
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return unsafe { CGMainDisplayID() };
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return unsafe { CGMainDisplayID() };
+    };
 
-        unsafe {
-            let mut displays = [0u32; 8];
-            let mut count = 0u32;
-            if CGGetActiveDisplayList(8, displays.as_mut_ptr(), &mut count) == 0 {
-                for &did in &displays[..count as usize] {
-                    // CGDisplayBounds returns the display's origin in global coordinates
-                    let bounds = CGDisplayBounds(did);
-                    if (bounds.origin.x as i32 - pos.x).abs() < 2
-                        && (bounds.origin.y as i32 - pos.y).abs() < 2
-                    {
-                        return did;
-                    }
-                }
-            }
+    unsafe {
+        use objc2::runtime::AnyClass;
+
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let ns_window: *const AnyObject = msg_send![ns_view, window];
+        if ns_window.is_null() {
+            return CGMainDisplayID();
         }
-    }
 
-    // Fallback: use the main display
-    unsafe { CGMainDisplayID() }
+        // [window screen] -> NSScreen
+        let screen: *const AnyObject = msg_send![ns_window, screen];
+        if screen.is_null() {
+            return CGMainDisplayID();
+        }
+
+        // [screen deviceDescription] -> NSDictionary
+        let device_desc: *const AnyObject = msg_send![screen, deviceDescription];
+        if device_desc.is_null() {
+            return CGMainDisplayID();
+        }
+
+        // deviceDescription[@"NSScreenNumber"] -> NSNumber containing the CGDirectDisplayID
+        let ns_string_class = AnyClass::get(c"NSString").unwrap();
+        let key: *const AnyObject =
+            msg_send![ns_string_class, stringWithUTF8String: c"NSScreenNumber".as_ptr()];
+        let screen_number: *const AnyObject = msg_send![device_desc, objectForKey: key];
+        if screen_number.is_null() {
+            return CGMainDisplayID();
+        }
+
+        // [screenNumber unsignedIntValue] -> CGDirectDisplayID (u32)
+        let display_id: u32 = msg_send![screen_number, unsignedIntValue];
+        display_id
+    }
 }
 
 /// Extract a human-readable description from raw ICC bytes, for logging.
@@ -246,32 +261,6 @@ fn describe_icc(icc: &[u8]) -> Option<String> {
         }
     }
     None
-}
-
-// CGRect and CGDisplayBounds for position matching.
-#[repr(C)]
-struct CGPoint {
-    x: f64,
-    y: f64,
-}
-
-#[repr(C)]
-struct CGSize {
-    #[allow(dead_code)]
-    width: f64,
-    #[allow(dead_code)]
-    height: f64,
-}
-
-#[repr(C)]
-struct CGRect {
-    origin: CGPoint,
-    #[allow(dead_code)]
-    size: CGSize,
-}
-
-unsafe extern "C" {
-    fn CGDisplayBounds(display: CGDirectDisplayID) -> CGRect;
 }
 
 /// Register an NSNotificationCenter observer for `NSWindowDidChangeScreenNotification`.
