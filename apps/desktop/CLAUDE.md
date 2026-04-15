@@ -92,18 +92,33 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
   `LSSetDefaultRoleHandlerForContentType` via objc2-core-services FFI. No Swift scripts — direct C calls, near-instant.
 
 - **ICC color management** (`color.rs`): Converts images with embedded ICC profiles to sRGB before GPU upload. Extraction
-  is format-specific (in `image_loader.rs`), transform is format-agnostic (in `color.rs` via lcms2). Key choices:
-    - **lcms2** over pure-Rust alternatives — industry standard, handles edge-case ICC profiles. Entire API surface is
-      isolated in `color.rs` (~40 lines); swapping to `qcms`/`moxcms` is a ~15-line change.
+  is format-specific (in `image_loader.rs`), transform is format-agnostic (in `color.rs` via moxcms). Key choices:
+    - **moxcms** (pure Rust, NEON SIMD on Apple Silicon) — 5.5x faster than lcms2 for the transform step. Entire API
+      surface is isolated in `color.rs` (~60 lines). The `in_place` feature flag is required for in-place transforms.
     - **Perceptual** rendering intent — maps out-of-gamut colors smoothly, which is what viewers should do.
     - **sRGB description heuristic** for early exit — skips transform if profile description contains "sRGB".
-    - **Per-image Profile/Transform** (not cached) — `Profile` isn't `Sync`, and creation cost (~1ms) is negligible.
     - This is **Level 1** (source → sRGB). Level 2 (source → display profile via ColorSync) is planned.
+    - **Why moxcms over lcms2** (decided 2026-04-15):
+
+      |                    | `lcms2` 6.1.1                  | `moxcms` 0.8.1 (chosen)              |
+      |--------------------|--------------------------------|--------------------------------------|
+      | Language           | C bindings (lcms2-sys bundles) | Pure Rust                            |
+      | SIMD               | None (scalar C)                | NEON (ARM), AVX2/SSE4.1 (x86)       |
+      | GitHub             | kornelski/rust-lcms2, 49 stars  | awxkee/moxcms, 43 stars              |
+      | License            | MIT                            | BSD-3-Clause                         |
+      | ICC transform 24MP | **247ms**                      | **45ms** (5.5x faster)               |
+      | Total decode 24MP  | 452ms (ICC = 55%)              | 263ms (ICC = 17%)                    |
+      | CMYK support       | Yes (via C lib)                | Yes                                  |
+      | Maturity           | 10y (C lib: 20y+)              | 14 months, 30 releases               |
+      | Cross-compile      | Needs C toolchain              | Just `cargo build`                   |
+
+      lcms2 is more battle-tested with exotic ICC profiles, but for standard RGB profiles (Adobe RGB, ProPhoto,
+      Display P3) moxcms produces identical results (verified by regression tests). The 5.5x speed advantage on
+      Apple Silicon and the simpler pure-Rust build won it.
+
     - **Performance** (benchmarked 2026-04-15, release build, Apple M3 Max, 24MP / 6000x4000 Adobe RGB JPEG): ICC
-      transform ~247ms, total decode ~452ms (JPEG decode ~205ms + ICC ~247ms). The ICC portion is ~55% of total load
-      time. Acceptable because the preloader handles adjacent images in the background. Most real-world images are sRGB
-      (no transform) or smaller than 24MP (proportionally faster). Level 2 won't change per-pixel cost — only the target
-      profile changes. To reproduce:
+      transform ~45ms, total decode ~263ms (JPEG decode ~218ms + ICC ~45ms). The ICC portion is ~17% of total load
+      time. To reproduce:
       ```
       mkdir -p /tmp/icc-bench
       for i in $(seq -w 1 10); do
@@ -164,7 +179,7 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | image                 | 0.25.10 | Image decoding (PNG, GIF, WebP, BMP, TIFF) and PNG encoding for screenshots |
 | zune-jpeg             | 0.5.15  | Fast JPEG decoding with SIMD (replaces `image` for JPEG)                    |
 | zune-core             | 0.5.1   | Decoder options for zune-jpeg                                               |
-| lcms2                 | 6.1.1   | ICC color management (Adobe RGB/ProPhoto → sRGB)                            |
+| moxcms                | 0.8.1   | ICC color management, pure Rust with NEON SIMD (Adobe RGB/ProPhoto → sRGB)  |
 | rayon                 | 1.11.0  | Thread pool for parallel preloading                                         |
 | clap                  | 4.6.0   | CLI argument parsing                                                        |
 | log                   | 0.4.29  | Logging facade                                                              |

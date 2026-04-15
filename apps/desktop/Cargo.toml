@@ -13,7 +13,7 @@ muda = "0.17.2"
 image = "0.25.10"
 zune-jpeg = "0.5.15"
 zune-core = "0.5.1"
-lcms2 = "6.1.1"
+moxcms = { version = "0.8.1", features = ["in_place"] }
 rayon = "1.11.0"
 log = "0.4.29"
 env_logger = "0.11.10"

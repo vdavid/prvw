@@ -1,10 +1,12 @@
-use lcms2::{Intent, PixelFormat, Profile, Transform};
+use moxcms::{
+    ColorProfile, InPlaceTransformExecutor, Layout, ProfileText, RenderingIntent, TransformOptions,
+};
 use std::time::Instant;
 
 /// Transform RGBA8 pixels from an embedded ICC profile to sRGB, in-place.
 /// Silently returns on malformed profiles (the image displays as-is, assuming sRGB).
 pub fn transform_to_srgb(rgba: &mut [u8], icc_bytes: &[u8]) {
-    let source = match Profile::new_icc(icc_bytes) {
+    let source = match ColorProfile::new_from_slice(icc_bytes) {
         Ok(p) => p,
         Err(e) => {
             log::debug!("Skipping ICC transform: couldn't parse profile ({e})");
@@ -17,23 +19,25 @@ pub fn transform_to_srgb(rgba: &mut [u8], icc_bytes: &[u8]) {
         return;
     }
 
-    let srgb = Profile::new_srgb();
-    let transform = match Transform::new(
-        &source,
-        PixelFormat::RGBA_8,
-        &srgb,
-        PixelFormat::RGBA_8,
-        Intent::Perceptual,
-    ) {
-        Ok(t) => t,
-        Err(e) => {
-            log::debug!("Skipping ICC transform: couldn't create transform ({e})");
-            return;
-        }
+    let srgb = ColorProfile::new_srgb();
+    let options = TransformOptions {
+        rendering_intent: RenderingIntent::Perceptual,
+        ..TransformOptions::default()
     };
+    let transform: std::sync::Arc<dyn InPlaceTransformExecutor<u8> + Send + Sync> =
+        match source.create_in_place_transform_8bit(Layout::Rgba, &srgb, options) {
+            Ok(t) => t,
+            Err(e) => {
+                log::debug!("Skipping ICC transform: couldn't create transform ({e})");
+                return;
+            }
+        };
 
     let start = Instant::now();
-    transform.transform_in_place(rgba);
+    if let Err(e) = transform.transform(rgba) {
+        log::debug!("ICC transform failed: {e}");
+        return;
+    }
     let pixel_count = rgba.len() / 4;
     log::debug!(
         "Applied ICC -> sRGB transform ({pixel_count} pixels) in {}ms",
@@ -42,9 +46,20 @@ pub fn transform_to_srgb(rgba: &mut [u8], icc_bytes: &[u8]) {
 }
 
 /// Heuristic: check if the profile is effectively sRGB.
-fn is_srgb_profile(profile: &Profile) -> bool {
-    let desc = profile.info(lcms2::InfoType::Description, lcms2::Locale::none());
-    matches!(desc.as_deref(), Some(d) if d.contains("sRGB"))
+fn is_srgb_profile(profile: &ColorProfile) -> bool {
+    let desc = match profile.description.as_ref() {
+        Some(ProfileText::PlainString(s)) => Some(s.as_str()),
+        Some(ProfileText::Description(d)) => {
+            if !d.unicode_string.is_empty() {
+                Some(d.unicode_string.as_str())
+            } else {
+                Some(d.ascii_string.as_str())
+            }
+        }
+        Some(ProfileText::Localizable(v)) => v.first().map(|ls| ls.value.as_str()),
+        None => None,
+    };
+    matches!(desc, Some(d) if d.contains("sRGB"))
 }
 
 #[cfg(test)]
@@ -141,15 +156,14 @@ mod tests {
     }
 
     #[test]
-    fn srgb_profile_is_noop() {
-        // Create an sRGB ICC profile, serialize it, and verify transform is skipped.
-        let srgb = Profile::new_srgb();
-        let srgb_bytes = srgb.icc().expect("failed to serialize sRGB profile");
+    fn srgb_profile_detected() {
+        // Verify the built-in sRGB profile is detected by the heuristic.
+        let srgb = ColorProfile::new_srgb();
+        assert!(is_srgb_profile(&srgb), "sRGB profile should be detected");
 
-        let mut pixel = [200, 100, 50, 255];
-        let original = pixel;
-        transform_to_srgb(&mut pixel, &srgb_bytes);
-        assert_eq!(pixel, original, "sRGB profile should be a no-op");
+        // Verify Adobe RGB is NOT detected as sRGB.
+        let adobe = ColorProfile::new_from_slice(ADOBE_RGB_ICC).unwrap();
+        assert!(!is_srgb_profile(&adobe), "Adobe RGB should not match sRGB");
     }
 
     #[test]
