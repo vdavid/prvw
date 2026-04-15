@@ -175,6 +175,17 @@ impl ImageCache {
         }
     }
 
+    /// Remove all entries from the cache (for example, after a display profile change).
+    pub fn clear(&mut self) {
+        let count = self.entries.len();
+        self.entries.clear();
+        self.access_order.clear();
+        self.memory_used = 0;
+        if count > 0 {
+            log::debug!("Cache cleared ({count} entries removed)");
+        }
+    }
+
     fn touch(&mut self, index: usize) {
         self.access_order.retain(|&i| i != index);
         self.access_order.push(index);
@@ -222,10 +233,12 @@ pub struct Preloader {
     in_flight: HashSet<usize>,
     /// Cancellation tokens for in-flight tasks.
     cancellation_tokens: Vec<Arc<AtomicBool>>,
+    /// ICC profile bytes for the current display (target color space for decoding).
+    display_icc: Arc<Vec<u8>>,
 }
 
 impl Preloader {
-    pub fn start() -> Self {
+    pub fn start(display_icc: Vec<u8>) -> Self {
         let num_threads = available_parallelism().map(|n| n.get()).unwrap_or(4);
 
         let pool = rayon::ThreadPoolBuilder::new()
@@ -244,7 +257,13 @@ impl Preloader {
             response_rx,
             in_flight: HashSet::new(),
             cancellation_tokens: Vec::new(),
+            display_icc: Arc::new(display_icc),
         }
+    }
+
+    /// Update the target display ICC profile (called when the window moves to a different display).
+    pub fn set_display_icc(&mut self, icc: Vec<u8>) {
+        self.display_icc = Arc::new(icc);
     }
 
     /// Cancel all in-flight tasks and submit new ones.
@@ -272,6 +291,7 @@ impl Preloader {
             self.cancellation_tokens.push(Arc::clone(&cancelled));
 
             let tx = self.response_tx.clone();
+            let display_icc = Arc::clone(&self.display_icc);
             let task = move || {
                 let file_name = path
                     .file_name()
@@ -279,7 +299,7 @@ impl Preloader {
                     .to_string_lossy()
                     .to_string();
                 let start = Instant::now();
-                match image_loader::load_image_cancellable(&path, &cancelled) {
+                match image_loader::load_image_cancellable(&path, &cancelled, &display_icc) {
                     Ok(image) => {
                         let duration = start.elapsed();
                         log::debug!(
@@ -432,5 +452,20 @@ mod tests {
         assert_eq!(diag.entries[0].width, 320);
         assert_eq!(diag.entries[1].index, 5);
         assert_eq!(diag.total_memory, 320 * 240 * 4 + 640 * 480 * 4);
+    }
+
+    #[test]
+    fn cache_clear() {
+        let mut cache = ImageCache::new();
+        for i in 0..5 {
+            insert_test_image(&mut cache, i, 100, 100);
+        }
+        assert_eq!(cache.len(), 5);
+        assert!(cache.memory_used() > 0);
+
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.memory_used(), 0);
+        assert!(!cache.contains(0));
     }
 }

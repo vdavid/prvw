@@ -129,6 +129,10 @@ pub enum AppCommand {
     /// Set enlarge-small-images mode.
     SetEnlargeSmallImages(bool),
 
+    // ── Color management ─────────────────────────────────────────────
+    /// The window moved to a different display — re-query the display ICC profile.
+    DisplayChanged,
+
     // ── App ──────────────────────────────────────────────────────────
     /// Show the About window.
     ShowAbout,

@@ -1,31 +1,52 @@
-use moxcms::{
-    ColorProfile, InPlaceTransformExecutor, Layout, ProfileText, RenderingIntent, TransformOptions,
-};
+use moxcms::{ColorProfile, InPlaceTransformExecutor, Layout, RenderingIntent, TransformOptions};
+use std::sync::OnceLock;
 use std::time::Instant;
 
-/// Transform RGBA8 pixels from an embedded ICC profile to sRGB, in-place.
-/// Silently returns on malformed profiles (the image displays as-is, assuming sRGB).
-pub fn transform_to_srgb(rgba: &mut [u8], icc_bytes: &[u8]) {
-    let source = match ColorProfile::new_from_slice(icc_bytes) {
+/// The macOS system sRGB ICC profile path. Always present on macOS.
+const SRGB_PROFILE_PATH: &str = "/System/Library/ColorSync/Profiles/sRGB Profile.icc";
+
+/// Returns the sRGB ICC profile bytes, loaded once from the macOS system profile.
+/// Panics if the system profile is missing (should never happen on macOS).
+pub fn srgb_icc_bytes() -> &'static [u8] {
+    static SRGB: OnceLock<Vec<u8>> = OnceLock::new();
+    SRGB.get_or_init(|| {
+        std::fs::read(SRGB_PROFILE_PATH).unwrap_or_else(|e| {
+            panic!("Couldn't read system sRGB profile at {SRGB_PROFILE_PATH}: {e}")
+        })
+    })
+}
+
+/// Transform RGBA8 pixels from a source ICC profile to a target ICC profile, in-place.
+/// Skips the transform if the profiles match (byte-equal).
+/// Silently returns on malformed profiles (the image displays as-is).
+pub fn transform_icc(rgba: &mut [u8], source_icc: &[u8], target_icc: &[u8]) {
+    if profiles_match(source_icc, target_icc) {
+        log::debug!("Source and target ICC profiles match, skipping transform");
+        return;
+    }
+
+    let source = match ColorProfile::new_from_slice(source_icc) {
         Ok(p) => p,
         Err(e) => {
-            log::debug!("Skipping ICC transform: couldn't parse profile ({e})");
+            log::debug!("Skipping ICC transform: couldn't parse source profile ({e})");
             return;
         }
     };
 
-    if is_srgb_profile(&source) {
-        log::debug!("ICC profile is sRGB, skipping transform");
-        return;
-    }
+    let target = match ColorProfile::new_from_slice(target_icc) {
+        Ok(p) => p,
+        Err(e) => {
+            log::debug!("Skipping ICC transform: couldn't parse target profile ({e})");
+            return;
+        }
+    };
 
-    let srgb = ColorProfile::new_srgb();
     let options = TransformOptions {
         rendering_intent: RenderingIntent::Perceptual,
         ..TransformOptions::default()
     };
     let transform: std::sync::Arc<dyn InPlaceTransformExecutor<u8> + Send + Sync> =
-        match source.create_in_place_transform_8bit(Layout::Rgba, &srgb, options) {
+        match source.create_in_place_transform_8bit(Layout::Rgba, &target, options) {
             Ok(t) => t,
             Err(e) => {
                 log::debug!("Skipping ICC transform: couldn't create transform ({e})");
@@ -39,14 +60,22 @@ pub fn transform_to_srgb(rgba: &mut [u8], icc_bytes: &[u8]) {
         return;
     }
     let pixel_count = rgba.len() / 4;
+    let source_desc = profile_description(&source);
+    let target_desc = profile_description(&target);
     log::debug!(
-        "Applied ICC -> sRGB transform ({pixel_count} pixels) in {}ms",
+        "ICC transform: {source_desc} -> {target_desc} ({pixel_count} pixels) in {}ms",
         start.elapsed().as_millis()
     );
 }
 
-/// Heuristic: check if the profile is effectively sRGB.
-fn is_srgb_profile(profile: &ColorProfile) -> bool {
+/// Check if two ICC profiles are byte-identical.
+pub fn profiles_match(a: &[u8], b: &[u8]) -> bool {
+    a == b
+}
+
+/// Extract a human-readable description from an ICC profile, for logging.
+fn profile_description(profile: &ColorProfile) -> String {
+    use moxcms::ProfileText;
     let desc = match profile.description.as_ref() {
         Some(ProfileText::PlainString(s)) => Some(s.as_str()),
         Some(ProfileText::Description(d)) => {
@@ -59,7 +88,7 @@ fn is_srgb_profile(profile: &ColorProfile) -> bool {
         Some(ProfileText::Localizable(v)) => v.first().map(|ls| ls.value.as_str()),
         None => None,
     };
-    matches!(desc, Some(d) if d.contains("sRGB"))
+    desc.unwrap_or("unknown").to_string()
 }
 
 #[cfg(test)]
@@ -117,6 +146,10 @@ mod tests {
     /// differences between implementations.
     const TOLERANCE: u8 = 1;
 
+    fn srgb_icc() -> &'static [u8] {
+        srgb_icc_bytes()
+    }
+
     fn assert_pixel_near(actual: [u8; 4], expected: [u8; 4], label: &str) {
         for (ch, (a, e)) in ["R", "G", "B", "A"]
             .iter()
@@ -134,52 +167,62 @@ mod tests {
     fn adobe_rgb_to_srgb_known_values() {
         // Adobe RGB (146, 0, 0) -> sRGB (172, 0, 0): red is the most affected channel
         let mut red = [146, 0, 0, 255];
-        transform_to_srgb(&mut red, ADOBE_RGB_ICC);
+        transform_icc(&mut red, ADOBE_RGB_ICC, srgb_icc());
         assert_pixel_near(red, [172, 0, 0, 255], "red");
 
         // Adobe RGB (0, 147, 0) -> sRGB (0, 148, 0): green barely changes
         let mut green = [0, 147, 0, 255];
-        transform_to_srgb(&mut green, ADOBE_RGB_ICC);
+        transform_icc(&mut green, ADOBE_RGB_ICC, srgb_icc());
         assert_pixel_near(green, [0, 148, 0, 255], "green");
 
         // Adobe RGB (0, 0, 146) -> sRGB (0, 0, 150): blue shifts slightly
         let mut blue = [0, 0, 146, 255];
-        transform_to_srgb(&mut blue, ADOBE_RGB_ICC);
+        transform_icc(&mut blue, ADOBE_RGB_ICC, srgb_icc());
         assert_pixel_near(blue, [0, 0, 150, 255], "blue");
     }
 
     #[test]
     fn alpha_channel_preserved() {
         let mut pixel = [146, 0, 0, 128];
-        transform_to_srgb(&mut pixel, ADOBE_RGB_ICC);
+        transform_icc(&mut pixel, ADOBE_RGB_ICC, srgb_icc());
         assert_eq!(pixel[3], 128, "alpha must be preserved");
     }
 
     #[test]
-    fn srgb_profile_detected() {
-        // Verify the built-in sRGB profile is detected by the heuristic.
-        let srgb = ColorProfile::new_srgb();
-        assert!(is_srgb_profile(&srgb), "sRGB profile should be detected");
-
-        // Verify Adobe RGB is NOT detected as sRGB.
-        let adobe = ColorProfile::new_from_slice(ADOBE_RGB_ICC).unwrap();
-        assert!(!is_srgb_profile(&adobe), "Adobe RGB should not match sRGB");
+    fn matching_profiles_skip_transform() {
+        let mut pixel = [200, 100, 50, 255];
+        let original = pixel;
+        transform_icc(&mut pixel, ADOBE_RGB_ICC, ADOBE_RGB_ICC);
+        assert_eq!(pixel, original, "identical profiles should be a no-op");
     }
 
     #[test]
-    fn malformed_profile_is_noop() {
-        let mut pixel = [200, 100, 50, 255];
-        let original = pixel;
-        transform_to_srgb(&mut pixel, b"not a real ICC profile");
-        assert_eq!(pixel, original, "malformed profile should be a no-op");
+    fn profiles_match_identical() {
+        assert!(profiles_match(ADOBE_RGB_ICC, ADOBE_RGB_ICC));
     }
 
     #[test]
-    fn empty_profile_is_noop() {
+    fn profiles_match_different() {
+        assert!(!profiles_match(ADOBE_RGB_ICC, srgb_icc()));
+    }
+
+    #[test]
+    fn malformed_source_is_noop() {
         let mut pixel = [200, 100, 50, 255];
         let original = pixel;
-        transform_to_srgb(&mut pixel, &[]);
-        assert_eq!(pixel, original, "empty profile should be a no-op");
+        transform_icc(&mut pixel, b"not a real ICC profile", srgb_icc());
+        assert_eq!(
+            pixel, original,
+            "malformed source profile should be a no-op"
+        );
+    }
+
+    #[test]
+    fn empty_source_is_noop() {
+        let mut pixel = [200, 100, 50, 255];
+        let original = pixel;
+        transform_icc(&mut pixel, &[], srgb_icc());
+        assert_eq!(pixel, original, "empty source profile should be a no-op");
     }
 
     #[test]
@@ -190,7 +233,7 @@ mod tests {
             0, 147, 0, 255, // green
             0, 0, 146, 255, // blue
         ];
-        transform_to_srgb(&mut pixels, ADOBE_RGB_ICC);
+        transform_icc(&mut pixels, ADOBE_RGB_ICC, srgb_icc());
 
         assert_pixel_near(
             [pixels[0], pixels[1], pixels[2], pixels[3]],

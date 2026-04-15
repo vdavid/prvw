@@ -1,5 +1,7 @@
 mod color;
 mod directory;
+#[cfg(target_os = "macos")]
+mod display_profile;
 mod image_loader;
 mod input;
 #[cfg(target_os = "macos")]
@@ -197,6 +199,9 @@ struct App {
     /// When waiting_for_file: the time we started waiting. After 500ms with no file,
     /// show the onboarding window.
     wait_start: Option<Instant>,
+    /// ICC profile bytes for the current display (target color space for image decoding).
+    /// Defaults to system sRGB; updated when the display is detected or the window moves.
+    display_icc: Vec<u8>,
 }
 
 impl App {
@@ -233,6 +238,7 @@ impl App {
             scale_factor: 2.0,
             waiting_for_file,
             wait_start: None,
+            display_icc: color::srgb_icc_bytes().to_vec(),
         }
     }
 
@@ -430,7 +436,17 @@ impl App {
         self.window = Some(win.clone());
 
         // Create renderer (wgpu surface must be created here, in resumed())
-        self.renderer = Some(renderer::Renderer::new(win));
+        self.renderer = Some(renderer::Renderer::new(win.clone()));
+
+        // Detect the display's ICC profile and configure the Metal layer colorspace
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(icc) = display_profile::get_display_icc(&win) {
+                display_profile::set_layer_colorspace(&win, &icc);
+                self.display_icc = icc;
+            }
+            display_profile::register_screen_change_observer(&win);
+        }
 
         // Create native menu bar
         self.app_menu = Some(menu::create_menu_bar());
@@ -443,7 +459,7 @@ impl App {
         };
 
         // Start preloader thread pool
-        let mut preloader = preloader::Preloader::start();
+        let mut preloader = preloader::Preloader::start(self.display_icc.clone());
 
         // Load and display the initial image
         let initial_path = self.file_path.clone();
@@ -499,7 +515,7 @@ impl App {
 
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
-        match image_loader::load_image(path) {
+        match image_loader::load_image(path, &self.display_icc) {
             Ok(image) => {
                 self.current_image_size = Some((image.width, image.height));
 
@@ -790,6 +806,41 @@ impl App {
                     preloader.mark_complete(index);
                 }
             }
+        }
+    }
+
+    /// Re-query the display ICC profile and re-decode the current image if the profile changed.
+    #[cfg(target_os = "macos")]
+    fn handle_display_changed(&mut self) {
+        let Some(win) = &self.window else { return };
+        let new_icc = display_profile::get_display_icc(win).unwrap_or_else(|| {
+            log::debug!("Couldn't get display profile, keeping current");
+            self.display_icc.clone()
+        });
+
+        if color::profiles_match(&self.display_icc, &new_icc) {
+            log::debug!("Display changed but ICC profile is the same, no action needed");
+            return;
+        }
+
+        log::info!("Display ICC profile changed, flushing cache and re-decoding");
+        self.display_icc = new_icc;
+
+        // Update the CAMetalLayer colorspace
+        display_profile::set_layer_colorspace(win, &self.display_icc);
+
+        // Flush cache (all cached images are in the old color space)
+        self.image_cache.clear();
+
+        // Update preloader's target ICC
+        if let Some(preloader) = &mut self.preloader {
+            preloader.set_display_icc(self.display_icc.clone());
+        }
+
+        // Re-decode and display the current image
+        if let Some(dir) = &self.dir_list {
+            let path = dir.current().to_path_buf();
+            self.display_image(&path);
         }
     }
 
@@ -1097,6 +1148,10 @@ impl App {
                 // Re-apply zoom: toggling this changes whether small images enlarge or not
                 self.apply_initial_zoom();
                 self.update_transform_and_redraw();
+            }
+            AppCommand::DisplayChanged => {
+                #[cfg(target_os = "macos")]
+                self.handle_display_changed();
             }
             AppCommand::ShowAbout => self.show_about_dialog(),
             AppCommand::ShowSettings => self.show_settings_dialog(),

@@ -13,7 +13,8 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 | `window.rs`       | Window creation, fullscreen toggle, auto-fit resize, title formatting                     |
 | `renderer.rs`     | wgpu surface, pipeline, texture upload, rendering                                         |
 | `image_loader.rs` | Decode image files to RGBA8 (zune-jpeg for JPEG, `image` crate for others), ICC extraction |
-| `color.rs`        | ICC color management: transform embedded profile to sRGB via lcms2                        |
+| `color.rs`        | ICC color management: transform source profile to display profile via moxcms              |
+| `display_profile.rs` | macOS display ICC profile detection, CAMetalLayer colorspace, screen change observer   |
 | `view.rs`         | Zoom/pan math, transform uniform for GPU                                                  |
 | `menu.rs`         | Native macOS menu bar via `muda`, shortcut wiring                                         |
 | `directory.rs`    | Scan parent dir for images, sort, track position                                          |
@@ -91,13 +92,31 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 - **File associations** (`onboarding.rs`): Uses `LSCopyDefaultRoleHandlerForContentType` and
   `LSSetDefaultRoleHandlerForContentType` via objc2-core-services FFI. No Swift scripts — direct C calls, near-instant.
 
-- **ICC color management** (`color.rs`): Converts images with embedded ICC profiles to sRGB before GPU upload. Extraction
-  is format-specific (in `image_loader.rs`), transform is format-agnostic (in `color.rs` via moxcms). Key choices:
+- **Display ICC lifecycle**: The display's ICC bytes flow through: `CGDisplayCopyColorSpace` (at startup in
+  `initialize_viewer`) -> stored as `App.display_icc: Vec<u8>` -> cloned into `Preloader` (as `Arc<Vec<u8>>`) -> cloned
+  into each rayon task closure -> passed to `image_loader::load_image_cancellable(path, cancelled, &display_icc)` ->
+  passed to `decode_jpeg`/`decode_generic` -> `color::transform_icc(rgba, source_icc, target_icc)`. On display change:
+  `NSWindowDidChangeScreenNotification` -> `AppCommand::DisplayChanged` -> `handle_display_changed()` re-queries
+  CoreGraphics, updates `App.display_icc`, calls `set_layer_colorspace`, flushes the image cache, updates the preloader's
+  ICC copy, and re-displays the current image. The direct `display_image()` path (first image, navigate from cache miss)
+  reads `self.display_icc` directly.
+
+- **ICC color management** (`color.rs` + `display_profile.rs`): Converts images with embedded ICC profiles to the
+  display's color space before GPU upload. Extraction is format-specific (in `image_loader.rs`), transform is
+  format-agnostic (in `color.rs` via moxcms), display profile detection is in `display_profile.rs`. Key choices:
     - **moxcms** (pure Rust, NEON SIMD on Apple Silicon) — 5.5x faster than lcms2 for the transform step. Entire API
-      surface is isolated in `color.rs` (~60 lines). The `in_place` feature flag is required for in-place transforms.
+      surface is isolated in `color.rs` (~70 lines). The `in_place` feature flag is required for in-place transforms.
     - **Perceptual** rendering intent — maps out-of-gamut colors smoothly, which is what viewers should do.
-    - **sRGB description heuristic** for early exit — skips transform if profile description contains "sRGB".
-    - This is **Level 1** (source → sRGB). Level 2 (source → display profile via ColorSync) is planned.
+    - **Byte-equality skip** — if source ICC bytes match target ICC bytes, the transform is skipped (zero cost for
+      P3-on-P3, sRGB-on-sRGB, etc.). Images without an embedded profile are assumed sRGB.
+    - This is **Level 2** (source → display profile). Level 1 was source → sRGB.
+    - **Display profile detection**: `CGDisplayCopyColorSpace()` + `CGColorSpaceCopyICCData()` via CoreGraphics FFI.
+      Matches the window's current monitor to a `CGDirectDisplayID` by comparing screen positions.
+    - **CAMetalLayer colorspace**: Set via `[layer setColorspace:]` so the macOS compositor knows our output color space.
+      This avoids changing the texture format (`Rgba8UnormSrgb`) or shader, because P3 and sRGB share the same EOTF.
+    - **Screen change detection**: `NSWindowDidChangeScreenNotification` observer fires `AppCommand::DisplayChanged`,
+      which re-queries the display profile, flushes the image cache, and re-decodes the current image.
+    - Full decision log with all 8 decisions and evidence: [docs/notes/icc-level-2-display-color-management.md](../../docs/notes/icc-level-2-display-color-management.md)
     - **Why moxcms over lcms2** (decided 2026-04-15):
 
       |                    | `lcms2` 6.1.1                  | `moxcms` 0.8.1 (chosen)              |
@@ -126,7 +145,7 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
           -profile /System/Library/ColorSync/Profiles/AdobeRGB1998.icc \
           /tmp/icc-bench/photo_${i}.jpg
       done
-      RUST_LOG=prvw::color=debug,prvw::image_loader=info ./target/release/prvw /tmp/icc-bench/photo_01.jpg
+      RUST_LOG=prvw::color=debug,prvw::display_profile=info,prvw::image_loader=info ./target/release/prvw /tmp/icc-bench/photo_01.jpg
       ```
 
 ## Gotchas
@@ -161,6 +180,15 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 - **`msg_send!` return types must match the ObjC method signature exactly.** `setActivationPolicy:` returns `BOOL`, not
   `void`. Writing `let _: () = msg_send![...]` for a method that returns `BOOL` panics at runtime with
   "expected return to have type code 'B', but found 'v'". Always check Apple's docs for the return type.
+- **wgpu's CAMetalLayer is a sublayer, not the view's direct layer.** When calling `[ns_view layer]`, you get the
+  NSView's root `CALayer`, not the `CAMetalLayer` that wgpu created. The Metal layer is in `[[ns_view layer] sublayers]`
+  (typically index 0). `set_layer_colorspace` handles this by checking `respondsToSelector:setColorspace:` and searching
+  sublayers if the root layer doesn't respond. Without this, `msg_send![layer, setColorspace:]` panics inside winit's
+  ObjC event loop (which aborts because panics can't unwind through `extern "C"` boundaries).
+- **Display profile falls back to sRGB.** If `CGDisplayCopyColorSpace` or `CGColorSpaceCopyICCData` returns null (headless,
+  SSH, CI), the display ICC defaults to the macOS system sRGB profile at `/System/Library/ColorSync/Profiles/sRGB Profile.icc`.
+  The `srgb_icc_bytes()` function in `color.rs` panics if this file is missing — it's always present on macOS but won't
+  exist on other platforms. Cross-platform support will need a fallback embedded sRGB profile.
 - **ICC extraction ordering with the `image` crate.** `ImageReader::into_decoder()` returns `impl ImageDecoder`.
   `icc_profile()` takes `&mut self`, while `DynamicImage::from_decoder()` consumes the decoder. So you must call
   `icc_profile()` first, then `from_decoder()`. Reversing the order won't compile.
