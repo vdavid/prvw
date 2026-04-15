@@ -194,6 +194,8 @@ struct App {
     icc_color_management: bool,
     /// Whether to use the display's ICC profile (Level 2) or sRGB (Level 1).
     color_match_display: bool,
+    /// Whether to use relative colorimetric rendering intent instead of perceptual.
+    use_relative_colorimetric: bool,
     /// Current display scale factor (Retina = 2.0). Updated on window creation and
     /// `ScaleFactorChanged` events. Defaults to 2.0 before the window exists.
     scale_factor: f64,
@@ -241,6 +243,7 @@ impl App {
             enlarge_small_images: initial_settings.enlarge_small_images,
             icc_color_management: initial_settings.icc_color_management,
             color_match_display: initial_settings.color_match_display,
+            use_relative_colorimetric: initial_settings.use_relative_colorimetric,
             scale_factor: 2.0,
             waiting_for_file,
             wait_start: None,
@@ -484,7 +487,8 @@ impl App {
         };
 
         // Start preloader thread pool
-        let mut preloader = preloader::Preloader::start(self.display_icc.clone());
+        let mut preloader =
+            preloader::Preloader::start(self.display_icc.clone(), self.use_relative_colorimetric);
 
         // Load and display the initial image
         let initial_path = self.file_path.clone();
@@ -540,7 +544,7 @@ impl App {
 
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
-        match image_loader::load_image(path, &self.display_icc) {
+        match image_loader::load_image(path, &self.display_icc, self.use_relative_colorimetric) {
             Ok(image) => {
                 self.current_image_size = Some((image.width, image.height));
 
@@ -866,6 +870,19 @@ impl App {
         }
     }
 
+    /// Flush the image cache, update the preloader, and re-decode the current image.
+    /// Used when color settings change that don't affect the ICC profile bytes (e.g., rendering intent).
+    fn flush_and_redisplay(&mut self) {
+        self.image_cache.clear();
+        if let Some(preloader) = &mut self.preloader {
+            preloader.set_use_relative_colorimetric(self.use_relative_colorimetric);
+        }
+        if let Some(dir) = &self.dir_list {
+            let path = dir.current().to_path_buf();
+            self.display_image(&path);
+        }
+    }
+
     /// Re-query the display ICC profile and re-decode the current image if the profile changed.
     #[cfg(target_os = "macos")]
     fn handle_display_changed(&mut self) {
@@ -956,6 +973,14 @@ impl App {
             let _ = self
                 .event_loop_proxy
                 .send_event(AppCommand::SetColorMatchDisplay(enabled));
+            return;
+        }
+        if event.id() == &app_menu.ids.relative_colorimetric {
+            let enabled = app_menu.relative_colorimetric_item.is_checked();
+            log::debug!("Menu: Relative colorimetric -> {enabled}");
+            let _ = self
+                .event_loop_proxy
+                .send_event(AppCommand::SetRelativeColorimetric(enabled));
             return;
         }
 
@@ -1202,8 +1227,9 @@ impl App {
                 s.save();
                 if let Some(menu) = &self.app_menu {
                     menu.icc_color_management_item.set_checked(enabled);
-                    // "Color match display" depends on ICC being enabled
+                    // "Color match display" and "Relative colorimetric" depend on ICC being enabled
                     menu.color_match_item.set_enabled(enabled);
+                    menu.relative_colorimetric_item.set_enabled(enabled);
                 }
                 self.apply_icc_settings();
             }
@@ -1218,8 +1244,26 @@ impl App {
                 }
                 self.apply_icc_settings();
             }
+            AppCommand::SetRelativeColorimetric(enabled) => {
+                self.use_relative_colorimetric = enabled;
+                log::info!(
+                    "Rendering intent set to: {}",
+                    if enabled {
+                        "relative colorimetric"
+                    } else {
+                        "perceptual"
+                    }
+                );
+                let mut s = settings::Settings::load();
+                s.use_relative_colorimetric = enabled;
+                s.save();
+                if let Some(menu) = &self.app_menu {
+                    menu.relative_colorimetric_item.set_checked(enabled);
+                }
+                self.flush_and_redisplay();
+            }
+            #[cfg(target_os = "macos")]
             AppCommand::DisplayChanged => {
-                #[cfg(target_os = "macos")]
                 self.handle_display_changed();
             }
             AppCommand::ShowAbout => self.show_about_dialog(),

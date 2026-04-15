@@ -132,9 +132,12 @@ pub enum AppCommand {
     SetIccColorManagement(bool),
     /// Set color match display mode (Level 2 ICC: source -> display profile).
     SetColorMatchDisplay(bool),
+    /// Set rendering intent to relative colorimetric (false = perceptual).
+    SetRelativeColorimetric(bool),
 
     // ── Color management ─────────────────────────────────────────────
     /// The window moved to a different display — re-query the display ICC profile.
+    #[cfg(target_os = "macos")]
     DisplayChanged,
 
     // ── App ──────────────────────────────────────────────────────────
