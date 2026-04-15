@@ -4,6 +4,21 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Finder double-click now works: macOS sends file paths via Apple Events (not CLI args), but the app was exiting before
+  the event loop started. Now the event loop always runs, with a 500ms wait for Apple Events before showing onboarding
+  ([f6e0fef](https://github.com/vdavid/prvw/commit/f6e0fef))
+
+### Changed
+
+- Onboarding window is now non-modal (doesn't block the event loop), allowing Apple Events and QA commands to arrive
+  while it's showing
+- Code refactors: `scale_factor` stored on App, `TextBlock` builder pattern, `MonitorBounds` helper, `LogicalF64` /
+  `LogicalF32` type aliases for coordinate clarity
+
 ## [0.6.0] - 2026-04-15
 
 ### Added
