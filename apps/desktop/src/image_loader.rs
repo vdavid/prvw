@@ -3,7 +3,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use image::ImageDecoder;
 use nom_exif::{EntryValue, ExifTag, MediaParser, MediaSource};
+
+use crate::color;
 
 /// Decoded image data ready for GPU upload.
 pub struct DecodedImage {
@@ -323,6 +326,8 @@ fn decode_jpeg(path: &Path, bytes: Vec<u8>) -> Result<DecodedImage, String> {
         .decode()
         .map_err(|e| format!("Couldn't decode JPEG {}: {e}", path.display()))?;
 
+    let icc_profile = decoder.icc_profile();
+
     let info = decoder
         .info()
         .ok_or_else(|| format!("No image info for {}", path.display()))?;
@@ -340,6 +345,10 @@ fn decode_jpeg(path: &Path, bytes: Vec<u8>) -> Result<DecodedImage, String> {
         rgba.push(255);
     }
 
+    if let Some(profile) = icc_profile {
+        color::transform_to_srgb(&mut rgba, &profile);
+    }
+
     Ok(DecodedImage {
         width,
         height,
@@ -349,14 +358,32 @@ fn decode_jpeg(path: &Path, bytes: Vec<u8>) -> Result<DecodedImage, String> {
 
 /// Fallback: decode via the `image` crate (PNG, WebP, GIF, BMP, TIFF, etc.).
 fn decode_generic(path: &Path, bytes: Vec<u8>) -> Result<DecodedImage, String> {
-    let img = image::load_from_memory(&bytes)
+    let cursor = Cursor::new(&bytes);
+    let reader = image::ImageReader::new(cursor)
+        .with_guessed_format()
+        .map_err(|e| format!("Couldn't identify format for {}: {e}", path.display()))?;
+
+    let mut decoder = reader
+        .into_decoder()
         .map_err(|e| format!("Couldn't decode {}: {e}", path.display()))?;
+
+    let icc_profile = decoder.icc_profile().ok().flatten();
+
+    let img = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| format!("Couldn't decode {}: {e}", path.display()))?;
+
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();
+    let mut rgba_data = rgba.into_raw();
+
+    if let Some(profile) = icc_profile {
+        color::transform_to_srgb(&mut rgba_data, &profile);
+    }
+
     Ok(DecodedImage {
         width,
         height,
-        rgba_data: rgba.into_raw(),
+        rgba_data,
     })
 }
 

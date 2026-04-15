@@ -1,3 +1,4 @@
+mod color;
 mod directory;
 mod image_loader;
 mod input;

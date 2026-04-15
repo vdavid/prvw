@@ -6,22 +6,23 @@ The Prvw desktop app: a GPU-accelerated image viewer using `winit` + `wgpu` + `m
 
 The app struct implements `winit::application::ApplicationHandler`. The event loop drives everything.
 
-| Module            | Responsibility                                              |
-| ----------------- | ----------------------------------------------------------- |
-| `main.rs`         | CLI parsing, event loop, `ApplicationHandler` impl, command executor |
-| `input.rs`        | Maps keyboard, mouse, menu, and QA key events to `AppCommand`s |
-| `window.rs`       | Window creation, fullscreen toggle, auto-fit resize, title formatting |
-| `renderer.rs`     | wgpu surface, pipeline, texture upload, rendering           |
-| `image_loader.rs` | Decode image files to RGBA8 (zune-jpeg for JPEG, `image` crate for others) |
-| `view.rs`         | Zoom/pan math, transform uniform for GPU                    |
-| `menu.rs`         | Native macOS menu bar via `muda`, shortcut wiring           |
-| `directory.rs`    | Scan parent dir for images, sort, track position            |
-| `preloader.rs`    | Parallel background decoding (rayon pool), LRU cache (512 MB budget) |
-| `native_ui.rs`    | AppKit secondary windows (About, Onboarding, Settings) via objc2 |
-| `onboarding.rs`   | File association queries and default viewer registration helpers |
+| Module            | Responsibility                                                                            |
+|-------------------|-------------------------------------------------------------------------------------------|
+| `main.rs`         | CLI parsing, event loop, `ApplicationHandler` impl, command executor                      |
+| `input.rs`        | Maps keyboard, mouse, menu, and QA key events to `AppCommand`s                            |
+| `window.rs`       | Window creation, fullscreen toggle, auto-fit resize, title formatting                     |
+| `renderer.rs`     | wgpu surface, pipeline, texture upload, rendering                                         |
+| `image_loader.rs` | Decode image files to RGBA8 (zune-jpeg for JPEG, `image` crate for others), ICC extraction |
+| `color.rs`        | ICC color management: transform embedded profile to sRGB via lcms2                        |
+| `view.rs`         | Zoom/pan math, transform uniform for GPU                                                  |
+| `menu.rs`         | Native macOS menu bar via `muda`, shortcut wiring                                         |
+| `directory.rs`    | Scan parent dir for images, sort, track position                                          |
+| `preloader.rs`    | Parallel background decoding (rayon pool), LRU cache (512 MB budget)                      |
+| `native_ui.rs`    | AppKit secondary windows (About, Onboarding, Settings) via objc2                          |
+| `onboarding.rs`   | File association queries and default viewer registration helpers                          |
 | `settings.rs`     | Settings persistence (JSON file in app data dir, overridable via `PRVW_DATA_DIR` env var) |
-| `qa_server.rs`    | `AppCommand` enum, embedded HTTP/MCP server for QA/E2E, global event loop proxy |
-| `shader.wgsl`     | WGSL vertex/fragment shader for textured quad with 2D transform |
+| `qa_server.rs`    | `AppCommand` enum, embedded HTTP/MCP server for QA/E2E, global event loop proxy           |
+| `shader.wgsl`     | WGSL vertex/fragment shader for textured quad with 2D transform                           |
 
 ## Key patterns
 
@@ -37,28 +38,28 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 - **Transform**: Zoom and pan are a 2D affine transform applied to the quad's vertices in the vertex shader. No image
   re-decode needed.
 
-- **Zoom model**: Zoom is absolute: `zoom=1.0` means 1 image pixel = 1 screen pixel. `fit_zoom()` computes the zoom
-  that makes the image exactly fit the window (< 1.0 for large images, > 1.0 for small ones). The zoom floor
+- **Zoom model**: Zoom is absolute: `zoom=1.0` means 1 image pixel = 1 screen pixel. `fit_zoom()` computes the zoom that
+  makes the image exactly fit the window (< 1.0 for large images, > 1.0 for small ones). The zoom floor
   (`min_zoom`) prevents zooming out past fit. On image load, `apply_initial_zoom()` sets the floor and starting zoom:
-  - **Auto-fit ON** (enlarge ignored): window resizes to image. `min_zoom` = zoom at which window hits 200px minimum.
-    On zoom in/out, the window resizes to match (`auto_fit_after_zoom`): desired size = image * zoom, capped at 90%
-    screen, floored at 200px. The cursor pivot stays at the same screen pixel. When the window hits the screen cap,
-    the leftover zoom is handled by panning within the fixed-size window.
-  - **Auto-fit OFF, Enlarge ON**: `min_zoom=fit_zoom`, initial zoom=`fit_zoom` (small images enlarged).
-  - **Auto-fit OFF, Enlarge OFF, large image** (`fit_zoom < 1.0`): `min_zoom=fit_zoom`, initial zoom=`fit_zoom`.
-  - **Auto-fit OFF, Enlarge OFF, small image** (`fit_zoom > 1.0`): `min_zoom=1.0`, initial zoom=1.0 (native pixels).
-  "Fit to window" (0 key) always sets zoom=`fit_zoom`. "Actual size" (1 key) always sets zoom=1.0. The zoom % in the
-  titlebar is the actual pixel scale (100% = native size). Background is always black.
+    - **Auto-fit ON** (enlarge ignored): window resizes to image. `min_zoom` = zoom at which window hits 200px minimum.
+      On zoom in/out, the window resizes to match (`auto_fit_after_zoom`): desired size = image * zoom, capped at 90%
+      screen, floored at 200px. The cursor pivot stays at the same screen pixel. When the window hits the screen cap,
+      the leftover zoom is handled by panning within the fixed-size window.
+    - **Auto-fit OFF, Enlarge ON**: `min_zoom=fit_zoom`, initial zoom=`fit_zoom` (small images enlarged).
+    - **Auto-fit OFF, Enlarge OFF, large image** (`fit_zoom < 1.0`): `min_zoom=fit_zoom`, initial zoom=`fit_zoom`.
+    - **Auto-fit OFF, Enlarge OFF, small image** (`fit_zoom > 1.0`): `min_zoom=1.0`, initial zoom=1.0 (native pixels).
+      "Fit to window" (0 key) always sets zoom=`fit_zoom`. "Actual size" (1 key) always sets zoom=1.0. The zoom % in the
+      titlebar is the actual pixel scale (100% = native size). Background is always black.
 
 - **Coordinate conventions**: Two coordinate systems are used throughout:
-  - **Logical pixels** (f64): UI layout coordinates, independent of display scaling. Used for window position
-    (`outer_position`), window content size in `MonitorBounds`, `TextBlock` coordinates, and `MeasuredPill`
-    positions. 1 logical pixel = 1 point on macOS.
-  - **Physical pixels** (u32): Actual GPU surface pixels. Used for `surface_width()`/`surface_height()`, wgpu texture
-    sizes, and `PhysicalSize` from winit. On Retina displays, 1 logical = 2 physical.
-  The `scale_factor` (stored on `App`, also on `Renderer`) converts between them. `Renderer::logical_width()` is a
-  convenience for `surface_width / scale_factor`. When in doubt, check the function signature: winit's `LogicalSize`
-  and `PhysicalSize` types make the system explicit at API boundaries.
+    - **Logical pixels** (f64): UI layout coordinates, independent of display scaling. Used for window position
+      (`outer_position`), window content size in `MonitorBounds`, `TextBlock` coordinates, and `MeasuredPill`
+      positions. 1 logical pixel = 1 point on macOS.
+    - **Physical pixels** (u32): Actual GPU surface pixels. Used for `surface_width()`/`surface_height()`, wgpu texture
+      sizes, and `PhysicalSize` from winit. On Retina displays, 1 logical = 2 physical. The `scale_factor` (stored on
+      `App`, also on `Renderer`) converts between them. `Renderer::logical_width()` is a convenience for
+      `surface_width / scale_factor`. When in doubt, check the function signature: winit's `LogicalSize`
+      and `PhysicalSize` types make the system explicit at API boundaries.
 
 - **Command architecture**: All user actions are expressed as `AppCommand` variants (defined in `qa_server.rs`).
   `input.rs` maps keyboard, menu, and QA key events to commands. `App::execute_command()` in `main.rs` is the single
@@ -67,21 +68,21 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 
 - **QA server**: An embedded HTTP server (raw `TcpListener`, no external crate) on a background thread. Agents and E2E
   tests use it to query state, send commands, and capture screenshots. Port controlled by `PRVW_QA_PORT` env var
-  (default 19447, set to 0 to disable). Commands flow through `EventLoopProxy<AppCommand>` user events. Screenshots
-  use an offscreen wgpu render target + buffer readback + PNG encoding.
+  (default 19447, set to 0 to disable). Commands flow through `EventLoopProxy<AppCommand>` user events. Screenshots use
+  an offscreen wgpu render target + buffer readback + PNG encoding.
 
 - **Native secondary windows** (`native_ui.rs`): About, Onboarding, and Settings windows are built with AppKit via
   objc2. All use `NSStackView` for layout, `NSVisualEffectView` for frosted glass, and transparent titlebars.
-  - **Onboarding** runs as a modal (`runModalForWindow`) BEFORE `EventLoop::new()`. Uses a state/render separation
-    pattern: `OnboardingState` (pure data, no UI refs) computes current state from system queries, and `OnboardingUI`
-    (widget pointers) has a single `render()` method that applies state to all widgets. An `NSTimer` polls every second,
-    and the delegate's button handler both use `OnboardingState::current()` + `ui.render()`. After the modal exits, the
-    timer is invalidated and views are dropped.
-  - **About and Settings** are non-modal: `makeKeyAndOrderFront` + `mem::forget` the retained views. A deduplication
-    guard (`is_window_already_open`) prevents stacking. FIXME: views leak on close/reopen (see code comments).
-  - **Settings** uses a `define_class!` delegate (`SettingsDelegate`) for the NSSwitch toggle actions. Toggles
-    apply immediately (no confirm step) — the button is "Close", not "OK". Changes route through
-    `AppCommand::SetAutoFitWindow` / disk write so the menu checkmarks and app state stay in sync.
+    - **Onboarding** runs as a modal (`runModalForWindow`) BEFORE `EventLoop::new()`. Uses a state/render separation
+      pattern: `OnboardingState` (pure data, no UI refs) computes current state from system queries, and `OnboardingUI`
+      (widget pointers) has a single `render()` method that applies state to all widgets. An `NSTimer` polls every
+      second, and the delegate's button handler both use `OnboardingState::current()` + `ui.render()`. After the modal
+      exits, the timer is invalidated and views are dropped.
+    - **About and Settings** are non-modal: `makeKeyAndOrderFront` + `mem::forget` the retained views. A deduplication
+      guard (`is_window_already_open`) prevents stacking. FIXME: views leak on close/reopen (see code comments).
+    - **Settings** uses a `define_class!` delegate (`SettingsDelegate`) for the NSSwitch toggle actions. Toggles apply
+      immediately (no confirm step) — the button is "Close", not "OK". Changes route through
+      `AppCommand::SetAutoFitWindow` / disk write so the menu checkmarks and app state stay in sync.
 
 - **Global event loop proxy** (`qa_server.rs`): A `OnceLock<EventLoopProxy<AppCommand>>` is set once in `resumed()`.
   This lets non-event-loop code (like the native Settings delegate) send commands into the main loop. Used by
@@ -90,54 +91,84 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 - **File associations** (`onboarding.rs`): Uses `LSCopyDefaultRoleHandlerForContentType` and
   `LSSetDefaultRoleHandlerForContentType` via objc2-core-services FFI. No Swift scripts — direct C calls, near-instant.
 
+- **ICC color management** (`color.rs`): Converts images with embedded ICC profiles to sRGB before GPU upload. Extraction
+  is format-specific (in `image_loader.rs`), transform is format-agnostic (in `color.rs` via lcms2). Key choices:
+    - **lcms2** over pure-Rust alternatives — industry standard, handles edge-case ICC profiles. Entire API surface is
+      isolated in `color.rs` (~40 lines); swapping to `qcms`/`moxcms` is a ~15-line change.
+    - **Perceptual** rendering intent — maps out-of-gamut colors smoothly, which is what viewers should do.
+    - **sRGB description heuristic** for early exit — skips transform if profile description contains "sRGB".
+    - **Per-image Profile/Transform** (not cached) — `Profile` isn't `Sync`, and creation cost (~1ms) is negligible.
+    - This is **Level 1** (source → sRGB). Level 2 (source → display profile via ColorSync) is planned.
+    - **Performance** (benchmarked 2026-04-15, release build, Apple M3 Max, 24MP / 6000x4000 Adobe RGB JPEG): ICC
+      transform ~247ms, total decode ~452ms (JPEG decode ~205ms + ICC ~247ms). The ICC portion is ~55% of total load
+      time. Acceptable because the preloader handles adjacent images in the background. Most real-world images are sRGB
+      (no transform) or smaller than 24MP (proportionally faster). Level 2 won't change per-pixel cost — only the target
+      profile changes. To reproduce:
+      ```
+      mkdir -p /tmp/icc-bench
+      for i in $(seq -w 1 10); do
+        magick -size 6000x4000 plasma:red-green -seed $i \
+          -profile /System/Library/ColorSync/Profiles/AdobeRGB1998.icc \
+          /tmp/icc-bench/photo_${i}.jpg
+      done
+      RUST_LOG=prvw::color=debug,prvw::image_loader=info ./target/release/prvw /tmp/icc-bench/photo_01.jpg
+      ```
+
 ## Gotchas
 
 - **wgpu 29 API changes**: `Instance::new()` takes a value (not reference). `get_current_texture()` returns
   `CurrentSurfaceTexture` enum (not `Result`). `PipelineLayoutDescriptor` uses `immediate_size` instead of
   `push_constant_ranges`. `RenderPassColorAttachment` requires `depth_slice`. `mipmap_filter` uses `MipmapFilterMode`.
-- **winit 0.30 `ApplicationHandler`**: No closure-based `run`. The app struct implements the trait. State that depends on
-  the window (renderer, surface) must be `Option` and initialized in `resumed()`.
+- **winit 0.30 `ApplicationHandler`**: No closure-based `run`. The app struct implements the trait. State that depends
+  on the window (renderer, surface) must be `Option` and initialized in `resumed()`.
 - **muda menu**: `init_for_nsapp()` must be called after building the menu. Menu events are polled via
   `MenuEvent::receiver().try_recv()`, not callbacks.
 - **bytemuck derives**: Use `bytemuck::Pod` and `bytemuck::Zeroable` (from the `derive` feature), not
   `bytemuck_derive::Pod` directly.
 - **zune-jpeg in debug builds**: zune-jpeg's SIMD is painfully slow without optimizations. `Cargo.toml` sets
   `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this.
-- **objc2 `Retained<>` lifetime with AppKit modals**: when creating AppKit views (NSTextField, NSButton, etc.) via
-  objc2 and adding them to a parent view with `addSubview`, the Rust `Retained<>` wrapper must stay alive for the
-  entire duration of the modal session. If it drops (goes out of scope), AppKit's autorelease pool cleanup will
-  segfault (use-after-free). Fix: collect all views in a `Vec<Retained<...>>` that lives alongside the modal loop.
-  This applies to `native_ui.rs` and any future native macOS dialogs. There is no compile-time check for this.
-- **Never run AppKit modals from inside winit's event loop.** Running `NSApplication::runModalForWindow` inside
-  winit's `resumed()` or `window_event()` creates a nested run loop inside winit's autorelease pool. When the modal
-  ends and an Apple Event arrives, the pool drains objects from the wrong scope, causing segfault. Fix: run native
-  modals BEFORE `EventLoop::new()` (like the onboarding dialog in `main()`), or use `EventLoopProxy` to defer the
-  modal to after the event loop exits.
+- **objc2 `Retained<>` lifetime with AppKit modals**: when creating AppKit views (NSTextField, NSButton, etc.) via objc2
+  and adding them to a parent view with `addSubview`, the Rust `Retained<>` wrapper must stay alive for the entire
+  duration of the modal session. If it drops (goes out of scope), AppKit's autorelease pool cleanup will segfault (
+  use-after-free). Fix: collect all views in a `Vec<Retained<...>>` that lives alongside the modal loop. This applies to
+  `native_ui.rs` and any future native macOS dialogs. There is no compile-time check for this.
+- **Never run AppKit modals from inside winit's event loop.** Running `NSApplication::runModalForWindow` inside winit's
+  `resumed()` or `window_event()` creates a nested run loop inside winit's autorelease pool. When the modal ends and an
+  Apple Event arrives, the pool drains objects from the wrong scope, causing segfault. Fix: run native modals BEFORE
+  `EventLoop::new()` (like the onboarding dialog in `main()`), or use `EventLoopProxy` to defer the modal to after the
+  event loop exits.
 - **`define_class!` methods get an implicit `_cmd: Sel` parameter.** Plain helper methods defined inside
-  `define_class!` are treated as ObjC methods and receive an implicit selector argument. To define a plain Rust
-  helper, put it in a separate `impl` block outside the macro, or use a free function.
+  `define_class!` are treated as ObjC methods and receive an implicit selector argument. To define a plain Rust helper,
+  put it in a separate `impl` block outside the macro, or use a free function.
 - **`request_inner_size` is async on macOS.** After calling `window.request_inner_size()`, `window.inner_size()`
   still returns the OLD size. The `Resized` event arrives later. To avoid a frame of wrong proportions,
   `resize_to_fit_image` computes and returns the physical size so callers can pass it directly to `renderer.resize()`.
-- **`msg_send!` return types must match the ObjC method signature exactly.** `setActivationPolicy:` returns `BOOL`,
-  not `void`. Writing `let _: () = msg_send![...]` for a method that returns `BOOL` panics at runtime with
+- **`msg_send!` return types must match the ObjC method signature exactly.** `setActivationPolicy:` returns `BOOL`, not
+  `void`. Writing `let _: () = msg_send![...]` for a method that returns `BOOL` panics at runtime with
   "expected return to have type code 'B', but found 'v'". Always check Apple's docs for the return type.
+- **ICC extraction ordering with the `image` crate.** `ImageReader::into_decoder()` returns `impl ImageDecoder`.
+  `icc_profile()` takes `&mut self`, while `DynamicImage::from_decoder()` consumes the decoder. So you must call
+  `icc_profile()` first, then `from_decoder()`. Reversing the order won't compile.
+- **Screenshot surface format.** The render pipeline targets `Bgra8UnormSrgb` (macOS surface format). The screenshot
+  readback copies raw BGRA bytes, which must be swizzled to RGBA before PNG encoding. If you change the surface
+  format, update the swizzle in `capture_screenshot()`.
 
 ## Dependencies
 
-| Crate       | Version | Purpose                                  |
-| ----------- | ------- | ---------------------------------------- |
-| winit       | 0.30.13 | Windowing and event handling             |
-| wgpu        | 29.0.1  | GPU rendering (Metal on macOS)           |
-| pollster    | 0.4.0   | Block on wgpu async calls                |
-| muda        | 0.17.2  | Native macOS menu bar                    |
-| image       | 0.25.10 | Image decoding (PNG, GIF, WebP, BMP, TIFF) and PNG encoding for screenshots |
-| zune-jpeg   | 0.5.15  | Fast JPEG decoding with SIMD (replaces `image` for JPEG) |
-| zune-core   | 0.5.1   | Decoder options for zune-jpeg                    |
-| rayon       | 1.11.0  | Thread pool for parallel preloading               |
-| clap        | 4.6.0   | CLI argument parsing                     |
-| log         | 0.4.29  | Logging facade                           |
-| env_logger  | 0.11.10 | Log output to stderr                     |
-| bytemuck    | 1.25.0  | Safe transmute for GPU uniform data      |
-| objc2-core-foundation | 0.3 | CFString for CoreServices FFI       |
-| objc2-core-services   | 0.3 | File association APIs (LSSetDefaultRoleHandler, etc.) |
+| Crate                 | Version | Purpose                                                                     |
+|-----------------------|---------|-----------------------------------------------------------------------------|
+| winit                 | 0.30.13 | Windowing and event handling                                                |
+| wgpu                  | 29.0.1  | GPU rendering (Metal on macOS)                                              |
+| pollster              | 0.4.0   | Block on wgpu async calls                                                   |
+| muda                  | 0.17.2  | Native macOS menu bar                                                       |
+| image                 | 0.25.10 | Image decoding (PNG, GIF, WebP, BMP, TIFF) and PNG encoding for screenshots |
+| zune-jpeg             | 0.5.15  | Fast JPEG decoding with SIMD (replaces `image` for JPEG)                    |
+| zune-core             | 0.5.1   | Decoder options for zune-jpeg                                               |
+| lcms2                 | 6.1.1   | ICC color management (Adobe RGB/ProPhoto → sRGB)                            |
+| rayon                 | 1.11.0  | Thread pool for parallel preloading                                         |
+| clap                  | 4.6.0   | CLI argument parsing                                                        |
+| log                   | 0.4.29  | Logging facade                                                              |
+| env_logger            | 0.11.10 | Log output to stderr                                                        |
+| bytemuck              | 1.25.0  | Safe transmute for GPU uniform data                                         |
+| objc2-core-foundation | 0.3     | CFString for CoreServices FFI                                               |
+| objc2-core-services   | 0.3     | File association APIs (LSSetDefaultRoleHandler, etc.)                       |

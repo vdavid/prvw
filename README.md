@@ -18,6 +18,7 @@ Built in Rust with `winit` + `wgpu` + `muda`. Native macOS menus, Metal renderin
 - **Background preloading**: adjacent images are decoded in parallel (rayon thread pool). Arrow keys feel instant.
 - **Auto-fit window**: the window resizes to match each image. Zoom in/out and the window follows. Toggle in View menu.
 - **Transparency support**: checkerboard background for transparent PNGs (Photoshop-style, fixed in screen space).
+- **ICC color management**: embedded ICC profiles (Adobe RGB, ProPhoto, Display P3) are automatically converted to sRGB. Your photos look as the photographer intended.
 - **EXIF orientation**: phone photos display right-side-up automatically.
 - **Keyboard-first**: navigate, zoom, pan, fullscreen, quit — all from the keyboard.
 - **Native macOS feel**: real system menus, SF Pro overlay text, transparent titlebar, Finder double-click integration.
@@ -42,7 +43,7 @@ Purchase at [getprvw.com](https://getprvw.com).
 ## Someday/maybe
 
 - GPU-accelerated image pipeline (compute shaders for decode)
-- ICC color management
+- ICC color management level 2: display-aware (source profile -> monitor profile via ColorSync)
 - IPC daemon mode (instant open from [Cmdr](https://getcmdr.com))
 - 90/180 degree manual rotation
 - "Save as smaller JPEG" export

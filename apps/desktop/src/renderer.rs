@@ -594,7 +594,8 @@ impl Renderer {
 
         let data = buffer_slice.get_mapped_range();
 
-        // Strip row padding and collect raw RGBA pixels
+        // Strip row padding and collect pixels. The surface format is BGRA, so swap R and B
+        // to produce RGBA for the PNG encoder.
         let mut rgba_pixels = Vec::with_capacity((width * height * bytes_per_pixel) as usize);
         for row in 0..height {
             let start = (row * padded_bytes_per_row) as usize;
@@ -603,6 +604,11 @@ impl Renderer {
         }
         drop(data);
         staging_buffer.unmap();
+
+        // BGRA -> RGBA: swap R and B channels
+        for pixel in rgba_pixels.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
 
         // Encode as PNG using the image crate
         let mut png_bytes: Vec<u8> = Vec::new();
