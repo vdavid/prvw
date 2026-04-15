@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "prvw"
-version = "0.6.3"
+version = "0.7.0"
 dependencies = [
  "base64",
  "bytemuck",

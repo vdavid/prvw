@@ -4,6 +4,34 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-04-16
+
+### Added
+
+- ICC color management: embedded source profiles (JPEG, PNG, TIFF, WebP) are transformed to accurate output colors.
+  Level 1 converts to sRGB, Level 2 targets the actual display profile via CoreGraphics FFI
+  (`CGDisplayCopyColorSpace`). Images without profiles assumed sRGB. Display changes flush the cache and re-decode
+  ([ee226ac](https://github.com/vdavid/prvw/commit/ee226ac),
+  [94820a8](https://github.com/vdavid/prvw/commit/94820a8))
+- View menu toggles: "ICC color management" (Cmd+Shift+I) and "Color match display" (Cmd+Shift+C), both persisted in
+  settings. Disabling ICC grays out color matching (L2 depends on L1)
+  ([a088330](https://github.com/vdavid/prvw/commit/a088330),
+  [b952b64](https://github.com/vdavid/prvw/commit/b952b64))
+
+### Changed
+
+- ICC engine: replaced lcms2 (C bindings) with moxcms (pure Rust, NEON SIMD). 24MP transform: 247ms -> 45ms on M3 Max.
+  No C toolchain needed for cross-compilation
+  ([f568b18](https://github.com/vdavid/prvw/commit/f568b18))
+
+### Fixed
+
+- Screen detection: replaced unreliable `current_monitor()` + `CGDisplayBounds` position matching with
+  `NSWindow.screen.deviceDescription` for authoritative `CGDirectDisplayID`
+  ([fcdefe3](https://github.com/vdavid/prvw/commit/fcdefe3))
+- Pre-existing BGRA->RGBA swap bug in screenshot capture
+  ([ee226ac](https://github.com/vdavid/prvw/commit/ee226ac))
+
 ## [0.6.3] - 2026-04-15
 
 ### Fixed
