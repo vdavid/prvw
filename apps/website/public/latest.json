@@ -1,15 +1,15 @@
 {
-  "version": "0.6.1",
-  "pub_date": "2026-04-15T00:20:07Z",
+  "version": "0.6.2",
+  "pub_date": "2026-04-15T06:43:06Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/vdavid/prvw/releases/download/v0.6.1/Prvw_0.6.1_aarch64.dmg"
+      "url": "https://github.com/vdavid/prvw/releases/download/v0.6.2/Prvw_0.6.2_aarch64.dmg"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/vdavid/prvw/releases/download/v0.6.1/Prvw_0.6.1_x86_64.dmg"
+      "url": "https://github.com/vdavid/prvw/releases/download/v0.6.2/Prvw_0.6.2_x86_64.dmg"
     },
     "darwin-universal": {
-      "url": "https://github.com/vdavid/prvw/releases/download/v0.6.1/Prvw_0.6.1_universal.dmg"
+      "url": "https://github.com/vdavid/prvw/releases/download/v0.6.2/Prvw_0.6.2_universal.dmg"
     }
   }
 }
