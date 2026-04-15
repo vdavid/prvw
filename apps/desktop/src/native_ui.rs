@@ -644,13 +644,10 @@ fn is_prvw_default_for_all() -> bool {
     !content_lines.is_empty() && content_lines.iter().all(|l| l.contains("(you)"))
 }
 
-/// Show the onboarding window as a modal NSWindow. Runs its own event loop
-/// via `NSApplication::runModalForWindow`, so this MUST be called BEFORE
-/// `EventLoop::new()` to avoid nested run loop segfaults.
-///
-/// Returns after the user closes the window (either via "Close" or "Set as default viewer").
-#[allow(dead_code)] // Kept for potential pre-event-loop use; normal flow uses non_modal version
-fn show_onboarding_window() {
+// The modal `show_onboarding_window` was removed — the non-modal version below is used instead.
+// The modal version is preserved in git history (commit before this one) if ever needed.
+#[allow(unused)]
+fn _show_onboarding_window_removed() {
     // SAFETY: this runs before winit's event loop, on the main thread.
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
 

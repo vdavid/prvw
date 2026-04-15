@@ -8,7 +8,6 @@ mod menu;
 mod native_ui;
 #[cfg(target_os = "macos")]
 mod onboarding;
-#[allow(dead_code)] // Conversion methods are part of the API even when not yet used.
 mod pixels;
 mod preloader;
 mod qa_server;

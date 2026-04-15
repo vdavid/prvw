@@ -18,12 +18,14 @@ pub struct Physical<T>(pub T);
 // ── Conversion ───────────────────────────────────────────────────────────
 
 impl Logical<f32> {
+    #[allow(dead_code)] // Completes the type API — used when logical→physical conversion is needed
     pub fn to_physical(self, scale_factor: f64) -> Physical<f32> {
         Physical(self.0 * scale_factor as f32)
     }
 }
 
 impl Logical<f64> {
+    #[allow(dead_code)]
     pub fn to_physical(self, scale_factor: f64) -> Physical<f64> {
         Physical(self.0 * scale_factor)
     }
@@ -34,12 +36,14 @@ impl Logical<f64> {
 }
 
 impl Physical<f32> {
+    #[allow(dead_code)]
     pub fn to_logical(self, scale_factor: f64) -> Logical<f32> {
         Logical(self.0 / scale_factor as f32)
     }
 }
 
 impl Physical<f64> {
+    #[allow(dead_code)]
     pub fn to_logical(self, scale_factor: f64) -> Logical<f64> {
         Logical(self.0 / scale_factor)
     }
