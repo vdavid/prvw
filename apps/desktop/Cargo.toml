@@ -1,6 +1,6 @@
 [package]
 name = "prvw"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "A fast, minimal image viewer for macOS"
 license = "BUSL-1.1"
