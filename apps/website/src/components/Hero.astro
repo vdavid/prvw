@@ -24,6 +24,24 @@ import DownloadButton from './DownloadButton.astro'
             <span class="text-sm text-[var(--color-text-secondary)]">macOS native, built in Rust</span>
         </div>
 
+        <!-- Animated name: Preview.app → Prvw -->
+        <div
+            class="name-anim mb-4 text-5xl font-bold tracking-tight md:text-6xl lg:text-8xl"
+            aria-label="Prvw"
+        >
+            <span class="name-anim__static">P</span
+            ><span class="name-anim__static">r</span
+            ><span class="name-anim__fade" style="--fade-delay: 0.9s">e</span
+            ><span class="name-anim__static">v</span
+            ><span class="name-anim__fade" style="--fade-delay: 0.5s">i</span
+            ><span class="name-anim__fade" style="--fade-delay: 0.7s">e</span
+            ><span class="name-anim__static">w</span
+            ><span class="name-anim__fade" style="--fade-delay: 1.4s">.</span
+            ><span class="name-anim__fade" style="--fade-delay: 1.6s">a</span
+            ><span class="name-anim__fade" style="--fade-delay: 1.8s">p</span
+            ><span class="name-anim__fade" style="--fade-delay: 2.0s">p</span>
+        </div>
+
         <!-- Headline -->
         <h1 class="mb-6 text-3xl font-bold leading-tight tracking-tight md:text-4xl lg:text-6xl">
             <span class="animate-blur-in stagger-2 inline-block">See your photos.</span>
@@ -118,5 +136,57 @@ import DownloadButton from './DownloadButton.astro'
         background: linear-gradient(to bottom, transparent 70%, var(--color-background) 100%);
         position: absolute;
         inset: 0;
+    }
+
+    /* Name animation: Preview.app → Prvw */
+    .name-anim__static,
+    .name-anim__fade {
+        display: inline-block;
+    }
+
+    .name-anim__fade {
+        overflow: clip;
+        animation: name-letter-out 1s ease-in-out both;
+        animation-delay: var(--fade-delay);
+    }
+
+    @keyframes name-letter-out {
+        0%, 10% {
+            color: var(--color-text-primary);
+            opacity: 1;
+            max-width: 0.7em;
+        }
+        18% {
+            color: #9aaab8;
+            opacity: 1;
+            max-width: 0.7em;
+        }
+        30% {
+            color: #3a5f8a;
+            opacity: 1;
+            max-width: 0.7em;
+        }
+        40% {
+            color: #1a3464;
+            opacity: 1;
+            max-width: 0.7em;
+        }
+        65% {
+            color: #1a3464;
+            opacity: 0;
+            max-width: 0.7em;
+        }
+        100% {
+            color: #1a3464;
+            opacity: 0;
+            max-width: 0;
+        }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .name-anim__fade {
+            animation: none;
+            display: none;
+        }
     }
 </style>
