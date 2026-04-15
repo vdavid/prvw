@@ -190,6 +190,8 @@ struct App {
     auto_fit_window: bool,
     /// Whether small images are enlarged to fill the window.
     enlarge_small_images: bool,
+    /// Whether ICC color management is enabled (Level 1: source -> sRGB).
+    icc_color_management: bool,
     /// Whether to use the display's ICC profile (Level 2) or sRGB (Level 1).
     color_match_display: bool,
     /// Current display scale factor (Retina = 2.0). Updated on window creation and
@@ -237,6 +239,7 @@ impl App {
             current_image_size: None,
             auto_fit_window: initial_settings.auto_fit_window,
             enlarge_small_images: initial_settings.enlarge_small_images,
+            icc_color_management: initial_settings.icc_color_management,
             color_match_display: initial_settings.color_match_display,
             scale_factor: 2.0,
             waiting_for_file,
@@ -267,6 +270,24 @@ impl App {
         } else {
             self.view_state.set_min_zoom(fit);
         }
+    }
+
+    /// Compute the target ICC bytes based on current settings.
+    /// - ICC off: empty (no transforms)
+    /// - ICC on, color match off: sRGB (Level 1)
+    /// - ICC on, color match on: display profile (Level 2)
+    fn effective_display_icc(&self, window: &Window) -> Vec<u8> {
+        if !self.icc_color_management {
+            return Vec::new(); // No ICC transforms
+        }
+        #[cfg(target_os = "macos")]
+        if self.color_match_display
+            && let Some(icc) = display_profile::get_display_icc(window) {
+                return icc;
+            }
+        // Suppress unused variable warning on non-macOS
+        let _ = window;
+        color::srgb_icc_bytes().to_vec()
     }
 
     /// Window center in logical pixels (for auto-fit pivot when zooming via keyboard/menu).
@@ -441,12 +462,12 @@ impl App {
         // Create renderer (wgpu surface must be created here, in resumed())
         self.renderer = Some(renderer::Renderer::new(win.clone()));
 
-        // Detect the display's ICC profile and configure the Metal layer colorspace
+        // Configure ICC color management based on settings
+        self.display_icc = self.effective_display_icc(&win);
         #[cfg(target_os = "macos")]
-        if self.color_match_display {
-            if let Some(icc) = display_profile::get_display_icc(&win) {
-                display_profile::set_layer_colorspace(&win, &icc);
-                self.display_icc = icc;
+        {
+            if !self.display_icc.is_empty() {
+                display_profile::set_layer_colorspace(&win, &self.display_icc);
             }
             display_profile::register_screen_change_observer(&win);
         }
@@ -812,39 +833,42 @@ impl App {
         }
     }
 
-    /// Re-query the display ICC profile and re-decode the current image if the profile changed.
-    #[cfg(target_os = "macos")]
-    fn handle_display_changed(&mut self) {
-        let Some(win) = &self.window else { return };
-        let new_icc = display_profile::get_display_icc(win).unwrap_or_else(|| {
-            log::debug!("Couldn't get display profile, keeping current");
-            self.display_icc.clone()
-        });
+    /// Recompute the effective display ICC, update the layer colorspace, flush cache, and re-decode.
+    /// Called when either ICC toggle changes.
+    fn apply_icc_settings(&mut self) {
+        let new_icc = if let Some(win) = &self.window {
+            self.effective_display_icc(win)
+        } else {
+            return;
+        };
 
         if color::profiles_match(&self.display_icc, &new_icc) {
-            log::debug!("Display changed but ICC profile is the same, no action needed");
-            return;
+            return; // No change
         }
 
-        log::info!("Display ICC profile changed, flushing cache and re-decoding");
         self.display_icc = new_icc;
 
-        // Update the CAMetalLayer colorspace
-        display_profile::set_layer_colorspace(win, &self.display_icc);
+        #[cfg(target_os = "macos")]
+        if let Some(win) = &self.window
+            && !self.display_icc.is_empty() {
+                display_profile::set_layer_colorspace(win, &self.display_icc);
+            }
 
-        // Flush cache (all cached images are in the old color space)
         self.image_cache.clear();
-
-        // Update preloader's target ICC
         if let Some(preloader) = &mut self.preloader {
             preloader.set_display_icc(self.display_icc.clone());
         }
-
-        // Re-decode and display the current image
         if let Some(dir) = &self.dir_list {
             let path = dir.current().to_path_buf();
             self.display_image(&path);
         }
+    }
+
+    /// Re-query the display ICC profile and re-decode the current image if the profile changed.
+    #[cfg(target_os = "macos")]
+    fn handle_display_changed(&mut self) {
+        log::debug!("Display changed, re-evaluating ICC settings");
+        self.apply_icc_settings();
     }
 
     fn show_settings_dialog(&self) {
@@ -914,6 +938,14 @@ impl App {
             let _ = self
                 .event_loop_proxy
                 .send_event(AppCommand::SetEnlargeSmallImages(enabled));
+            return;
+        }
+        if event.id() == &app_menu.ids.icc_color_management {
+            let enabled = app_menu.icc_color_management_item.is_checked();
+            log::debug!("Menu: ICC color management -> {enabled}");
+            let _ = self
+                .event_loop_proxy
+                .send_event(AppCommand::SetIccColorManagement(enabled));
             return;
         }
         if event.id() == &app_menu.ids.color_match_display {
@@ -1160,6 +1192,19 @@ impl App {
                 self.apply_initial_zoom();
                 self.update_transform_and_redraw();
             }
+            AppCommand::SetIccColorManagement(enabled) => {
+                self.icc_color_management = enabled;
+                log::info!("ICC color management set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.icc_color_management = enabled;
+                s.save();
+                if let Some(menu) = &self.app_menu {
+                    menu.icc_color_management_item.set_checked(enabled);
+                    // "Color match display" depends on ICC being enabled
+                    menu.color_match_item.set_enabled(enabled);
+                }
+                self.apply_icc_settings();
+            }
             AppCommand::SetColorMatchDisplay(enabled) => {
                 self.color_match_display = enabled;
                 log::info!("Color match display set to: {enabled}");
@@ -1169,32 +1214,7 @@ impl App {
                 if let Some(menu) = &self.app_menu {
                     menu.color_match_item.set_checked(enabled);
                 }
-
-                // Switch between display profile (L2) and sRGB (L1)
-                #[cfg(target_os = "macos")]
-                if enabled {
-                    if let Some(win) = &self.window
-                        && let Some(icc) = display_profile::get_display_icc(win) {
-                            display_profile::set_layer_colorspace(win, &icc);
-                            self.display_icc = icc;
-                        }
-                } else {
-                    self.display_icc = color::srgb_icc_bytes().to_vec();
-                    // Reset the layer colorspace to sRGB
-                    if let Some(win) = &self.window {
-                        display_profile::set_layer_colorspace(win, &self.display_icc);
-                    }
-                }
-
-                // Flush cache and re-decode with the new target profile
-                self.image_cache.clear();
-                if let Some(preloader) = &mut self.preloader {
-                    preloader.set_display_icc(self.display_icc.clone());
-                }
-                if let Some(dir) = &self.dir_list {
-                    let path = dir.current().to_path_buf();
-                    self.display_image(&path);
-                }
+                self.apply_icc_settings();
             }
             AppCommand::DisplayChanged => {
                 #[cfg(target_os = "macos")]

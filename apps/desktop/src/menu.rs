@@ -11,6 +11,7 @@ pub struct MenuIds {
     pub fit_to_window: MenuId,
     pub auto_fit_window: MenuId,
     pub enlarge_small_images: MenuId,
+    pub icc_color_management: MenuId,
     pub color_match_display: MenuId,
     pub fullscreen: MenuId,
     pub refresh: MenuId,
@@ -28,6 +29,7 @@ pub struct AppMenu {
     /// Kept so we can update the checkmark from outside (e.g., when settings window toggles it).
     pub auto_fit_item: CheckMenuItem,
     pub enlarge_small_item: CheckMenuItem,
+    pub icc_color_management_item: CheckMenuItem,
     pub color_match_item: CheckMenuItem,
 }
 
@@ -79,9 +81,20 @@ pub fn create_menu_bar() -> AppMenu {
         settings.enlarge_small_images,
         None,
     );
+    let icc_color_management = CheckMenuItem::new(
+        "ICC color management",
+        true,
+        settings.icc_color_management,
+        Some(Accelerator::new(
+            Some(Modifiers::SUPER | Modifiers::SHIFT),
+            Code::KeyI,
+        )),
+    );
+    // Disabled when ICC color management is off (L2 depends on L1)
+    let color_match_enabled = settings.icc_color_management;
     let color_match_display = CheckMenuItem::new(
         "Color match display",
-        true,
+        color_match_enabled,
         settings.color_match_display,
         Some(Accelerator::new(
             Some(Modifiers::SUPER | Modifiers::SHIFT),
@@ -99,6 +112,7 @@ pub fn create_menu_bar() -> AppMenu {
             &fit_to_window,
             &auto_fit_window,
             &enlarge_small_images,
+            &icc_color_management,
             &color_match_display,
             &PredefinedMenuItem::separator(),
             &fullscreen,
@@ -125,11 +139,13 @@ pub fn create_menu_bar() -> AppMenu {
 
     let auto_fit_id = auto_fit_window.id().clone();
     let enlarge_small_id = enlarge_small_images.id().clone();
+    let icc_color_management_id = icc_color_management.id().clone();
     let color_match_id = color_match_display.id().clone();
 
     AppMenu {
         auto_fit_item: auto_fit_window,
         enlarge_small_item: enlarge_small_images,
+        icc_color_management_item: icc_color_management,
         color_match_item: color_match_display,
         _menu: menu,
         ids: MenuIds {
@@ -141,6 +157,7 @@ pub fn create_menu_bar() -> AppMenu {
             fit_to_window: fit_to_window.id().clone(),
             auto_fit_window: auto_fit_id,
             enlarge_small_images: enlarge_small_id,
+            icc_color_management: icc_color_management_id,
             color_match_display: color_match_id,
             fullscreen: fullscreen.id().clone(),
             refresh: refresh.id().clone(),

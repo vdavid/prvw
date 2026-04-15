@@ -57,6 +57,7 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         Some(AppCommand::FitToWindow)
     } else if id == &ids.auto_fit_window
         || id == &ids.enlarge_small_images
+        || id == &ids.icc_color_management
         || id == &ids.color_match_display
     {
         // CheckMenuItems auto-toggle on click; we return None and let the caller

@@ -128,6 +128,8 @@ pub enum AppCommand {
     SetAutoFitWindow(bool),
     /// Set enlarge-small-images mode.
     SetEnlargeSmallImages(bool),
+    /// Set ICC color management (Level 1: source -> sRGB when color match display is off).
+    SetIccColorManagement(bool),
     /// Set color match display mode (Level 2 ICC: source -> display profile).
     SetColorMatchDisplay(bool),
 

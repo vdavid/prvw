@@ -20,6 +20,9 @@ pub fn srgb_icc_bytes() -> &'static [u8] {
 /// Skips the transform if the profiles match (byte-equal).
 /// Silently returns on malformed profiles (the image displays as-is).
 pub fn transform_icc(rgba: &mut [u8], source_icc: &[u8], target_icc: &[u8]) {
+    if target_icc.is_empty() {
+        return; // ICC color management is disabled
+    }
     if profiles_match(source_icc, target_icc) {
         log::debug!("Source and target ICC profiles match, skipping transform");
         return;

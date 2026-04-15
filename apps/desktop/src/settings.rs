@@ -22,6 +22,9 @@ pub struct Settings {
     pub enlarge_small_images: bool,
 
     #[serde(default = "default_true")]
+    pub icc_color_management: bool,
+
+    #[serde(default = "default_true")]
     pub color_match_display: bool,
 }
 
@@ -35,6 +38,7 @@ impl Default for Settings {
             auto_update: true,
             auto_fit_window: true,
             enlarge_small_images: false,
+            icc_color_management: true,
             color_match_display: true,
         }
     }
@@ -97,6 +101,7 @@ mod tests {
         assert!(settings.auto_update);
         assert!(settings.auto_fit_window);
         assert!(!settings.enlarge_small_images);
+        assert!(settings.icc_color_management);
         assert!(settings.color_match_display);
     }
 
@@ -108,6 +113,7 @@ mod tests {
             auto_update: false,
             auto_fit_window: false,
             enlarge_small_images: true,
+            icc_color_management: false,
             color_match_display: false,
         };
         fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
