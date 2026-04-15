@@ -4,6 +4,23 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Finder double-click file opening: replaced `NSAppleEventManager` handler (overridden by AppKit's
+  `NSDocumentController`) with ObjC runtime method injection (`class_addMethod`) that adds
+  `application:openURLs:` directly to winit's `WinitApplicationDelegate` class
+  ([9417ab0](https://github.com/vdavid/prvw/commit/9417ab0))
+
+### Changed
+
+- Zoom model uses logical pixels: zoom=1.0 = 100% = one image pixel per logical pixel. The overlay
+  correctly shows 100% for naturally-sized images on Retina displays (was 200%)
+- Compiler-enforced `Logical<T>` / `Physical<T>` newtypes prevent mixing logical and physical pixel
+  values. Winit interop via `from_logical_size`, `to_logical_pos`, etc.
+- Removed 329 lines of dead modal onboarding code
+
 ## [0.6.2] - 2026-04-15
 
 ### Fixed
