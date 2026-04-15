@@ -4,6 +4,16 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Finder double-click "cannot open files in JPEG Image format": `CFBundleTypeRole` was missing from `Info.plist`
+  document type entries. macOS requires this to know the app can actually open files, not just be registered as a handler
+- CI: add `libxdo-dev` to Linux apt-get for `muda` dependency
+- Auto-updater: call `lsregister -f` after replacing the `.app` bundle so macOS picks up new document types in future
+  updates
+
 ## [0.6.1] - 2026-04-15
 
 ### Fixed
