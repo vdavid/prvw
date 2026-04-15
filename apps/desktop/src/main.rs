@@ -110,12 +110,15 @@ fn main() {
     let proxy = event_loop.create_proxy();
     let shared_state = Arc::new(Mutex::new(SharedAppState::default()));
 
-    // Register Apple Event handler for file-open events.
-    // For Finder double-click (app not running): macOS sends kAEOpenDocuments AFTER
-    // the event loop starts — this is the primary way we receive files.
-    // For Finder double-click (app already running): same Apple Event to the running instance.
+    // Inject application:openURLs: into winit's delegate class so macOS routes file-open
+    // events to us instead of NSDocumentController (which shows "cannot open files" errors).
+    // Must happen after EventLoop::new() (which creates the WinitApplicationDelegate class)
+    // but before run_app() (which calls finishLaunching and dispatches queued Apple Events).
     #[cfg(target_os = "macos")]
-    let _open_handler = macos_open_handler::register(proxy.clone());
+    {
+        macos_open_handler::set_proxy(proxy.clone());
+        macos_open_handler::register();
+    }
 
     let explicit_files = if resolved_files.len() > 1 {
         Some(resolved_files)

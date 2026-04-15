@@ -1,113 +1,107 @@
-//! macOS Apple Event handler for "open documents" events.
+//! macOS file-open handler via ObjC method injection.
 //!
-//! When a user double-clicks an image file while Prvw is already running, macOS sends a
-//! `kAEOpenDocuments` Apple Event to the running instance. This module registers a handler
-//! via `NSAppleEventManager` (not via NSApplicationDelegate, which would conflict with winit).
+//! Winit 0.30 registers its own NSApplicationDelegate (`WinitApplicationDelegate`) and panics
+//! if we replace it. But winit's delegate doesn't implement `application:openURLs:`, so AppKit
+//! falls through to NSDocumentController, which shows "cannot open files in X format" because
+//! there's no NSDocument subclass.
 //!
-//! The handler extracts file URLs from the event descriptor and sends them to the main
-//! event loop via `EventLoopProxy<AppCommand>`.
+//! The fix: use the ObjC runtime to add `application:openURLs:` directly to winit's delegate
+//! class. This way AppKit dispatches file-open events to our implementation without us
+//! replacing the delegate.
 
 use crate::qa_server::AppCommand;
-use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::sel;
-use objc2::{MainThreadOnly, define_class, msg_send};
-use objc2_foundation::{NSAppleEventDescriptor, NSAppleEventManager, NSObject, NSObjectProtocol};
+use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
+use objc2::{ffi, sel};
 use std::cell::RefCell;
+use std::ffi::CString;
 use std::path::PathBuf;
 use winit::event_loop::EventLoopProxy;
-
-// Apple Event constants (from CoreServices/AE headers)
-// kCoreEventClass = 'aevt' = 0x61657674
-// kAEOpenDocuments = 'odoc' = 0x6F646F63
-const K_CORE_EVENT_CLASS: u32 = 0x6165_7674;
-const K_AE_OPEN_DOCUMENTS: u32 = 0x6F64_6F63;
-// keyDirectObject = '----' = 0x2D2D2D2D
-const KEY_DIRECT_OBJECT: u32 = 0x2D2D_2D2D;
 
 // Thread-local storage for the event loop proxy.
 thread_local! {
     static EVENT_PROXY: RefCell<Option<EventLoopProxy<AppCommand>>> = const { RefCell::new(None) };
 }
 
-define_class!(
-    // SAFETY: NSObject has no subclassing requirements. This type doesn't impl Drop.
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "PrvwOpenHandler"]
-    pub struct PrvwOpenHandler;
-
-    unsafe impl NSObjectProtocol for PrvwOpenHandler {}
-
-    impl PrvwOpenHandler {
-        #[unsafe(method(handleOpenDocuments:withReplyEvent:))]
-        fn handle_open_documents(
-            &self,
-            event: &NSAppleEventDescriptor,
-            _reply: &NSAppleEventDescriptor,
-        ) {
-            // The file list is in the direct object parameter ('----')
-            let Some(file_list) = event.paramDescriptorForKeyword(KEY_DIRECT_OBJECT) else {
-                log::warn!("Apple Event: no direct object parameter");
-                return;
-            };
-
-            let count = file_list.numberOfItems();
-            log::debug!("Apple Event: received open request for {count} file(s)");
-
-            for i in 1..=count {
-                // Apple Event descriptors are 1-indexed
-                let Some(desc) = file_list.descriptorAtIndex(i) else {
-                    continue;
-                };
-                let Some(url) = desc.fileURLValue() else {
-                    continue;
-                };
-                let Some(path_nsstring) = url.path() else {
-                    continue;
-                };
-                let path = PathBuf::from(path_nsstring.to_string());
-                if path.is_file() {
-                    log::info!("Apple Event: opening {}", path.display());
-                    EVENT_PROXY.with(|proxy| {
-                        if let Some(proxy) = proxy.borrow().as_ref() {
-                            let _ = proxy.send_event(AppCommand::OpenFile(path.clone()));
-                        }
-                    });
-                }
-            }
-        }
-    }
-);
-
-impl PrvwOpenHandler {
-    fn new(mtm: objc2_foundation::MainThreadMarker) -> Retained<Self> {
-        let this = mtm.alloc().set_ivars(());
-        unsafe { msg_send![super(this), init] }
-    }
-}
-
-/// Register the Apple Event handler for `kAEOpenDocuments`. Must be called after
-/// `EventLoop::new()` and before `run_app()`. Returns the handler object (must be kept alive).
-pub fn register(proxy: EventLoopProxy<AppCommand>) -> Retained<PrvwOpenHandler> {
+/// Store the event loop proxy. Call before `register()`.
+pub fn set_proxy(proxy: EventLoopProxy<AppCommand>) {
     EVENT_PROXY.with(|p| {
         *p.borrow_mut() = Some(proxy);
     });
+}
 
-    let mtm =
-        objc2_foundation::MainThreadMarker::new().expect("Must be called from the main thread");
-    let handler = PrvwOpenHandler::new(mtm);
-
-    let manager = NSAppleEventManager::sharedAppleEventManager();
+/// The `application:openURLs:` implementation that will be added to winit's delegate class.
+/// This is a C-style function matching the ObjC method signature.
+extern "C" fn application_open_urls(
+    _this: &AnyObject,
+    _cmd: Sel,
+    _app: &AnyObject,
+    urls: &AnyObject, // NSArray<NSURL>
+) {
     unsafe {
-        manager.setEventHandler_andSelector_forEventClass_andEventID(
-            handler.as_ref() as &AnyObject,
-            sel!(handleOpenDocuments:withReplyEvent:),
-            K_CORE_EVENT_CLASS,
-            K_AE_OPEN_DOCUMENTS,
-        );
-    }
+        use objc2::msg_send;
 
-    log::debug!("Registered Apple Event handler for kAEOpenDocuments");
-    handler
+        let count: usize = msg_send![urls, count];
+        log::debug!("application:openURLs: received {count} file(s)");
+
+        for i in 0..count {
+            let url: *const AnyObject = msg_send![urls, objectAtIndex: i];
+            if url.is_null() {
+                continue;
+            }
+            let path_str: *const AnyObject = msg_send![url, path];
+            if path_str.is_null() {
+                continue;
+            }
+            // Convert NSString to Rust String
+            let utf8: *const u8 = msg_send![path_str, UTF8String];
+            if utf8.is_null() {
+                continue;
+            }
+            let c_str = std::ffi::CStr::from_ptr(utf8 as *const std::ffi::c_char);
+            let path = PathBuf::from(c_str.to_string_lossy().into_owned());
+
+            if path.is_file() {
+                log::info!("File open via delegate: {}", path.display());
+                EVENT_PROXY.with(|proxy| {
+                    if let Some(proxy) = proxy.borrow().as_ref() {
+                        let _ = proxy.send_event(AppCommand::OpenFile(path.clone()));
+                    }
+                });
+            }
+        }
+    }
+}
+
+/// Add `application:openURLs:` to winit's `WinitApplicationDelegate` class.
+/// Must be called after `EventLoop::new()` (which creates the class) and before `run_app()`.
+pub fn register() {
+    unsafe {
+        let class_name = CString::new("WinitApplicationDelegate").unwrap();
+        let class = objc2::runtime::AnyClass::get(class_name.as_c_str());
+        let Some(class) = class else {
+            log::warn!("WinitApplicationDelegate class not found, file opens won't work");
+            return;
+        };
+
+        // Cast to mutable — class_addMethod requires a mutable class pointer.
+        // SAFETY: we're adding a method before the event loop runs, so no concurrent access.
+        let class_ptr = class as *const AnyClass as *mut AnyClass;
+
+        let sel = sel!(application:openURLs:);
+        // ObjC type encoding for `void (NSApplication*, NSArray<NSURL>*)` = "v@:@@"
+        let types = CString::new("v@:@@").unwrap();
+
+        let imp: unsafe extern "C-unwind" fn() = std::mem::transmute::<
+            extern "C" fn(&AnyObject, Sel, &AnyObject, &AnyObject),
+            unsafe extern "C-unwind" fn(),
+        >(application_open_urls);
+
+        let added = ffi::class_addMethod(class_ptr as *mut _, sel, imp, types.as_ptr());
+
+        if added != Bool::NO {
+            log::debug!("Added application:openURLs: to WinitApplicationDelegate");
+        } else {
+            log::warn!("Failed to add application:openURLs: (method may already exist)");
+        }
+    }
 }
