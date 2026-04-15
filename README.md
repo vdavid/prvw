@@ -7,26 +7,30 @@ A fast, minimal image viewer for macOS. Inspired by ACDSee 2.41 (if you know, yo
 Open an image, see it instantly, zoom and pan with GPU acceleration, arrow keys for next/prev with background preloading.
 That's it. No bloat, no editing tools, no 200 MB of Electron.
 
-Built in Rust with `winit` + `wgpu` + `muda`. Native macOS menus, Metal rendering, ~5 MB binary.
+Built in Rust with `winit` + `wgpu` + `muda`. Native macOS menus, Metal rendering, ~19 MB binary.
+
+**Download at [getprvw.com](https://getprvw.com).**
 
 ## What it does
 
 - **Instant display**: open an image, see it immediately. No splash screen, no loading bar.
 - **GPU-accelerated zoom and pan**: scroll to zoom (centered on cursor), click-drag to pan. Smooth and immediate.
-- **Background preloading**: adjacent images are decoded ahead of time. Left/Right arrow keys feel instant.
-- **Keyboard-first**: navigate, zoom, pan, fullscreen, quit, all from the keyboard.
-- **Native macOS menus**: real system menus with proper shortcuts via `muda`.
-- **Minimal chrome**: the image takes up 99% of the window. No sidebars, no toolbars, no distractions.
-- **Format support**: JPEG, PNG, GIF (first frame), WebP, BMP, TIFF.
-
-## Status
-
-Early development. Not usable yet.
+- **Background preloading**: adjacent images are decoded in parallel (rayon thread pool). Arrow keys feel instant.
+- **Auto-fit window**: the window resizes to match each image. Zoom in/out and the window follows. Toggle in View menu.
+- **Transparency support**: checkerboard background for transparent PNGs (Photoshop-style, fixed in screen space).
+- **EXIF orientation**: phone photos display right-side-up automatically.
+- **Keyboard-first**: navigate, zoom, pan, fullscreen, quit — all from the keyboard.
+- **Native macOS feel**: real system menus, SF Pro overlay text, transparent titlebar, Finder double-click integration.
+- **Format support**: JPEG (SIMD-accelerated via `zune-jpeg`), PNG, GIF (first frame), WebP, BMP, TIFF.
+- **Settings**: auto-fit window, enlarge small images, auto-update — persisted to `settings.json`.
+- **Auto-updater**: checks for updates on startup, downloads and installs in the background.
 
 ## Tech stack
 
-Prvw is built with pure **Rust**: `winit` for windowing, `wgpu` for GPU-accelerated rendering (Metal on macOS), `muda`
-for native menus, and `image` for decoding. No UI framework, no webview.
+Pure **Rust**: `winit` for windowing, `wgpu` for GPU rendering (Metal on macOS), `muda` for native menus, `glyphon`
+for text rendering, `zune-jpeg` for fast JPEG decoding, `image` for other formats, `objc2` for AppKit integration.
+
+An embedded MCP/HTTP server (`PRVW_QA_PORT=19447`) lets AI agents and E2E tests control the viewer programmatically.
 
 ## Pricing
 
@@ -37,10 +41,7 @@ Purchase at [getprvw.com](https://getprvw.com).
 
 ## Someday/maybe
 
-Things I'd love to add eventually:
-
 - GPU-accelerated image pipeline (compute shaders for decode)
-- EXIF-aware auto-rotation
 - ICC color management
 - IPC daemon mode (instant open from [Cmdr](https://getcmdr.com))
 - 90/180 degree manual rotation
