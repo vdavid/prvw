@@ -91,6 +91,12 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
       target/action is wired. Toggles apply immediately (no confirm step) via `AppCommand` through the global event
       loop proxy. All toggle rows use a spacer view to right-align the NSSwitch to the trailing edge. Per-UTI toggles
       use `NSControlSizeSmall` for a compact appearance.
+    - **Settings UI is retained-mode, not rebuilt.** The entire view tree is built once. Section switching uses
+      `setHidden:` to show/hide pre-built panels (all four exist simultaneously). Dynamic text (like file association
+      descriptions) is updated in place via `setStringValue:` on existing `NSTextField` labels. To add a dynamic
+      description to a setting toggle, store the label pointer in `SettingsDelegateIvars` and call `setStringValue:`
+      from the toggle's action handler. This is how file associations update their "Currently opens with X" text
+      without rebuilding anything.
 
 ### How to add a new setting
 
