@@ -92,6 +92,34 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
       loop proxy. All toggle rows use a spacer view to right-align the NSSwitch to the trailing edge. Per-UTI toggles
       use `NSControlSizeSmall` for a compact appearance.
 
+### How to add a new setting
+
+Follow these steps in order. Each one is required.
+
+1. **`settings.rs`**: Add the field to `Settings` struct with `#[serde(default)]` (or `default = "default_true"` if
+   it should default to `true`). Update `Default` impl and tests.
+2. **`App` struct in `main.rs`**: Add a field, initialize from `initial_settings` in `App::new()`.
+3. **`AppCommand` in `qa_server.rs`**: Add a `Set{SettingName}(bool)` variant.
+4. **`execute_command` in `main.rs`**: Add a handler that updates the App field, loads/saves Settings, syncs the menu
+   checkmark if applicable, and calls `self.update_shared_state()`. If the setting has cross-dependencies (like
+   auto-fit disabling enlarge), update the dependent toggle's enabled state here.
+5. **Menu item** (if the setting should be in the View menu): Add to `menu.rs` (MenuIds + CheckMenuItem), wire in
+   `input.rs` (menu_to_command), handle in `handle_menu_event` in `main.rs`.
+6. **Settings window toggle in `native_ui.rs`**: Use `make_setting_row()` to create the toggle row. Add it to the
+   appropriate section panel's vertical stack. Add the toggle action method to `SettingsDelegate`. Store the toggle
+   pointer in `SettingsDelegateIvars` if other code needs to enable/disable it. Push ALL created views to
+   `retained_views`.
+7. **MCP/QA**: Add HTTP endpoint and MCP tool in `qa_server.rs`.
+8. **Integration test**: Add a test in `tests/integration.rs`.
+
+**UX principles for settings:**
+- Settings apply **immediately** on toggle — no confirm/apply button. The button is "Close", not "OK".
+- Toggles are **right-aligned** via a spacer view with low content hugging priority.
+- When one setting disables another (cross-dependency), gray out the dependent toggle via `setEnabled:`.
+- Choose the section by domain: General (app behavior), Zoom (view behavior), Color (rendering), File associations
+  (OS integration).
+- New sections: add a sidebar button + panel + delegate method. Update `switch_settings_section()`.
+
 - **FlippedView**: Always use `FlippedView::new_as_nsview(mtm)` instead of `NSView::new(mtm)` for custom container
   views in `native_ui.rs`. macOS puts Y=0 at the bottom (Cartesian), which causes NSScrollView to bottom-anchor
   content. FlippedView overrides `isFlipped` to return `true` (Y=0 at top, like iOS/CSS/SwiftUI), making layout
