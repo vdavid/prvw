@@ -19,6 +19,41 @@ use objc2_foundation::{
     NSBundle, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString, NSURL,
 };
 
+// ─── FlippedView ─────────────────────────────────────────────────────────────
+
+define_class!(
+    /// NSView subclass with a flipped coordinate system (Y=0 at top, like iOS/CSS/SwiftUI).
+    /// Use this instead of `NSView::new()` for all custom container views to avoid
+    /// layout surprises (especially with NSScrollView which bottom-anchors non-flipped views).
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrvwFlippedView"]
+    pub(crate) struct FlippedView;
+
+    unsafe impl NSObjectProtocol for FlippedView {}
+
+    impl FlippedView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+    }
+);
+
+impl FlippedView {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc().set_ivars(());
+        unsafe { msg_send![super(this), init] }
+    }
+
+    /// Create a FlippedView and return it as an NSView (for APIs that expect NSView).
+    fn new_as_nsview(mtm: MainThreadMarker) -> Retained<NSView> {
+        let view = Self::new(mtm);
+        // SAFETY: FlippedView inherits from NSView, this cast is sound.
+        unsafe { Retained::cast_unchecked(view) }
+    }
+}
+
 // ─── Helper functions ───────────────────────────────────────────────────────
 
 /// Upcast any AppKit control to NSView for use with NSStackView.
@@ -1067,9 +1102,11 @@ struct SettingsDelegateIvars {
     general_panel: *const NSStackView,
     zoom_panel: *const NSStackView,
     color_panel: *const NSStackView,
+    file_assoc_panel: *const NSStackView,
     sidebar_general_btn: *const NSButton,
     sidebar_zoom_btn: *const NSButton,
     sidebar_color_btn: *const NSButton,
+    sidebar_file_assoc_btn: *const NSButton,
 }
 
 // SAFETY: Raw pointers are only used on the main thread within the window's lifetime,
@@ -1170,6 +1207,11 @@ define_class!(
         fn select_color(&self, _sender: &AnyObject) {
             self.select_panel(2);
         }
+
+        #[unsafe(method(selectFileAssoc:))]
+        fn select_file_assoc(&self, _sender: &AnyObject) {
+            self.select_panel(3);
+        }
     }
 );
 
@@ -1181,11 +1223,17 @@ impl SettingsDelegate {
 
     fn select_panel(&self, index: usize) {
         let ivars = self.ivars();
-        let panels = [ivars.general_panel, ivars.zoom_panel, ivars.color_panel];
+        let panels = [
+            ivars.general_panel,
+            ivars.zoom_panel,
+            ivars.color_panel,
+            ivars.file_assoc_panel,
+        ];
         let buttons = [
             ivars.sidebar_general_btn,
             ivars.sidebar_zoom_btn,
             ivars.sidebar_color_btn,
+            ivars.sidebar_file_assoc_btn,
         ];
         for (i, &panel) in panels.iter().enumerate() {
             if !panel.is_null() {
@@ -1247,10 +1295,19 @@ fn make_setting_row(
         NSControlStateValueOff
     });
 
+    // Spacer pushes the toggle to the trailing edge
+    let spacer = FlippedView::new_as_nsview(mtm);
+    unsafe {
+        let _: () = msg_send![&*spacer, setTranslatesAutoresizingMaskIntoConstraints: false];
+        // Hugging priority 1 = spacer happily expands to fill available space
+        let _: () = msg_send![&*spacer, setContentHuggingPriority: 1.0f32, forOrientation: 0i64]; // Horizontal
+    }
+
     let row = NSStackView::new(mtm);
     row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     row.setSpacing(12.0);
     row.addArrangedSubview(unsafe { as_view::<NSTextField>(&label) });
+    row.addArrangedSubview(unsafe { as_view::<NSView>(&spacer) });
     row.addArrangedSubview(unsafe { as_view::<NSSwitch>(&toggle) });
 
     let desc = if wrapping {
@@ -1262,8 +1319,9 @@ fn make_setting_row(
         d
     };
 
-    // Keep the label alive (it's added to the row via addArrangedSubview)
+    // Keep the label and spacer alive (they're added to the row via addArrangedSubview)
     std::mem::forget(label);
+    std::mem::forget(spacer);
 
     (row, toggle, desc)
 }
@@ -1287,9 +1345,10 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
     let style = NSWindowStyleMask::Titled
         | NSWindowStyleMask::Closable
+        | NSWindowStyleMask::Resizable
         | NSWindowStyleMask::FullSizeContentView;
 
-    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(620.0, 860.0));
+    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(620.0, 520.0));
 
     let window = unsafe {
         let window = NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -1304,6 +1363,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         let _: () = msg_send![&*window, setTitlebarAppearsTransparent: true];
         let _: () = msg_send![&*window, setMovableByWindowBackground: true];
         let _: () = msg_send![&*window, setReleasedWhenClosed: false];
+
+        window.setMinSize(NSSize::new(500.0, 400.0));
+        window.setMaxSize(NSSize::new(900.0, 800.0));
 
         window
     };
@@ -1348,6 +1410,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     let sidebar_general_btn = make_sidebar_button("General");
     let sidebar_zoom_btn = make_sidebar_button("Zoom");
     let sidebar_color_btn = make_sidebar_button("Color");
+    let sidebar_file_assoc_btn = make_sidebar_button("File associations");
 
     // General starts selected
     sidebar_general_btn.setState(NSControlStateValueOn);
@@ -1355,10 +1418,11 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     let sidebar_stack = NSStackView::new(mtm);
     sidebar_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
     sidebar_stack.setAlignment(NSLayoutAttribute::Leading);
-    sidebar_stack.setSpacing(2.0);
+    sidebar_stack.setSpacing(12.0);
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_general_btn) });
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_zoom_btn) });
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_color_btn) });
+    sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_file_assoc_btn) });
 
     // ── General panel ─────────────────────────────────────────────────
 
@@ -1370,131 +1434,6 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         content_max_width,
         mtm,
     );
-
-    // ── File associations section ────────────────────────────────────
-
-    let fa_section_header = make_bold_label("File associations", 14.0, mtm);
-    fa_section_header.setAlignment(NSTextAlignment(0)); // Left
-
-    let utis = crate::onboarding::SUPPORTED_UTIS;
-    let all_prvw = utis
-        .iter()
-        .all(|e| crate::onboarding::is_prvw_default(e.uti));
-
-    // "Set all" row
-    let fa_set_all_label = make_label("Open all supported images with Prvw", 14.0, mtm);
-    fa_set_all_label.setAlignment(NSTextAlignment(0));
-
-    let fa_set_all_secondary_text = if all_prvw {
-        "All image types are handled by Prvw."
-    } else {
-        "Some image types are handled by other apps."
-    };
-    let fa_set_all_secondary = make_label(fa_set_all_secondary_text, 12.0, mtm);
-    fa_set_all_secondary.setAlignment(NSTextAlignment(0));
-    fa_set_all_secondary.setTextColor(Some(&NSColor::secondaryLabelColor()));
-
-    let fa_set_all_toggle = NSSwitch::new(mtm);
-    fa_set_all_toggle.setState(if all_prvw {
-        NSControlStateValueOn
-    } else {
-        NSControlStateValueOff
-    });
-
-    let fa_set_all_label_stack = NSStackView::new(mtm);
-    fa_set_all_label_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-    fa_set_all_label_stack.setAlignment(NSLayoutAttribute::Leading);
-    fa_set_all_label_stack.setSpacing(2.0);
-    fa_set_all_label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&fa_set_all_label) });
-    fa_set_all_label_stack
-        .addArrangedSubview(unsafe { as_view::<NSTextField>(&fa_set_all_secondary) });
-
-    let fa_set_all_row = NSStackView::new(mtm);
-    fa_set_all_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    fa_set_all_row.setSpacing(12.0);
-    fa_set_all_row.addArrangedSubview(unsafe { as_view::<NSStackView>(&fa_set_all_label_stack) });
-    fa_set_all_row.addArrangedSubview(unsafe { as_view::<NSSwitch>(&fa_set_all_toggle) });
-
-    // Per-UTI rows
-    let mut fa_uti_toggles: [*const NSSwitch; UTI_COUNT] = [std::ptr::null(); UTI_COUNT];
-    let mut fa_uti_labels: [*const NSTextField; UTI_COUNT] = [std::ptr::null(); UTI_COUNT];
-    let mut fa_uti_rows: Vec<Retained<NSStackView>> = Vec::new();
-    let mut fa_uti_toggle_retained: Vec<Retained<NSSwitch>> = Vec::new();
-    let mut fa_uti_label_retained: Vec<Retained<NSTextField>> = Vec::new();
-    let mut fa_uti_primary_retained: Vec<Retained<NSTextField>> = Vec::new();
-    let mut fa_uti_label_stack_retained: Vec<Retained<NSStackView>> = Vec::new();
-
-    for (i, entry) in utis.iter().enumerate() {
-        let is_prvw = crate::onboarding::is_prvw_default(entry.uti);
-
-        let primary_text = format!("{} ({})", entry.label, entry.extensions);
-        let primary = make_label(&primary_text, 14.0, mtm);
-        primary.setAlignment(NSTextAlignment(0));
-
-        let secondary_text = file_assoc_secondary_text(entry.uti, is_prvw);
-        let secondary = make_label(&secondary_text, 12.0, mtm);
-        secondary.setAlignment(NSTextAlignment(0));
-        secondary.setTextColor(Some(&NSColor::secondaryLabelColor()));
-
-        let toggle = NSSwitch::new(mtm);
-        toggle.setState(if is_prvw {
-            NSControlStateValueOn
-        } else {
-            NSControlStateValueOff
-        });
-        unsafe {
-            let _: () = msg_send![&*toggle, setTag: i as isize];
-        }
-
-        let label_stack = NSStackView::new(mtm);
-        label_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-        label_stack.setAlignment(NSLayoutAttribute::Leading);
-        label_stack.setSpacing(2.0);
-        label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&primary) });
-        label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&secondary) });
-
-        let row = NSStackView::new(mtm);
-        row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-        row.setSpacing(12.0);
-        row.addArrangedSubview(unsafe { as_view::<NSStackView>(&label_stack) });
-        row.addArrangedSubview(unsafe { as_view::<NSSwitch>(&toggle) });
-
-        fa_uti_toggles[i] = &*toggle as *const NSSwitch;
-        fa_uti_labels[i] = &*secondary as *const NSTextField;
-
-        fa_uti_rows.push(row);
-        fa_uti_toggle_retained.push(toggle);
-        fa_uti_label_retained.push(secondary);
-        fa_uti_primary_retained.push(primary);
-        fa_uti_label_stack_retained.push(label_stack);
-    }
-
-    // Build general panel views list
-    let auto_update_desc_ref = unsafe { as_view::<NSTextField>(&auto_update_desc) };
-    let fa_header_ref = unsafe { as_view::<NSTextField>(&fa_section_header) };
-    let fa_set_all_row_ref = unsafe { as_view::<NSStackView>(&fa_set_all_row) };
-
-    let mut general_views: Vec<&NSView> = vec![
-        unsafe { as_view::<NSStackView>(&auto_update_row) },
-        auto_update_desc_ref,
-        fa_header_ref,
-        fa_set_all_row_ref,
-    ];
-    let fa_row_refs: Vec<&NSView> = fa_uti_rows
-        .iter()
-        .map(|r| unsafe { as_view::<NSStackView>(r) })
-        .collect();
-    for r in &fa_row_refs {
-        general_views.push(r);
-    }
-
-    let general_panel = make_vertical_stack(&general_views, 8.0, mtm);
-    general_panel.setAlignment(NSLayoutAttribute::Leading);
-    // Extra spacing before the file associations section header
-    general_panel.setCustomSpacing_afterView(20.0, auto_update_desc_ref);
-    general_panel.setCustomSpacing_afterView(12.0, fa_header_ref);
-
-    // ── Zoom panel ────────────────────────────────────────────────────
 
     let (auto_fit_row, auto_fit_toggle, auto_fit_desc) = make_setting_row(
         "Auto-fit window",
@@ -1514,22 +1453,6 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         mtm,
     );
     enlarge_toggle.setEnabled(!settings.auto_fit_window);
-
-    let auto_fit_desc_ref = unsafe { as_view::<NSTextField>(&auto_fit_desc) };
-    let zoom_panel = make_vertical_stack(
-        &[
-            unsafe { as_view::<NSStackView>(&auto_fit_row) },
-            auto_fit_desc_ref,
-            unsafe { as_view::<NSStackView>(&enlarge_row) },
-            unsafe { as_view::<NSTextField>(&enlarge_desc) },
-        ],
-        8.0,
-        mtm,
-    );
-    zoom_panel.setAlignment(NSLayoutAttribute::Leading);
-    zoom_panel.setCustomSpacing_afterView(16.0, auto_fit_desc_ref);
-
-    // ── Color panel ───────────────────────────────────────────────────
 
     let (icc_row, icc_toggle, icc_desc) = make_setting_row(
         "ICC color management",
@@ -1560,8 +1483,70 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     );
     rc_toggle.setEnabled(settings.icc_color_management);
 
+    let auto_update_desc_ref = unsafe { as_view::<NSTextField>(&auto_update_desc) };
+    let auto_fit_desc_ref = unsafe { as_view::<NSTextField>(&auto_fit_desc) };
+    let enlarge_desc_ref = unsafe { as_view::<NSTextField>(&enlarge_desc) };
     let icc_desc_ref = unsafe { as_view::<NSTextField>(&icc_desc) };
     let cm_desc_ref = unsafe { as_view::<NSTextField>(&cm_desc) };
+
+    // General panel: Auto-update only
+    let general_panel = make_vertical_stack(
+        &[
+            unsafe { as_view::<NSStackView>(&auto_update_row) },
+            auto_update_desc_ref,
+        ],
+        8.0,
+        mtm,
+    );
+    general_panel.setAlignment(NSLayoutAttribute::Leading);
+
+    // Pin toggle rows to full panel width
+    {
+        let row = &auto_update_row;
+        let c = unsafe {
+            NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                row, NSLayoutAttribute::Width,
+                NSLayoutRelation::Equal,
+                Some(&general_panel as &AnyObject), NSLayoutAttribute::Width,
+                1.0, 0.0,
+            )
+        };
+        c.setActive(true);
+        retained_views.push(unsafe { Retained::cast_unchecked(c) });
+    }
+
+    // Zoom panel: Auto-fit window + Enlarge small images
+    let zoom_panel = make_vertical_stack(
+        &[
+            unsafe { as_view::<NSStackView>(&auto_fit_row) },
+            auto_fit_desc_ref,
+            unsafe { as_view::<NSStackView>(&enlarge_row) },
+            enlarge_desc_ref,
+        ],
+        8.0,
+        mtm,
+    );
+    zoom_panel.setAlignment(NSLayoutAttribute::Leading);
+    zoom_panel.setCustomSpacing_afterView(16.0, auto_fit_desc_ref);
+
+    for row in [&auto_fit_row, &enlarge_row] {
+        let c = unsafe {
+            NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                row, NSLayoutAttribute::Width,
+                NSLayoutRelation::Equal,
+                Some(&zoom_panel as &AnyObject), NSLayoutAttribute::Width,
+                1.0, 0.0,
+            )
+        };
+        c.setActive(true);
+        retained_views.push(unsafe { Retained::cast_unchecked(c) });
+    }
+
+    unsafe {
+        let _: () = msg_send![&*zoom_panel, setHidden: true];
+    }
+
+    // Color panel: ICC color management + Color match display + Relative colorimetric
     let color_panel = make_vertical_stack(
         &[
             unsafe { as_view::<NSStackView>(&icc_row) },
@@ -1578,10 +1563,183 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     color_panel.setCustomSpacing_afterView(16.0, icc_desc_ref);
     color_panel.setCustomSpacing_afterView(16.0, cm_desc_ref);
 
-    // Zoom and Color panels start hidden
+    for row in [&icc_row, &cm_row, &rc_row] {
+        let c = unsafe {
+            NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                row, NSLayoutAttribute::Width,
+                NSLayoutRelation::Equal,
+                Some(&color_panel as &AnyObject), NSLayoutAttribute::Width,
+                1.0, 0.0,
+            )
+        };
+        c.setActive(true);
+        retained_views.push(unsafe { Retained::cast_unchecked(c) });
+    }
+
     unsafe {
-        let _: () = msg_send![&*zoom_panel, setHidden: true];
         let _: () = msg_send![&*color_panel, setHidden: true];
+    }
+
+    // ── File associations panel ──────────────────────────────────────
+
+    let utis = crate::onboarding::SUPPORTED_UTIS;
+    let all_prvw = utis
+        .iter()
+        .all(|e| crate::onboarding::is_prvw_default(e.uti));
+
+    // "Set all" row
+    let fa_set_all_label = make_label("Open all supported images with Prvw", 14.0, mtm);
+    fa_set_all_label.setAlignment(NSTextAlignment(0));
+
+    let fa_set_all_secondary_text = if all_prvw {
+        "All image types are handled by Prvw."
+    } else {
+        "Some image types are handled by other apps."
+    };
+    let fa_set_all_secondary = make_label(fa_set_all_secondary_text, 12.0, mtm);
+    fa_set_all_secondary.setAlignment(NSTextAlignment(0));
+    fa_set_all_secondary.setTextColor(Some(&NSColor::secondaryLabelColor()));
+
+    let fa_set_all_toggle = NSSwitch::new(mtm);
+    fa_set_all_toggle.setState(if all_prvw {
+        NSControlStateValueOn
+    } else {
+        NSControlStateValueOff
+    });
+
+    let fa_set_all_spacer = FlippedView::new_as_nsview(mtm);
+    unsafe {
+        let _: () =
+            msg_send![&*fa_set_all_spacer, setTranslatesAutoresizingMaskIntoConstraints: false];
+        let _: () =
+            msg_send![&*fa_set_all_spacer, setContentHuggingPriority: 1.0f32, forOrientation: 0i64];
+    }
+
+    let fa_set_all_label_stack = NSStackView::new(mtm);
+    fa_set_all_label_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    fa_set_all_label_stack.setAlignment(NSLayoutAttribute::Leading);
+    fa_set_all_label_stack.setSpacing(2.0);
+    fa_set_all_label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&fa_set_all_label) });
+    fa_set_all_label_stack
+        .addArrangedSubview(unsafe { as_view::<NSTextField>(&fa_set_all_secondary) });
+
+    let fa_set_all_row = NSStackView::new(mtm);
+    fa_set_all_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    fa_set_all_row.setSpacing(12.0);
+    fa_set_all_row.addArrangedSubview(unsafe { as_view::<NSStackView>(&fa_set_all_label_stack) });
+    fa_set_all_row.addArrangedSubview(unsafe { as_view::<NSView>(&fa_set_all_spacer) });
+    fa_set_all_row.addArrangedSubview(unsafe { as_view::<NSSwitch>(&fa_set_all_toggle) });
+
+    // Per-UTI rows
+    let mut fa_uti_toggles: [*const NSSwitch; UTI_COUNT] = [std::ptr::null(); UTI_COUNT];
+    let mut fa_uti_labels: [*const NSTextField; UTI_COUNT] = [std::ptr::null(); UTI_COUNT];
+    let mut fa_uti_rows: Vec<Retained<NSStackView>> = Vec::new();
+    let mut fa_uti_toggle_retained: Vec<Retained<NSSwitch>> = Vec::new();
+    let mut fa_uti_label_retained: Vec<Retained<NSTextField>> = Vec::new();
+    let mut fa_uti_primary_retained: Vec<Retained<NSTextField>> = Vec::new();
+    let mut fa_uti_label_stack_retained: Vec<Retained<NSStackView>> = Vec::new();
+    let mut fa_uti_spacer_retained: Vec<Retained<NSView>> = Vec::new();
+
+    for (i, entry) in utis.iter().enumerate() {
+        let is_prvw = crate::onboarding::is_prvw_default(entry.uti);
+
+        let primary_text = format!("{} ({})", entry.label, entry.extensions);
+        let primary = make_label(&primary_text, 14.0, mtm);
+        primary.setAlignment(NSTextAlignment(0));
+
+        let secondary_text = file_assoc_secondary_text(entry.uti, is_prvw);
+        let secondary = make_label(&secondary_text, 12.0, mtm);
+        secondary.setAlignment(NSTextAlignment(0));
+        secondary.setTextColor(Some(&NSColor::secondaryLabelColor()));
+
+        let toggle = NSSwitch::new(mtm);
+        toggle.setState(if is_prvw {
+            NSControlStateValueOn
+        } else {
+            NSControlStateValueOff
+        });
+        unsafe {
+            let _: () = msg_send![&*toggle, setTag: i as isize];
+            // Use small control size for per-UTI toggles
+            let _: () = msg_send![&*toggle, setControlSize: 1i64]; // NSControlSizeSmall = 1
+        }
+
+        let spacer = FlippedView::new_as_nsview(mtm);
+        unsafe {
+            let _: () = msg_send![&*spacer, setTranslatesAutoresizingMaskIntoConstraints: false];
+            let _: () =
+                msg_send![&*spacer, setContentHuggingPriority: 1.0f32, forOrientation: 0i64];
+        }
+
+        let label_stack = NSStackView::new(mtm);
+        label_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        label_stack.setAlignment(NSLayoutAttribute::Leading);
+        label_stack.setSpacing(2.0);
+        label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&primary) });
+        label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&secondary) });
+
+        let row = NSStackView::new(mtm);
+        row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+        row.setSpacing(12.0);
+        row.addArrangedSubview(unsafe { as_view::<NSStackView>(&label_stack) });
+        row.addArrangedSubview(unsafe { as_view::<NSView>(&spacer) });
+        row.addArrangedSubview(unsafe { as_view::<NSSwitch>(&toggle) });
+
+        fa_uti_toggles[i] = &*toggle as *const NSSwitch;
+        fa_uti_labels[i] = &*secondary as *const NSTextField;
+
+        fa_uti_rows.push(row);
+        fa_uti_toggle_retained.push(toggle);
+        fa_uti_label_retained.push(secondary);
+        fa_uti_primary_retained.push(primary);
+        fa_uti_label_stack_retained.push(label_stack);
+        fa_uti_spacer_retained.push(spacer);
+    }
+
+    let fa_set_all_row_ref = unsafe { as_view::<NSStackView>(&fa_set_all_row) };
+
+    let mut file_assoc_views: Vec<&NSView> = vec![fa_set_all_row_ref];
+    let fa_row_refs: Vec<&NSView> = fa_uti_rows
+        .iter()
+        .map(|r| unsafe { as_view::<NSStackView>(r) })
+        .collect();
+    for r in &fa_row_refs {
+        file_assoc_views.push(r);
+    }
+
+    let file_assoc_panel = make_vertical_stack(&file_assoc_views, 8.0, mtm);
+    file_assoc_panel.setAlignment(NSLayoutAttribute::Leading);
+    // Extra spacing after the "Set all" row
+    file_assoc_panel.setCustomSpacing_afterView(16.0, fa_set_all_row_ref);
+
+    // Pin all toggle rows to full panel width
+    let c = unsafe {
+        NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &fa_set_all_row, NSLayoutAttribute::Width,
+            NSLayoutRelation::Equal,
+            Some(&file_assoc_panel as &AnyObject), NSLayoutAttribute::Width,
+            1.0, 0.0,
+        )
+    };
+    c.setActive(true);
+    retained_views.push(unsafe { Retained::cast_unchecked(c) });
+
+    for row in &fa_uti_rows {
+        let c = unsafe {
+            NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                row, NSLayoutAttribute::Width,
+                NSLayoutRelation::Equal,
+                Some(&file_assoc_panel as &AnyObject), NSLayoutAttribute::Width,
+                1.0, 0.0,
+            )
+        };
+        c.setActive(true);
+        retained_views.push(unsafe { Retained::cast_unchecked(c) });
+    }
+
+    // File associations panel starts hidden
+    unsafe {
+        let _: () = msg_send![&*file_assoc_panel, setHidden: true];
     }
 
     // ── Create delegate with ivars ────────────────────────────────────
@@ -1593,9 +1751,11 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         general_panel: &*general_panel as *const NSStackView,
         zoom_panel: &*zoom_panel as *const NSStackView,
         color_panel: &*color_panel as *const NSStackView,
+        file_assoc_panel: &*file_assoc_panel as *const NSStackView,
         sidebar_general_btn: &*sidebar_general_btn as *const NSButton,
         sidebar_zoom_btn: &*sidebar_zoom_btn as *const NSButton,
         sidebar_color_btn: &*sidebar_color_btn as *const NSButton,
+        sidebar_file_assoc_btn: &*sidebar_file_assoc_btn as *const NSButton,
     };
     let delegate = SettingsDelegate::new(mtm, ivars);
 
@@ -1628,6 +1788,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
         sidebar_color_btn.setTarget(Some(&delegate as &AnyObject));
         sidebar_color_btn.setAction(Some(sel!(selectColor:)));
+
+        sidebar_file_assoc_btn.setTarget(Some(&delegate as &AnyObject));
+        sidebar_file_assoc_btn.setAction(Some(sel!(selectFileAssoc:)));
     }
 
     // ── Create file association delegate ──────────────────────────────
@@ -1682,7 +1845,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         content_view_ref.addSubview(as_view::<NSStackView>(&sidebar_stack));
 
         // Separator line
-        let separator = NSView::new(mtm);
+        let separator = FlippedView::new_as_nsview(mtm);
         let _: () = msg_send![&*separator, setTranslatesAutoresizingMaskIntoConstraints: false];
         let _: () = msg_send![&*separator, setWantsLayer: true];
         let sep_layer: *const AnyObject = msg_send![&*separator, layer];
@@ -1707,19 +1870,71 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         }
         content_view_ref.addSubview(&separator);
 
-        // Content container (holds all 3 panels, pinned to same edges)
-        let content_container = NSView::new(mtm);
+        // Content container (holds both panels, pinned to same edges)
+        let content_container = FlippedView::new_as_nsview(mtm);
         let _: () =
             msg_send![&*content_container, setTranslatesAutoresizingMaskIntoConstraints: false];
-        content_view_ref.addSubview(&content_container);
+
+        // Wrap content in a scroll view so tall sections are scrollable
+        let scroll_view: Retained<AnyObject> = {
+            let sv: Retained<AnyObject> = msg_send![objc2::class!(NSScrollView), new];
+            let _: () = msg_send![&*sv, setTranslatesAutoresizingMaskIntoConstraints: false];
+            let _: () = msg_send![&*sv, setDocumentView: &*content_container];
+            let _: () = msg_send![&*sv, setHasVerticalScroller: true];
+            let _: () = msg_send![&*sv, setHasHorizontalScroller: false];
+            let _: () = msg_send![&*sv, setAutohidesScrollers: true];
+            let _: () = msg_send![&*sv, setDrawsBackground: false];
+            let _: () = msg_send![&*sv, setBorderType: 0i64]; // NSNoBorder
+            sv
+        };
+        content_view_ref.addSubview(&*(&*scroll_view as *const AnyObject as *const NSView));
+
+        let clip_view: *const AnyObject = msg_send![&*scroll_view, contentView];
+
+        // Pin content_container width to the clip view so it doesn't scroll horizontally.
+        // Top-anchoring is handled by FlippedView (Y=0 at top).
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &content_container, NSLayoutAttribute::Width, NSLayoutRelation::Equal,
+            Some(&*clip_view as &AnyObject), NSLayoutAttribute::Width, 1.0, 0.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
 
         // Add panels to content container
         let _: () = msg_send![&*general_panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         let _: () = msg_send![&*zoom_panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         let _: () = msg_send![&*color_panel, setTranslatesAutoresizingMaskIntoConstraints: false];
+        let _: () =
+            msg_send![&*file_assoc_panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         content_container.addSubview(as_view::<NSStackView>(&general_panel));
         content_container.addSubview(as_view::<NSStackView>(&zoom_panel));
         content_container.addSubview(as_view::<NSStackView>(&color_panel));
+        content_container.addSubview(as_view::<NSStackView>(&file_assoc_panel));
+
+        // Horizontal separator above Close button
+        let close_separator = FlippedView::new_as_nsview(mtm);
+        let _: () =
+            msg_send![&*close_separator, setTranslatesAutoresizingMaskIntoConstraints: false];
+        let _: () = msg_send![&*close_separator, setWantsLayer: true];
+        let close_sep_layer: *const AnyObject = msg_send![&*close_separator, layer];
+        if !close_sep_layer.is_null() {
+            let sep_color = NSColor::separatorColor();
+            let cg_color_sel = sel!(CGColor);
+            let bg_color_sel = sel!(setBackgroundColor:);
+            let get_cg: unsafe extern "C" fn(
+                *const AnyObject,
+                objc2::runtime::Sel,
+            ) -> *const std::ffi::c_void =
+                std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
+            let cg_color = get_cg(&*sep_color as *const _ as *const AnyObject, cg_color_sel);
+            let set_bg: unsafe extern "C" fn(
+                *const AnyObject,
+                objc2::runtime::Sel,
+                *const std::ffi::c_void,
+            ) = std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
+            set_bg(close_sep_layer, bg_color_sel, cg_color);
+        }
+        content_view_ref.addSubview(&close_separator);
 
         // Close button below panels
         let _: () = msg_send![&*close_button, setTranslatesAutoresizingMaskIntoConstraints: false];
@@ -1781,37 +1996,66 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         c.setActive(true);
         retained_views.push(Retained::cast_unchecked(c));
 
-        // Content container: after separator, top, trailing, above close button
+        // Scroll view: after vertical separator, top, trailing, above horizontal separator
         let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-            &content_container, NSLayoutAttribute::Leading, NSLayoutRelation::Equal,
-            Some(&separator as &AnyObject), NSLayoutAttribute::Trailing, 1.0, 20.0,
+            &scroll_view, NSLayoutAttribute::Leading, NSLayoutRelation::Equal,
+            Some(&separator as &AnyObject), NSLayoutAttribute::Trailing, 1.0, 0.0,
         );
         c.setActive(true);
         retained_views.push(Retained::cast_unchecked(c));
 
         let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-            &content_container, NSLayoutAttribute::Top, NSLayoutRelation::Equal,
+            &scroll_view, NSLayoutAttribute::Top, NSLayoutRelation::Equal,
             Some(content_view_ref as &AnyObject), NSLayoutAttribute::Top, 1.0, 36.0,
         );
         c.setActive(true);
         retained_views.push(Retained::cast_unchecked(c));
 
         let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-            &content_container, NSLayoutAttribute::Trailing, NSLayoutRelation::Equal,
-            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Trailing, 1.0, -20.0,
+            &scroll_view, NSLayoutAttribute::Trailing, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Trailing, 1.0, 0.0,
         );
         c.setActive(true);
         retained_views.push(Retained::cast_unchecked(c));
 
         let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-            &content_container, NSLayoutAttribute::Bottom, NSLayoutRelation::Equal,
-            Some(as_view::<NSButton>(&close_button) as &AnyObject), NSLayoutAttribute::Top, 1.0, -16.0,
+            &scroll_view, NSLayoutAttribute::Bottom, NSLayoutRelation::Equal,
+            Some(&close_separator as &AnyObject), NSLayoutAttribute::Top, 1.0, 0.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        // Horizontal separator: from vertical separator to right edge, 1px tall, above close button
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &close_separator, NSLayoutAttribute::Leading, NSLayoutRelation::Equal,
+            Some(&separator as &AnyObject), NSLayoutAttribute::Trailing, 1.0, 0.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &close_separator, NSLayoutAttribute::Trailing, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Trailing, 1.0, 0.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &close_separator, NSLayoutAttribute::Height, NSLayoutRelation::Equal,
+            None::<&AnyObject>, NSLayoutAttribute::NotAnAttribute, 1.0, 1.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &close_separator, NSLayoutAttribute::Bottom, NSLayoutRelation::Equal,
+            Some(as_view::<NSButton>(&close_button) as &AnyObject), NSLayoutAttribute::Top, 1.0, -12.0,
         );
         c.setActive(true);
         retained_views.push(Retained::cast_unchecked(c));
 
         // Pin each panel to content container edges
-        for panel in [&general_panel, &zoom_panel, &color_panel] {
+        for panel in [&general_panel, &zoom_panel, &color_panel, &file_assoc_panel] {
             let panel_view = as_view::<NSStackView>(panel);
 
             let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
@@ -1823,14 +2067,22 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
             let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
                 panel_view, NSLayoutAttribute::Leading, NSLayoutRelation::Equal,
-                Some(&content_container as &AnyObject), NSLayoutAttribute::Leading, 1.0, 0.0,
+                Some(&content_container as &AnyObject), NSLayoutAttribute::Leading, 1.0, 20.0,
             );
             c.setActive(true);
             retained_views.push(Retained::cast_unchecked(c));
 
             let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-                panel_view, NSLayoutAttribute::Trailing, NSLayoutRelation::LessThanOrEqual,
-                Some(&content_container as &AnyObject), NSLayoutAttribute::Trailing, 1.0, 0.0,
+                panel_view, NSLayoutAttribute::Trailing, NSLayoutRelation::Equal,
+                Some(&content_container as &AnyObject), NSLayoutAttribute::Trailing, 1.0, -20.0,
+            );
+            c.setActive(true);
+            retained_views.push(Retained::cast_unchecked(c));
+
+            // Bottom: content_container must be at least as tall as the panel (for scroll view sizing)
+            let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                &content_container, NSLayoutAttribute::Bottom, NSLayoutRelation::GreaterThanOrEqual,
+                Some(panel_view as &AnyObject), NSLayoutAttribute::Bottom, 1.0, 16.0,
             );
             c.setActive(true);
             retained_views.push(Retained::cast_unchecked(c));
@@ -1853,7 +2105,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
         retained_views.push(Retained::cast_unchecked(content_view_retained));
         retained_views.push(Retained::cast_unchecked(separator));
+        retained_views.push(Retained::cast_unchecked(close_separator));
         retained_views.push(Retained::cast_unchecked(content_container));
+        retained_views.push(scroll_view);
     }
 
     // Store all Retained objects so they live as long as the window
@@ -1861,18 +2115,18 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_general_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_zoom_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_color_btn) });
+    retained_views.push(unsafe { Retained::cast_unchecked(sidebar_file_assoc_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_stack) });
+    // General panel views
     retained_views.push(unsafe { Retained::cast_unchecked(auto_update_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_update_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_update_desc) });
-    retained_views.push(unsafe { Retained::cast_unchecked(general_panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_desc) });
     retained_views.push(unsafe { Retained::cast_unchecked(enlarge_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(enlarge_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(enlarge_desc) });
-    retained_views.push(unsafe { Retained::cast_unchecked(zoom_panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(icc_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(icc_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(icc_desc) });
@@ -1882,17 +2136,18 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(rc_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(rc_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(rc_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(general_panel) });
+    retained_views.push(unsafe { Retained::cast_unchecked(zoom_panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(color_panel) });
-    retained_views.push(unsafe { Retained::cast_unchecked(close_button) });
-    retained_views.push(unsafe { Retained::cast_unchecked(esc_button) });
-    // File association views
+    // File association panel views
     retained_views.push(unsafe { Retained::cast_unchecked(fa_delegate) });
-    retained_views.push(unsafe { Retained::cast_unchecked(fa_section_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_label) });
     retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_secondary) });
     retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_spacer) });
     retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_label_stack) });
     retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(file_assoc_panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(_fa_poll_timer) });
     for row in fa_uti_rows {
         retained_views.push(unsafe { Retained::cast_unchecked(row) });
@@ -1909,6 +2164,11 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     for label_stack in fa_uti_label_stack_retained {
         retained_views.push(unsafe { Retained::cast_unchecked(label_stack) });
     }
+    for spacer in fa_uti_spacer_retained {
+        retained_views.push(unsafe { Retained::cast_unchecked(spacer) });
+    }
+    retained_views.push(unsafe { Retained::cast_unchecked(close_button) });
+    retained_views.push(unsafe { Retained::cast_unchecked(esc_button) });
 
     // ── Position and show ──────────────────────────────────────────────
 
@@ -1927,6 +2187,75 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     std::mem::forget(window);
 
     log::debug!("Settings window shown");
+}
+
+/// Switch the Settings window to the given section by name.
+/// Called by the QA server's `ShowSettingsSection` command.
+pub fn switch_settings_section(section: &str) {
+    let index = match section.to_lowercase().as_str() {
+        "general" => 0,
+        "zoom" => 1,
+        "color" => 2,
+        "file associations" | "file_associations" | "fileassociations" => 3,
+        _ => {
+            log::warn!("Unknown settings section: {section}");
+            return;
+        }
+    };
+
+    unsafe {
+        let mtm = MainThreadMarker::new_unchecked();
+        let app = NSApplication::sharedApplication(mtm);
+        let windows: Retained<objc2_foundation::NSArray<NSWindow>> = msg_send![&*app, windows];
+        let count: usize = msg_send![&*windows, count];
+        let target = NSString::from_str("Settings");
+        for i in 0..count {
+            let win: *const NSWindow = msg_send![&*windows, objectAtIndex: i];
+            if !win.is_null() {
+                let win_title: Retained<NSString> = msg_send![win, title];
+                let visible: bool = msg_send![win, isVisible];
+                if visible && win_title.isEqualToString(&target) {
+                    // Find the delegate and call select_panel
+                    let delegate: *const AnyObject = msg_send![win, delegate];
+                    if !delegate.is_null() {
+                        let sel = match index {
+                            0 => sel!(selectGeneral:),
+                            1 => sel!(selectZoom:),
+                            2 => sel!(selectColor:),
+                            3 => sel!(selectFileAssoc:),
+                            _ => return,
+                        };
+                        let _: () = msg_send![delegate, performSelector: sel, withObject: std::ptr::null::<AnyObject>()];
+                    }
+                    return;
+                }
+            }
+        }
+    }
+    log::debug!("Settings window not open, cannot switch section");
+}
+
+/// Close the Settings window if it's open.
+pub fn close_settings_window() {
+    unsafe {
+        let mtm = MainThreadMarker::new_unchecked();
+        let app = NSApplication::sharedApplication(mtm);
+        let windows: Retained<objc2_foundation::NSArray<NSWindow>> = msg_send![&*app, windows];
+        let count: usize = msg_send![&*windows, count];
+        let target = NSString::from_str("Settings");
+        for i in 0..count {
+            let win: *const NSWindow = msg_send![&*windows, objectAtIndex: i];
+            if !win.is_null() {
+                let win_title: Retained<NSString> = msg_send![win, title];
+                let visible: bool = msg_send![win, isVisible];
+                if visible && win_title.isEqualToString(&target) {
+                    let _: () = msg_send![win, close];
+                    log::debug!("Closed settings window");
+                    return;
+                }
+            }
+        }
+    }
 }
 
 /// Load the app icon from the bundle or fall back to the resources dir.

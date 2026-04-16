@@ -1268,6 +1268,14 @@ impl App {
             }
             AppCommand::ShowAbout => self.show_about_dialog(),
             AppCommand::ShowSettings => self.show_settings_dialog(),
+            AppCommand::ShowSettingsSection(ref section) => {
+                #[cfg(target_os = "macos")]
+                native_ui::switch_settings_section(section);
+            }
+            AppCommand::CloseSettings => {
+                #[cfg(target_os = "macos")]
+                native_ui::close_settings_window();
+            }
             AppCommand::Exit => {
                 // Escape exits fullscreen first, then exits the app
                 if let Some(win) = &self.window

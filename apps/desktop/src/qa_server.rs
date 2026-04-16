@@ -143,8 +143,12 @@ pub enum AppCommand {
     // ── App ──────────────────────────────────────────────────────────
     /// Show the About window.
     ShowAbout,
-    /// Show the Settings window.
+    /// Show the Settings window (optionally to a specific section).
     ShowSettings,
+    /// Switch to a specific Settings section by name (e.g., "general", "file_associations").
+    ShowSettingsSection(String),
+    /// Close the Settings window.
+    CloseSettings,
     /// Exit the application.
     Exit,
 
@@ -323,6 +327,10 @@ fn handle_request(
         ("POST", "/zoom-in") => handle_post_zoom_in(stream, proxy, state),
         ("POST", "/zoom-out") => handle_post_zoom_out(stream, proxy, state),
         ("POST", "/refresh") => handle_post_refresh(stream, proxy, state),
+        ("POST", "/show-settings") => handle_post_show_settings(stream, proxy, &body, state),
+        ("POST", "/close-settings") => {
+            send_and_wait_http(stream, proxy, AppCommand::CloseSettings, state)
+        }
         ("GET", "/settings") => handle_get_settings(stream),
         _ => write_response(stream, 404, "text/plain", b"Not found", &[]),
     }
@@ -544,6 +552,27 @@ fn mcp_tools_list() -> Result<Value, Value> {
                     "type": "object",
                     "properties": {}
                 }
+            },
+            {
+                "name": "show_settings",
+                "description": "Open the Settings window, optionally switching to a specific section.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "section": {
+                            "type": "string",
+                            "description": "Section to show: 'general' or 'file_associations'. Omit to show the current/default section."
+                        }
+                    }
+                }
+            },
+            {
+                "name": "close_settings",
+                "description": "Close the Settings window.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
             }
         ]
     }))
@@ -750,6 +779,37 @@ fn mcp_tools_call(
                     "mimeType": "image/png"
                 }]
             }))
+        }
+        "show_settings" => {
+            let section = args["section"].as_str().unwrap_or("").to_string();
+            if section.is_empty() {
+                let state_json =
+                    send_and_wait(proxy, AppCommand::ShowSettings, state, SYNC_TIMEOUT)?;
+                let mut content = mcp_text_content("Settings window opened.");
+                content["state"] = state_json;
+                Ok(content)
+            } else {
+                // Open settings then switch to section
+                proxy
+                    .send_event(AppCommand::ShowSettings)
+                    .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+                let state_json = send_and_wait(
+                    proxy,
+                    AppCommand::ShowSettingsSection(section.clone()),
+                    state,
+                    SYNC_TIMEOUT,
+                )?;
+                let mut content =
+                    mcp_text_content(&format!("Settings opened to section: {section}"));
+                content["state"] = state_json;
+                Ok(content)
+            }
+        }
+        "close_settings" => {
+            let state_json = send_and_wait(proxy, AppCommand::CloseSettings, state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content("Settings window closed.");
+            content["state"] = state_json;
+            Ok(content)
         }
         _ => Err(json_rpc_error(
             -32602,
@@ -1230,6 +1290,28 @@ fn handle_post_refresh(
     state: &Arc<Mutex<SharedAppState>>,
 ) -> Result<(), String> {
     send_and_wait_http(stream, proxy, AppCommand::Refresh, state)
+}
+
+fn handle_post_show_settings(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    let section = body.trim().to_string();
+    if section.is_empty() {
+        send_and_wait_http(stream, proxy, AppCommand::ShowSettings, state)
+    } else {
+        proxy
+            .send_event(AppCommand::ShowSettings)
+            .map_err(|e| format!("Event loop closed: {e}"))?;
+        send_and_wait_http(
+            stream,
+            proxy,
+            AppCommand::ShowSettingsSection(section),
+            state,
+        )
+    }
 }
 
 fn handle_get_settings(stream: &mut std::net::TcpStream) -> Result<(), String> {

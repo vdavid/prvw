@@ -74,20 +74,28 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 
 - **Native secondary windows** (`native_ui.rs`): About, Onboarding, and Settings windows are built with AppKit via
   objc2. All use `NSStackView` for layout, `NSVisualEffectView` for frosted glass, and transparent titlebars.
-    - **Onboarding** runs as a modal (`runModalForWindow`) BEFORE `EventLoop::new()`. Uses a state/render separation
-      pattern: `OnboardingState` (pure data, no UI refs) computes current state from system queries, and `OnboardingUI`
-      (widget pointers) has a single `render()` method that applies state to all widgets. An `NSTimer` polls every
-      second, and the delegate's button handler both use `OnboardingState::current()` + `ui.render()`. After the modal
-      exits, the timer is invalidated and views are dropped.
+    - **Onboarding** is non-modal (`makeKeyAndOrderFront`), shown after a 500ms delay when no CLI files are provided.
+      This allows the event loop to receive Apple Events (Finder double-click) while onboarding is visible. Uses a
+      state/render separation: `OnboardingState` (pure data) + `OnboardingUI::render()`. An `NSTimer` polls every
+      second. When a file arrives via Apple Event, the onboarding closes and the viewer initializes.
     - **About and Settings** are non-modal: `makeKeyAndOrderFront` + `mem::forget` the retained views. A deduplication
       guard (`is_window_already_open`) prevents stacking. FIXME: views leak on close/reopen (see code comments).
-    - **Settings** uses a sidebar + content panel layout (like macOS System Settings). Three sections: General, Zoom,
-      Color. The `SettingsDelegate` (via `define_class!` with `SettingsDelegateIvars`) holds raw pointers to dependent
-      toggles and all three panels. Sidebar buttons use `AccessoryBarAction` bezel style with `PushOnPushOff` button
-      type. Panel switching shows/hides NSStackView panels. Cross-dependencies: ICC off disables Color match display
-      and Relative colorimetric toggles; Auto-fit on disables Enlarge small images. All views (toggles, panels, sidebar
-      buttons) are created first, then the delegate is created with ivars pointing to them, then target/action is wired.
-      Toggles apply immediately (no confirm step) via `AppCommand` through the global event loop proxy.
+    - **Settings** uses a sidebar + content panel layout (like macOS System Settings). Four sections: General
+      (Auto-update), Zoom (Auto-fit window, Enlarge small images), Color (ICC color management, Color match display,
+      Relative colorimetric), File associations (Set all + per-UTI toggles). A "section" is the entity selected in
+      the sidebar. The `SettingsDelegate` (via `define_class!` with `SettingsDelegateIvars`) holds raw pointers to
+      dependent toggles and all four panels. Sidebar buttons use `AccessoryBarAction` bezel style with `PushOnPushOff`
+      button type. Panel switching shows/hides NSStackView panels. Cross-dependencies: ICC off disables Color match
+      display and Relative colorimetric toggles; Auto-fit on disables Enlarge small images. All views (toggles,
+      panels, sidebar buttons) are created first, then the delegate is created with ivars pointing to them, then
+      target/action is wired. Toggles apply immediately (no confirm step) via `AppCommand` through the global event
+      loop proxy. All toggle rows use a spacer view to right-align the NSSwitch to the trailing edge. Per-UTI toggles
+      use `NSControlSizeSmall` for a compact appearance.
+
+- **FlippedView**: Always use `FlippedView::new_as_nsview(mtm)` instead of `NSView::new(mtm)` for custom container
+  views in `native_ui.rs`. macOS puts Y=0 at the bottom (Cartesian), which causes NSScrollView to bottom-anchor
+  content. FlippedView overrides `isFlipped` to return `true` (Y=0 at top, like iOS/CSS/SwiftUI), making layout
+  predictable. Defined at the top of `native_ui.rs`.
 
 - **Global event loop proxy** (`qa_server.rs`): A `OnceLock<EventLoopProxy<AppCommand>>` is set once in `resumed()`.
   This lets non-event-loop code (like the native Settings delegate) send commands into the main loop. Used by
@@ -162,6 +170,16 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
 
 ## Gotchas
 
+- **Finder file opens require ObjC runtime method injection.** Winit 0.30 registers its own `NSApplicationDelegate`
+  and panics if replaced. But winit doesn't implement `application:openURLs:`, so AppKit falls through to
+  `NSDocumentController` which shows "cannot open files in X format." Fix: use `ffi::class_addMethod` to inject
+  `application:openURLs:` into `WinitApplicationDelegate` after `EventLoop::new()` but before `run_app()`. See
+  `macos_open_handler.rs`. Registering in `resumed()` is too late — the Apple Event is dispatched during
+  `finishLaunching`.
+- **objc2 `msg_send!` panics on CoreGraphics opaque types.** `CGColorRef` and `CGColorSpaceRef` are `*const c_void`
+  which `msg_send!` encodes as `^v`, but ObjC expects `^{CGColor=}` or `^{CGColorSpace=}`. Use raw
+  `objc2::ffi::objc_msgSend` with `std::mem::transmute` to bypass the type encoding check. See `display_profile.rs`
+  and the separator color code in `native_ui.rs`.
 - **wgpu 29 API changes**: `Instance::new()` takes a value (not reference). `get_current_texture()` returns
   `CurrentSurfaceTexture` enum (not `Result`). `PipelineLayoutDescriptor` uses `immediate_size` instead of
   `push_constant_ranges`. `RenderPassColorAttachment` requires `depth_slice`. `mipmap_filter` uses `MipmapFilterMode`.
