@@ -68,9 +68,21 @@ pub fn create_menu_bar() -> AppMenu {
 
     // View menu
     let view_menu = Submenu::new("View", true);
-    let zoom_in = MenuItem::new("Zoom in", true, None);
-    let zoom_out = MenuItem::new("Zoom out", true, None);
-    let actual_size = MenuItem::new("Actual size", true, None);
+    let zoom_in = MenuItem::new(
+        "Zoom in",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::Equal)),
+    );
+    let zoom_out = MenuItem::new(
+        "Zoom out",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::Minus)),
+    );
+    let actual_size = MenuItem::new(
+        "Actual size",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::Digit0)),
+    );
     let fit_to_window = MenuItem::new("Fit to window", true, None);
     let settings = crate::settings::Settings::load();
     let auto_fit_window =
