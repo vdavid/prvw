@@ -162,7 +162,12 @@ unsafe fn set_colorspace_on_layer(layer: *const AnyObject, icc_bytes: &[u8]) {
         }
 
         // [layer setColorspace:color_space]
-        let _: () = msg_send![layer, setColorspace: color_space];
+        // Use raw objc_msgSend to bypass type encoding check — our CGColorSpaceRef is
+        // *const c_void (encodes as ^v) but ObjC expects ^{CGColorSpace=}.
+        let sel = objc2::sel!(setColorspace:);
+        let send: unsafe extern "C" fn(*const AnyObject, objc2::runtime::Sel, CGColorSpaceRef) =
+            std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
+        send(layer, sel, color_space);
         CFRelease(color_space);
 
         log::info!(

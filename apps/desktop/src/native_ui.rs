@@ -637,11 +637,9 @@ impl OnboardingDelegate {
 
 /// Check if Prvw is the default handler for all queried types (JPEG and PNG).
 fn is_prvw_default_for_all() -> bool {
-    let status = crate::onboarding::query_handler_status();
-    // query_handler_status returns lines like "  JPEG: Prvw.app (you)\n  PNG: Preview.app\n"
-    // Count lines with content and check they all contain "(you)"
-    let content_lines: Vec<&str> = status.lines().filter(|l| !l.trim().is_empty()).collect();
-    !content_lines.is_empty() && content_lines.iter().all(|l| l.contains("(you)"))
+    crate::onboarding::SUPPORTED_UTIS
+        .iter()
+        .all(|e| crate::onboarding::is_prvw_default(e.uti))
 }
 const ONBOARDING_TITLE: &str = "Welcome to Prvw";
 
@@ -920,6 +918,146 @@ pub fn close_onboarding_window() {
     }
 }
 
+// ─── File association delegate (used by Settings) ────────────────────────
+
+/// Number of supported UTIs (must match `crate::onboarding::SUPPORTED_UTIS.len()`).
+const UTI_COUNT: usize = 6;
+
+struct FileAssocDelegateIvars {
+    /// Per-UTI toggles (index matches SUPPORTED_UTIS).
+    uti_toggles: [*const NSSwitch; UTI_COUNT],
+    /// Per-UTI secondary labels showing handler info.
+    uti_labels: [*const NSTextField; UTI_COUNT],
+    /// "Set all" toggle.
+    set_all_toggle: *const NSSwitch,
+    /// "Set all" secondary label.
+    set_all_label: *const NSTextField,
+}
+
+// SAFETY: Raw pointers are only used on the main thread within the window's lifetime.
+unsafe impl Send for FileAssocDelegateIvars {}
+unsafe impl Sync for FileAssocDelegateIvars {}
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements. This type doesn't impl Drop.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrvwFileAssocDelegate"]
+    #[ivars = FileAssocDelegateIvars]
+    struct FileAssocDelegate;
+
+    unsafe impl NSObjectProtocol for FileAssocDelegate {}
+
+    impl FileAssocDelegate {
+        /// Called when a per-UTI toggle is switched. Tag identifies which UTI.
+        #[unsafe(method(toggleFileAssoc:))]
+        fn toggle_file_assoc(&self, sender: &NSSwitch) {
+            let tag: isize = unsafe { msg_send![sender, tag] };
+            let idx = tag as usize;
+            let utis = crate::onboarding::SUPPORTED_UTIS;
+            if idx >= utis.len() {
+                return;
+            }
+            let on = sender.state() == NSControlStateValueOn;
+            if on {
+                crate::onboarding::set_prvw_as_handler(utis[idx].uti);
+            } else {
+                crate::onboarding::restore_handler(utis[idx].uti);
+            }
+            // Refresh all states after a short delay (the OS may take a moment)
+            self.refresh_all();
+        }
+
+        /// Called when the "Set all" toggle is switched.
+        #[unsafe(method(toggleSetAll:))]
+        fn toggle_set_all(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            for entry in crate::onboarding::SUPPORTED_UTIS {
+                if on {
+                    crate::onboarding::set_prvw_as_handler(entry.uti);
+                } else {
+                    crate::onboarding::restore_handler(entry.uti);
+                }
+            }
+            self.refresh_all();
+        }
+
+        /// Called by NSTimer every 1 second to poll file association state.
+        #[unsafe(method(pollFileAssoc:))]
+        fn poll_file_assoc(&self, _timer: &AnyObject) {
+            self.refresh_all();
+        }
+    }
+);
+
+impl FileAssocDelegate {
+    fn new(mtm: MainThreadMarker, ivars: FileAssocDelegateIvars) -> Retained<Self> {
+        let this = mtm.alloc().set_ivars(ivars);
+        unsafe { msg_send![super(this), init] }
+    }
+
+    /// Re-query handler state for every UTI and update toggles + labels.
+    fn refresh_all(&self) {
+        let utis = crate::onboarding::SUPPORTED_UTIS;
+        let ivars = self.ivars();
+        let mut all_prvw = true;
+        for (i, entry) in utis.iter().enumerate() {
+            let is_prvw = crate::onboarding::is_prvw_default(entry.uti);
+            if !is_prvw {
+                all_prvw = false;
+            }
+            let state = if is_prvw {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            };
+            unsafe {
+                let toggle = ivars.uti_toggles[i];
+                if !toggle.is_null() {
+                    let _: () = msg_send![toggle, setState: state];
+                }
+                let label = ivars.uti_labels[i];
+                if !label.is_null() {
+                    let text = file_assoc_secondary_text(entry.uti, is_prvw);
+                    (*label).setStringValue(&NSString::from_str(&text));
+                }
+            }
+        }
+        // Update "Set all" toggle and label
+        unsafe {
+            if !ivars.set_all_toggle.is_null() {
+                let state = if all_prvw {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                };
+                let _: () = msg_send![ivars.set_all_toggle, setState: state];
+            }
+            if !ivars.set_all_label.is_null() {
+                let text = if all_prvw {
+                    "All image types are handled by Prvw."
+                } else {
+                    "Some image types are handled by other apps."
+                };
+                (*ivars.set_all_label).setStringValue(&NSString::from_str(text));
+            }
+        }
+    }
+}
+
+/// Build secondary label text for a per-UTI row.
+fn file_assoc_secondary_text(uti: &str, is_prvw: bool) -> String {
+    if is_prvw {
+        let prev = crate::onboarding::previous_handler_name(uti);
+        format!("Before Prvw, these opened with {prev}.")
+    } else {
+        let current = crate::onboarding::get_handler_bundle_id(uti)
+            .map(|id| crate::onboarding::bundle_id_to_app_name(&id))
+            .unwrap_or_else(|| "unknown".to_string());
+        format!("Currently opens with {current}.")
+    }
+}
+
 // ─── Settings window ──────────────────────────────────────────────────────
 
 struct SettingsDelegateIvars {
@@ -1151,7 +1289,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::FullSizeContentView;
 
-    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(620.0, 460.0));
+    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(620.0, 860.0));
 
     let window = unsafe {
         let window = NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -1233,15 +1371,128 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         mtm,
     );
 
-    let general_panel = make_vertical_stack(
-        &[
-            unsafe { as_view::<NSStackView>(&auto_update_row) },
-            unsafe { as_view::<NSTextField>(&auto_update_desc) },
-        ],
-        8.0,
-        mtm,
-    );
+    // ── File associations section ────────────────────────────────────
+
+    let fa_section_header = make_bold_label("File associations", 14.0, mtm);
+    fa_section_header.setAlignment(NSTextAlignment(0)); // Left
+
+    let utis = crate::onboarding::SUPPORTED_UTIS;
+    let all_prvw = utis
+        .iter()
+        .all(|e| crate::onboarding::is_prvw_default(e.uti));
+
+    // "Set all" row
+    let fa_set_all_label = make_label("Open all supported images with Prvw", 14.0, mtm);
+    fa_set_all_label.setAlignment(NSTextAlignment(0));
+
+    let fa_set_all_secondary_text = if all_prvw {
+        "All image types are handled by Prvw."
+    } else {
+        "Some image types are handled by other apps."
+    };
+    let fa_set_all_secondary = make_label(fa_set_all_secondary_text, 12.0, mtm);
+    fa_set_all_secondary.setAlignment(NSTextAlignment(0));
+    fa_set_all_secondary.setTextColor(Some(&NSColor::secondaryLabelColor()));
+
+    let fa_set_all_toggle = NSSwitch::new(mtm);
+    fa_set_all_toggle.setState(if all_prvw {
+        NSControlStateValueOn
+    } else {
+        NSControlStateValueOff
+    });
+
+    let fa_set_all_label_stack = NSStackView::new(mtm);
+    fa_set_all_label_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    fa_set_all_label_stack.setAlignment(NSLayoutAttribute::Leading);
+    fa_set_all_label_stack.setSpacing(2.0);
+    fa_set_all_label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&fa_set_all_label) });
+    fa_set_all_label_stack
+        .addArrangedSubview(unsafe { as_view::<NSTextField>(&fa_set_all_secondary) });
+
+    let fa_set_all_row = NSStackView::new(mtm);
+    fa_set_all_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    fa_set_all_row.setSpacing(12.0);
+    fa_set_all_row.addArrangedSubview(unsafe { as_view::<NSStackView>(&fa_set_all_label_stack) });
+    fa_set_all_row.addArrangedSubview(unsafe { as_view::<NSSwitch>(&fa_set_all_toggle) });
+
+    // Per-UTI rows
+    let mut fa_uti_toggles: [*const NSSwitch; UTI_COUNT] = [std::ptr::null(); UTI_COUNT];
+    let mut fa_uti_labels: [*const NSTextField; UTI_COUNT] = [std::ptr::null(); UTI_COUNT];
+    let mut fa_uti_rows: Vec<Retained<NSStackView>> = Vec::new();
+    let mut fa_uti_toggle_retained: Vec<Retained<NSSwitch>> = Vec::new();
+    let mut fa_uti_label_retained: Vec<Retained<NSTextField>> = Vec::new();
+    let mut fa_uti_primary_retained: Vec<Retained<NSTextField>> = Vec::new();
+    let mut fa_uti_label_stack_retained: Vec<Retained<NSStackView>> = Vec::new();
+
+    for (i, entry) in utis.iter().enumerate() {
+        let is_prvw = crate::onboarding::is_prvw_default(entry.uti);
+
+        let primary_text = format!("{} ({})", entry.label, entry.extensions);
+        let primary = make_label(&primary_text, 14.0, mtm);
+        primary.setAlignment(NSTextAlignment(0));
+
+        let secondary_text = file_assoc_secondary_text(entry.uti, is_prvw);
+        let secondary = make_label(&secondary_text, 12.0, mtm);
+        secondary.setAlignment(NSTextAlignment(0));
+        secondary.setTextColor(Some(&NSColor::secondaryLabelColor()));
+
+        let toggle = NSSwitch::new(mtm);
+        toggle.setState(if is_prvw {
+            NSControlStateValueOn
+        } else {
+            NSControlStateValueOff
+        });
+        unsafe {
+            let _: () = msg_send![&*toggle, setTag: i as isize];
+        }
+
+        let label_stack = NSStackView::new(mtm);
+        label_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        label_stack.setAlignment(NSLayoutAttribute::Leading);
+        label_stack.setSpacing(2.0);
+        label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&primary) });
+        label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&secondary) });
+
+        let row = NSStackView::new(mtm);
+        row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+        row.setSpacing(12.0);
+        row.addArrangedSubview(unsafe { as_view::<NSStackView>(&label_stack) });
+        row.addArrangedSubview(unsafe { as_view::<NSSwitch>(&toggle) });
+
+        fa_uti_toggles[i] = &*toggle as *const NSSwitch;
+        fa_uti_labels[i] = &*secondary as *const NSTextField;
+
+        fa_uti_rows.push(row);
+        fa_uti_toggle_retained.push(toggle);
+        fa_uti_label_retained.push(secondary);
+        fa_uti_primary_retained.push(primary);
+        fa_uti_label_stack_retained.push(label_stack);
+    }
+
+    // Build general panel views list
+    let auto_update_desc_ref = unsafe { as_view::<NSTextField>(&auto_update_desc) };
+    let fa_header_ref = unsafe { as_view::<NSTextField>(&fa_section_header) };
+    let fa_set_all_row_ref = unsafe { as_view::<NSStackView>(&fa_set_all_row) };
+
+    let mut general_views: Vec<&NSView> = vec![
+        unsafe { as_view::<NSStackView>(&auto_update_row) },
+        auto_update_desc_ref,
+        fa_header_ref,
+        fa_set_all_row_ref,
+    ];
+    let fa_row_refs: Vec<&NSView> = fa_uti_rows
+        .iter()
+        .map(|r| unsafe { as_view::<NSStackView>(r) })
+        .collect();
+    for r in &fa_row_refs {
+        general_views.push(r);
+    }
+
+    let general_panel = make_vertical_stack(&general_views, 8.0, mtm);
     general_panel.setAlignment(NSLayoutAttribute::Leading);
+    // Extra spacing before the file associations section header
+    general_panel.setCustomSpacing_afterView(20.0, auto_update_desc_ref);
+    general_panel.setCustomSpacing_afterView(12.0, fa_header_ref);
 
     // ── Zoom panel ────────────────────────────────────────────────────
 
@@ -1379,6 +1630,41 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         sidebar_color_btn.setAction(Some(sel!(selectColor:)));
     }
 
+    // ── Create file association delegate ──────────────────────────────
+
+    let fa_ivars = FileAssocDelegateIvars {
+        uti_toggles: fa_uti_toggles,
+        uti_labels: fa_uti_labels,
+        set_all_toggle: &*fa_set_all_toggle as *const NSSwitch,
+        set_all_label: &*fa_set_all_secondary as *const NSTextField,
+    };
+    let fa_delegate = FileAssocDelegate::new(mtm, fa_ivars);
+
+    // Wire file association toggles
+    unsafe {
+        fa_set_all_toggle.setTarget(Some(&fa_delegate as &AnyObject));
+        fa_set_all_toggle.setAction(Some(sel!(toggleSetAll:)));
+
+        for toggle in &fa_uti_toggle_retained {
+            toggle.setTarget(Some(&fa_delegate as &AnyObject));
+            toggle.setAction(Some(sel!(toggleFileAssoc:)));
+        }
+    }
+
+    // 1-second polling timer for file association state
+    let fa_delegate_ptr: *const AnyObject =
+        &*fa_delegate as *const FileAssocDelegate as *const AnyObject;
+    let _fa_poll_timer: Retained<AnyObject> = unsafe {
+        msg_send![
+            objc2::class!(NSTimer),
+            scheduledTimerWithTimeInterval: 1.0f64,
+            target: fa_delegate_ptr,
+            selector: sel!(pollFileAssoc:),
+            userInfo: std::ptr::null::<AnyObject>(),
+            repeats: true
+        ]
+    };
+
     // ── Close + ESC buttons ───────────────────────────────────────────
 
     let close_button = make_close_button("Close", &window, mtm);
@@ -1401,9 +1687,23 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         let _: () = msg_send![&*separator, setWantsLayer: true];
         let sep_layer: *const AnyObject = msg_send![&*separator, layer];
         if !sep_layer.is_null() {
+            // Use raw objc_msgSend for CGColor — it returns a CGColorRef (opaque C pointer)
+            // which msg_send! mis-encodes as '@' (ObjC object) instead of '^{CGColor=}'.
             let sep_color = NSColor::separatorColor();
-            let cg_color: *const AnyObject = msg_send![&*sep_color, CGColor];
-            let _: () = msg_send![sep_layer, setBackgroundColor: cg_color];
+            let cg_color_sel = sel!(CGColor);
+            let bg_color_sel = sel!(setBackgroundColor:);
+            let get_cg: unsafe extern "C" fn(
+                *const AnyObject,
+                objc2::runtime::Sel,
+            ) -> *const std::ffi::c_void =
+                std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
+            let cg_color = get_cg(&*sep_color as *const _ as *const AnyObject, cg_color_sel);
+            let set_bg: unsafe extern "C" fn(
+                *const AnyObject,
+                objc2::runtime::Sel,
+                *const std::ffi::c_void,
+            ) = std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
+            set_bg(sep_layer, bg_color_sel, cg_color);
         }
         content_view_ref.addSubview(&separator);
 
@@ -1585,6 +1885,30 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(color_panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(close_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(esc_button) });
+    // File association views
+    retained_views.push(unsafe { Retained::cast_unchecked(fa_delegate) });
+    retained_views.push(unsafe { Retained::cast_unchecked(fa_section_header) });
+    retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_label) });
+    retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_secondary) });
+    retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_label_stack) });
+    retained_views.push(unsafe { Retained::cast_unchecked(fa_set_all_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(_fa_poll_timer) });
+    for row in fa_uti_rows {
+        retained_views.push(unsafe { Retained::cast_unchecked(row) });
+    }
+    for toggle in fa_uti_toggle_retained {
+        retained_views.push(unsafe { Retained::cast_unchecked(toggle) });
+    }
+    for label in fa_uti_label_retained {
+        retained_views.push(unsafe { Retained::cast_unchecked(label) });
+    }
+    for primary in fa_uti_primary_retained {
+        retained_views.push(unsafe { Retained::cast_unchecked(primary) });
+    }
+    for label_stack in fa_uti_label_stack_retained {
+        retained_views.push(unsafe { Retained::cast_unchecked(label_stack) });
+    }
 
     // ── Position and show ──────────────────────────────────────────────
 

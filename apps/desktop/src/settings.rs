@@ -7,6 +7,7 @@
 //! The settings file is the source of truth — no in-memory cache or Arc/Mutex needed.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -29,6 +30,12 @@ pub struct Settings {
 
     #[serde(default)]
     pub use_relative_colorimetric: bool,
+
+    /// Previous default handler for each UTI before Prvw claimed it.
+    /// Used to restore associations when the user turns off a file type toggle.
+    /// Keys are UTIs (e.g., "public.jpeg"), values are bundle IDs (e.g., "com.apple.Preview").
+    #[serde(default)]
+    pub previous_handlers: HashMap<String, String>,
 }
 
 fn default_true() -> bool {
@@ -44,6 +51,7 @@ impl Default for Settings {
             icc_color_management: true,
             color_match_display: true,
             use_relative_colorimetric: false,
+            previous_handlers: HashMap::new(),
         }
     }
 }
@@ -120,6 +128,10 @@ mod tests {
             icc_color_management: false,
             color_match_display: false,
             use_relative_colorimetric: true,
+            previous_handlers: HashMap::from([(
+                "public.jpeg".to_string(),
+                "com.apple.Preview".to_string(),
+            )]),
         };
         fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
 
