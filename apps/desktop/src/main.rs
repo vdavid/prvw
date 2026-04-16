@@ -1550,6 +1550,20 @@ impl ApplicationHandler<AppCommand> for App {
                 }
             }
 
+            // Trackpad pinch-to-zoom: cursor-centered
+            WindowEvent::PinchGesture { delta, .. } => {
+                let delta = delta as f32;
+                if delta.abs() > f32::EPSILON {
+                    let old_zoom = self.view_state.zoom;
+                    let (cx, cy) = self.last_mouse_pos;
+                    self.view_state.pinch_zoom(delta, cx.as_f32(), cy.as_f32());
+                    if self.auto_fit_window {
+                        self.auto_fit_after_zoom(old_zoom, cx, cy);
+                    }
+                    self.update_transform_and_redraw();
+                }
+            }
+
             // Mouse drag for panning (convert to logical pixels)
             WindowEvent::CursorMoved { position, .. } => {
                 let sf = self.scale_factor;

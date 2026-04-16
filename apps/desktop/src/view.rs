@@ -129,6 +129,15 @@ impl ViewState {
         self.zoom_around(factor, cursor_x, cursor_y);
     }
 
+    /// Zoom by trackpad pinch gesture, centered on the cursor position.
+    /// `delta` is the relative scale change (positive = magnify, negative = shrink).
+    pub fn pinch_zoom(&mut self, delta: f32, cursor_x: Logical<f32>, cursor_y: Logical<f32>) {
+        let factor = 1.0 + delta;
+        if factor > 0.0 {
+            self.zoom_around(factor, cursor_x, cursor_y);
+        }
+    }
+
     /// Zoom in/out by keyboard shortcut (centered on window).
     pub fn keyboard_zoom(&mut self, zoom_in: bool) {
         let factor = if zoom_in {
@@ -417,5 +426,45 @@ mod tests {
         view.zoom = 0.5;
         view.set_min_zoom(1.0);
         assert!((view.zoom - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn pinch_zoom_magnifies() {
+        let mut view = ViewState::new();
+        view.update_dimensions(800, 600, Logical(800.0), Logical(600.0));
+        view.zoom = 1.0;
+        let original = view.zoom;
+        view.pinch_zoom(0.1, Logical(400.0), Logical(300.0)); // 10% magnify
+        assert!(view.zoom > original);
+    }
+
+    #[test]
+    fn pinch_zoom_shrinks() {
+        let mut view = ViewState::new();
+        view.update_dimensions(800, 600, Logical(800.0), Logical(600.0));
+        view.zoom = 2.0;
+        let original = view.zoom;
+        view.pinch_zoom(-0.1, Logical(400.0), Logical(300.0)); // 10% shrink
+        assert!(view.zoom < original);
+    }
+
+    #[test]
+    fn pinch_zoom_at_center_preserves_pan() {
+        let mut view = ViewState::new();
+        view.update_dimensions(800, 600, Logical(800.0), Logical(600.0));
+        view.fit_to_window();
+        view.pinch_zoom(0.5, Logical(400.0), Logical(300.0));
+        assert!(view.pan_x.abs() < 0.01);
+        assert!(view.pan_y.abs() < 0.01);
+    }
+
+    #[test]
+    fn pinch_zoom_ignores_negative_factor() {
+        let mut view = ViewState::new();
+        view.update_dimensions(800, 600, Logical(800.0), Logical(600.0));
+        view.zoom = 1.0;
+        let original = view.zoom;
+        view.pinch_zoom(-1.5, Logical(400.0), Logical(300.0)); // factor = -0.5, invalid
+        assert!((view.zoom - original).abs() < f32::EPSILON);
     }
 }
