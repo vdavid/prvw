@@ -16,30 +16,33 @@ import DownloadButton from './DownloadButton.astro'
     </div>
 
     <div class="relative z-10 mx-auto max-w-5xl pt-16 text-left md:pt-28">
-        <!-- Badge -->
-        <div
-            class="animate-blur-in stagger-1 mb-8 inline-flex items-center gap-2 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-1.5"
-        >
-            <span class="h-2 w-2 animate-pulse rounded-full bg-[var(--color-accent)]"></span>
-            <span class="text-sm text-[var(--color-text-secondary)]">macOS native, built in Rust</span>
-        </div>
-
         <!-- Animated name: Preview.app → Prvw -->
-        <div
-            class="name-anim mb-4 text-5xl font-bold tracking-tight md:text-6xl lg:text-8xl"
-            aria-label="Prvw"
-        >
-            <span class="name-anim__static">P</span
-            ><span class="name-anim__static">r</span
-            ><span class="name-anim__fade" style="--fade-delay: 0.9s">e</span
-            ><span class="name-anim__static">v</span
-            ><span class="name-anim__fade" style="--fade-delay: 0.5s">i</span
-            ><span class="name-anim__fade" style="--fade-delay: 0.7s">e</span
-            ><span class="name-anim__static">w</span
-            ><span class="name-anim__fade" style="--fade-delay: 1.4s">.</span
-            ><span class="name-anim__fade" style="--fade-delay: 1.6s">a</span
-            ><span class="name-anim__fade" style="--fade-delay: 1.8s">p</span
-            ><span class="name-anim__fade" style="--fade-delay: 2.0s">p</span>
+        <div class="relative mb-4">
+            <div
+                class="name-anim text-5xl font-bold leading-none tracking-tight md:text-6xl lg:text-8xl"
+                aria-label="Prvw"
+            >
+                <span class="name-anim__static">P</span
+                ><span class="name-anim__static">r</span
+                ><span class="name-anim__fade" style="--fade-delay: 0.9s">e</span
+                ><span class="name-anim__static">v</span
+                ><span class="name-anim__fade" style="--fade-delay: 0.5s">i</span
+                ><span class="name-anim__fade" style="--fade-delay: 0.7s">e</span
+                ><span class="name-anim__static">w</span
+                ><span class="name-anim__fade" style="--fade-delay: 1.4s">.</span
+                ><span class="name-anim__fade" style="--fade-delay: 1.6s">a</span
+                ><span class="name-anim__fade" style="--fade-delay: 1.8s">p</span
+                ><span class="name-anim__fade" style="--fade-delay: 2.0s">p</span>
+            </div>
+
+            <!-- Badge: hidden until name animation finishes, then fades in -->
+            <div
+                id="rust-badge"
+                class="badge-rust absolute right-0 top-1 items-center gap-2 rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-2 md:top-2 lg:top-3"
+            >
+                <span class="h-2 w-2 rounded-full bg-[var(--color-accent)]"></span>
+                <span class="text-sm text-[var(--color-text-secondary)]">Powered by Rust</span>
+            </div>
         </div>
 
         <!-- Headline -->
@@ -78,43 +81,21 @@ import DownloadButton from './DownloadButton.astro'
 
         <!-- Pricing hint -->
         <p class="mt-8 text-sm text-[var(--color-text-tertiary)]">
-            Source-available · Free forever for personal use · $29/year for commercial
+            Source-available · Free during development · $29/year once stable
         </p>
     </div>
 
-    <!-- Screenshot placeholder -->
-    <div class="relative z-10 mx-auto mt-16 max-w-4xl pb-8" aria-hidden="true">
-        <div
-            class="aspect-video overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]"
-        >
-            <div class="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
-                <!-- Decorative window chrome -->
-                <div class="flex gap-2 self-start pb-4">
-                    <span class="h-3 w-3 rounded-full bg-[#ff5f57]"></span>
-                    <span class="h-3 w-3 rounded-full bg-[#febc2e]"></span>
-                    <span class="h-3 w-3 rounded-full bg-[#28c840]"></span>
-                </div>
-                <!-- Placeholder content representing an image viewer -->
-                <div class="flex flex-1 items-center justify-center">
-                    <div class="flex flex-col items-center gap-3">
-                        <svg
-                            class="h-16 w-16 text-[var(--color-accent)]"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                            stroke-width="1"
-                        >
-                            <path
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                                d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0 0 22.5 18.75V5.25A2.25 2.25 0 0 0 20.25 3H3.75A2.25 2.25 0 0 0 1.5 5.25v13.5A2.25 2.25 0 0 0 3.75 21Z"
-                            ></path>
-                        </svg>
-                        <p class="text-sm text-[var(--color-text-tertiary)]">Screenshot coming soon</p>
-                    </div>
-                </div>
-            </div>
-        </div>
+    <!-- Screenshot: 65px @2x shadow per side = 32.5px logical. Negative margins pull
+         shadows outside the content column so the solid window edges align with body text. -->
+    <div class="relative z-10 mx-auto mt-16 max-w-5xl pb-8">
+        <img
+            src="/hero-screenshot.webp"
+            alt="Prvw displaying a photo with instant zoom and navigation"
+            width="2012"
+            height="1415"
+            class="w-[calc(100%+6.46%)] max-w-none -mx-[3.23%]"
+            loading="eager"
+        />
         <!-- Glow underneath -->
         <div
             class="pointer-events-none absolute -inset-4 -z-10 rounded-2xl bg-[radial-gradient(ellipse_at_center,rgba(77,166,255,0.08),transparent_70%)]"
@@ -183,10 +164,41 @@ import DownloadButton from './DownloadButton.astro'
         }
     }
 
+    /* Badge: hidden until JS reveals it after the name animation */
+    .badge-rust {
+        display: none;
+        opacity: 0;
+        transition: opacity 0.5s ease-out;
+    }
+
+    .badge-rust.visible {
+        opacity: 1;
+    }
+
     @media (prefers-reduced-motion: reduce) {
         .name-anim__fade {
             animation: none;
             display: none;
         }
+
+        .badge-rust {
+            display: inline-flex;
+            opacity: 1;
+            transition: none;
+        }
     }
 </style>
+
+<script>
+    const badge = document.getElementById('rust-badge')
+    if (badge) {
+        setTimeout(() => {
+            badge.style.display = 'inline-flex'
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    badge.classList.add('visible')
+                })
+            })
+        }, 3000)
+    }
+</script>
