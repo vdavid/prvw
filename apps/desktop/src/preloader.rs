@@ -235,10 +235,12 @@ pub struct Preloader {
     cancellation_tokens: Vec<Arc<AtomicBool>>,
     /// ICC profile bytes for the current display (target color space for decoding).
     display_icc: Arc<Vec<u8>>,
+    /// Whether to use relative colorimetric rendering intent instead of perceptual.
+    use_relative_colorimetric: bool,
 }
 
 impl Preloader {
-    pub fn start(display_icc: Vec<u8>) -> Self {
+    pub fn start(display_icc: Vec<u8>, use_relative_colorimetric: bool) -> Self {
         let num_threads = available_parallelism().map(|n| n.get()).unwrap_or(4);
 
         let pool = rayon::ThreadPoolBuilder::new()
@@ -258,12 +260,17 @@ impl Preloader {
             in_flight: HashSet::new(),
             cancellation_tokens: Vec::new(),
             display_icc: Arc::new(display_icc),
+            use_relative_colorimetric,
         }
     }
 
     /// Update the target display ICC profile (called when the window moves to a different display).
     pub fn set_display_icc(&mut self, icc: Vec<u8>) {
         self.display_icc = Arc::new(icc);
+    }
+
+    pub fn set_use_relative_colorimetric(&mut self, value: bool) {
+        self.use_relative_colorimetric = value;
     }
 
     /// Cancel all in-flight tasks and submit new ones.
@@ -292,6 +299,7 @@ impl Preloader {
 
             let tx = self.response_tx.clone();
             let display_icc = Arc::clone(&self.display_icc);
+            let use_relative_colorimetric = self.use_relative_colorimetric;
             let task = move || {
                 let file_name = path
                     .file_name()
@@ -299,7 +307,12 @@ impl Preloader {
                     .to_string_lossy()
                     .to_string();
                 let start = Instant::now();
-                match image_loader::load_image_cancellable(&path, &cancelled, &display_icc) {
+                match image_loader::load_image_cancellable(
+                    &path,
+                    &cancelled,
+                    &display_icc,
+                    use_relative_colorimetric,
+                ) {
                     Ok(image) => {
                         let duration = start.elapsed();
                         log::debug!(

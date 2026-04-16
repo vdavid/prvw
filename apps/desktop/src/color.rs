@@ -19,7 +19,12 @@ pub fn srgb_icc_bytes() -> &'static [u8] {
 /// Transform RGBA8 pixels from a source ICC profile to a target ICC profile, in-place.
 /// Skips the transform if the profiles match (byte-equal).
 /// Silently returns on malformed profiles (the image displays as-is).
-pub fn transform_icc(rgba: &mut [u8], source_icc: &[u8], target_icc: &[u8]) {
+pub fn transform_icc(
+    rgba: &mut [u8],
+    source_icc: &[u8],
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
+) {
     if target_icc.is_empty() {
         return; // ICC color management is disabled
     }
@@ -44,8 +49,13 @@ pub fn transform_icc(rgba: &mut [u8], source_icc: &[u8], target_icc: &[u8]) {
         }
     };
 
+    let intent = if use_relative_colorimetric {
+        RenderingIntent::RelativeColorimetric
+    } else {
+        RenderingIntent::Perceptual
+    };
     let options = TransformOptions {
-        rendering_intent: RenderingIntent::Perceptual,
+        rendering_intent: intent,
         ..TransformOptions::default()
     };
     let transform: std::sync::Arc<dyn InPlaceTransformExecutor<u8> + Send + Sync> =
@@ -65,10 +75,25 @@ pub fn transform_icc(rgba: &mut [u8], source_icc: &[u8], target_icc: &[u8]) {
     let pixel_count = rgba.len() / 4;
     let source_desc = profile_description(&source);
     let target_desc = profile_description(&target);
+    let intent_name = if use_relative_colorimetric { "relative" } else { "perceptual" };
+    let pixel_count_fmt = format_with_separators(pixel_count);
     log::debug!(
-        "ICC transform: {source_desc} -> {target_desc} ({pixel_count} pixels) in {}ms",
+        "ICC transform: {source_desc} -> {target_desc}, {intent_name} ({pixel_count_fmt} pixels) in {}ms",
         start.elapsed().as_millis()
     );
+}
+
+/// Format a number with thousands separators (e.g., 24000000 -> "24,000,000").
+fn format_with_separators(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(ch);
+    }
+    result
 }
 
 /// Check if two ICC profiles are byte-identical.
@@ -170,24 +195,24 @@ mod tests {
     fn adobe_rgb_to_srgb_known_values() {
         // Adobe RGB (146, 0, 0) -> sRGB (172, 0, 0): red is the most affected channel
         let mut red = [146, 0, 0, 255];
-        transform_icc(&mut red, ADOBE_RGB_ICC, srgb_icc());
+        transform_icc(&mut red, ADOBE_RGB_ICC, srgb_icc(), false);
         assert_pixel_near(red, [172, 0, 0, 255], "red");
 
         // Adobe RGB (0, 147, 0) -> sRGB (0, 148, 0): green barely changes
         let mut green = [0, 147, 0, 255];
-        transform_icc(&mut green, ADOBE_RGB_ICC, srgb_icc());
+        transform_icc(&mut green, ADOBE_RGB_ICC, srgb_icc(), false);
         assert_pixel_near(green, [0, 148, 0, 255], "green");
 
         // Adobe RGB (0, 0, 146) -> sRGB (0, 0, 150): blue shifts slightly
         let mut blue = [0, 0, 146, 255];
-        transform_icc(&mut blue, ADOBE_RGB_ICC, srgb_icc());
+        transform_icc(&mut blue, ADOBE_RGB_ICC, srgb_icc(), false);
         assert_pixel_near(blue, [0, 0, 150, 255], "blue");
     }
 
     #[test]
     fn alpha_channel_preserved() {
         let mut pixel = [146, 0, 0, 128];
-        transform_icc(&mut pixel, ADOBE_RGB_ICC, srgb_icc());
+        transform_icc(&mut pixel, ADOBE_RGB_ICC, srgb_icc(), false);
         assert_eq!(pixel[3], 128, "alpha must be preserved");
     }
 
@@ -195,7 +220,7 @@ mod tests {
     fn matching_profiles_skip_transform() {
         let mut pixel = [200, 100, 50, 255];
         let original = pixel;
-        transform_icc(&mut pixel, ADOBE_RGB_ICC, ADOBE_RGB_ICC);
+        transform_icc(&mut pixel, ADOBE_RGB_ICC, ADOBE_RGB_ICC, false);
         assert_eq!(pixel, original, "identical profiles should be a no-op");
     }
 
@@ -213,7 +238,7 @@ mod tests {
     fn malformed_source_is_noop() {
         let mut pixel = [200, 100, 50, 255];
         let original = pixel;
-        transform_icc(&mut pixel, b"not a real ICC profile", srgb_icc());
+        transform_icc(&mut pixel, b"not a real ICC profile", srgb_icc(), false);
         assert_eq!(
             pixel, original,
             "malformed source profile should be a no-op"
@@ -224,7 +249,7 @@ mod tests {
     fn empty_source_is_noop() {
         let mut pixel = [200, 100, 50, 255];
         let original = pixel;
-        transform_icc(&mut pixel, &[], srgb_icc());
+        transform_icc(&mut pixel, &[], srgb_icc(), false);
         assert_eq!(pixel, original, "empty source profile should be a no-op");
     }
 
@@ -236,7 +261,7 @@ mod tests {
             0, 147, 0, 255, // green
             0, 0, 146, 255, // blue
         ];
-        transform_icc(&mut pixels, ADOBE_RGB_ICC, srgb_icc());
+        transform_icc(&mut pixels, ADOBE_RGB_ICC, srgb_icc(), false);
 
         assert_pixel_near(
             [pixels[0], pixels[1], pixels[2], pixels[3]],

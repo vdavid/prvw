@@ -13,6 +13,7 @@ pub struct MenuIds {
     pub enlarge_small_images: MenuId,
     pub icc_color_management: MenuId,
     pub color_match_display: MenuId,
+    pub relative_colorimetric: MenuId,
     pub fullscreen: MenuId,
     pub refresh: MenuId,
     pub previous: MenuId,
@@ -31,6 +32,7 @@ pub struct AppMenu {
     pub enlarge_small_item: CheckMenuItem,
     pub icc_color_management_item: CheckMenuItem,
     pub color_match_item: CheckMenuItem,
+    pub relative_colorimetric_item: CheckMenuItem,
 }
 
 /// Build the native menu bar. The caller MUST keep the returned `AppMenu` alive.
@@ -101,6 +103,15 @@ pub fn create_menu_bar() -> AppMenu {
             Code::KeyC,
         )),
     );
+    let relative_colorimetric = CheckMenuItem::new(
+        "Relative colorimetric",
+        settings.icc_color_management,
+        settings.use_relative_colorimetric,
+        Some(Accelerator::new(
+            Some(Modifiers::SUPER | Modifiers::SHIFT),
+            Code::KeyR,
+        )),
+    );
     let fullscreen = MenuItem::new("Fullscreen", true, None);
     let refresh = MenuItem::new("Refresh", true, None);
     view_menu
@@ -112,8 +123,10 @@ pub fn create_menu_bar() -> AppMenu {
             &fit_to_window,
             &auto_fit_window,
             &enlarge_small_images,
+            &PredefinedMenuItem::separator(),
             &icc_color_management,
             &color_match_display,
+            &relative_colorimetric,
             &PredefinedMenuItem::separator(),
             &fullscreen,
             &PredefinedMenuItem::separator(),
@@ -141,12 +154,14 @@ pub fn create_menu_bar() -> AppMenu {
     let enlarge_small_id = enlarge_small_images.id().clone();
     let icc_color_management_id = icc_color_management.id().clone();
     let color_match_id = color_match_display.id().clone();
+    let relative_colorimetric_id = relative_colorimetric.id().clone();
 
     AppMenu {
         auto_fit_item: auto_fit_window,
         enlarge_small_item: enlarge_small_images,
         icc_color_management_item: icc_color_management,
         color_match_item: color_match_display,
+        relative_colorimetric_item: relative_colorimetric,
         _menu: menu,
         ids: MenuIds {
             about: about.id().clone(),
@@ -159,6 +174,7 @@ pub fn create_menu_bar() -> AppMenu {
             enlarge_small_images: enlarge_small_id,
             icc_color_management: icc_color_management_id,
             color_match_display: color_match_id,
+            relative_colorimetric: relative_colorimetric_id,
             fullscreen: fullscreen.id().clone(),
             refresh: refresh.id().clone(),
             previous: previous.id().clone(),

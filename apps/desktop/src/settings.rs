@@ -26,6 +26,9 @@ pub struct Settings {
 
     #[serde(default = "default_true")]
     pub color_match_display: bool,
+
+    #[serde(default)]
+    pub use_relative_colorimetric: bool,
 }
 
 fn default_true() -> bool {
@@ -40,6 +43,7 @@ impl Default for Settings {
             enlarge_small_images: false,
             icc_color_management: true,
             color_match_display: true,
+            use_relative_colorimetric: false,
         }
     }
 }
@@ -115,6 +119,7 @@ mod tests {
             enlarge_small_images: true,
             icc_color_management: false,
             color_match_display: false,
+            use_relative_colorimetric: true,
         };
         fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
 

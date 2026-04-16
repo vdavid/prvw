@@ -197,7 +197,11 @@ fn is_jpeg_extension(ext: &str) -> bool {
 /// JPEGs use zune-jpeg (SIMD-accelerated). Everything else goes through the `image` crate.
 /// Applies EXIF orientation correction automatically.
 /// Images without an embedded ICC profile are assumed sRGB and transformed to `target_icc`.
-pub fn load_image(path: &Path, target_icc: &[u8]) -> Result<DecodedImage, String> {
+pub fn load_image(
+    path: &Path,
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
+) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
@@ -209,9 +213,9 @@ pub fn load_image(path: &Path, target_icc: &[u8]) -> Result<DecodedImage, String
     let orientation = parse_exif_orientation(&bytes, filename);
 
     let result = if is_jpeg_extension(ext) {
-        decode_jpeg(path, bytes, target_icc)
+        decode_jpeg(path, bytes, target_icc, use_relative_colorimetric)
     } else {
-        decode_generic(path, bytes, target_icc)
+        decode_generic(path, bytes, target_icc, use_relative_colorimetric)
     };
 
     let result = result.map(|mut img| {
@@ -260,6 +264,7 @@ pub fn load_image_cancellable(
     path: &Path,
     cancelled: &AtomicBool,
     target_icc: &[u8],
+    use_relative_colorimetric: bool,
 ) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -275,9 +280,9 @@ pub fn load_image_cancellable(
     let orientation = parse_exif_orientation(&bytes, filename);
 
     let result = if is_jpeg_extension(ext) {
-        decode_jpeg(path, bytes, target_icc)
+        decode_jpeg(path, bytes, target_icc, use_relative_colorimetric)
     } else {
-        decode_generic(path, bytes, target_icc)
+        decode_generic(path, bytes, target_icc, use_relative_colorimetric)
     };
 
     let result = result.map(|mut img| {
@@ -322,7 +327,12 @@ pub fn load_image_cancellable(
 }
 
 /// Decode JPEG bytes (shared by cancellable and non-cancellable paths).
-fn decode_jpeg(path: &Path, bytes: Vec<u8>, target_icc: &[u8]) -> Result<DecodedImage, String> {
+fn decode_jpeg(
+    path: &Path,
+    bytes: Vec<u8>,
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
+) -> Result<DecodedImage, String> {
     let options = zune_core::options::DecoderOptions::new_fast();
     let cursor = std::io::Cursor::new(bytes);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(cursor, options);
@@ -353,7 +363,7 @@ fn decode_jpeg(path: &Path, bytes: Vec<u8>, target_icc: &[u8]) -> Result<Decoded
     let source_icc = icc_profile
         .as_deref()
         .unwrap_or_else(|| color::srgb_icc_bytes());
-    color::transform_icc(&mut rgba, source_icc, target_icc);
+    color::transform_icc(&mut rgba, source_icc, target_icc, use_relative_colorimetric);
 
     Ok(DecodedImage {
         width,
@@ -363,7 +373,12 @@ fn decode_jpeg(path: &Path, bytes: Vec<u8>, target_icc: &[u8]) -> Result<Decoded
 }
 
 /// Fallback: decode via the `image` crate (PNG, WebP, GIF, BMP, TIFF, etc.).
-fn decode_generic(path: &Path, bytes: Vec<u8>, target_icc: &[u8]) -> Result<DecodedImage, String> {
+fn decode_generic(
+    path: &Path,
+    bytes: Vec<u8>,
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
+) -> Result<DecodedImage, String> {
     let cursor = Cursor::new(&bytes);
     let reader = image::ImageReader::new(cursor)
         .with_guessed_format()
@@ -385,7 +400,12 @@ fn decode_generic(path: &Path, bytes: Vec<u8>, target_icc: &[u8]) -> Result<Deco
     let source_icc = icc_profile
         .as_deref()
         .unwrap_or_else(|| color::srgb_icc_bytes());
-    color::transform_icc(&mut rgba_data, source_icc, target_icc);
+    color::transform_icc(
+        &mut rgba_data,
+        source_icc,
+        target_icc,
+        use_relative_colorimetric,
+    );
 
     Ok(DecodedImage {
         width,
