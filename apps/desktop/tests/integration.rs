@@ -194,6 +194,16 @@ fn auto_fit_toggle() {
 }
 
 #[test]
+fn scroll_to_zoom_toggle() {
+    let app = TestApp::start();
+    let before = app.get_state()["scroll_to_zoom"].as_bool().unwrap();
+    let new_value = !before;
+    app.post("/scroll-to-zoom", if new_value { "on" } else { "off" });
+    let after = app.get_state()["scroll_to_zoom"].as_bool().unwrap();
+    assert_eq!(after, new_value);
+}
+
+#[test]
 fn refresh_redisplays_image() {
     let app = TestApp::start();
     let before = app.get_state();

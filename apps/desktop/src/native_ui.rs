@@ -1099,6 +1099,7 @@ struct SettingsDelegateIvars {
     enlarge_toggle: *const NSSwitch,
     color_match_toggle: *const NSSwitch,
     relative_col_toggle: *const NSSwitch,
+    scroll_to_zoom_desc: *const NSTextField,
     general_panel: *const NSStackView,
     zoom_panel: *const NSStackView,
     color_panel: *const NSStackView,
@@ -1191,6 +1192,24 @@ define_class!(
             crate::qa_server::send_command(
                 crate::qa_server::AppCommand::SetRelativeColorimetric(on),
             );
+        }
+
+        #[unsafe(method(toggleScrollToZoom:))]
+        fn toggle_scroll_to_zoom(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            log::debug!("Scroll to zoom toggled via settings: {on}");
+            crate::qa_server::send_command(crate::qa_server::AppCommand::SetScrollToZoom(on));
+            unsafe {
+                let desc = self.ivars().scroll_to_zoom_desc;
+                if !desc.is_null() {
+                    let text = if on {
+                        "Use scroll to zoom instead of switching images."
+                    } else {
+                        "You can still zoom with trackpad pinch and \u{2318}+/\u{2318}\u{2212}."
+                    };
+                    let _: () = msg_send![desc, setStringValue: &*NSString::from_str(text)];
+                }
+            }
         }
 
         #[unsafe(method(selectGeneral:))]
@@ -1435,6 +1454,20 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         mtm,
     );
 
+    let scroll_to_zoom_desc_text = if settings.scroll_to_zoom {
+        "Use scroll to zoom instead of switching images."
+    } else {
+        "You can still zoom with trackpad pinch and \u{2318}+/\u{2318}\u{2212}."
+    };
+    let (scroll_to_zoom_row, scroll_to_zoom_toggle, scroll_to_zoom_desc) = make_setting_row(
+        "Scroll to zoom",
+        scroll_to_zoom_desc_text,
+        settings.scroll_to_zoom,
+        false,
+        content_max_width,
+        mtm,
+    );
+
     let (auto_fit_row, auto_fit_toggle, auto_fit_desc) = make_setting_row(
         "Auto-fit window",
         "Resize the window to match each image.",
@@ -1489,20 +1522,24 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     let icc_desc_ref = unsafe { as_view::<NSTextField>(&icc_desc) };
     let cm_desc_ref = unsafe { as_view::<NSTextField>(&cm_desc) };
 
-    // General panel: Auto-update only
+    let scroll_to_zoom_desc_ref = unsafe { as_view::<NSTextField>(&scroll_to_zoom_desc) };
+
+    // General panel: Auto-update + Scroll to zoom
     let general_panel = make_vertical_stack(
         &[
             unsafe { as_view::<NSStackView>(&auto_update_row) },
             auto_update_desc_ref,
+            unsafe { as_view::<NSStackView>(&scroll_to_zoom_row) },
+            scroll_to_zoom_desc_ref,
         ],
         8.0,
         mtm,
     );
     general_panel.setAlignment(NSLayoutAttribute::Leading);
+    general_panel.setCustomSpacing_afterView(16.0, auto_update_desc_ref);
 
     // Pin toggle rows to full panel width
-    {
-        let row = &auto_update_row;
+    for row in [&auto_update_row, &scroll_to_zoom_row] {
         let c = unsafe {
             NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
                 row, NSLayoutAttribute::Width,
@@ -1748,6 +1785,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         enlarge_toggle: &*enlarge_toggle as *const NSSwitch,
         color_match_toggle: &*cm_toggle as *const NSSwitch,
         relative_col_toggle: &*rc_toggle as *const NSSwitch,
+        scroll_to_zoom_desc: &*scroll_to_zoom_desc as *const NSTextField,
         general_panel: &*general_panel as *const NSStackView,
         zoom_panel: &*zoom_panel as *const NSStackView,
         color_panel: &*color_panel as *const NSStackView,
@@ -1764,6 +1802,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     unsafe {
         auto_update_toggle.setTarget(Some(&delegate as &AnyObject));
         auto_update_toggle.setAction(Some(sel!(toggleAutoUpdate:)));
+
+        scroll_to_zoom_toggle.setTarget(Some(&delegate as &AnyObject));
+        scroll_to_zoom_toggle.setAction(Some(sel!(toggleScrollToZoom:)));
 
         auto_fit_toggle.setTarget(Some(&delegate as &AnyObject));
         auto_fit_toggle.setAction(Some(sel!(toggleAutoFitWindow:)));
@@ -2121,6 +2162,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(auto_update_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_update_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_update_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(scroll_to_zoom_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(scroll_to_zoom_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(scroll_to_zoom_desc) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_desc) });

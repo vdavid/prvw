@@ -31,6 +31,10 @@ pub struct Settings {
     #[serde(default)]
     pub use_relative_colorimetric: bool,
 
+    /// When true, scroll wheel/touchpad zooms the image. When false, scroll navigates images.
+    #[serde(default)]
+    pub scroll_to_zoom: bool,
+
     /// Previous default handler for each UTI before Prvw claimed it.
     /// Used to restore associations when the user turns off a file type toggle.
     /// Keys are UTIs (e.g., "public.jpeg"), values are bundle IDs (e.g., "com.apple.Preview").
@@ -51,6 +55,7 @@ impl Default for Settings {
             icc_color_management: true,
             color_match_display: true,
             use_relative_colorimetric: false,
+            scroll_to_zoom: false,
             previous_handlers: HashMap::new(),
         }
     }
@@ -115,6 +120,7 @@ mod tests {
         assert!(!settings.enlarge_small_images);
         assert!(settings.icc_color_management);
         assert!(settings.color_match_display);
+        assert!(!settings.scroll_to_zoom);
     }
 
     #[test]
@@ -128,6 +134,7 @@ mod tests {
             icc_color_management: false,
             color_match_display: false,
             use_relative_colorimetric: true,
+            scroll_to_zoom: true,
             previous_handlers: HashMap::from([(
                 "public.jpeg".to_string(),
                 "com.apple.Preview".to_string(),

@@ -196,6 +196,8 @@ struct App {
     color_match_display: bool,
     /// Whether to use relative colorimetric rendering intent instead of perceptual.
     use_relative_colorimetric: bool,
+    /// Whether scroll wheel/touchpad zooms (true) or navigates images (false).
+    scroll_to_zoom: bool,
     /// Current display scale factor (Retina = 2.0). Updated on window creation and
     /// `ScaleFactorChanged` events. Defaults to 2.0 before the window exists.
     scale_factor: f64,
@@ -244,6 +246,7 @@ impl App {
             icc_color_management: initial_settings.icc_color_management,
             color_match_display: initial_settings.color_match_display,
             use_relative_colorimetric: initial_settings.use_relative_colorimetric,
+            scroll_to_zoom: initial_settings.scroll_to_zoom,
             scale_factor: 2.0,
             waiting_for_file,
             wait_start: None,
@@ -1003,6 +1006,7 @@ impl App {
         state.pan_y = self.view_state.pan_y;
         state.auto_fit_window = self.auto_fit_window;
         state.enlarge_small_images = self.enlarge_small_images;
+        state.scroll_to_zoom = self.scroll_to_zoom;
 
         if let Some(win) = &self.window {
             let sf = win.scale_factor();
@@ -1261,6 +1265,14 @@ impl App {
                     menu.relative_colorimetric_item.set_checked(enabled);
                 }
                 self.flush_and_redisplay();
+            }
+            AppCommand::SetScrollToZoom(enabled) => {
+                self.scroll_to_zoom = enabled;
+                log::debug!("Scroll to zoom set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.scroll_to_zoom = enabled;
+                s.save();
+                self.update_shared_state();
             }
             #[cfg(target_os = "macos")]
             AppCommand::DisplayChanged => {
@@ -1532,21 +1544,29 @@ impl ApplicationHandler<AppCommand> for App {
                 }
             }
 
-            // Scroll zoom: cursor-centered, not a discrete command
+            // Scroll: zoom (when scroll_to_zoom is on or Cmd is held) or navigate images
             WindowEvent::MouseWheel { delta, .. } => {
                 let scroll_y = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
                 };
                 if scroll_y.abs() > f32::EPSILON {
-                    let old_zoom = self.view_state.zoom;
-                    let (cx, cy) = self.last_mouse_pos;
-                    self.view_state
-                        .scroll_zoom(scroll_y, cx.as_f32(), cy.as_f32());
-                    if self.auto_fit_window {
-                        self.auto_fit_after_zoom(old_zoom, cx, cy);
+                    let cmd_held = self.modifiers.super_key();
+                    if self.scroll_to_zoom || cmd_held {
+                        // Zoom centered on cursor
+                        let old_zoom = self.view_state.zoom;
+                        let (cx, cy) = self.last_mouse_pos;
+                        self.view_state
+                            .scroll_zoom(scroll_y, cx.as_f32(), cy.as_f32());
+                        if self.auto_fit_window {
+                            self.auto_fit_after_zoom(old_zoom, cx, cy);
+                        }
+                        self.update_transform_and_redraw();
+                    } else {
+                        // Navigate: scroll down = next, scroll up = previous
+                        let forward = scroll_y < 0.0;
+                        self.execute_command(event_loop, AppCommand::Navigate(forward));
                     }
-                    self.update_transform_and_redraw();
                 }
             }
 

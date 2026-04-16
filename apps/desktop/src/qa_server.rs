@@ -64,6 +64,8 @@ pub struct SharedAppState {
     pub auto_fit_window: bool,
     /// Whether small images are enlarged to fill the window.
     pub enlarge_small_images: bool,
+    /// Whether scroll zooms (true) or navigates images (false).
+    pub scroll_to_zoom: bool,
     /// Pre-formatted diagnostics text, updated by the main thread.
     pub diagnostics_text: String,
 }
@@ -92,6 +94,7 @@ impl Default for SharedAppState {
             min_zoom: 1.0,
             auto_fit_window: true,
             enlarge_small_images: false,
+            scroll_to_zoom: false,
             diagnostics_text: String::new(),
         }
     }
@@ -134,6 +137,8 @@ pub enum AppCommand {
     SetColorMatchDisplay(bool),
     /// Set rendering intent to relative colorimetric (false = perceptual).
     SetRelativeColorimetric(bool),
+    /// Set scroll-to-zoom mode (true = scroll zooms, false = scroll navigates).
+    SetScrollToZoom(bool),
 
     // ── Color management ─────────────────────────────────────────────
     /// The window moved to a different display — re-query the display ICC profile.
@@ -321,6 +326,7 @@ fn handle_request(
         ("POST", "/fullscreen") => handle_post_fullscreen(stream, proxy, &body, state),
         ("POST", "/auto-fit") => handle_post_auto_fit(stream, proxy, &body, state),
         ("POST", "/enlarge-small") => handle_post_enlarge_small(stream, proxy, &body, state),
+        ("POST", "/scroll-to-zoom") => handle_post_scroll_to_zoom(stream, proxy, &body, state),
         ("POST", "/open") => handle_post_open(stream, proxy, &body, state),
         ("POST", "/window-geometry") => handle_post_window_geometry(stream, proxy, &body, state),
         ("POST", "/scroll-zoom") => handle_post_scroll_zoom(stream, proxy, &body, state),
@@ -479,6 +485,20 @@ fn mcp_tools_list() -> Result<Value, Value> {
             {
                 "name": "auto_fit_window",
                 "description": "Control the auto-fit window setting. When enabled, the window resizes to match each loaded image.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "true to enable, false to disable."
+                        }
+                    },
+                    "required": ["enabled"]
+                }
+            },
+            {
+                "name": "scroll_to_zoom",
+                "description": "Control whether scroll zooms the image (true) or navigates between images (false).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -680,6 +700,21 @@ fn mcp_tools_call(
             content["state"] = state_json;
             Ok(content)
         }
+        "scroll_to_zoom" => {
+            let enabled = args["enabled"]
+                .as_bool()
+                .ok_or_else(|| json_rpc_error(-32602, "enabled must be a boolean"))?;
+            let state_json = send_and_wait(
+                proxy,
+                AppCommand::SetScrollToZoom(enabled),
+                state,
+                SYNC_TIMEOUT,
+            )?;
+            let label = if enabled { "enabled" } else { "disabled" };
+            let mut content = mcp_text_content(&format!("Scroll to zoom: {label}"));
+            content["state"] = state_json;
+            Ok(content)
+        }
         "enlarge_small_images" => {
             let enabled = args["enabled"]
                 .as_bool()
@@ -830,7 +865,7 @@ fn mcp_resources_list() -> Result<Value, Value> {
             {
                 "uri": "prvw://settings",
                 "name": "Settings",
-                "description": "Current settings (auto-update, auto-fit window, enlarge small images).",
+                "description": "Current settings (auto-update, scroll to zoom, auto-fit window, enlarge small images).",
                 "mimeType": "application/json"
             },
             {
@@ -867,6 +902,7 @@ fn mcp_resources_read(params: &Value, state: &Arc<Mutex<SharedAppState>>) -> Res
             let s = settings::Settings::load();
             let settings_json = json!({
                 "auto_update": s.auto_update,
+                "scroll_to_zoom": s.scroll_to_zoom,
                 "auto_fit_window": s.auto_fit_window,
                 "enlarge_small_images": s.enlarge_small_images,
             });
@@ -935,6 +971,7 @@ fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "fullscreen": s.fullscreen,
         "auto_fit_window": s.auto_fit_window,
         "enlarge_small_images": s.enlarge_small_images,
+        "scroll_to_zoom": s.scroll_to_zoom,
         "window_x": s.window_x,
         "window_y": s.window_y,
         "window_width": s.window_width,
@@ -1206,6 +1243,29 @@ fn handle_post_enlarge_small(
         AppCommand::SetEnlargeSmallImages(enabled),
         state,
     )
+}
+
+fn handle_post_scroll_to_zoom(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    let value = body.trim().to_lowercase();
+    let enabled = match value.as_str() {
+        "on" | "true" | "1" => true,
+        "off" | "false" | "0" => false,
+        _ => {
+            return write_response(
+                stream,
+                400,
+                "text/plain",
+                b"Body must be 'on'/'off', 'true'/'false', or '1'/'0'",
+                &[],
+            );
+        }
+    };
+    send_and_wait_http(stream, proxy, AppCommand::SetScrollToZoom(enabled), state)
 }
 
 fn handle_post_open(
