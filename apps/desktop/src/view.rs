@@ -27,6 +27,9 @@ pub struct ViewState {
     /// Window dimensions in logical pixels (points).
     window_width: Logical<f32>,
     window_height: Logical<f32>,
+    /// Vertical offset for the image area (top reserved area, e.g. for the title bar).
+    /// The image renders in window_height - content_offset_y logical pixels.
+    content_offset_y: Logical<f32>,
 }
 
 /// The transform data sent to the GPU uniform buffer.
@@ -49,7 +52,19 @@ impl ViewState {
             image_height: 1,
             window_width: Logical(1.0),
             window_height: Logical(1.0),
+            content_offset_y: Logical(0.0),
         }
+    }
+
+    /// The image area height: full window height minus the top reserved area.
+    fn effective_height(&self) -> Logical<f32> {
+        Logical((self.window_height.0 - self.content_offset_y.0).max(1.0))
+    }
+
+    /// Set the vertical offset for the image area (e.g. for a title bar reserved at the top).
+    pub fn set_content_offset_y(&mut self, offset: Logical<f32>) {
+        self.content_offset_y = offset;
+        self.clamp_pan();
     }
 
     /// Update image and window dimensions. Window dimensions must be in logical pixels.
@@ -67,17 +82,18 @@ impl ViewState {
         self.clamp_pan();
     }
 
-    /// The zoom level at which the image exactly fits the window (both axes visible).
+    /// The zoom level at which the image exactly fits the image area (both axes visible).
     pub fn fit_zoom(&self) -> f32 {
+        let eh = self.effective_height();
         if self.image_width == 0
             || self.image_height == 0
             || self.window_width.0 == 0.0
-            || self.window_height.0 == 0.0
+            || eh.0 == 0.0
         {
             return 1.0;
         }
         let scale_x = self.window_width.0 / self.image_width as f32;
-        let scale_y = self.window_height.0 / self.image_height as f32;
+        let scale_y = eh.0 / self.image_height as f32;
         scale_x.min(scale_y)
     }
 
@@ -138,7 +154,7 @@ impl ViewState {
         }
     }
 
-    /// Zoom in/out by keyboard shortcut (centered on window).
+    /// Zoom in/out by keyboard shortcut (centered on image area).
     pub fn keyboard_zoom(&mut self, zoom_in: bool) {
         let factor = if zoom_in {
             KEYBOARD_ZOOM_STEP
@@ -146,20 +162,22 @@ impl ViewState {
             1.0 / KEYBOARD_ZOOM_STEP
         };
         let cx = self.window_width / 2.0;
-        let cy = self.window_height / 2.0;
+        let cy = self.effective_height() / 2.0;
         self.zoom_around(factor, cx, cy);
     }
 
-    /// Apply zoom factor centered on a specific cursor position (in logical pixels).
+    /// Apply zoom factor centered on a specific cursor position (in logical pixels,
+    /// relative to the image area — i.e. cursor Y should already be offset by content_offset_y).
     fn zoom_around(&mut self, factor: f32, cursor_x: Logical<f32>, cursor_y: Logical<f32>) {
         let new_zoom = (self.zoom * factor).clamp(self.min_zoom, MAX_ZOOM);
         if (new_zoom - self.zoom).abs() < f32::EPSILON {
             return;
         }
 
-        // Convert cursor position to NDC (-1..1)
+        // Convert cursor position to NDC (-1..1) within the image area
+        let eh = self.effective_height();
         let ndc_x = (cursor_x.0 / self.window_width.0) * 2.0 - 1.0;
-        let ndc_y = -((cursor_y.0 / self.window_height.0) * 2.0 - 1.0);
+        let ndc_y = -((cursor_y.0 / eh.0) * 2.0 - 1.0);
 
         // Adjust pan so the point under the cursor stays fixed
         let ratio = 1.0 - new_zoom / self.zoom;
@@ -172,20 +190,22 @@ impl ViewState {
 
     /// Pan by logical pixel delta (from mouse drag). Positive dx = move image right.
     pub fn pan(&mut self, dx: Logical<f32>, dy: Logical<f32>) {
-        if self.window_width.0 == 0.0 || self.window_height.0 == 0.0 {
+        let eh = self.effective_height();
+        if self.window_width.0 == 0.0 || eh.0 == 0.0 {
             return;
         }
         self.pan_x += (dx.0 / self.window_width.0) * 2.0;
-        self.pan_y -= (dy.0 / self.window_height.0) * 2.0;
+        self.pan_y -= (dy.0 / eh.0) * 2.0;
         self.clamp_pan();
     }
 
-    /// Clamp pan so the image edges don't leave the window.
+    /// Clamp pan so the image edges don't leave the image area.
     fn clamp_pan(&mut self) {
         // Compute the NDC half-extents of the image quad.
-        // sx = (image_width * zoom) / window_width, sy = (image_height * zoom) / window_height
+        // sx = (image_width * zoom) / window_width, sy = (image_height * zoom) / effective_height
+        let eh = self.effective_height();
         let sx = self.image_width as f32 * self.zoom / self.window_width.0;
-        let sy = self.image_height as f32 * self.zoom / self.window_height.0;
+        let sy = self.image_height as f32 * self.zoom / eh.0;
 
         // When zoomed in (sx > 1): keep image edges covering the window.
         // When zoomed out (sx <= 1): center the image — no panning on that axis.
@@ -201,9 +221,10 @@ impl ViewState {
         // The image quad spans [-1, 1] on both axes in NDC.
         // Scale it so that `zoom` image pixels = `zoom` screen pixels.
         // sx = (image_width * zoom) / window_width
-        // sy = (image_height * zoom) / window_height
+        // sy = (image_height * zoom) / effective_height
+        let eh = self.effective_height();
         let sx = self.image_width as f32 * self.zoom / self.window_width.0;
-        let sy = self.image_height as f32 * self.zoom / self.window_height.0;
+        let sy = self.image_height as f32 * self.zoom / eh.0;
 
         TransformUniform {
             col0: [sx, 0.0, 0.0, sy],
@@ -212,16 +233,18 @@ impl ViewState {
     }
 
     /// Compute the rendered image rectangle in logical pixels: (x, y, width, height).
+    /// Coordinates are relative to the full window (Y includes the content offset).
     pub fn rendered_rect(&self) -> (Logical<f32>, Logical<f32>, Logical<f32>, Logical<f32>) {
         let t = self.transform();
+        let eh = self.effective_height();
         let sx = t.col0[0];
         let sy = t.col0[3];
         let tx = t.col1[0];
         let ty = t.col1[1];
         let left = ((tx - sx + 1.0) / 2.0) * self.window_width.0;
         let right = ((tx + sx + 1.0) / 2.0) * self.window_width.0;
-        let top = ((1.0 - ty - sy) / 2.0) * self.window_height.0;
-        let bottom = ((1.0 - ty + sy) / 2.0) * self.window_height.0;
+        let top = ((1.0 - ty - sy) / 2.0) * eh.0 + self.content_offset_y.0;
+        let bottom = ((1.0 - ty + sy) / 2.0) * eh.0 + self.content_offset_y.0;
         (
             Logical(left),
             Logical(top),

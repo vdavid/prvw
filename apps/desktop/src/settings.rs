@@ -35,6 +35,10 @@ pub struct Settings {
     #[serde(default)]
     pub scroll_to_zoom: bool,
 
+    /// When true, reserve 59px at the top so the title bar doesn't cover the image.
+    #[serde(default = "default_true")]
+    pub title_bar: bool,
+
     /// Previous default handler for each UTI before Prvw claimed it.
     /// Used to restore associations when the user turns off a file type toggle.
     /// Keys are UTIs (e.g., "public.jpeg"), values are bundle IDs (e.g., "com.apple.Preview").
@@ -56,6 +60,7 @@ impl Default for Settings {
             color_match_display: true,
             use_relative_colorimetric: false,
             scroll_to_zoom: false,
+            title_bar: true,
             previous_handlers: HashMap::new(),
         }
     }
@@ -121,6 +126,7 @@ mod tests {
         assert!(settings.icc_color_management);
         assert!(settings.color_match_display);
         assert!(!settings.scroll_to_zoom);
+        assert!(settings.title_bar);
     }
 
     #[test]
@@ -135,6 +141,7 @@ mod tests {
             color_match_display: false,
             use_relative_colorimetric: true,
             scroll_to_zoom: true,
+            title_bar: false,
             previous_handlers: HashMap::from([(
                 "public.jpeg".to_string(),
                 "com.apple.Preview".to_string(),

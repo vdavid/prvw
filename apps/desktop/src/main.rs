@@ -38,6 +38,10 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
+/// Height of the title bar area in logical pixels. When the title bar setting is on,
+/// the image area starts this many pixels below the top of the window.
+const TITLE_BAR_HEIGHT: f32 = 32.0;
+
 #[derive(Parser)]
 #[command(name = "prvw", about = "A fast, minimal image viewer")]
 struct Cli {
@@ -198,6 +202,8 @@ struct App {
     use_relative_colorimetric: bool,
     /// Whether scroll wheel/touchpad zooms (true) or navigates images (false).
     scroll_to_zoom: bool,
+    /// Whether to reserve space at the top for the title bar.
+    title_bar: bool,
     /// Current display scale factor (Retina = 2.0). Updated on window creation and
     /// `ScaleFactorChanged` events. Defaults to 2.0 before the window exists.
     scale_factor: f64,
@@ -247,11 +253,52 @@ impl App {
             color_match_display: initial_settings.color_match_display,
             use_relative_colorimetric: initial_settings.use_relative_colorimetric,
             scroll_to_zoom: initial_settings.scroll_to_zoom,
+            title_bar: initial_settings.title_bar,
             scale_factor: 2.0,
             waiting_for_file,
             wait_start: None,
             display_icc: color::srgb_icc_bytes().to_vec(),
         }
+    }
+
+    /// Compute the content offset based on the title_bar setting and fullscreen state.
+    fn content_offset_y(&self) -> Logical<f32> {
+        let is_fullscreen = self
+            .window
+            .as_ref()
+            .is_some_and(|w| window::is_fullscreen(w));
+        if self.title_bar && !is_fullscreen {
+            Logical(TITLE_BAR_HEIGHT)
+        } else {
+            Logical(0.0)
+        }
+    }
+
+    /// Apply the current content offset to the view state, resize the window if auto-fit
+    /// is on, and recalculate zoom.
+    fn apply_content_offset(&mut self) {
+        let offset = self.content_offset_y();
+        self.view_state.set_content_offset_y(offset);
+
+        // Resize window to add/remove the title bar area height
+        if self.auto_fit_window
+            && let (Some(win), Some((iw, ih))) = (&self.window, self.current_image_size)
+            && let Some(size) = window::resize_to_fit_image(win, iw, ih, offset)
+        {
+            let (pw, ph) = from_physical_size(size);
+            if let Some(renderer) = &mut self.renderer {
+                renderer.resize(pw, ph);
+                self.view_state.update_dimensions(
+                    iw,
+                    ih,
+                    renderer.logical_width(),
+                    renderer.logical_height(),
+                );
+            }
+        }
+
+        self.apply_initial_zoom();
+        self.update_transform_and_redraw();
     }
 
     /// Recalculate the zoom floor based on current image/window/settings state.
@@ -330,10 +377,11 @@ impl App {
 
         let new_zoom = self.view_state.zoom;
         let scale = win.scale_factor();
+        let offset = self.content_offset_y().0 as f64;
 
-        // Desired window = image * zoom (already in logical pixels with the new zoom model)
+        // Desired window = image * zoom + title bar area offset
         let desired_w = iw as f64 * new_zoom as f64;
-        let desired_h = ih as f64 * new_zoom as f64;
+        let desired_h = ih as f64 * new_zoom as f64 + offset;
 
         // Cap at screen bounds, floor at minimum
         let monitor_bounds = window::MonitorBounds::from_window(win);
@@ -469,6 +517,10 @@ impl App {
         // Create renderer (wgpu surface must be created here, in resumed())
         self.renderer = Some(renderer::Renderer::new(win.clone()));
 
+        // Set up title bar area before any image display
+        self.view_state
+            .set_content_offset_y(self.content_offset_y());
+
         // Configure ICC color management based on settings
         self.display_icc = self.effective_display_icc(&win);
         #[cfg(target_os = "macos")]
@@ -550,6 +602,7 @@ impl App {
         match image_loader::load_image(path, &self.display_icc, self.use_relative_colorimetric) {
             Ok(image) => {
                 self.current_image_size = Some((image.width, image.height));
+                let offset = self.content_offset_y();
 
                 let renderer = self.renderer.as_mut().unwrap();
 
@@ -558,7 +611,8 @@ impl App {
                 // so window.inner_size() would still return the OLD size.
                 if self.auto_fit_window
                     && let Some(win) = &self.window
-                    && let Some(size) = window::resize_to_fit_image(win, image.width, image.height)
+                    && let Some(size) =
+                        window::resize_to_fit_image(win, image.width, image.height, offset)
                 {
                     let (pw, ph) = from_physical_size(size);
                     renderer.resize(pw, ph);
@@ -610,6 +664,7 @@ impl App {
             return;
         }
 
+        let offset = self.content_offset_y();
         if let Some(image) = self.image_cache.get(index) {
             self.current_image_size = Some((image.width, image.height));
 
@@ -617,7 +672,8 @@ impl App {
 
             if self.auto_fit_window
                 && let Some(win) = &self.window
-                && let Some(size) = window::resize_to_fit_image(win, image.width, image.height)
+                && let Some(size) =
+                    window::resize_to_fit_image(win, image.width, image.height, offset)
             {
                 let (pw, ph) = from_physical_size(size);
                 renderer.resize(pw, ph);
@@ -1007,6 +1063,7 @@ impl App {
         state.auto_fit_window = self.auto_fit_window;
         state.enlarge_small_images = self.enlarge_small_images;
         state.scroll_to_zoom = self.scroll_to_zoom;
+        state.title_bar = self.title_bar;
 
         if let Some(win) = &self.window {
             let sf = win.scale_factor();
@@ -1204,7 +1261,7 @@ impl App {
                 if enabled
                     && let (Some(win), Some((iw, ih))) = (&self.window, self.current_image_size)
                 {
-                    window::resize_to_fit_image(win, iw, ih);
+                    window::resize_to_fit_image(win, iw, ih, self.content_offset_y());
                 }
                 // Re-apply zoom: auto-fit changes whether min_zoom can go below 1.0
                 self.apply_initial_zoom();
@@ -1272,6 +1329,15 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.scroll_to_zoom = enabled;
                 s.save();
+                self.update_shared_state();
+            }
+            AppCommand::SetTitleBar(enabled) => {
+                self.title_bar = enabled;
+                log::debug!("Title bar set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.title_bar = enabled;
+                s.save();
+                self.apply_content_offset();
                 self.update_shared_state();
             }
             #[cfg(target_os = "macos")]
@@ -1394,8 +1460,9 @@ impl App {
                 cursor_y,
             } => {
                 let old_zoom = self.view_state.zoom;
+                let image_cy = cursor_y - self.content_offset_y().0;
                 self.view_state
-                    .scroll_zoom(delta, Logical(cursor_x), Logical(cursor_y));
+                    .scroll_zoom(delta, Logical(cursor_x), Logical(image_cy));
                 if self.auto_fit_window {
                     self.auto_fit_after_zoom(
                         old_zoom,
@@ -1493,6 +1560,9 @@ impl ApplicationHandler<AppCommand> for App {
 
             WindowEvent::Resized(size) => {
                 log::debug!("Window resized to {}x{}", size.width, size.height);
+                // Re-apply content offset (may change on fullscreen transitions)
+                self.view_state
+                    .set_content_offset_y(self.content_offset_y());
                 if let Some(renderer) = &mut self.renderer {
                     let (pw, ph) = from_physical_size(size);
                     renderer.resize(pw, ph);
@@ -1518,10 +1588,11 @@ impl ApplicationHandler<AppCommand> for App {
                 if self.needs_redraw {
                     log::trace!("Rendering frame");
                     let text_blocks = self.build_text_overlay();
+                    let offset = self.content_offset_y();
                     let rendered = self
                         .renderer
                         .as_mut()
-                        .is_some_and(|renderer| renderer.render(&text_blocks));
+                        .is_some_and(|renderer| renderer.render(&text_blocks, offset));
                     if rendered {
                         self.needs_redraw = false;
                     } else {
@@ -1553,11 +1624,12 @@ impl ApplicationHandler<AppCommand> for App {
                 if scroll_y.abs() > f32::EPSILON {
                     let cmd_held = self.modifiers.super_key();
                     if self.scroll_to_zoom || cmd_held {
-                        // Zoom centered on cursor
+                        // Zoom centered on cursor (Y offset into image area)
                         let old_zoom = self.view_state.zoom;
                         let (cx, cy) = self.last_mouse_pos;
+                        let offset = Logical(self.content_offset_y().0 as f64);
                         self.view_state
-                            .scroll_zoom(scroll_y, cx.as_f32(), cy.as_f32());
+                            .scroll_zoom(scroll_y, cx.as_f32(), (cy - offset).as_f32());
                         if self.auto_fit_window {
                             self.auto_fit_after_zoom(old_zoom, cx, cy);
                         }
@@ -1576,7 +1648,9 @@ impl ApplicationHandler<AppCommand> for App {
                 if delta.abs() > f32::EPSILON {
                     let old_zoom = self.view_state.zoom;
                     let (cx, cy) = self.last_mouse_pos;
-                    self.view_state.pinch_zoom(delta, cx.as_f32(), cy.as_f32());
+                    let offset = Logical(self.content_offset_y().0 as f64);
+                    self.view_state
+                        .pinch_zoom(delta, cx.as_f32(), (cy - offset).as_f32());
                     if self.auto_fit_window {
                         self.auto_fit_after_zoom(old_zoom, cx, cy);
                     }

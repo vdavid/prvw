@@ -1212,6 +1212,13 @@ define_class!(
             }
         }
 
+        #[unsafe(method(toggleTitleBar:))]
+        fn toggle_title_bar(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            log::debug!("Title bar toggled via settings: {on}");
+            crate::qa_server::send_command(crate::qa_server::AppCommand::SetTitleBar(on));
+        }
+
         #[unsafe(method(selectGeneral:))]
         fn select_general(&self, _sender: &AnyObject) {
             self.select_panel(0);
@@ -1468,6 +1475,15 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         mtm,
     );
 
+    let (title_bar_row, title_bar_toggle, title_bar_desc) = make_setting_row(
+        "Title bar",
+        "Reserve space at the top so the title bar doesn\u{2019}t cover the image.",
+        settings.title_bar,
+        false,
+        content_max_width,
+        mtm,
+    );
+
     let (auto_fit_row, auto_fit_toggle, auto_fit_desc) = make_setting_row(
         "Auto-fit window",
         "Resize the window to match each image.",
@@ -1523,23 +1539,27 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     let cm_desc_ref = unsafe { as_view::<NSTextField>(&cm_desc) };
 
     let scroll_to_zoom_desc_ref = unsafe { as_view::<NSTextField>(&scroll_to_zoom_desc) };
+    let title_bar_desc_ref = unsafe { as_view::<NSTextField>(&title_bar_desc) };
 
-    // General panel: Auto-update + Scroll to zoom
+    // General panel: Auto-update + Scroll to zoom + Title bar
     let general_panel = make_vertical_stack(
         &[
             unsafe { as_view::<NSStackView>(&auto_update_row) },
             auto_update_desc_ref,
             unsafe { as_view::<NSStackView>(&scroll_to_zoom_row) },
             scroll_to_zoom_desc_ref,
+            unsafe { as_view::<NSStackView>(&title_bar_row) },
+            title_bar_desc_ref,
         ],
         8.0,
         mtm,
     );
     general_panel.setAlignment(NSLayoutAttribute::Leading);
     general_panel.setCustomSpacing_afterView(16.0, auto_update_desc_ref);
+    general_panel.setCustomSpacing_afterView(16.0, scroll_to_zoom_desc_ref);
 
     // Pin toggle rows to full panel width
-    for row in [&auto_update_row, &scroll_to_zoom_row] {
+    for row in [&auto_update_row, &scroll_to_zoom_row, &title_bar_row] {
         let c = unsafe {
             NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
                 row, NSLayoutAttribute::Width,
@@ -1805,6 +1825,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
         scroll_to_zoom_toggle.setTarget(Some(&delegate as &AnyObject));
         scroll_to_zoom_toggle.setAction(Some(sel!(toggleScrollToZoom:)));
+
+        title_bar_toggle.setTarget(Some(&delegate as &AnyObject));
+        title_bar_toggle.setAction(Some(sel!(toggleTitleBar:)));
 
         auto_fit_toggle.setTarget(Some(&delegate as &AnyObject));
         auto_fit_toggle.setAction(Some(sel!(toggleAutoFitWindow:)));
@@ -2165,6 +2188,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(scroll_to_zoom_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(scroll_to_zoom_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(scroll_to_zoom_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(title_bar_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(title_bar_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(title_bar_desc) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_desc) });

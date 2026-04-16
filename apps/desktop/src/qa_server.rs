@@ -66,6 +66,8 @@ pub struct SharedAppState {
     pub enlarge_small_images: bool,
     /// Whether scroll zooms (true) or navigates images (false).
     pub scroll_to_zoom: bool,
+    /// Whether the title bar area is reserved at the top.
+    pub title_bar: bool,
     /// Pre-formatted diagnostics text, updated by the main thread.
     pub diagnostics_text: String,
 }
@@ -95,6 +97,7 @@ impl Default for SharedAppState {
             auto_fit_window: true,
             enlarge_small_images: false,
             scroll_to_zoom: false,
+            title_bar: true,
             diagnostics_text: String::new(),
         }
     }
@@ -139,6 +142,8 @@ pub enum AppCommand {
     SetRelativeColorimetric(bool),
     /// Set scroll-to-zoom mode (true = scroll zooms, false = scroll navigates).
     SetScrollToZoom(bool),
+    /// Set title bar mode (true = reserve a strip at the top, false = image fills window).
+    SetTitleBar(bool),
 
     // ── Color management ─────────────────────────────────────────────
     /// The window moved to a different display — re-query the display ICC profile.
@@ -327,6 +332,7 @@ fn handle_request(
         ("POST", "/auto-fit") => handle_post_auto_fit(stream, proxy, &body, state),
         ("POST", "/enlarge-small") => handle_post_enlarge_small(stream, proxy, &body, state),
         ("POST", "/scroll-to-zoom") => handle_post_scroll_to_zoom(stream, proxy, &body, state),
+        ("POST", "/title-bar") => handle_post_title_bar(stream, proxy, &body, state),
         ("POST", "/open") => handle_post_open(stream, proxy, &body, state),
         ("POST", "/window-geometry") => handle_post_window_geometry(stream, proxy, &body, state),
         ("POST", "/scroll-zoom") => handle_post_scroll_zoom(stream, proxy, &body, state),
@@ -485,6 +491,20 @@ fn mcp_tools_list() -> Result<Value, Value> {
             {
                 "name": "auto_fit_window",
                 "description": "Control the auto-fit window setting. When enabled, the window resizes to match each loaded image.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "true to enable, false to disable."
+                        }
+                    },
+                    "required": ["enabled"]
+                }
+            },
+            {
+                "name": "title_bar",
+                "description": "Control the title bar area. When enabled, a strip at the top is reserved so the title bar doesn't cover the image.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -700,6 +720,17 @@ fn mcp_tools_call(
             content["state"] = state_json;
             Ok(content)
         }
+        "title_bar" => {
+            let enabled = args["enabled"]
+                .as_bool()
+                .ok_or_else(|| json_rpc_error(-32602, "enabled must be a boolean"))?;
+            let state_json =
+                send_and_wait(proxy, AppCommand::SetTitleBar(enabled), state, SYNC_TIMEOUT)?;
+            let label = if enabled { "enabled" } else { "disabled" };
+            let mut content = mcp_text_content(&format!("Title bar: {label}"));
+            content["state"] = state_json;
+            Ok(content)
+        }
         "scroll_to_zoom" => {
             let enabled = args["enabled"]
                 .as_bool()
@@ -865,7 +896,7 @@ fn mcp_resources_list() -> Result<Value, Value> {
             {
                 "uri": "prvw://settings",
                 "name": "Settings",
-                "description": "Current settings (auto-update, scroll to zoom, auto-fit window, enlarge small images).",
+                "description": "Current settings (auto-update, scroll to zoom, title bar, auto-fit window, enlarge small images).",
                 "mimeType": "application/json"
             },
             {
@@ -903,6 +934,7 @@ fn mcp_resources_read(params: &Value, state: &Arc<Mutex<SharedAppState>>) -> Res
             let settings_json = json!({
                 "auto_update": s.auto_update,
                 "scroll_to_zoom": s.scroll_to_zoom,
+                "title_bar": s.title_bar,
                 "auto_fit_window": s.auto_fit_window,
                 "enlarge_small_images": s.enlarge_small_images,
             });
@@ -972,6 +1004,7 @@ fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "auto_fit_window": s.auto_fit_window,
         "enlarge_small_images": s.enlarge_small_images,
         "scroll_to_zoom": s.scroll_to_zoom,
+        "title_bar": s.title_bar,
         "window_x": s.window_x,
         "window_y": s.window_y,
         "window_width": s.window_width,
@@ -1266,6 +1299,29 @@ fn handle_post_scroll_to_zoom(
         }
     };
     send_and_wait_http(stream, proxy, AppCommand::SetScrollToZoom(enabled), state)
+}
+
+fn handle_post_title_bar(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    let value = body.trim().to_lowercase();
+    let enabled = match value.as_str() {
+        "on" | "true" | "1" => true,
+        "off" | "false" | "0" => false,
+        _ => {
+            return write_response(
+                stream,
+                400,
+                "text/plain",
+                b"Body must be 'on'/'off', 'true'/'false', or '1'/'0'",
+                &[],
+            );
+        }
+    };
+    send_and_wait_http(stream, proxy, AppCommand::SetTitleBar(enabled), state)
 }
 
 fn handle_post_open(

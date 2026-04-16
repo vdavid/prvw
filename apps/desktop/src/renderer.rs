@@ -373,7 +373,9 @@ impl Renderer {
 
     /// Render the current image with optional text overlays. Returns false if the surface
     /// isn't ready. Pill backgrounds are computed from actual text measurements.
-    pub fn render(&mut self, text_blocks: &[TextBlock]) -> bool {
+    /// Render the current frame. `content_offset_y` is the area reserved at the top in logical
+    /// pixels — the image renders below it while pills/text render across the full surface.
+    pub fn render(&mut self, text_blocks: &[TextBlock], content_offset_y: Logical<f32>) -> bool {
         let surface_texture = self.surface.get_current_texture();
         let output = match surface_texture {
             wgpu::CurrentSurfaceTexture::Success(tex)
@@ -454,11 +456,17 @@ impl Renderer {
                 multiview_mask: None,
             });
 
-            // Draw image if loaded
+            // Draw image if loaded — confined to the image area below the title bar
             if let Some(bind_group) = &self.bind_group {
+                let offset_px = (content_offset_y.0 as f64 * self.scale_factor) as f32;
+                let sw = self.config.width as f32;
+                let sh = self.config.height as f32;
+                pass.set_viewport(0.0, offset_px, sw, (sh - offset_px).max(1.0), 0.0, 1.0);
                 pass.set_pipeline(&self.render_pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
                 pass.draw(0..6, 0..1);
+                // Reset viewport to full surface for pills and text
+                pass.set_viewport(0.0, 0.0, sw, sh, 0.0, 1.0);
             }
 
             // Draw pill backgrounds (between image and text), each with its own bind group

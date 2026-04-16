@@ -233,12 +233,14 @@ pub fn resize_to_fit_image(
     window: &Window,
     image_width: u32,
     image_height: u32,
+    content_offset_y: Logical<f32>,
 ) -> Option<PhysicalSize<u32>> {
     if is_fullscreen(window) {
         return None;
     }
 
     let scale_factor = window.scale_factor();
+    let offset = content_offset_y.0 as f64;
 
     // Get the monitor's work area (excluding dock/menu bar)
     let (max_w, max_h) = MonitorBounds::from_window(window)
@@ -251,11 +253,12 @@ pub fn resize_to_fit_image(
     // Apply the minimum floor first, then scale down proportionally to fit within the
     // screen cap. Scaling must happen on the un-clamped dimensions to preserve aspect ratio —
     // clamping first would make both axes fit independently, losing the ratio.
+    // The offset is added after scaling — it's a fixed overhead, not part of the image.
     let img_w = (image_width as f64).max(MIN_WINDOW_DIM);
     let img_h = (image_height as f64).max(MIN_WINDOW_DIM);
-    let scale = (max_w / img_w).min(max_h / img_h).min(1.0);
+    let scale = (max_w / img_w).min((max_h - offset) / img_h).min(1.0);
     let final_w = (img_w * scale).max(MIN_WINDOW_DIM);
-    let final_h = (img_h * scale).max(MIN_WINDOW_DIM);
+    let final_h = (img_h * scale + offset).max(MIN_WINDOW_DIM);
 
     let new_size = to_logical_size(Logical(final_w), Logical(final_h));
     let (pw, ph) = from_physical_size(new_size.to_physical::<u32>(scale_factor));
