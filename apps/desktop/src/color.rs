@@ -75,7 +75,11 @@ pub fn transform_icc(
     let pixel_count = rgba.len() / 4;
     let source_desc = profile_description(&source);
     let target_desc = profile_description(&target);
-    let intent_name = if use_relative_colorimetric { "relative" } else { "perceptual" };
+    let intent_name = if use_relative_colorimetric {
+        "relative"
+    } else {
+        "perceptual"
+    };
     let pixel_count_fmt = format_with_separators(pixel_count);
     log::debug!(
         "ICC transform: {source_desc} -> {target_desc}, {intent_name} ({pixel_count_fmt} pixels) in {}ms",

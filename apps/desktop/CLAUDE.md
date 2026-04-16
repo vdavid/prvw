@@ -81,9 +81,13 @@ The app struct implements `winit::application::ApplicationHandler`. The event lo
       exits, the timer is invalidated and views are dropped.
     - **About and Settings** are non-modal: `makeKeyAndOrderFront` + `mem::forget` the retained views. A deduplication
       guard (`is_window_already_open`) prevents stacking. FIXME: views leak on close/reopen (see code comments).
-    - **Settings** uses a `define_class!` delegate (`SettingsDelegate`) for the NSSwitch toggle actions. Toggles apply
-      immediately (no confirm step) — the button is "Close", not "OK". Changes route through
-      `AppCommand::SetAutoFitWindow` / disk write so the menu checkmarks and app state stay in sync.
+    - **Settings** uses a sidebar + content panel layout (like macOS System Settings). Three sections: General, Zoom,
+      Color. The `SettingsDelegate` (via `define_class!` with `SettingsDelegateIvars`) holds raw pointers to dependent
+      toggles and all three panels. Sidebar buttons use `AccessoryBarAction` bezel style with `PushOnPushOff` button
+      type. Panel switching shows/hides NSStackView panels. Cross-dependencies: ICC off disables Color match display
+      and Relative colorimetric toggles; Auto-fit on disables Enlarge small images. All views (toggles, panels, sidebar
+      buttons) are created first, then the delegate is created with ivars pointing to them, then target/action is wired.
+      Toggles apply immediately (no confirm step) via `AppCommand` through the global event loop proxy.
 
 - **Global event loop proxy** (`qa_server.rs`): A `OnceLock<EventLoopProxy<AppCommand>>` is set once in `resumed()`.
   This lets non-event-loop code (like the native Settings delegate) send commands into the main loop. Used by

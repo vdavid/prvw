@@ -922,17 +922,34 @@ pub fn close_onboarding_window() {
 
 // ─── Settings window ──────────────────────────────────────────────────────
 
+struct SettingsDelegateIvars {
+    enlarge_toggle: *const NSSwitch,
+    color_match_toggle: *const NSSwitch,
+    relative_col_toggle: *const NSSwitch,
+    general_panel: *const NSStackView,
+    zoom_panel: *const NSStackView,
+    color_panel: *const NSStackView,
+    sidebar_general_btn: *const NSButton,
+    sidebar_zoom_btn: *const NSButton,
+    sidebar_color_btn: *const NSButton,
+}
+
+// SAFETY: Raw pointers are only used on the main thread within the window's lifetime,
+// and the pointed-to objects are kept alive by retained_views.
+unsafe impl Send for SettingsDelegateIvars {}
+unsafe impl Sync for SettingsDelegateIvars {}
+
 define_class!(
     // SAFETY: NSObject has no subclassing requirements. This type doesn't impl Drop.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "PrvwSettingsDelegate"]
+    #[ivars = SettingsDelegateIvars]
     struct SettingsDelegate;
 
     unsafe impl NSObjectProtocol for SettingsDelegate {}
 
     impl SettingsDelegate {
-        /// Called when the auto-update NSSwitch is flipped.
         #[unsafe(method(toggleAutoUpdate:))]
         fn toggle_auto_update(&self, sender: &NSSwitch) {
             let on = sender.state() == NSControlStateValueOn;
@@ -942,14 +959,17 @@ define_class!(
             settings.save();
         }
 
-        /// Called when the auto-fit window NSSwitch is flipped.
-        /// Sends a command through the event loop so the App updates its state, the menu
-        /// checkmark, and persists the setting — all in one place.
         #[unsafe(method(toggleAutoFitWindow:))]
         fn toggle_auto_fit_window(&self, sender: &NSSwitch) {
             let on = sender.state() == NSControlStateValueOn;
             log::debug!("Auto-fit window toggled via settings: {on}");
             crate::qa_server::send_command(crate::qa_server::AppCommand::SetAutoFitWindow(on));
+            unsafe {
+                let enlarge = self.ivars().enlarge_toggle;
+                if !enlarge.is_null() {
+                    let _: () = msg_send![enlarge, setEnabled: !on];
+                }
+            }
         }
 
         #[unsafe(method(toggleEnlargeSmallImages:))]
@@ -960,14 +980,154 @@ define_class!(
                 crate::qa_server::AppCommand::SetEnlargeSmallImages(on),
             );
         }
+
+        #[unsafe(method(toggleIccColorManagement:))]
+        fn toggle_icc_color_management(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            log::debug!("ICC color management toggled via settings: {on}");
+            crate::qa_server::send_command(
+                crate::qa_server::AppCommand::SetIccColorManagement(on),
+            );
+            unsafe {
+                let cm = self.ivars().color_match_toggle;
+                if !cm.is_null() {
+                    let _: () = msg_send![cm, setEnabled: on];
+                }
+                let rc = self.ivars().relative_col_toggle;
+                if !rc.is_null() {
+                    let _: () = msg_send![rc, setEnabled: on];
+                }
+            }
+        }
+
+        #[unsafe(method(toggleColorMatchDisplay:))]
+        fn toggle_color_match_display(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            log::debug!("Color match display toggled via settings: {on}");
+            crate::qa_server::send_command(
+                crate::qa_server::AppCommand::SetColorMatchDisplay(on),
+            );
+        }
+
+        #[unsafe(method(toggleRelativeColorimetric:))]
+        fn toggle_relative_colorimetric(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            log::debug!("Relative colorimetric toggled via settings: {on}");
+            crate::qa_server::send_command(
+                crate::qa_server::AppCommand::SetRelativeColorimetric(on),
+            );
+        }
+
+        #[unsafe(method(selectGeneral:))]
+        fn select_general(&self, _sender: &AnyObject) {
+            self.select_panel(0);
+        }
+
+        #[unsafe(method(selectZoom:))]
+        fn select_zoom(&self, _sender: &AnyObject) {
+            self.select_panel(1);
+        }
+
+        #[unsafe(method(selectColor:))]
+        fn select_color(&self, _sender: &AnyObject) {
+            self.select_panel(2);
+        }
     }
 );
 
 impl SettingsDelegate {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = mtm.alloc().set_ivars(());
+    fn new(mtm: MainThreadMarker, ivars: SettingsDelegateIvars) -> Retained<Self> {
+        let this = mtm.alloc().set_ivars(ivars);
         unsafe { msg_send![super(this), init] }
     }
+
+    fn select_panel(&self, index: usize) {
+        let ivars = self.ivars();
+        let panels = [ivars.general_panel, ivars.zoom_panel, ivars.color_panel];
+        let buttons = [
+            ivars.sidebar_general_btn,
+            ivars.sidebar_zoom_btn,
+            ivars.sidebar_color_btn,
+        ];
+        for (i, &panel) in panels.iter().enumerate() {
+            if !panel.is_null() {
+                let hidden = i != index;
+                unsafe {
+                    let _: () = msg_send![panel, setHidden: hidden];
+                }
+            }
+        }
+        for (i, &btn) in buttons.iter().enumerate() {
+            if !btn.is_null() {
+                let state = if i == index {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                };
+                unsafe {
+                    let _: () = msg_send![btn, setState: state];
+                }
+            }
+        }
+    }
+}
+
+/// Create a wrapping description label using `[NSTextField wrappingLabelWithString:]`.
+fn make_wrapping_label(text: &str, max_width: f64) -> Retained<NSTextField> {
+    unsafe {
+        let ns_str = NSString::from_str(text);
+        let label: Retained<NSTextField> =
+            msg_send![objc2::class!(NSTextField), wrappingLabelWithString: &*ns_str];
+        label.setFont(Some(&NSFont::systemFontOfSize(12.0)));
+        label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        let _: () = msg_send![&*label, setPreferredMaxLayoutWidth: max_width];
+        label
+    }
+}
+
+/// Create a toggle row (label + NSSwitch) and a description label underneath.
+/// Returns (row_stack, toggle, desc_label).
+fn make_setting_row(
+    title: &str,
+    description: &str,
+    is_on: bool,
+    wrapping: bool,
+    max_width: f64,
+    mtm: MainThreadMarker,
+) -> (
+    Retained<NSStackView>,
+    Retained<NSSwitch>,
+    Retained<NSTextField>,
+) {
+    let label = make_label(title, 14.0, mtm);
+    label.setAlignment(NSTextAlignment(0));
+
+    let toggle = NSSwitch::new(mtm);
+    toggle.setState(if is_on {
+        NSControlStateValueOn
+    } else {
+        NSControlStateValueOff
+    });
+
+    let row = NSStackView::new(mtm);
+    row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    row.setSpacing(12.0);
+    row.addArrangedSubview(unsafe { as_view::<NSTextField>(&label) });
+    row.addArrangedSubview(unsafe { as_view::<NSSwitch>(&toggle) });
+
+    let desc = if wrapping {
+        make_wrapping_label(description, max_width)
+    } else {
+        let d = make_label(description, 12.0, mtm);
+        d.setAlignment(NSTextAlignment(0));
+        d.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        d
+    };
+
+    // Keep the label alive (it's added to the row via addArrangedSubview)
+    std::mem::forget(label);
+
+    (row, toggle, desc)
 }
 
 /// Show the Settings window as a non-modal NSWindow.
@@ -991,7 +1151,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::FullSizeContentView;
 
-    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 330.0));
+    let content_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(620.0, 460.0));
 
     let window = unsafe {
         let window = NSWindow::initWithContentRect_styleMask_backing_defer(
@@ -1014,222 +1174,417 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
     let mut retained_views: Vec<Retained<AnyObject>> = Vec::new();
 
-    // Add frosted glass background
     add_vibrancy_background(&window, mtm, &mut retained_views);
 
     let settings = crate::settings::Settings::load();
+    let content_max_width = 400.0;
 
-    // Action delegate for the toggle
-    let delegate = SettingsDelegate::new(mtm);
+    // ── Sidebar buttons ───────────────────────────────────────────────
 
-    // Auto-update label
-    let toggle_label = make_label("Auto-update", 14.0, mtm);
-    toggle_label.setAlignment(NSTextAlignment(0)); // NSTextAlignmentLeft
+    let mut make_sidebar_button = |title: &str| -> Retained<NSButton> {
+        unsafe {
+            let btn = NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(title),
+                None,
+                None,
+                mtm,
+            );
+            btn.setBezelStyle(NSBezelStyle::AccessoryBarAction);
+            let _: () = msg_send![&*btn, setButtonType: 1i64]; // PushOnPushOff
+            let _: () = msg_send![&*btn, setAlignment: 0i64]; // NSTextAlignmentLeft
 
-    // NSSwitch toggle
-    let toggle = NSSwitch::new(mtm);
-    let initial_state = if settings.auto_update {
-        NSControlStateValueOn
-    } else {
-        NSControlStateValueOff
+            // Fixed width
+            let w = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                &btn, NSLayoutAttribute::Width,
+                NSLayoutRelation::Equal,
+                None::<&AnyObject>, NSLayoutAttribute::NotAnAttribute,
+                1.0, 140.0,
+            );
+            w.setActive(true);
+            retained_views.push(Retained::cast_unchecked(w));
+
+            btn
+        }
     };
-    toggle.setState(initial_state);
 
-    // Wire the action: when toggled, call SettingsDelegate::toggleAutoUpdate:
-    unsafe {
-        toggle.setTarget(Some(&delegate as &AnyObject));
-        toggle.setAction(Some(sel!(toggleAutoUpdate:)));
-    }
+    let sidebar_general_btn = make_sidebar_button("General");
+    let sidebar_zoom_btn = make_sidebar_button("Zoom");
+    let sidebar_color_btn = make_sidebar_button("Color");
 
-    // Horizontal row: label + toggle
-    let label_ref = unsafe { as_view::<NSTextField>(&toggle_label) };
-    let toggle_ref = unsafe { as_view::<NSSwitch>(&toggle) };
+    // General starts selected
+    sidebar_general_btn.setState(NSControlStateValueOn);
 
-    let toggle_row = NSStackView::new(mtm);
-    toggle_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    toggle_row.setSpacing(12.0);
-    toggle_row.addArrangedSubview(label_ref);
-    toggle_row.addArrangedSubview(toggle_ref);
+    let sidebar_stack = NSStackView::new(mtm);
+    sidebar_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    sidebar_stack.setAlignment(NSLayoutAttribute::Leading);
+    sidebar_stack.setSpacing(2.0);
+    sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_general_btn) });
+    sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_zoom_btn) });
+    sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_color_btn) });
 
-    // Auto-update description label
-    let desc_label = make_label("Check for updates when Prvw starts.", 12.0, mtm);
-    desc_label.setAlignment(NSTextAlignment(0)); // NSTextAlignmentLeft
-    let secondary_color = NSColor::secondaryLabelColor();
-    desc_label.setTextColor(Some(&secondary_color));
+    // ── General panel ─────────────────────────────────────────────────
 
-    // ── Auto-fit window toggle ───────────────────────────────────────
-
-    let auto_fit_label = make_label("Auto-fit window", 14.0, mtm);
-    auto_fit_label.setAlignment(NSTextAlignment(0));
-
-    let auto_fit_toggle = NSSwitch::new(mtm);
-    let auto_fit_state = if settings.auto_fit_window {
-        NSControlStateValueOn
-    } else {
-        NSControlStateValueOff
-    };
-    auto_fit_toggle.setState(auto_fit_state);
-
-    unsafe {
-        auto_fit_toggle.setTarget(Some(&delegate as &AnyObject));
-        auto_fit_toggle.setAction(Some(sel!(toggleAutoFitWindow:)));
-    }
-
-    let auto_fit_label_ref = unsafe { as_view::<NSTextField>(&auto_fit_label) };
-    let auto_fit_toggle_ref = unsafe { as_view::<NSSwitch>(&auto_fit_toggle) };
-
-    let auto_fit_row = NSStackView::new(mtm);
-    auto_fit_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    auto_fit_row.setSpacing(12.0);
-    auto_fit_row.addArrangedSubview(auto_fit_label_ref);
-    auto_fit_row.addArrangedSubview(auto_fit_toggle_ref);
-
-    let auto_fit_desc_label = make_label("Resize the window to match each image.", 12.0, mtm);
-    auto_fit_desc_label.setAlignment(NSTextAlignment(0));
-    auto_fit_desc_label.setTextColor(Some(&secondary_color));
-
-    // ── Enlarge small images toggle ──────────────────────────────────
-
-    let enlarge_label = make_label("Enlarge small images", 14.0, mtm);
-    enlarge_label.setAlignment(NSTextAlignment(0));
-
-    let enlarge_toggle = NSSwitch::new(mtm);
-    let enlarge_state = if settings.enlarge_small_images {
-        NSControlStateValueOn
-    } else {
-        NSControlStateValueOff
-    };
-    enlarge_toggle.setState(enlarge_state);
-    // Disabled when auto-fit is on
-    enlarge_toggle.setEnabled(!settings.auto_fit_window);
-
-    unsafe {
-        enlarge_toggle.setTarget(Some(&delegate as &AnyObject));
-        enlarge_toggle.setAction(Some(sel!(toggleEnlargeSmallImages:)));
-    }
-
-    let enlarge_label_ref = unsafe { as_view::<NSTextField>(&enlarge_label) };
-    let enlarge_toggle_ref = unsafe { as_view::<NSSwitch>(&enlarge_toggle) };
-
-    let enlarge_row = NSStackView::new(mtm);
-    enlarge_row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    enlarge_row.setSpacing(12.0);
-    enlarge_row.addArrangedSubview(enlarge_label_ref);
-    enlarge_row.addArrangedSubview(enlarge_toggle_ref);
-
-    let enlarge_desc_label = make_label(
-        "Scale up images smaller than the window. Off by default to avoid pixelation.",
-        12.0,
+    let (auto_update_row, auto_update_toggle, auto_update_desc) = make_setting_row(
+        "Auto-update",
+        "Check for updates when Prvw starts.",
+        settings.auto_update,
+        false,
+        content_max_width,
         mtm,
     );
-    enlarge_desc_label.setAlignment(NSTextAlignment(0));
-    enlarge_desc_label.setTextColor(Some(&secondary_color));
 
-    // Close button
-    let ok_button = make_close_button("Close", &window, mtm);
+    let general_panel = make_vertical_stack(
+        &[
+            unsafe { as_view::<NSStackView>(&auto_update_row) },
+            unsafe { as_view::<NSTextField>(&auto_update_desc) },
+        ],
+        8.0,
+        mtm,
+    );
+    general_panel.setAlignment(NSLayoutAttribute::Leading);
 
-    // Hidden ESC button to close with Escape key
+    // ── Zoom panel ────────────────────────────────────────────────────
+
+    let (auto_fit_row, auto_fit_toggle, auto_fit_desc) = make_setting_row(
+        "Auto-fit window",
+        "Resize the window to match each image.",
+        settings.auto_fit_window,
+        false,
+        content_max_width,
+        mtm,
+    );
+
+    let (enlarge_row, enlarge_toggle, enlarge_desc) = make_setting_row(
+        "Enlarge small images",
+        "Scale up images smaller than the window. Off by default to avoid pixelation.",
+        settings.enlarge_small_images,
+        false,
+        content_max_width,
+        mtm,
+    );
+    enlarge_toggle.setEnabled(!settings.auto_fit_window);
+
+    let auto_fit_desc_ref = unsafe { as_view::<NSTextField>(&auto_fit_desc) };
+    let zoom_panel = make_vertical_stack(
+        &[
+            unsafe { as_view::<NSStackView>(&auto_fit_row) },
+            auto_fit_desc_ref,
+            unsafe { as_view::<NSStackView>(&enlarge_row) },
+            unsafe { as_view::<NSTextField>(&enlarge_desc) },
+        ],
+        8.0,
+        mtm,
+    );
+    zoom_panel.setAlignment(NSLayoutAttribute::Leading);
+    zoom_panel.setCustomSpacing_afterView(16.0, auto_fit_desc_ref);
+
+    // ── Color panel ───────────────────────────────────────────────────
+
+    let (icc_row, icc_toggle, icc_desc) = make_setting_row(
+        "ICC color management",
+        "Corrects colors in images that have an embedded color profile, like photos from professional cameras. Without this, some images \u{2014} especially those shot in Adobe RGB or ProPhoto \u{2014} can look washed out or have wrong colors.",
+        settings.icc_color_management,
+        true,
+        content_max_width,
+        mtm,
+    );
+
+    let (cm_row, cm_toggle, cm_desc) = make_setting_row(
+        "Color match display",
+        "Adapts colors to your specific display instead of assuming a standard sRGB screen. Different monitors reproduce colors differently, and this ensures you see the most accurate colors on yours. Makes the most difference on wide-gamut (P3) screens like MacBooks and Studio Displays.",
+        settings.color_match_display,
+        true,
+        content_max_width,
+        mtm,
+    );
+    cm_toggle.setEnabled(settings.icc_color_management);
+
+    let (rc_row, rc_toggle, rc_desc) = make_setting_row(
+        "Relative colorimetric",
+        "Changes how colors outside your display\u{2019}s range are handled. By default, Prvw smoothly adjusts all colors to fit (perceptual). With this on, colors that your display can show stay pixel-perfect, but out-of-range colors get clipped. The difference is subtle \u{2014} photographers comparing specific color values may prefer this.",
+        settings.use_relative_colorimetric,
+        true,
+        content_max_width,
+        mtm,
+    );
+    rc_toggle.setEnabled(settings.icc_color_management);
+
+    let icc_desc_ref = unsafe { as_view::<NSTextField>(&icc_desc) };
+    let cm_desc_ref = unsafe { as_view::<NSTextField>(&cm_desc) };
+    let color_panel = make_vertical_stack(
+        &[
+            unsafe { as_view::<NSStackView>(&icc_row) },
+            icc_desc_ref,
+            unsafe { as_view::<NSStackView>(&cm_row) },
+            cm_desc_ref,
+            unsafe { as_view::<NSStackView>(&rc_row) },
+            unsafe { as_view::<NSTextField>(&rc_desc) },
+        ],
+        8.0,
+        mtm,
+    );
+    color_panel.setAlignment(NSLayoutAttribute::Leading);
+    color_panel.setCustomSpacing_afterView(16.0, icc_desc_ref);
+    color_panel.setCustomSpacing_afterView(16.0, cm_desc_ref);
+
+    // Zoom and Color panels start hidden
+    unsafe {
+        let _: () = msg_send![&*zoom_panel, setHidden: true];
+        let _: () = msg_send![&*color_panel, setHidden: true];
+    }
+
+    // ── Create delegate with ivars ────────────────────────────────────
+
+    let ivars = SettingsDelegateIvars {
+        enlarge_toggle: &*enlarge_toggle as *const NSSwitch,
+        color_match_toggle: &*cm_toggle as *const NSSwitch,
+        relative_col_toggle: &*rc_toggle as *const NSSwitch,
+        general_panel: &*general_panel as *const NSStackView,
+        zoom_panel: &*zoom_panel as *const NSStackView,
+        color_panel: &*color_panel as *const NSStackView,
+        sidebar_general_btn: &*sidebar_general_btn as *const NSButton,
+        sidebar_zoom_btn: &*sidebar_zoom_btn as *const NSButton,
+        sidebar_color_btn: &*sidebar_color_btn as *const NSButton,
+    };
+    let delegate = SettingsDelegate::new(mtm, ivars);
+
+    // ── Wire target/action on all controls ────────────────────────────
+
+    unsafe {
+        auto_update_toggle.setTarget(Some(&delegate as &AnyObject));
+        auto_update_toggle.setAction(Some(sel!(toggleAutoUpdate:)));
+
+        auto_fit_toggle.setTarget(Some(&delegate as &AnyObject));
+        auto_fit_toggle.setAction(Some(sel!(toggleAutoFitWindow:)));
+
+        enlarge_toggle.setTarget(Some(&delegate as &AnyObject));
+        enlarge_toggle.setAction(Some(sel!(toggleEnlargeSmallImages:)));
+
+        icc_toggle.setTarget(Some(&delegate as &AnyObject));
+        icc_toggle.setAction(Some(sel!(toggleIccColorManagement:)));
+
+        cm_toggle.setTarget(Some(&delegate as &AnyObject));
+        cm_toggle.setAction(Some(sel!(toggleColorMatchDisplay:)));
+
+        rc_toggle.setTarget(Some(&delegate as &AnyObject));
+        rc_toggle.setAction(Some(sel!(toggleRelativeColorimetric:)));
+
+        sidebar_general_btn.setTarget(Some(&delegate as &AnyObject));
+        sidebar_general_btn.setAction(Some(sel!(selectGeneral:)));
+
+        sidebar_zoom_btn.setTarget(Some(&delegate as &AnyObject));
+        sidebar_zoom_btn.setAction(Some(sel!(selectZoom:)));
+
+        sidebar_color_btn.setTarget(Some(&delegate as &AnyObject));
+        sidebar_color_btn.setAction(Some(sel!(selectColor:)));
+    }
+
+    // ── Close + ESC buttons ───────────────────────────────────────────
+
+    let close_button = make_close_button("Close", &window, mtm);
     let esc_button = make_escape_button(&window, mtm);
 
-    // ── Layout with NSStackView ────────────────────────────────────────
+    // ── Layout with Auto Layout ───────────────────────────────────────
 
-    let toggle_row_ref = unsafe { as_view::<NSStackView>(&toggle_row) };
-    let desc_ref = unsafe { as_view::<NSTextField>(&desc_label) };
-    let auto_fit_row_ref = unsafe { as_view::<NSStackView>(&auto_fit_row) };
-    let auto_fit_desc_ref = unsafe { as_view::<NSTextField>(&auto_fit_desc_label) };
-    let enlarge_row_ref = unsafe { as_view::<NSStackView>(&enlarge_row) };
-    let enlarge_desc_ref = unsafe { as_view::<NSTextField>(&enlarge_desc_label) };
-    let button_ref = unsafe { as_view::<NSButton>(&ok_button) };
-
-    let views: Vec<&NSView> = vec![
-        toggle_row_ref,
-        desc_ref,
-        auto_fit_row_ref,
-        auto_fit_desc_ref,
-        enlarge_row_ref,
-        enlarge_desc_ref,
-        button_ref,
-    ];
-
-    let stack = make_vertical_stack(&views, 8.0, mtm);
-    stack.setAlignment(NSLayoutAttribute::Leading);
-
-    // Visual grouping: extra spacing between setting groups and before Close
-    stack.setCustomSpacing_afterView(16.0, desc_ref);
-    stack.setCustomSpacing_afterView(16.0, auto_fit_desc_ref);
-    stack.setCustomSpacing_afterView(24.0, enlarge_desc_ref);
-
-    // Set the stack as the window's content view with padding
     unsafe {
-        let _: () = msg_send![
-            &*stack,
-            setTranslatesAutoresizingMaskIntoConstraints: false
-        ];
-
         let content_view: *mut NSView = msg_send![&*window, contentView];
         let content_view_ref = &*content_view;
         let content_view_retained = Retained::retain(content_view).unwrap();
 
-        content_view_ref.addSubview(&stack);
+        // Sidebar
+        let _: () = msg_send![&*sidebar_stack, setTranslatesAutoresizingMaskIntoConstraints: false];
+        content_view_ref.addSubview(as_view::<NSStackView>(&sidebar_stack));
 
-        // Add the hidden ESC button to the content view (not the stack)
+        // Separator line
+        let separator = NSView::new(mtm);
+        let _: () = msg_send![&*separator, setTranslatesAutoresizingMaskIntoConstraints: false];
+        let _: () = msg_send![&*separator, setWantsLayer: true];
+        let sep_layer: *const AnyObject = msg_send![&*separator, layer];
+        if !sep_layer.is_null() {
+            let sep_color = NSColor::separatorColor();
+            let cg_color: *const AnyObject = msg_send![&*sep_color, CGColor];
+            let _: () = msg_send![sep_layer, setBackgroundColor: cg_color];
+        }
+        content_view_ref.addSubview(&separator);
+
+        // Content container (holds all 3 panels, pinned to same edges)
+        let content_container = NSView::new(mtm);
+        let _: () =
+            msg_send![&*content_container, setTranslatesAutoresizingMaskIntoConstraints: false];
+        content_view_ref.addSubview(&content_container);
+
+        // Add panels to content container
+        let _: () = msg_send![&*general_panel, setTranslatesAutoresizingMaskIntoConstraints: false];
+        let _: () = msg_send![&*zoom_panel, setTranslatesAutoresizingMaskIntoConstraints: false];
+        let _: () = msg_send![&*color_panel, setTranslatesAutoresizingMaskIntoConstraints: false];
+        content_container.addSubview(as_view::<NSStackView>(&general_panel));
+        content_container.addSubview(as_view::<NSStackView>(&zoom_panel));
+        content_container.addSubview(as_view::<NSStackView>(&color_panel));
+
+        // Close button below panels
+        let _: () = msg_send![&*close_button, setTranslatesAutoresizingMaskIntoConstraints: false];
+        content_view_ref.addSubview(as_view::<NSButton>(&close_button));
+
+        // ESC button (hidden)
         content_view_ref.addSubview(as_view::<NSButton>(&esc_button));
 
-        // Pin stack edges to content view with padding
-        let top = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-            &stack, NSLayoutAttribute::Top,
-            NSLayoutRelation::Equal,
-            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Top,
-            1.0, 36.0,
-        );
-        let leading = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-            &stack, NSLayoutAttribute::Leading,
-            NSLayoutRelation::Equal,
-            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Leading,
-            1.0, 24.0,
-        );
-        let trailing = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-            &stack, NSLayoutAttribute::Trailing,
-            NSLayoutRelation::LessThanOrEqual,
-            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Trailing,
-            1.0, -24.0,
-        );
-        let bottom = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
-            &stack, NSLayoutAttribute::Bottom,
-            NSLayoutRelation::LessThanOrEqual,
-            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Bottom,
-            1.0, -20.0,
-        );
+        // ── Constraints ───────────────────────────────────────────────
 
-        top.setActive(true);
-        leading.setActive(true);
-        trailing.setActive(true);
-        bottom.setActive(true);
+        // Sidebar: top, leading, bottom, fixed width
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &sidebar_stack, NSLayoutAttribute::Top, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Top, 1.0, 36.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
 
-        retained_views.push(Retained::cast_unchecked(top));
-        retained_views.push(Retained::cast_unchecked(leading));
-        retained_views.push(Retained::cast_unchecked(trailing));
-        retained_views.push(Retained::cast_unchecked(bottom));
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &sidebar_stack, NSLayoutAttribute::Leading, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Leading, 1.0, 8.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &sidebar_stack, NSLayoutAttribute::Width, NSLayoutRelation::Equal,
+            None::<&AnyObject>, NSLayoutAttribute::NotAnAttribute, 1.0, 150.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        // Separator: 1px wide, after sidebar
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &separator, NSLayoutAttribute::Leading, NSLayoutRelation::Equal,
+            Some(as_view::<NSStackView>(&sidebar_stack) as &AnyObject), NSLayoutAttribute::Trailing, 1.0, 0.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &separator, NSLayoutAttribute::Top, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Top, 1.0, 36.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &separator, NSLayoutAttribute::Bottom, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Bottom, 1.0, 0.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &separator, NSLayoutAttribute::Width, NSLayoutRelation::Equal,
+            None::<&AnyObject>, NSLayoutAttribute::NotAnAttribute, 1.0, 1.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        // Content container: after separator, top, trailing, above close button
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &content_container, NSLayoutAttribute::Leading, NSLayoutRelation::Equal,
+            Some(&separator as &AnyObject), NSLayoutAttribute::Trailing, 1.0, 20.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &content_container, NSLayoutAttribute::Top, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Top, 1.0, 36.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &content_container, NSLayoutAttribute::Trailing, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Trailing, 1.0, -20.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &content_container, NSLayoutAttribute::Bottom, NSLayoutRelation::Equal,
+            Some(as_view::<NSButton>(&close_button) as &AnyObject), NSLayoutAttribute::Top, 1.0, -16.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        // Pin each panel to content container edges
+        for panel in [&general_panel, &zoom_panel, &color_panel] {
+            let panel_view = as_view::<NSStackView>(panel);
+
+            let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                panel_view, NSLayoutAttribute::Top, NSLayoutRelation::Equal,
+                Some(&content_container as &AnyObject), NSLayoutAttribute::Top, 1.0, 0.0,
+            );
+            c.setActive(true);
+            retained_views.push(Retained::cast_unchecked(c));
+
+            let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                panel_view, NSLayoutAttribute::Leading, NSLayoutRelation::Equal,
+                Some(&content_container as &AnyObject), NSLayoutAttribute::Leading, 1.0, 0.0,
+            );
+            c.setActive(true);
+            retained_views.push(Retained::cast_unchecked(c));
+
+            let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                panel_view, NSLayoutAttribute::Trailing, NSLayoutRelation::LessThanOrEqual,
+                Some(&content_container as &AnyObject), NSLayoutAttribute::Trailing, 1.0, 0.0,
+            );
+            c.setActive(true);
+            retained_views.push(Retained::cast_unchecked(c));
+        }
+
+        // Close button: bottom-right
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &close_button, NSLayoutAttribute::Trailing, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Trailing, 1.0, -20.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
+        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &close_button, NSLayoutAttribute::Bottom, NSLayoutRelation::Equal,
+            Some(content_view_ref as &AnyObject), NSLayoutAttribute::Bottom, 1.0, -16.0,
+        );
+        c.setActive(true);
+        retained_views.push(Retained::cast_unchecked(c));
+
         retained_views.push(Retained::cast_unchecked(content_view_retained));
+        retained_views.push(Retained::cast_unchecked(separator));
+        retained_views.push(Retained::cast_unchecked(content_container));
     }
 
     // Store all Retained objects so they live as long as the window
     retained_views.push(unsafe { Retained::cast_unchecked(delegate) });
-    retained_views.push(unsafe { Retained::cast_unchecked(toggle_label) });
-    retained_views.push(unsafe { Retained::cast_unchecked(toggle) });
-    retained_views.push(unsafe { Retained::cast_unchecked(toggle_row) });
-    retained_views.push(unsafe { Retained::cast_unchecked(desc_label) });
-    retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_label) });
-    retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(sidebar_general_btn) });
+    retained_views.push(unsafe { Retained::cast_unchecked(sidebar_zoom_btn) });
+    retained_views.push(unsafe { Retained::cast_unchecked(sidebar_color_btn) });
+    retained_views.push(unsafe { Retained::cast_unchecked(sidebar_stack) });
+    retained_views.push(unsafe { Retained::cast_unchecked(auto_update_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(auto_update_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(auto_update_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(general_panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_row) });
-    retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_desc_label) });
-    retained_views.push(unsafe { Retained::cast_unchecked(enlarge_label) });
-    retained_views.push(unsafe { Retained::cast_unchecked(enlarge_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(auto_fit_desc) });
     retained_views.push(unsafe { Retained::cast_unchecked(enlarge_row) });
-    retained_views.push(unsafe { Retained::cast_unchecked(enlarge_desc_label) });
-    retained_views.push(unsafe { Retained::cast_unchecked(ok_button) });
+    retained_views.push(unsafe { Retained::cast_unchecked(enlarge_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(enlarge_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(zoom_panel) });
+    retained_views.push(unsafe { Retained::cast_unchecked(icc_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(icc_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(icc_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(cm_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(cm_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(cm_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(rc_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(rc_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(rc_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(color_panel) });
+    retained_views.push(unsafe { Retained::cast_unchecked(close_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(esc_button) });
-    retained_views.push(unsafe { Retained::cast_unchecked(stack) });
 
     // ── Position and show ──────────────────────────────────────────────
 
