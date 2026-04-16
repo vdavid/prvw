@@ -82,11 +82,300 @@ fn configure_macos_window(window: &Window) {
         // and accessibility) but not drawn — we render our own overlay instead.
         // NSWindowTitleVisibility.hidden = 1
         let _: () = msg_send![ns_window, setTitleVisibility: 1i64];
+
+        // Make the window non-opaque so the NSVisualEffectViews (BehindWindow blend mode)
+        // can sample the desktop behind the window for true vibrancy.
+        let _: () = msg_send![ns_window, setOpaque: false];
+        let clear_color: *const objc2::runtime::AnyObject =
+            msg_send![objc2::class!(NSColor), clearColor];
+        let _: () = msg_send![ns_window, setBackgroundColor: clear_color];
+
+        // Two vibrancy layers: the full-window dark one (HUDWindow material) provides the
+        // dark blurred background around the image, and the title bar one (Titlebar material)
+        // sits on top in the title bar area. Order matters: full-window first so it's at
+        // the back. Both end up behind the wgpu CAMetalLayer (which uses zPosition).
+        add_image_area_vibrancy(ns_view);
+        add_titlebar_vibrancy(ns_view);
     }
 
     log::debug!(
         "Configured macOS window: tabbing disabled, native fullscreen removed, transparent titlebar"
     );
+}
+
+/// Add a full-window NSVisualEffectView with a dark material. This provides the dark
+/// blurred background visible around the image (where the wgpu surface is transparent).
+#[cfg(target_os = "macos")]
+unsafe fn add_image_area_vibrancy(ns_view: *const objc2::runtime::AnyObject) {
+    use objc2::MainThreadOnly;
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{NSLayoutAttribute, NSLayoutConstraint, NSLayoutRelation};
+    use objc2_app_kit::{
+        NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    };
+    use objc2_foundation::{MainThreadMarker, NSRect, NSString};
+
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let zero_frame = NSRect::default();
+    let effect = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), zero_frame);
+    unsafe {
+        // HUDWindow material: dark, translucent with blur. Suits the "almost black with
+        // glass" look the user wants around the image.
+        effect.setMaterial(NSVisualEffectMaterial::HUDWindow);
+        effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        effect.setState(NSVisualEffectState::FollowsWindowActiveState);
+        let identifier = NSString::from_str(IMAGE_AREA_VIBRANCY_IDENTIFIER);
+        let _: () = msg_send![&*effect, setIdentifier: &*identifier];
+
+        let _: () = msg_send![&*effect, setTranslatesAutoresizingMaskIntoConstraints: false];
+
+        let effect_obj: *const AnyObject = &*effect as *const NSVisualEffectView as *const _;
+        let _: () = msg_send![ns_view, addSubview: effect_obj];
+
+        // Pin to all four edges of the contentView.
+        let make_constraint = |attr: NSLayoutAttribute,
+                               parent_attr: NSLayoutAttribute,
+                               constant: f64| {
+            NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                    &effect, attr,
+                    NSLayoutRelation::Equal,
+                    Some(&*ns_view),
+                    parent_attr, 1.0, constant,
+                )
+        };
+        // After addSubview / setActive, AppKit owns retains on the view and constraints,
+        // so we drop our local Retained handles at end of scope. The view tree keeps
+        // everything alive for the window's lifetime.
+        for c in [
+            make_constraint(NSLayoutAttribute::Top, NSLayoutAttribute::Top, 0.0),
+            make_constraint(NSLayoutAttribute::Bottom, NSLayoutAttribute::Bottom, 0.0),
+            make_constraint(NSLayoutAttribute::Leading, NSLayoutAttribute::Leading, 0.0),
+            make_constraint(
+                NSLayoutAttribute::Trailing,
+                NSLayoutAttribute::Trailing,
+                0.0,
+            ),
+        ] {
+            c.setActive(true);
+        }
+    }
+}
+
+/// Identifiers set on the vibrancy views so we can find them later by `identifier`
+/// (NSView's `tag` is read-only on plain NSViews).
+#[cfg(target_os = "macos")]
+const TITLEBAR_VIBRANCY_IDENTIFIER: &str = "prvw.titlebar_vibrancy";
+#[cfg(target_os = "macos")]
+const IMAGE_AREA_VIBRANCY_IDENTIFIER: &str = "prvw.image_area_vibrancy";
+
+/// Add an NSVisualEffectView pinned to the top 32px (the title bar area).
+#[cfg(target_os = "macos")]
+unsafe fn add_titlebar_vibrancy(ns_view: *const objc2::runtime::AnyObject) {
+    use objc2::MainThreadOnly;
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{NSLayoutAttribute, NSLayoutConstraint, NSLayoutRelation};
+    use objc2_app_kit::{
+        NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    };
+    use objc2_foundation::{MainThreadMarker, NSRect, NSString};
+
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    const TITLE_BAR_HEIGHT: f64 = 32.0;
+
+    // Use Auto Layout to pin the view to the top of the contentView. Skipping the frame
+    // approach because winit's NSView uses flipped coordinates, which makes the "top
+    // versus bottom" Y calculation error-prone.
+    let zero_frame = NSRect::default();
+    let effect = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), zero_frame);
+    unsafe {
+        effect.setMaterial(NSVisualEffectMaterial::Titlebar);
+        effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        effect.setState(NSVisualEffectState::FollowsWindowActiveState);
+        // Identifier so set_titlebar_vibrancy_visible can find it.
+        let identifier = NSString::from_str(TITLEBAR_VIBRANCY_IDENTIFIER);
+        let _: () = msg_send![&*effect, setIdentifier: &*identifier];
+
+        let _: () = msg_send![&*effect, setTranslatesAutoresizingMaskIntoConstraints: false];
+
+        // Plain addSubview (no positioned:) → goes to the END of subviews → renders on
+        // top of the image area vibrancy (which was added earlier).
+        let effect_obj: *const AnyObject = &*effect as *const NSVisualEffectView as *const _;
+        let _: () = msg_send![ns_view, addSubview: effect_obj];
+
+        // Pin: top, leading, trailing to contentView; height = TITLE_BAR_HEIGHT.
+        let make_constraint = |attr: NSLayoutAttribute,
+                               parent_attr: NSLayoutAttribute,
+                               constant: f64| {
+            NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                &effect, attr,
+                NSLayoutRelation::Equal,
+                Some(&*ns_view),
+                parent_attr, 1.0, constant,
+            )
+        };
+        let top = make_constraint(NSLayoutAttribute::Top, NSLayoutAttribute::Top, 0.0);
+        let leading = make_constraint(NSLayoutAttribute::Leading, NSLayoutAttribute::Leading, 0.0);
+        let trailing = make_constraint(
+            NSLayoutAttribute::Trailing,
+            NSLayoutAttribute::Trailing,
+            0.0,
+        );
+        let height = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &effect, NSLayoutAttribute::Height,
+            NSLayoutRelation::Equal,
+            None::<&AnyObject>, NSLayoutAttribute::NotAnAttribute,
+            1.0, TITLE_BAR_HEIGHT,
+        );
+        // After addSubview / setActive, AppKit owns retains on the view and constraints,
+        // so we drop our local Retained handles at end of scope.
+        top.setActive(true);
+        leading.setActive(true);
+        trailing.setActive(true);
+        height.setActive(true);
+    }
+}
+
+/// Show or hide the title bar vibrancy view.
+#[cfg(target_os = "macos")]
+pub fn set_titlebar_vibrancy_visible(window: &Window, visible: bool) {
+    set_subview_hidden_by_id(window, TITLEBAR_VIBRANCY_IDENTIFIER, !visible);
+}
+
+/// Switch the window's appearance for fullscreen vs windowed.
+/// In fullscreen: hide the dark vibrancy and use a solid black background.
+/// In windowed: show the vibrancy (which has a translucent dark blur).
+#[cfg(target_os = "macos")]
+pub fn set_fullscreen_appearance(window: &Window, fullscreen: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    set_subview_hidden_by_id(window, IMAGE_AREA_VIBRANCY_IDENTIFIER, fullscreen);
+
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let ns_window: *const AnyObject = msg_send![ns_view, window];
+        if ns_window.is_null() {
+            return;
+        }
+        let bg: *const AnyObject = if fullscreen {
+            msg_send![objc2::class!(NSColor), blackColor]
+        } else {
+            msg_send![objc2::class!(NSColor), clearColor]
+        };
+        let _: () = msg_send![ns_window, setBackgroundColor: bg];
+    }
+}
+
+/// Find a subview by its `identifier` and set its `hidden` flag.
+#[cfg(target_os = "macos")]
+fn set_subview_hidden_by_id(window: &Window, identifier: &str, hidden: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let subviews: *const AnyObject = msg_send![ns_view, subviews];
+        if subviews.is_null() {
+            return;
+        }
+        let count: usize = msg_send![subviews, count];
+        let target_id = NSString::from_str(identifier);
+        for i in 0..count {
+            let subview: *const AnyObject = msg_send![subviews, objectAtIndex: i];
+            let id: *const NSString = msg_send![subview, identifier];
+            if !id.is_null() {
+                let matches: bool = msg_send![&*target_id, isEqualToString: id];
+                if matches {
+                    let _: () = msg_send![subview, setHidden: hidden];
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Force the wgpu CAMetalLayer to render on top of the NSVisualEffectView's layer
+/// (added by `add_titlebar_vibrancy`) using `zPosition`. Both layers are siblings under
+/// the contentView's root layer; setting wgpu's zPosition higher pushes it in front of
+/// the vibrancy in the compositing order.
+#[cfg(target_os = "macos")]
+pub fn push_metal_layer_above_vibrancy(window: &Window) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let root_layer: *const AnyObject = msg_send![ns_view, layer];
+        if root_layer.is_null() {
+            return;
+        }
+        let metal_layer = find_sublayer_responding_to(root_layer, objc2::sel!(setColorspace:));
+        if metal_layer.is_null() {
+            log::warn!("No CAMetalLayer found, can't set zPosition");
+            return;
+        }
+
+        // Force wgpu in front of the NSVisualEffectView's layer (default zPosition = 0).
+        // setZPosition: takes a CGFloat (f64 on macOS).
+        let _: () = msg_send![metal_layer, setZPosition: 1.0_f64];
+        log::debug!("Set CAMetalLayer.zPosition = 1.0 (wgpu renders on top of vibrancy)");
+    }
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn find_sublayer_responding_to(
+    layer: *const objc2::runtime::AnyObject,
+    sel: objc2::runtime::Sel,
+) -> *const objc2::runtime::AnyObject {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    unsafe {
+        // Check the layer itself first (in case it IS the Metal layer).
+        let responds: bool = msg_send![layer, respondsToSelector: sel];
+        if responds {
+            return layer;
+        }
+        let sublayers: *const AnyObject = msg_send![layer, sublayers];
+        if sublayers.is_null() {
+            return std::ptr::null();
+        }
+        let count: usize = msg_send![sublayers, count];
+        for i in 0..count {
+            let sublayer: *const AnyObject = msg_send![sublayers, objectAtIndex: i];
+            let sub_responds: bool = msg_send![sublayer, respondsToSelector: sel];
+            if sub_responds {
+                return sublayer;
+            }
+        }
+        std::ptr::null()
+    }
 }
 
 /// Build the window title from a file path (filename only, not the full path).

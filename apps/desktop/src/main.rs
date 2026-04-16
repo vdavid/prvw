@@ -279,6 +279,10 @@ impl App {
     fn apply_content_offset(&mut self) {
         let offset = self.content_offset_y();
         self.view_state.set_content_offset_y(offset);
+        #[cfg(target_os = "macos")]
+        if let Some(win) = &self.window {
+            window::set_titlebar_vibrancy_visible(win, offset.0 > 0.0);
+        }
 
         // Resize window to add/remove the title bar area height
         if self.auto_fit_window
@@ -529,6 +533,13 @@ impl App {
                 display_profile::set_layer_colorspace(&win, &self.display_icc);
             }
             display_profile::register_screen_change_observer(&win);
+            // Allow the title bar area to show vibrancy through the transparent clear.
+            display_profile::set_metal_layer_transparent(&win);
+            // Push the wgpu Metal layer above the vibrancy views via zPosition so the
+            // image renders on top.
+            window::push_metal_layer_above_vibrancy(&win);
+            // Set initial appearance for windowed mode (image area vibrancy visible).
+            window::set_fullscreen_appearance(&win, window::is_fullscreen(&win));
         }
 
         // Create native menu bar
@@ -1561,8 +1572,13 @@ impl ApplicationHandler<AppCommand> for App {
             WindowEvent::Resized(size) => {
                 log::debug!("Window resized to {}x{}", size.width, size.height);
                 // Re-apply content offset (may change on fullscreen transitions)
-                self.view_state
-                    .set_content_offset_y(self.content_offset_y());
+                let offset = self.content_offset_y();
+                self.view_state.set_content_offset_y(offset);
+                #[cfg(target_os = "macos")]
+                if let Some(win) = &self.window {
+                    window::set_titlebar_vibrancy_visible(win, offset.0 > 0.0);
+                    window::set_fullscreen_appearance(win, window::is_fullscreen(win));
+                }
                 if let Some(renderer) = &mut self.renderer {
                     let (pw, ph) = from_physical_size(size);
                     renderer.resize(pw, ph);

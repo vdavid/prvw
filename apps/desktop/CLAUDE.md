@@ -126,20 +126,45 @@ Follow these steps in order. Each one is required.
   (OS integration).
 - New sections: add a sidebar button + panel + delegate method. Update `switch_settings_section()`.
 
-- **Title bar area** (`view.rs` + `renderer.rs` + `main.rs`): When the `title_bar` setting is on, a 32px area at
-  the top of the window is reserved (image doesn't render there). Implementation:
-    - `ViewState.content_offset_y` stores the offset. `effective_height() = window_height - content_offset_y` is used
-      by `fit_zoom`, `transform`, `pan`, `clamp_pan`, `zoom_around`, `keyboard_zoom` — every image-area calculation.
-    - The renderer's image draw is wrapped in `set_viewport(0, offset_px, sw, sh - offset_px)` to clip the image to
-      the lower area. The viewport is **reset to the full surface before pills/text** (so they can render in the
-      title bar area). The offset matters because `set_viewport` REMAPS NDC [-1,1] to the viewport rectangle (not
-      just clips) — so the transform's denominator must be `effective_height` for sy=1.0 to fill the viewport correctly.
-    - `apply_content_offset()` in `main.rs` sets the ViewState offset, resizes the window (when auto-fit is on, by
-      calling `resize_to_fit_image` with the new offset), and re-applies zoom. Without the resize, toggling the
-      setting leaves the window the wrong size and produces visible padding.
-    - Mouse Y for zoom-at-cursor must subtract `content_offset_y` because `zoom_around` expects coordinates relative
-      to the image area, not the window.
-    - In fullscreen, the offset is forced to 0 (`content_offset_y()` checks `is_fullscreen`).
+- **Title bar area + window vibrancy** (`view.rs` + `renderer.rs` + `window.rs` + `display_profile.rs` + `main.rs`):
+  When the `title_bar` setting is on, a 32px strip at the top of the window is reserved for the title (filename + zoom %).
+  The image area below has a dark glassy background. In fullscreen, the background is solid black instead.
+    - **Layout math**: `ViewState.content_offset_y` stores the title bar height (32px or 0). `effective_height()`
+      returns `window_height - content_offset_y` and is used by every image-area calculation: `fit_zoom`, `transform`,
+      `pan`, `clamp_pan`, `zoom_around`, `keyboard_zoom`. Mouse Y for zoom-at-cursor must subtract `content_offset_y`.
+      In fullscreen, the offset is forced to 0 (`content_offset_y()` checks `is_fullscreen`).
+    - **Viewport**: The renderer's image draw is wrapped in `set_viewport(0, offset_px, sw, sh - offset_px)` to clip
+      the image to the lower area. The viewport is **reset to the full surface before pills/text**. `set_viewport`
+      REMAPS NDC [-1,1] to the viewport rectangle (not just clips), so the transform's denominator must be
+      `effective_height` for sy=1.0 to fill the viewport correctly.
+    - **Window sizing**: `apply_content_offset()` in `main.rs` sets the ViewState offset, resizes the window (when
+      auto-fit is on, by calling `resize_to_fit_image` with the new offset), and re-applies zoom. Without the resize,
+      toggling the setting leaves the window the wrong size and produces visible padding.
+    - **Vibrancy** (`window.rs`): Two `NSVisualEffectView`s as subviews of winit's contentView. The image area one
+      (HUDWindow material, full-window) is added first → goes to the back. The title bar one (Titlebar material,
+      top 32px) is added second → on top. Both use `BehindWindow` blending so they sample the desktop. Identified by
+      `setIdentifier:` (NSView's `tag` is read-only, so we can't use it).
+    - **wgpu compositing** (`window.rs::push_metal_layer_above_vibrancy` + `display_profile.rs::set_metal_layer_transparent`):
+      The Metal layer is set to `isOpaque = false`, the wgpu surface uses a non-opaque alpha mode, and the clear
+      color is `TRANSPARENT`. The Metal layer's `zPosition = 1.0` pushes it in front of the vibrancy views (which
+      have the default zPosition of 0). Image pixels are opaque, so they cover the vibrancy below. In transparent
+      areas (around the image, in the title bar zone), the vibrancy shows through.
+    - **Fullscreen**: `set_fullscreen_appearance(window, fullscreen)` hides the image area vibrancy and switches the
+      NSWindow background from `clearColor` to `blackColor`. Called from the Resized handler, which fires on every
+      fullscreen transition. The title bar vibrancy is hidden separately by `set_titlebar_vibrancy_visible` whenever
+      `content_offset_y == 0`.
+
+- **macOS layer/subview compositing gotcha**: When you `addSubview:` to a layer-backed NSView, the subview's CALayer
+  becomes a sublayer of the parent's CALayer. AppKit places those sublayers AFTER any sublayers added directly via
+  `CALayer.addSublayer` — so subview layers render on top of "raw" CALayer additions, regardless of `addSubview`'s
+  `positioned:` parameter. Use `zPosition` to override (CALayer compositing among siblings is by zPosition, then by
+  array order). This is how the wgpu `CAMetalLayer` (added by wgpu directly) ends up behind subview layers and needs
+  `zPosition = 1` to come back to the front.
+
+- **winit's NSView is flipped**: winit creates the window's contentView with `isFlipped = YES` (top-left origin,
+  matches iOS/web). Native macOS NSViews default to bottom-left origin. So `frame.origin.y = bounds.height - 32`
+  places a view at the BOTTOM in winit's NSView, not the top. Prefer Auto Layout (`.Top` / `.Leading` anchors) over
+  manual frame math — Auto Layout's `.Top` works correctly regardless of `isFlipped`.
 
 - **Screenshot render path differs from main render** (`renderer.rs`): `capture_screenshot` runs a separate, stripped
   render — only the image quad on a black background, no viewport offset, no pills, no text. Pixel-based tests of the

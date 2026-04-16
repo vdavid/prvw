@@ -139,6 +139,59 @@ pub fn set_layer_colorspace(window: &Window, icc_bytes: &[u8]) {
     }
 }
 
+/// Mark the wgpu Metal layer as non-opaque so transparent areas of the rendered surface
+/// composite with whatever is behind it (e.g. an NSVisualEffectView for vibrancy).
+pub fn set_metal_layer_transparent(window: &Window) {
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let layer: *const AnyObject = msg_send![ns_view, layer];
+        if layer.is_null() {
+            return;
+        }
+
+        let metal_layer = find_metal_layer(layer);
+        if metal_layer.is_null() {
+            log::warn!("No CAMetalLayer found, can't disable opacity");
+            return;
+        }
+
+        let _: () = msg_send![metal_layer, setOpaque: false];
+        log::debug!("Set CAMetalLayer.opaque = false (vibrancy passthrough enabled)");
+    }
+}
+
+/// Walk the layer hierarchy to find the wgpu CAMetalLayer (identified by its response to
+/// `setColorspace:`, which is a CAMetalLayer-specific selector).
+unsafe fn find_metal_layer(layer: *const AnyObject) -> *const AnyObject {
+    unsafe {
+        let responds: bool = msg_send![layer, respondsToSelector: objc2::sel!(setColorspace:)];
+        if responds {
+            return layer;
+        }
+        let sublayers: *const AnyObject = msg_send![layer, sublayers];
+        if sublayers.is_null() {
+            return std::ptr::null();
+        }
+        let count: usize = msg_send![sublayers, count];
+        for i in 0..count {
+            let sublayer: *const AnyObject = msg_send![sublayers, objectAtIndex: i];
+            let sub_responds: bool =
+                msg_send![sublayer, respondsToSelector: objc2::sel!(setColorspace:)];
+            if sub_responds {
+                return sublayer;
+            }
+        }
+        std::ptr::null()
+    }
+}
+
 /// Set the colorspace on a CAMetalLayer pointer.
 unsafe fn set_colorspace_on_layer(layer: *const AnyObject, icc_bytes: &[u8]) {
     unsafe {
