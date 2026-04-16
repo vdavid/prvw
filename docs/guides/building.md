@@ -17,7 +17,7 @@ cargo run -- /path/to/image.jpg
 Use `RUST_LOG=debug` for verbose logging, or target specific modules:
 
 ```sh
-RUST_LOG=prvw::renderer=debug cargo run -- /path/to/image.jpg
+RUST_LOG=prvw::render::renderer=debug cargo run -- /path/to/image.jpg
 ```
 
 ## Release build with code signing

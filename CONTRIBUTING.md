@@ -29,8 +29,8 @@ cargo run -- "$(find ~/Pictures -name '*.jpg' -o -name '*.png' | head -1)"
 Useful env vars:
 
 - `RUST_LOG=debug` for verbose logging
-- `RUST_LOG=prvw::renderer=debug` for GPU-specific logs
-- `RUST_LOG=prvw::preloader=debug` for preloading logs
+- `RUST_LOG=prvw::render::renderer=debug` for GPU-specific logs
+- `RUST_LOG=prvw::imaging::preloader=debug` for preloading logs
 
 ## Running the website
 

@@ -155,11 +155,11 @@ preloader handles adjacent images in background threads, so the user only pays t
 
 | File | Role |
 |---|---|
-| `apps/desktop/src/color.rs` | `transform_icc()`, `profiles_match()`, `srgb_icc_bytes()` |
-| `apps/desktop/src/display_profile.rs` | CoreGraphics FFI, `CAMetalLayer` colorspace, screen change observer |
-| `apps/desktop/src/image_loader.rs` | ICC extraction, passes `target_icc` through decode pipeline |
-| `apps/desktop/src/preloader.rs` | Stores display ICC, passes to decode tasks, `ImageCache::clear()` |
-| `apps/desktop/src/main.rs` | `display_icc` field, `handle_display_changed()`, init in `initialize_viewer()` |
-| `apps/desktop/src/qa_server.rs` | `AppCommand::DisplayChanged` |
+| `apps/desktop/src/imaging/color.rs` | `transform_icc()`, `profiles_match()`, `srgb_icc_bytes()` |
+| `apps/desktop/src/platform/macos/display_profile.rs` | CoreGraphics FFI, `CAMetalLayer` colorspace, screen change observer |
+| `apps/desktop/src/imaging/loader.rs` | ICC extraction, passes `target_icc` through decode pipeline |
+| `apps/desktop/src/imaging/preloader.rs` | Stores display ICC, passes to decode tasks, `ImageCache::clear()` |
+| `apps/desktop/src/app.rs` | `display_icc` field, `handle_display_changed()`, init in `initialize_viewer()` |
+| `apps/desktop/src/commands.rs` | `AppCommand::DisplayChanged` |
 | `apps/desktop/tests/color_management.rs` | Integration tests (P3 vs sRGB, identity transform) |
 | `apps/desktop/tests/fixtures/p3_red_64x64.jpg` | 64x64 test fixture with Display P3 profile |

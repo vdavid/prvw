@@ -9,7 +9,7 @@
 //! class. This way AppKit dispatches file-open events to our implementation without us
 //! replacing the delegate.
 
-use crate::qa_server::AppCommand;
+use crate::commands::AppCommand;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
 use objc2::{ffi, sel};
 use std::cell::RefCell;

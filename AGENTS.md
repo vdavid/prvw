@@ -62,7 +62,7 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 
 ## Debugging
 
-- **Logging**: Use `RUST_LOG=debug` or target specific modules with `RUST_LOG=prvw::renderer=debug`.
+- **Logging**: Use `RUST_LOG=debug` or target specific modules with `RUST_LOG=prvw::render::renderer=debug`.
 - **GPU issues**: `wgpu` logs adapter/device info at `info` level. Check `RUST_LOG=wgpu=info` for GPU backend details.
 
 ## Where to put instructions

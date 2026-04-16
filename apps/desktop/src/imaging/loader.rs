@@ -6,7 +6,7 @@ use std::time::Instant;
 use image::ImageDecoder;
 use nom_exif::{EntryValue, ExifTag, MediaParser, MediaSource};
 
-use crate::color;
+use super::color;
 
 /// Decoded image data ready for GPU upload.
 pub struct DecodedImage {

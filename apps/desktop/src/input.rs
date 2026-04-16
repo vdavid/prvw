@@ -4,8 +4,8 @@
 //! menu handler, and QA key handler all call into these functions rather than
 //! duplicating action logic.
 
+use crate::commands::AppCommand;
 use crate::menu::MenuIds;
-use crate::qa_server::AppCommand;
 use muda::MenuEvent;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 

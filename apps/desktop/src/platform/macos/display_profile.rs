@@ -375,7 +375,7 @@ pub fn register_screen_change_observer(window: &Window) {
                 _notification: *mut AnyObject,
             ) {
                 log::debug!("NSWindowDidChangeScreenNotification fired");
-                crate::qa_server::send_command(crate::qa_server::AppCommand::DisplayChanged);
+                crate::commands::send_command(crate::commands::AppCommand::DisplayChanged);
             }
 
             builder.add_method(
