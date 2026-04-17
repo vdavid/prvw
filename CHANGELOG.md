@@ -14,6 +14,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   regenerate via `PRVW_UPDATE_GOLDENS=1 cargo test`. Sets up Phase 2 of RAW work (wide-gamut + exposure + tone curve +
   sharpening). See `docs/notes/raw-support-phase2.md`
 
+### Changed
+
+- RAW decode now preserves wide-gamut color data end-to-end. Previously, rawler's develop pipeline clipped output to
+  sRGB during color conversion, discarding any P3 or Rec.2020 coverage the sensor captured. The new pipeline runs
+  rawler's demosaic stages only, then applies our own white balance and camera matrix into a linear Rec.2020
+  intermediate, which moxcms transforms to the display profile. On P3 displays, RAW output now shows colors that were
+  previously clipped — saturated reds, greens, and blues near the edge of the gamut. Pipeline details in
+  `docs/notes/raw-support-phase2.md`
+
 ## [0.9.0] - 2026-04-17
 
 ### Added

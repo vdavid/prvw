@@ -2,9 +2,11 @@
 //! Settings panel.
 
 pub mod delta_e;
+pub mod profiles;
 mod transform;
 
-pub use transform::{profiles_match, srgb_icc_bytes, transform_icc};
+pub use profiles::linear_rec2020_profile;
+pub use transform::{profiles_match, srgb_icc_bytes, transform_f32_with_profile, transform_icc};
 
 #[cfg(target_os = "macos")]
 pub mod display_profile;

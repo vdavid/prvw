@@ -46,13 +46,80 @@ With that in place, each Phase 2.x sub-step can prove correctness two ways:
 Phases land as separate commits. Each updates the golden PNG as its final step
 so future phases compare against the *new* baseline.
 
-### Phase 2.1 — Wide-gamut working space (TBD)
+### Phase 2.1 — Wide-gamut working space (done, 2026-04-17)
 
-Run the develop pipeline into a wide-gamut linear space (Rec.2020 or Wide
-Gamut RGB) rather than sRGB, then hand the buffer to the ICC transform to
-convert to the display profile. The ICC transform already handles that last
-step correctly; the win is not clipping saturated pixels before the
-gamut-mapped transform runs.
+**What changed.** The RAW decode path no longer runs rawler's full develop
+pipeline. It stops after demosaic + active-area crop, then applies white
+balance and the camera color matrix into a **linear Rec.2020 intermediate**
+rather than into clipped sRGB. Moxcms then transforms that buffer into the
+display's ICC profile in f32 — no 8-bit round trip until the very end. This
+preserves every P3/Rec.2020 color the sensor captured through to the display
+gate.
+
+**Pipeline diagram.**
+
+```
+rawler::RawDevelop { Rescale, Demosaic, CropActiveArea }
+  → Intermediate (camera RGB, float)
+  → OUR wide-gamut step (in apps/desktop/src/decoding/raw.rs):
+      * apply WB coefficients (from RawImage.wb_coeffs)
+      * apply cam_to_rec2020 = invert(normalize(xyz_to_cam * rec2020_to_xyz))
+      * do NOT clip; keep as f32
+  → apply default crop (RawImage.crop_area)
+  → color::transform_f32_with_profile(src = linear Rec.2020, dst = display_icc)
+  → clamp to [0, 1], RGBA8
+  → existing apply_orientation → DecodedImage
+```
+
+The matrix math is the same structure rawler uses in its own `Calibrate`
+step — row-normalise then invert — only the RGB-primaries matrix changed
+(sRGB → Rec.2020). That keeps neutral mapping to neutral while widening the
+output gamut.
+
+**Why Rec.2020 and not Display P3.** Rec.2020 is wider than P3 and fits
+nearly every photographic color a camera sensor can capture. Picking P3
+instead would still clip some saturated greens and blues on cameras with
+wider native gamuts. Moxcms already ships `ColorProfile::new_bt2020()`, so
+Rec.2020 costs us nothing extra: we just override the TRC to linear.
+
+**ICC profile source.** Constructed programmatically via moxcms in
+`src/color/profiles.rs::linear_rec2020_profile()`. Builds on top of
+`ColorProfile::new_bt2020()` and replaces the Rec.709-parametric TRC with a
+linear (empty-LUT) one. No bundled binary file, no license concern.
+`linear_rec2020_icc_bytes()` is kept alongside for debug logging.
+
+**Rec.2020 D65 → XYZ matrix.** Standard ITU-R BT.2020-2 values,
+cross-checked against Bruce Lindbloom's RGB/XYZ matrix generator. Inverse
+is pre-computed in `XYZ_TO_REC2020_D65` (verified by round-trip tests on
+D65 whitepoint and each basis vector).
+
+**Effect on the synthetic golden.** Delta-E ran into the 80s against the
+Phase 1 golden. On inspection, that's expected drift, not a bug. The
+synthetic fixture's gradient + saturated matrix produce values deep into
+Rec.2020 territory. Rawler's `clip_euclidean_norm_avg` used to mix those
+hypersaturated pixels toward white, giving the old golden a pink-to-white
+fade. The new pipeline preserves the saturation, and moxcms' perceptual
+gamut mapping lands them at the sRGB red corner for an sRGB display. On a
+real photo with colors within the camera's native gamut, output is visually
+identical to the Phase 1 pipeline. The golden was regenerated and visually
+verified.
+
+**Performance.** ARW decode on a 20 MP full-frame Sony file: **~115 ms**
+steady-state release build on M3 Max, vs. Phase 1's ~170 ms for the develop
+step alone. The new pipeline is faster because moxcms' f32 transform is
+cheaper than rawler's sRGB gamma + f32→u16 conversion + our separate 8-bit
+ICC transform.
+
+**Files changed.**
+
+- `src/color/profiles.rs` (new) — Rec.2020 matrices, `linear_rec2020_profile`,
+  `linear_rec2020_icc_bytes`, matrix round-trip unit tests.
+- `src/color/mod.rs` — re-exports `linear_rec2020_profile`.
+- `src/color/transform.rs` — `transform_f32_with_profile` for the f32 hop.
+- `src/decoding/raw.rs` — pipeline rewrite, matrix math, unit tests.
+- `examples/raw-dev-dump.rs` — per-stage dumps now include `post-demosaic`,
+  `post-wb`, `linear-rec2020`, and `final`.
+- `tests/fixtures/raw/synthetic-bayer-128.golden.png` — regenerated.
 
 ### Phase 2.2 — Exposure compensation (TBD)
 

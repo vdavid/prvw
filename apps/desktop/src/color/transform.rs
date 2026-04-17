@@ -87,6 +87,70 @@ pub fn transform_icc(
     );
 }
 
+/// Transform f32 RGB pixels from a source `ColorProfile` into a target ICC
+/// profile, in place. Input and output layouts are both `Rgb` (three
+/// components, no alpha). Used by the RAW decode path to convert a linear
+/// wide-gamut intermediate buffer into the display's color space without
+/// going through an 8-bit round trip first — that would clip anything
+/// outside [0, 1] before the transform ever sees it.
+///
+/// Silently skips the transform on parse/setup errors and leaves the buffer
+/// untouched. The caller decides what to render in that case.
+pub fn transform_f32_with_profile(
+    rgb: &mut [f32],
+    source: &ColorProfile,
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
+) {
+    if target_icc.is_empty() {
+        return;
+    }
+
+    let target = match ColorProfile::new_from_slice(target_icc) {
+        Ok(p) => p,
+        Err(e) => {
+            log::debug!("Skipping f32 ICC transform: couldn't parse target profile ({e})");
+            return;
+        }
+    };
+
+    let intent = if use_relative_colorimetric {
+        RenderingIntent::RelativeColorimetric
+    } else {
+        RenderingIntent::Perceptual
+    };
+    let options = TransformOptions {
+        rendering_intent: intent,
+        ..TransformOptions::default()
+    };
+    let transform = match source.create_in_place_transform_f32(Layout::Rgb, &target, options) {
+        Ok(t) => t,
+        Err(e) => {
+            log::debug!("Skipping f32 ICC transform: couldn't create transform ({e})");
+            return;
+        }
+    };
+
+    let start = Instant::now();
+    if let Err(e) = transform.transform(rgb) {
+        log::debug!("f32 ICC transform failed: {e}");
+        return;
+    }
+    let pixel_count = rgb.len() / 3;
+    let source_desc = profile_description(source);
+    let target_desc = profile_description(&target);
+    let intent_name = if use_relative_colorimetric {
+        "relative"
+    } else {
+        "perceptual"
+    };
+    let pixel_count_fmt = format_with_separators(pixel_count);
+    log::debug!(
+        "ICC f32 transform: {source_desc} -> {target_desc}, {intent_name} ({pixel_count_fmt} pixels) in {}ms",
+        start.elapsed().as_millis()
+    );
+}
+
 /// Format a number with thousands separators (e.g., 24000000 -> "24,000,000").
 fn format_with_separators(n: usize) -> String {
     let s = n.to_string();
