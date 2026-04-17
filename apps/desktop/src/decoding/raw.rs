@@ -111,7 +111,10 @@ fn check_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
+// Gated to macOS because these tests go through `color::srgb_icc_bytes`, which
+// loads the system sRGB profile from `/System/Library/ColorSync/Profiles/` and
+// panics on other platforms. The RAW decoder itself is cross-platform.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
