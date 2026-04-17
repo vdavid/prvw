@@ -121,12 +121,70 @@ ICC transform.
   `post-wb`, `linear-rec2020`, and `final`.
 - `tests/fixtures/raw/synthetic-bayer-128.golden.png` — regenerated.
 
-### Phase 2.2 — Exposure compensation (TBD)
+### Phase 2.2 — Baseline exposure (done, 2026-04-17)
 
-Apply a small multiplicative gain (target: +0.3 to +0.5 EV) after develop and
-before tone mapping. Work in linear light; a constant scale factor on RGB
-values before gamma. Land on a value that makes a set of reference RAWs match
-Apple's brightness by Delta-E.
+**What changed.** After the wide-gamut matrix and default crop, the pipeline
+now applies a single EV-stop lift in linear Rec.2020 land: `linear *= 2^ev`,
+per-component, Rayon-parallel. This closes most of the brightness gap
+between our output and Preview.app/Affinity on real RAW files.
+
+**Pipeline diagram (delta over Phase 2.1).**
+
+```
+... default crop
+  → NEW: baseline_exposure_ev(decoder, raw)   // priority chain below
+  → NEW: apply_exposure(&mut rec2020, ev)     // linear *= 2^ev
+  → color::transform_f32_with_profile(...)
+```
+
+**EV source, priority order.**
+
+1. `raw.dng_tags[BaselineExposure]` (tag 50730). Rarely populated for
+   parsed DNGs but handy for files rawler built from non-DNG sources, so
+   we check it first.
+2. `decoder.ifd(WellKnownIFD::Root).get_entry(DngTag::BaselineExposure)` —
+   reads the TIFF SRATIONAL directly off the DNG's root IFD. This is the
+   path that actually fires for real DNG files.
+3. Fallback: **+0.5 EV** (Adobe's neutral default, roughly what Apple
+   Photos and Preview.app silently apply).
+
+Rawler has no per-camera "baseline exposure" hint (the `Camera.hints`
+field is for format-level decoder quirks, not color tuning), so we skip a
+camera-hint branch.
+
+**Safety clamp.** Output clamped to `[-2.0, +2.0]` EV and NaN/±∞ clamped to
+`0.0`. Pathological DNG tags can't blow out the image.
+
+**Real-world EV values.** Sony ARW (no DNG tag) → +0.50 EV (default). An
+iPhone DNG in the `/tmp/raw/sample2.dng` bench → +0.45 EV (from the DNG
+tag). Both values fall squarely in the "Adobe-neutral" band.
+
+**Smoke-test brightness check (Sony ARW, 20 MP, mean 8-bit channel value).**
+Phase 2.1 `linear-rec2020.png` preview: 62.78. Phase 2.2 `final.png`:
+72.85. Apple's `sips` export of the same ARW: 74.72. We're now inside ~97 %
+of Preview.app's brightness; the remaining gap closes when Phase 2.3 lands
+a tone curve.
+
+**Effect on the synthetic golden.** The gradient pixels came out brighter
+(mean 8-bit RGB shifted up by the expected `1.414^(1/2.4) ≈ 1.16×` factor
+for a +0.5 EV lift post-gamma). Golden was regenerated and visually
+verified: same magenta-pink gradient, just brighter.
+
+**Not configurable.** No user knob yet. Baseline exposure is part of the
+default render, same as white balance or the camera matrix. If a future
+phase wants a user-overridable global brightness slider, it plugs in at
+the same pipeline slot; for now, we hard-code the priority chain.
+
+**Files changed.**
+
+- `src/decoding/raw.rs` — `baseline_exposure_ev`, `apply_exposure`,
+  `baseline_exposure_ev_from_tag_value` pure helper, `tag_value_to_f32`
+  converter, wired into the pipeline between crop and ICC. Unit tests
+  cover each knob of the priority chain and clamp.
+- `examples/raw-dev-dump.rs` — new `post-exposure.png` stage and prints
+  the applied EV. Helper functions inlined to match the example's
+  standalone-binary style.
+- `tests/fixtures/raw/synthetic-bayer-128.golden.png` — regenerated.
 
 ### Phase 2.3 — Tone curve (TBD)
 

@@ -1,7 +1,7 @@
 //! Per-stage RAW pipeline inspector.
 //!
 //! Takes a RAW file and dumps labeled PNGs for each meaningful pipeline stage.
-//! Phase 2.1 stages:
+//! Current stages:
 //!
 //! - `post-demosaic` — rawler's sensor-level output: rescale + demosaic +
 //!   active-area crop only. Camera-native RGB, pre-white-balance. Looks green
@@ -11,6 +11,9 @@
 //!   wide-gamut linear; PNG-encoded with an sRGB-like gamma so you can eyeball
 //!   it on a normal display. Values outside sRGB are clipped in the preview
 //!   only — the real pipeline keeps them.
+//! - `post-exposure` — linear Rec.2020 after the baseline-exposure lift
+//!   (Phase 2.2). Same sRGB-ish preview encoding as `linear-rec2020` so
+//!   side-by-side brightness changes are eyeballable.
 //! - `final` — the RGBA8 buffer Prvw actually renders, after ICC transform to
 //!   sRGB (or whatever `--target-icc` points at).
 //!
@@ -37,10 +40,17 @@ use moxcms::{
     RenderingIntent, ToneReprCurve, TransformOptions,
 };
 use rawler::RawImage;
-use rawler::decoders::RawDecodeParams;
+use rawler::decoders::{Decoder, RawDecodeParams, WellKnownIFD};
+use rawler::formats::tiff::Value;
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
 use rawler::imgop::xyz::Illuminant;
 use rawler::rawsource::RawSource;
+use rawler::tags::DngTag;
+
+/// Keep in sync with `src/decoding/raw.rs::DEFAULT_BASELINE_EV`.
+const DEFAULT_BASELINE_EV: f32 = 0.5;
+/// Keep in sync with `src/decoding/raw.rs::BASELINE_EV_CLAMP`.
+const BASELINE_EV_CLAMP: f32 = 2.0;
 
 /// Rec.2020 D65 → XYZ matrix, duplicated here so the example doesn't need a
 /// lib-crate split of the desktop app. Keep in sync with
@@ -149,10 +159,25 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
     let linear_preview = linear_to_srgb_preview(&rec2020);
     let linear_rec2020_ms = t0.elapsed().as_millis();
 
-    // Stage 4: final ICC-transformed sRGB output, same as what Prvw ships on
+    // Stage 4: baseline exposure lift (Phase 2.2). Same sRGB-ish preview
+    // encoding as the linear stage above so brightness differences are
+    // eyeballable side-by-side.
+    let t0 = Instant::now();
+    let ev = baseline_exposure_ev(decoder.as_ref(), &raw);
+    println!(
+        "Baseline EV     : {:+.2} ({:.3}x linear)",
+        ev,
+        2.0_f32.powf(ev)
+    );
+    let mut rec2020_lifted = rec2020.clone();
+    apply_exposure(&mut rec2020_lifted, ev);
+    let post_exposure_preview = linear_to_srgb_preview(&rec2020_lifted);
+    let post_exposure_ms = t0.elapsed().as_millis();
+
+    // Stage 5: final ICC-transformed sRGB output, same as what Prvw ships on
     // an sRGB display.
     let t0 = Instant::now();
-    let mut rec2020_for_icc = rec2020.clone();
+    let mut rec2020_for_icc = rec2020_lifted;
     transform_f32_rec2020_to_srgb(&mut rec2020_for_icc);
     let final_rgb = f32_to_rgb8(&rec2020_for_icc);
     let final_ms = t0.elapsed().as_millis();
@@ -182,6 +207,13 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
             took_ms: linear_rec2020_ms,
         },
         Stage {
+            name: "post-exposure",
+            width: demosaic_w,
+            height: demosaic_h,
+            rgb: post_exposure_preview,
+            took_ms: post_exposure_ms,
+        },
+        Stage {
             name: "final",
             width: demosaic_w,
             height: demosaic_h,
@@ -191,6 +223,68 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
     ];
 
     Ok(stages)
+}
+
+/// Same exposure math as `src/decoding/raw.rs::apply_exposure`, inlined so
+/// the example stays standalone.
+fn apply_exposure(rec2020: &mut [f32], ev: f32) {
+    if ev == 0.0 {
+        return;
+    }
+    let gain = 2.0_f32.powf(ev);
+    for v in rec2020.iter_mut() {
+        *v *= gain;
+    }
+}
+
+/// Same EV-source priority and clamp as `src/decoding/raw.rs`. Inlined for
+/// standalone build.
+fn baseline_exposure_ev(decoder: &dyn Decoder, raw: &RawImage) -> f32 {
+    if let Some(v) = raw.dng_tags.get(&(DngTag::BaselineExposure as u16))
+        && let Some(ev) = tag_value_to_f32(v)
+    {
+        return clamp_ev(ev);
+    }
+    if let Ok(Some(ifd)) = decoder.ifd(WellKnownIFD::Root)
+        && let Some(entry) = ifd.get_entry(DngTag::BaselineExposure)
+        && let Some(ev) = tag_value_to_f32(&entry.value)
+    {
+        return clamp_ev(ev);
+    }
+    clamp_ev(DEFAULT_BASELINE_EV)
+}
+
+fn clamp_ev(ev: f32) -> f32 {
+    if !ev.is_finite() {
+        return 0.0;
+    }
+    ev.clamp(-BASELINE_EV_CLAMP, BASELINE_EV_CLAMP)
+}
+
+fn tag_value_to_f32(value: &Value) -> Option<f32> {
+    match value {
+        Value::SRational(v) => v.first().and_then(|r| {
+            if r.d == 0 {
+                None
+            } else {
+                Some(r.n as f32 / r.d as f32)
+            }
+        }),
+        Value::Rational(v) => v.first().and_then(|r| {
+            if r.d == 0 {
+                None
+            } else {
+                Some(r.n as f32 / r.d as f32)
+            }
+        }),
+        Value::Float(v) => v.first().copied(),
+        Value::Double(v) => v.first().map(|x| *x as f32),
+        Value::SLong(v) => v.first().map(|x| *x as f32),
+        Value::Long(v) => v.first().map(|x| *x as f32),
+        Value::SShort(v) => v.first().map(|x| *x as f32),
+        Value::Short(v) => v.first().map(|x| *x as f32),
+        _ => None,
+    }
 }
 
 /// Pull an `Intermediate` into a flat RGB f32 buffer. `FourColor` sensors

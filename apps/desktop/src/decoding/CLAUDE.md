@@ -47,7 +47,7 @@ and hand a `DecodedImage` off to the renderer.
   bilinear demosaic, not Markesteijn. Usable in a viewer but less detailed than
   what dedicated RAW tools produce.
 
-## RAW pipeline (Phase 2.1)
+## RAW pipeline (Phase 2.2)
 
 `raw.rs` bypasses rawler's default `Calibrate`/`CropDefault`/`SRgb` stages so we
 can keep the intermediate wide-gamut:
@@ -57,9 +57,14 @@ can keep the intermediate wide-gamut:
 2. `raw.rs::camera_to_linear_rec2020` applies white balance and
    `cam → linear Rec.2020` (via the camera's D65 matrix composed with
    `XYZ → linear Rec.2020`). No clip.
-3. Default crop, then `color::transform_f32_with_profile` hands the buffer to
-   moxcms for the linear-Rec.2020 → display-ICC conversion in f32. Clamp to
-   [0, 1] on the way out to RGBA8.
+3. Default crop.
+4. `raw.rs::apply_exposure` lifts the linear buffer by the baseline EV picked
+   by `baseline_exposure_ev` (DNG `BaselineExposure` tag first, fallback
+   +0.5 EV, clamped to [-2, +2]). Linear-space multiply so relative luminance
+   stays correct.
+5. `color::transform_f32_with_profile` hands the buffer to moxcms for the
+   linear-Rec.2020 → display-ICC conversion in f32. Clamp to [0, 1] on the
+   way out to RGBA8.
 
 The linear Rec.2020 `ColorProfile` is built programmatically in
 `color::profiles::linear_rec2020_profile`. No bundled ICC file.

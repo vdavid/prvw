@@ -16,6 +16,11 @@
 //!    throws away any P3/Rec.2020 coverage the sensor captured. The wide-gamut
 //!    intermediate preserves those colors all the way through the final ICC
 //!    transform to the display profile.
+//! 3. **Baseline exposure lift.** Still in linear Rec.2020 land, we apply a
+//!    single EV scale (`linear *= 2^ev`). Source is the DNG
+//!    `BaselineExposure` tag (50730) when present, otherwise a +0.5 EV
+//!    default that matches what Adobe-neutral viewers apply silently. See
+//!    `baseline_exposure_ev` for the priority chain and clamp.
 //!
 //! Then moxcms transforms `linear Rec.2020 → display ICC` in f32 land so
 //! out-of-[0, 1] values stay meaningful up to the final 8-bit conversion.
@@ -45,16 +50,29 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rawler::RawImage;
-use rawler::decoders::RawDecodeParams;
+use rawler::decoders::{Decoder, RawDecodeParams, WellKnownIFD};
+use rawler::formats::tiff::Value;
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
 use rawler::imgop::xyz::Illuminant;
 use rawler::rawsource::RawSource;
+use rawler::tags::DngTag;
 use rayon::prelude::*;
 
 use crate::color;
 use crate::color::profiles::REC2020_TO_XYZ_D65;
 
 use super::DecodedImage;
+
+/// Fallback exposure lift when a RAW file doesn't carry a DNG `BaselineExposure`
+/// tag. +0.5 EV (~1.41× linear gain) is Adobe's neutral default and roughly
+/// matches what Preview.app, Apple Photos, and Lightroom apply silently when
+/// opening a sensor-linear file.
+const DEFAULT_BASELINE_EV: f32 = 0.5;
+
+/// Safety clamp on the baseline exposure. A well-formed DNG lands in
+/// [+0.0, +1.5] EV; anything past ±2 EV is almost certainly a bogus tag and
+/// would blow out the whole image.
+const BASELINE_EV_CLAMP: f32 = 2.0;
 
 /// Decode a RAW file through our wide-gamut pipeline and color-manage to
 /// `target_icc`. Returns the developed RGBA8 buffer plus the EXIF orientation
@@ -114,6 +132,21 @@ pub(super) fn decode(
     // step does the same thing after calibrate; we just moved it later so the
     // color transform happens on the full active-area buffer.
     let (width, height, mut rec2020) = apply_default_crop(&raw, width, height, rec2020);
+
+    check_cancelled(cancelled)?;
+
+    // Baseline exposure lift. Still in linear Rec.2020, so the math is a
+    // single multiplicative scale per component. Applying it here (pre-ICC)
+    // keeps relative luminance correct; doing it after gamma encoding would
+    // distort midtones.
+    let ev = baseline_exposure_ev(decoder.as_ref(), &raw);
+    log::debug!(
+        "RAW baseline exposure: {:+.2} EV ({:.3}x linear gain) for {}",
+        ev,
+        2.0_f32.powf(ev),
+        path.display()
+    );
+    apply_exposure(&mut rec2020, ev);
 
     check_cancelled(cancelled)?;
 
@@ -303,6 +336,95 @@ fn apply_default_crop(
         out[dst_off..dst_off + cw * 3].copy_from_slice(&pixels[src_off..src_off + cw * 3]);
     }
     (cw as u32, ch as u32, out)
+}
+
+/// Multiply every linear RGB component by `2^ev`. Called on the wide-gamut
+/// buffer pre-ICC, so the math runs in linear light and preserves relative
+/// luminance. Doing this post-gamma would distort midtones.
+///
+/// No clamp here. Out-of-[0, 1] values stay alive until the ICC transform
+/// gamut-maps them.
+fn apply_exposure(rec2020: &mut [f32], ev: f32) {
+    if ev == 0.0 {
+        return;
+    }
+    let gain = 2.0_f32.powf(ev);
+    rec2020.par_iter_mut().for_each(|v| *v *= gain);
+}
+
+/// Decide the exposure lift (in EV stops) to apply to this RAW frame. Priority:
+///
+/// 1. `raw.dng_tags` — rawler populates this when building a DNG from a
+///    non-DNG raw, so some edge cases land here first.
+/// 2. The decoder's root IFD — for parsed DNG files, rawler does not mirror
+///    tags into `raw.dng_tags`, so we read `DngTag::BaselineExposure` (50730)
+///    straight off the TIFF via [`Decoder::ifd`].
+/// 3. Fallback to [`DEFAULT_BASELINE_EV`] (+0.5 EV).
+///
+/// The result is clamped to `[-BASELINE_EV_CLAMP, +BASELINE_EV_CLAMP]` so a
+/// bogus tag can't blow out the whole image.
+///
+/// There is no per-camera hint for baseline exposure in rawler's data files
+/// (hints are format-level quirks, not color-pipeline tuning), so this
+/// function intentionally has no camera-hint branch.
+fn baseline_exposure_ev(decoder: &dyn Decoder, raw: &RawImage) -> f32 {
+    if let Some(value) = raw.dng_tags.get(&(DngTag::BaselineExposure as u16)) {
+        return baseline_exposure_ev_from_tag_value(Some(value), DEFAULT_BASELINE_EV);
+    }
+    if let Ok(Some(ifd)) = decoder.ifd(WellKnownIFD::Root)
+        && let Some(entry) = ifd.get_entry(DngTag::BaselineExposure)
+    {
+        return baseline_exposure_ev_from_tag_value(Some(&entry.value), DEFAULT_BASELINE_EV);
+    }
+    clamp_ev(DEFAULT_BASELINE_EV)
+}
+
+/// Pure helper so we can unit-test the tag-decoding + clamp logic without
+/// fabricating a whole `RawImage` or `Decoder`. Returns the clamped EV:
+/// decodes an `SRational` / `Rational` / numeric `Value` into `f32`, falls
+/// back to `default` on missing or weird shapes, then clamps.
+fn baseline_exposure_ev_from_tag_value(value: Option<&Value>, default: f32) -> f32 {
+    let raw_ev = value.and_then(tag_value_to_f32).unwrap_or(default);
+    clamp_ev(raw_ev)
+}
+
+fn clamp_ev(ev: f32) -> f32 {
+    if !ev.is_finite() {
+        return 0.0;
+    }
+    ev.clamp(-BASELINE_EV_CLAMP, BASELINE_EV_CLAMP)
+}
+
+/// Convert the first element of a TIFF [`Value`] into `f32`. Supports the
+/// types the DNG spec allows for `BaselineExposure` (signed rational) plus
+/// the usual numeric fallbacks in case a writer used a wider type. Returns
+/// `None` on empty vectors or divide-by-zero rationals.
+fn tag_value_to_f32(value: &Value) -> Option<f32> {
+    match value {
+        Value::SRational(v) => v.first().and_then(|r| {
+            if r.d == 0 {
+                None
+            } else {
+                Some(r.n as f32 / r.d as f32)
+            }
+        }),
+        Value::Rational(v) => v.first().and_then(|r| {
+            if r.d == 0 {
+                None
+            } else {
+                Some(r.n as f32 / r.d as f32)
+            }
+        }),
+        Value::Float(v) => v.first().copied(),
+        Value::Double(v) => v.first().map(|x| *x as f32),
+        Value::SLong(v) => v.first().map(|x| *x as f32),
+        Value::Long(v) => v.first().map(|x| *x as f32),
+        Value::SShort(v) => v.first().map(|x| *x as f32),
+        Value::Short(v) => v.first().map(|x| *x as f32),
+        Value::SByte(v) => v.first().map(|x| *x as f32),
+        Value::Byte(v) => v.first().map(|x| *x as f32),
+        _ => None,
+    }
 }
 
 /// Clamp every f32 to [0, 1] and promote to RGBA8 with full alpha. This is the
@@ -548,5 +670,109 @@ mod tests {
     fn flat_matrix_parse_rejects_short_input() {
         assert!(flat_matrix_to_3x3(&[1.0, 2.0]).is_none());
         assert!(flat_matrix_to_4x3(&[1.0; 11]).is_none());
+    }
+
+    #[test]
+    fn apply_exposure_zero_is_noop() {
+        let mut buf = vec![0.0_f32, 0.25, 0.5, 0.75, 1.0, 2.0];
+        let original = buf.clone();
+        apply_exposure(&mut buf, 0.0);
+        assert_eq!(buf, original);
+    }
+
+    #[test]
+    fn apply_exposure_plus_one_doubles() {
+        let mut buf = vec![0.1_f32, 0.2, 0.3];
+        apply_exposure(&mut buf, 1.0);
+        for (got, want) in buf.iter().zip([0.2_f32, 0.4, 0.6]) {
+            assert!((got - want).abs() < 1e-5, "got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn apply_exposure_minus_one_halves() {
+        let mut buf = vec![0.4_f32, 0.8, 1.2];
+        apply_exposure(&mut buf, -1.0);
+        for (got, want) in buf.iter().zip([0.2_f32, 0.4, 0.6]) {
+            assert!((got - want).abs() < 1e-5, "got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn apply_exposure_handles_empty_buffer() {
+        let mut buf: Vec<f32> = Vec::new();
+        apply_exposure(&mut buf, 0.5); // shouldn't panic
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn baseline_ev_missing_tag_returns_default() {
+        let ev = baseline_exposure_ev_from_tag_value(None, DEFAULT_BASELINE_EV);
+        assert!((ev - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn baseline_ev_reads_srational() {
+        use rawler::formats::tiff::SRational;
+        // +0.75 EV encoded as 3/4
+        let value = Value::SRational(vec![SRational::new(3, 4)]);
+        let ev = baseline_exposure_ev_from_tag_value(Some(&value), DEFAULT_BASELINE_EV);
+        assert!((ev - 0.75).abs() < 1e-6, "got {ev}");
+    }
+
+    #[test]
+    fn baseline_ev_reads_negative_srational() {
+        use rawler::formats::tiff::SRational;
+        // -0.5 EV
+        let value = Value::SRational(vec![SRational::new(-1, 2)]);
+        let ev = baseline_exposure_ev_from_tag_value(Some(&value), DEFAULT_BASELINE_EV);
+        assert!((ev + 0.5).abs() < 1e-6, "got {ev}");
+    }
+
+    #[test]
+    fn baseline_ev_clamps_extreme_values() {
+        use rawler::formats::tiff::SRational;
+        // +5 EV — way too much, should clamp to +2
+        let big = Value::SRational(vec![SRational::new(5, 1)]);
+        let ev = baseline_exposure_ev_from_tag_value(Some(&big), DEFAULT_BASELINE_EV);
+        assert!((ev - 2.0).abs() < 1e-6, "got {ev}");
+
+        // -10 EV — should clamp to -2
+        let small = Value::SRational(vec![SRational::new(-10, 1)]);
+        let ev = baseline_exposure_ev_from_tag_value(Some(&small), DEFAULT_BASELINE_EV);
+        assert!((ev + 2.0).abs() < 1e-6, "got {ev}");
+    }
+
+    #[test]
+    fn baseline_ev_divide_by_zero_falls_back() {
+        use rawler::formats::tiff::SRational;
+        let junk = Value::SRational(vec![SRational::new(1, 0)]);
+        let ev = baseline_exposure_ev_from_tag_value(Some(&junk), DEFAULT_BASELINE_EV);
+        // Garbage denominator -> fallback to default (+0.5)
+        assert!((ev - 0.5).abs() < 1e-6, "got {ev}");
+    }
+
+    #[test]
+    fn baseline_ev_accepts_float_tag() {
+        let value = Value::Float(vec![0.3]);
+        let ev = baseline_exposure_ev_from_tag_value(Some(&value), DEFAULT_BASELINE_EV);
+        assert!((ev - 0.3).abs() < 1e-6, "got {ev}");
+    }
+
+    #[test]
+    fn baseline_ev_rejects_wrong_type() {
+        use rawler::formats::tiff::TiffAscii;
+        // String tag (e.g., if a broken writer used the wrong type) -> fallback
+        let value = Value::Ascii(TiffAscii::new("nonsense"));
+        let ev = baseline_exposure_ev_from_tag_value(Some(&value), DEFAULT_BASELINE_EV);
+        assert!((ev - 0.5).abs() < 1e-6, "got {ev}");
+    }
+
+    #[test]
+    fn clamp_ev_handles_nan_and_inf() {
+        assert_eq!(clamp_ev(f32::NAN), 0.0);
+        assert_eq!(clamp_ev(f32::INFINITY), 0.0);
+        assert_eq!(clamp_ev(f32::NEG_INFINITY), 0.0);
+        assert_eq!(clamp_ev(0.7), 0.7);
     }
 }

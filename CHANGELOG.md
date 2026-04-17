@@ -22,6 +22,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   intermediate, which moxcms transforms to the display profile. On P3 displays, RAW output now shows colors that were
   previously clipped — saturated reds, greens, and blues near the edge of the gamut. Pipeline details in
   `docs/notes/raw-support-phase2.md`
+- RAW decode now applies a baseline exposure lift in linear Rec.2020 space, right before the ICC transform. Source is
+  the DNG `BaselineExposure` tag (50730) when the file carries one, otherwise +0.5 EV — Adobe's neutral default and
+  roughly what Preview.app and Apple Photos apply silently. Clamped to ±2 EV for safety. Real-world RAW output now
+  lands within ~97 % of Preview.app's brightness; the final gap closes when Phase 2.3's tone curve lands. See
+  `docs/notes/raw-support-phase2.md`
 
 ## [0.9.0] - 2026-04-17
 
