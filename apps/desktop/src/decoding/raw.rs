@@ -240,18 +240,33 @@ pub(super) fn decode(
 
     check_cancelled(cancelled)?;
 
-    // DCP (Adobe Digital Camera Profile). Opt-in per-camera color
-    // refinement: we look up a DCP matching this camera's
-    // `UniqueCameraModel` under `$PRVW_DCP_DIR` and Adobe Camera Raw's
-    // default location, and apply its `ProfileHueSatMap` 3D LUT in HSV.
-    // Zero effect when no DCP is available, which is the common case.
-    // See `color::dcp` for the format, matching rules, and what we
+    // DCP (Adobe Digital Camera Profile). Per-camera color refinement,
+    // resolved in this priority order:
+    //
+    // 1. **Embedded** — profile tags read straight from the DNG's main
+    //    IFD. Smartphone DNGs (Pixel, Galaxy, iPhone ProRAW) and any
+    //    DNG converted by Adobe DNG Converter ship one here. The camera
+    //    manufacturer picked this, so it's the most trustworthy source
+    //    and wins over any filesystem match.
+    // 2. **Filesystem** — opt-in `.dcp` matching the camera's
+    //    `UniqueCameraModel` under `$PRVW_DCP_DIR` or Adobe Camera
+    //    Raw's default directory. Used when the file carries no
+    //    embedded profile (for example, every Sony ARW in our
+    //    fixture set).
+    //
+    // Zero effect when neither path yields a match, which stays the
+    // common case for non-DNG RAWs without an installed profile. See
+    // `color::dcp` for the format, matching rules, and what we
     // deliberately skip (LookTable, ProfileToneCurve, forward-matrix
     // swap, dual-illuminant interpolation).
     let camera_id = format!("{} {}", raw.camera.make, raw.camera.model);
-    if let Some(dcp) = color::dcp::apply_if_available(&camera_id, &mut rec2020) {
-        log::debug!(
-            "RAW applied DCP '{}' for camera '{}' on {}",
+    let dng_tags_for_dcp = collect_dng_profile_tags(decoder.as_ref(), &raw);
+    if let Some((dcp, source)) =
+        color::dcp::apply_if_available(&camera_id, dng_tags_for_dcp.as_ref(), &mut rec2020)
+    {
+        log::info!(
+            "RAW applied {} DCP '{}' for camera '{}' on {}",
+            color::dcp::source_label(source),
             dcp.profile_name.as_deref().unwrap_or("<unnamed profile>"),
             camera_id,
             path.display()
@@ -690,6 +705,53 @@ fn check_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), String> {
         return Err("cancelled".into());
     }
     Ok(())
+}
+
+/// DNG profile tag IDs we hand to `color::dcp::from_dng_tags`. Keep in
+/// sync with the `TAG_*` constants in `color::dcp::embedded`. Listing them
+/// here (rather than iterating every entry in the source IFD) lets us
+/// pull the minimum set and skip anything unrelated to DCP — the less we
+/// clone, the better for decode performance.
+const DCP_PROFILE_TAG_IDS: &[u16] = &[
+    DngTag::UniqueCameraModel as u16,
+    DngTag::CalibrationIlluminant1 as u16,
+    DngTag::CalibrationIlluminant2 as u16,
+    DngTag::ProfileCalibrationSignature as u16,
+    DngTag::ProfileName as u16,
+    DngTag::ProfileHueSatMapDims as u16,
+    DngTag::ProfileHueSatMapData1 as u16,
+    DngTag::ProfileHueSatMapData2 as u16,
+    DngTag::ProfileCopyright as u16,
+    DngTag::ProfileHueSatMapEncoding as u16,
+];
+
+/// Collect the DNG profile tags for the DCP applier. Checks `raw.dng_tags`
+/// first (some rawler decoders, notably RAF, populate it directly), then
+/// pulls from the decoder's `VirtualDngRootTags` view, then the plain
+/// `Root` IFD. Returns `None` when no relevant tag is found, so the DCP
+/// applier can skip the embedded-profile path without a useless allocation.
+fn collect_dng_profile_tags(
+    decoder: &dyn Decoder,
+    raw: &RawImage,
+) -> Option<std::collections::HashMap<u16, Value>> {
+    let mut out: std::collections::HashMap<u16, Value> = std::collections::HashMap::new();
+    for tag in DCP_PROFILE_TAG_IDS {
+        if let Some(value) = raw.dng_tags.get(tag) {
+            out.insert(*tag, value.clone());
+        }
+    }
+    for ifd_kind in [WellKnownIFD::VirtualDngRootTags, WellKnownIFD::Root] {
+        if let Ok(Some(ifd)) = decoder.ifd(ifd_kind) {
+            for tag in DCP_PROFILE_TAG_IDS {
+                if !out.contains_key(tag)
+                    && let Some(entry) = ifd.entries.get(tag)
+                {
+                    out.insert(*tag, entry.value.clone());
+                }
+            }
+        }
+    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 /// Fetch the raw bytes of `DngTag::OpcodeList1/2/3` off a decoder's virtual
@@ -1135,6 +1197,89 @@ mod tests {
         let img =
             ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, rgba.to_vec()).expect("image buffer size");
         img.save(path).expect("save png");
+    }
+
+    /// Phase 3.3 smoke test: decode the Pixel 6 Pro sample2.dng twice —
+    /// once with the embedded profile honored (the default) and once
+    /// with `PRVW_DISABLE_EMBEDDED_DCP=1` forcing a skip — then assert
+    /// the two outputs differ. Confirms our `from_dng_tags` path wires
+    /// into the pipeline and produces a visible color shift.
+    ///
+    /// Set `PRVW_EMBEDDED_DCP_SMOKE_DUMP=/some/dir` to additionally emit
+    /// `without-embedded.png` and `with-embedded.png` for side-by-side
+    /// visual inspection. `#[ignore]` because the fixture lives outside
+    /// the repo. Run with
+    /// `cargo test --release embedded_dcp_smoke -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn embedded_dcp_smoke() {
+        use crate::color::dcp::EMBEDDED_DCP_DISABLE_ENV_VAR;
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+        let path = Path::new("/tmp/raw/sample2.dng");
+        if !path.exists() {
+            log::warn!("skipping: fixture missing");
+            return;
+        }
+        let bytes = std::fs::read(path).expect("fixture missing");
+
+        // Make sure no stray filesystem DCP can interfere with the
+        // comparison. SAFETY: single-threaded test body; serial with the
+        // other env-var tests via the `#[ignore]` gate.
+        unsafe {
+            std::env::remove_var("PRVW_DCP_DIR");
+        }
+
+        // Without embedded DCP — what Phase 3.2 would have produced.
+        unsafe {
+            std::env::set_var(EMBEDDED_DCP_DISABLE_ENV_VAR, "1");
+        }
+        let (without, _) = decode(path, bytes.clone(), None, color::srgb_icc_bytes(), false)
+            .expect("decode without embedded DCP");
+
+        // With embedded DCP — the Phase 3.3 default.
+        unsafe {
+            std::env::remove_var(EMBEDDED_DCP_DISABLE_ENV_VAR);
+        }
+        let (with_embedded, _) = decode(path, bytes, None, color::srgb_icc_bytes(), false)
+            .expect("decode with embedded DCP");
+
+        let n = without.rgba_data.len().min(with_embedded.rgba_data.len());
+        let mut diff_count = 0u64;
+        let mut total_delta: u64 = 0;
+        for i in 0..n {
+            if without.rgba_data[i] != with_embedded.rgba_data[i] {
+                diff_count += 1;
+                total_delta += (without.rgba_data[i] as i32 - with_embedded.rgba_data[i] as i32)
+                    .unsigned_abs() as u64;
+            }
+        }
+        let pct = 100.0 * diff_count as f64 / n as f64;
+        let mean = total_delta as f64 / diff_count.max(1) as f64;
+        println!(
+            "Embedded DCP smoke: {diff_count}/{n} bytes changed ({pct:.1}%), mean |Δ| = {mean:.2}"
+        );
+        assert!(
+            diff_count > n as u64 / 100,
+            "expected embedded DCP to produce a visible shift; got only {diff_count} of {n} bytes changed"
+        );
+
+        if let Some(dump_dir) = std::env::var_os("PRVW_EMBEDDED_DCP_SMOKE_DUMP") {
+            let dir = std::path::PathBuf::from(dump_dir);
+            std::fs::create_dir_all(&dir).expect("create dump dir");
+            let (w, h) = (without.width, without.height);
+            write_rgba_png(&dir.join("without-embedded.png"), w, h, &without.rgba_data);
+            write_rgba_png(
+                &dir.join("with-embedded.png"),
+                w,
+                h,
+                &with_embedded.rgba_data,
+            );
+            println!(
+                "Dumped without-embedded.png / with-embedded.png under {}",
+                dir.display()
+            );
+        }
     }
 
     #[test]

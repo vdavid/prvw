@@ -4,7 +4,7 @@ Quick checklist across phases. Detailed design notes live in
 `raw-support-phase1.md` and `raw-support-phase2.md`. This file is the single
 source for "what's done, what's next."
 
-Last updated: 2026-04-17 (Phase 3.2 shipped).
+Last updated: 2026-04-17 (Phase 3.3 shipped).
 
 ## Phase 1 — shipped in v0.9.0 🎉
 
@@ -130,20 +130,23 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
 (our matrix already targets Rec.2020). See
 `docs/notes/raw-support-phase3.md` for rationale and format details.
 
-### Phase 3.x — still ahead
+### Phase 3.3 — DCP embedded in DNG (done, 2026-04-17)
 
-- [ ] **Apply DCP data embedded in DNG files.** Smartphone DNGs (Pixel,
-      Samsung Galaxy, iPhone ProRAW) ship without standalone `.dcp` files
-      because they embed `ProfileHueSatMap`, `ProfileToneCurve`,
-      `ForwardMatrix`, and related tags directly in the DNG. Rawler already
-      parses these tags into `raw.dng_tags`; we just don't apply them yet.
-      Extending our DCP applier to read from the DNG's own IFD would
-      unlock per-camera color for every smartphone DNG out of the box, no
-      user config required. ~300 LoC, same HueSatMap application code we
-      already have. High ROI: Pixel, Samsung, and iPhone ProRAW photos all
-      benefit immediately. Discovered 2026-04-18 while testing sample2.dng
-      (Pixel 6 Pro) — its `strings` output literally says "Google Embedded
-      Camera Profile".
+- [x] **Apply DCP data embedded in DNG files.** Smartphone DNGs (Pixel,
+      Samsung Galaxy, iPhone ProRAW) and Adobe-converted DNGs carry
+      `ProfileHueSatMapDims`, `ProfileHueSatMapData1/2`, and friends in
+      their main IFD. New `color::dcp::embedded::from_dng_tags` reads
+      them into the same `Dcp` struct the standalone parser produces, so
+      `apply_hue_sat_map` runs unchanged. Embedded wins over filesystem
+      DCP — the manufacturer's profile is authoritative. Non-DNG files
+      and DNGs without profile tags are byte-for-byte identical to
+      Phase 3.2. On sample2.dng (Pixel 6 Pro), the embedded profile
+      produces a visible warmer / better-balanced output (63 % of bytes
+      changed, mean |Δ| = 3.28). INFO log line spells out the source
+      (`"RAW applied EMBEDDED DCP 'Google Embedded Camera Profile' …"`).
+      See `docs/notes/raw-support-phase3.md`.
+
+### Phase 3.x — still ahead
 - [ ] Fuzzy DCP matching fallback. Currently requires exact
       `UniqueCameraModel` match. If a user has a DCP for a close-family
       camera (e.g., `SONY ILCE-6000` while shooting with an α5000), the

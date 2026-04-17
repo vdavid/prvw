@@ -1,4 +1,4 @@
-# Camera RAW support: Phase 3.0 + 3.1 + 3.2
+# Camera RAW support: Phase 3.0 + 3.1 + 3.2 + 3.3
 
 Phase 2 closed the viewer-polish gap against Preview.app: wide-gamut
 intermediate, baseline exposure, tone curve, saturation, and capture
@@ -12,7 +12,12 @@ keeps near-clip pixels from drifting magenta / cyan.
 Phase 3.2 adds **DCP (Adobe Digital Camera Profile) support**: opt-in per-
 camera color refinement that picks up where a generic 3×3 matrix leaves off.
 
-Last updated: 2026-04-17 (Phase 3.2 shipped).
+Phase 3.3 extends that to **DNG-embedded profiles**: smartphone DNGs
+(Pixel, Galaxy, iPhone ProRAW) and Adobe-converted DNGs carry the same
+profile tags directly in their main IFD, and Prvw now honors them
+automatically with zero user config.
+
+Last updated: 2026-04-17 (Phase 3.3 shipped).
 
 ## Scope
 
@@ -128,7 +133,7 @@ are present — the opcode passes are silent no-ops.
 - `gain_map_identity_leaves_data_unchanged` — all-ones gain on CFA
 - `gain_map_scales_corner_pixels` — uniform non-unity gain on CFA
 - `gain_map_cfa_planes_1_touches_every_pixel_regardless_of_bayer` —
-  pins the Phase 3.3 bugfix: on CFA photometric, `Plane = 0, Planes = 1`
+  pins the Phase 3.2 hotfix: on CFA photometric, `Plane = 0, Planes = 1`
   applies to every pixel the rect + pitch select, NOT only to pixels of
   a matching CFA color
 - `gain_map_cfa_pitch_2_reaches_only_the_matching_bayer_positions` —
@@ -555,7 +560,7 @@ cargo run --example dcp-inspect -- /tmp/prvw-dcp-test/SONY_ILCE-7M3.dcp
 - Docs: `raw-roadmap.md`, this file, `color/CLAUDE.md`,
   `decoding/CLAUDE.md`, `CHANGELOG.md`.
 
-## Phase 3.3 — CFA GainMap plane-semantics bugfix
+## Phase 3.2 hotfix — CFA GainMap plane-semantics bugfix
 
 Sample2.dng was rendering with a strong red cast that grew with radial
 distance from the center — a textbook sign of a lens-shading correction
@@ -613,3 +618,138 @@ the iPhone pattern (one Bayer phase per offset + pitch 2 GainMap).
   closure; no more `cfa` clone.
 - `apps/desktop/examples/raw-dev-dump.rs` — mirror the fix.
 - Docs: this file, `CHANGELOG.md`.
+
+## Phase 3.3 — apply DCP data embedded in DNG files
+
+Phase 3.2 built an opt-in DCP stack: parse standalone `.dcp` files, match
+by `UniqueCameraModel`, apply `ProfileHueSatMap`. That unlocked per-camera
+color for any camera the user had a DCP for, but in practice most users
+don't install Adobe Camera Raw and have no `.dcp` lying around. Phase 3.3
+closes the biggest remaining gap in per-camera color: **DNG files that
+embed their own profile**.
+
+Smartphone DNGs are the prime case. A Pixel 6 Pro DNG carries a
+`ProfileName` of `"Google Embedded Camera Profile"` sitting right in the
+main IFD alongside `ProfileHueSatMapDims`, `ProfileHueSatMapData1`, and
+friends. Samsung Galaxy and iPhone ProRAW do the same. Adobe DNG
+Converter also bakes a profile into the DNG when you convert an ARW / CR3
+/ RAF through it, so anything that's run through the converter ships a
+matching profile too. Before Phase 3.3 we ignored every one of those.
+
+### What changed
+
+- **New module** `color::dcp::embedded` with a single public entry
+  point: `from_dng_tags(tags: &HashMap<u16, Value>) -> Option<Dcp>`.
+  Reads the same DNG 1.6 § 6.2 profile tags the standalone parser knows
+  about (`ProfileHueSatMapDims`, `ProfileHueSatMapData1/2`,
+  `ProfileHueSatMapEncoding`, `UniqueCameraModel`, `ProfileName`,
+  `ProfileCopyright`, `ProfileCalibrationSignature`, and both
+  `CalibrationIlluminant` tags) and produces the same `Dcp` struct
+  the standalone parser produces, so downstream `apply_hue_sat_map`
+  doesn't care where the data came from.
+- **New helper** `decoding::raw::collect_dng_profile_tags`. Builds the
+  input `HashMap` from (1) `raw.dng_tags` (rawler's RAF decoder
+  populates this), (2) `decoder.ifd(WellKnownIFD::VirtualDngRootTags)`,
+  (3) `decoder.ifd(WellKnownIFD::Root)`. Returns `None` when no
+  relevant tag is present so the DCP code can skip the embedded path
+  without a useless allocation.
+- **Updated entry point**: `color::dcp::apply_if_available` now takes
+  the optional tag map and a camera id, tries the embedded path first,
+  then falls back to `find_dcp_for_camera`. Returns `(Dcp, DcpSource)`
+  where `DcpSource` is `Embedded` or `Filesystem`.
+- **INFO-level log line** spells the source out:
+  `"RAW applied EMBEDDED DCP 'Google Embedded Camera Profile' for
+  camera 'Google Pixel 6 Pro' on …"` vs. `"RAW applied filesystem DCP
+  'SONY ILCE-7M3' for camera 'Sony ILCE-7M3' on …"`.
+
+### Precedence rule
+
+Embedded wins. When a DNG has both an embedded profile and a matching
+filesystem DCP, we use the embedded one. The manufacturer's profile is
+the authoritative description of how the camera sees color;
+overriding it with a third-party file is almost always wrong.
+
+Users who want to override can set `PRVW_DISABLE_EMBEDDED_DCP=1`. That
+forces `apply_if_available` to skip the embedded path and fall through
+to filesystem discovery. It's there for the smoke test and the rare
+expert override — normal operation never needs it.
+
+### Pipeline position
+
+Unchanged from Phase 3.2: the DCP runs **post-highlight-recovery,
+pre-tone-curve** in linear Rec.2020. We only added the new discovery
+branch; the applier is byte-for-byte identical.
+
+### Smoke-test observations
+
+`decoding::raw::tests::embedded_dcp_smoke` (ignored, needs
+`/tmp/raw/sample2.dng`) decodes the Pixel 6 Pro sample twice:
+once with `PRVW_DISABLE_EMBEDDED_DCP=1`, once without. Output:
+
+```
+RAW applied EMBEDDED DCP 'Google Embedded Camera Profile' for camera
+    'Google Pixel 6 Pro' on /tmp/raw/sample2.dng
+Embedded DCP smoke: 30296917/47880000 bytes changed (63.3%),
+    mean |Δ| = 3.28
+```
+
+Visually, the two outputs are clearly different: the without-embedded
+version has a slight cool / greenish cast on the tiles and walls that
+the Pixel's matrix + our default pipeline leaves behind, while the
+with-embedded version renders the bathroom with more balanced, warmer
+grays — the neutral look Google's profile designers intended.
+
+Set `PRVW_EMBEDDED_DCP_SMOKE_DUMP=/some/dir` to emit
+`without-embedded.png` and `with-embedded.png` for side-by-side
+inspection.
+
+### Regression
+
+- **Sony ARW** (`sample1.arw`, `sample3.arw`): no embedded profile tags
+  present, `from_dng_tags` returns `None`, the filesystem path runs
+  unchanged. The existing `dcp_smoke` test asserts bit-for-bit equality
+  with the pre-3.3 baseline in the no-match case, and it still passes.
+- **Synthetic Bayer DNG** (`synthetic-bayer-128.dng`): no profile tags
+  embedded, `from_dng_tags` returns `None`, no apply. The golden-image
+  regression test passes unchanged — no golden regeneration needed.
+
+### Why we parse tags directly instead of piping through the standalone
+DCP parser
+
+The standalone `parser::parse` expects the DCP file header magic (`IIRC`
+plus an IFD offset) and iterates a private IFD. A DNG's main IFD doesn't
+carry that magic and its entries are mixed with thousands of non-profile
+tags. Routing through `parse` would mean synthesising a fake DCP file in
+memory, which would duplicate rawler's TIFF writer logic for no reason.
+`from_dng_tags` is much simpler: it already has the decoded `Value`s in
+its hand; it just picks the ones the spec calls out.
+
+### Tests
+
+- **Unit**: seven in `color::dcp::embedded::tests` cover: minimal happy
+  path, missing dims returns `None`, missing both data maps returns
+  `None`, size mismatch between dims and data, `Data2`-only (no
+  `Data1`), full metadata round-trip (name, copyright, illuminants,
+  encoding), `Double` fallback when a writer used `f64` instead of
+  `f32`.
+- **Unit** (existing): `parser::tests::pick_hue_sat_map_falls_back_to_
+  single` covers "illuminant tag missing → gracefully pick map 1". The
+  embedded path produces the same `Dcp` struct, so that test also
+  validates the no-illuminant behaviour end-to-end.
+- **Integration** (ignored): `decoding::raw::tests::embedded_dcp_smoke`
+  — see above.
+
+### Files touched
+
+- `apps/desktop/src/color/dcp/embedded.rs` (new) — `from_dng_tags`.
+- `apps/desktop/src/color/dcp/mod.rs` — re-export `from_dng_tags`,
+  refactor `apply_if_available` to take an optional tag map, add the
+  `DcpSource` enum, add the `PRVW_DISABLE_EMBEDDED_DCP` override.
+- `apps/desktop/src/decoding/raw.rs` — new `collect_dng_profile_tags`
+  helper; call the updated `apply_if_available`; INFO log line names
+  the source.
+- `apps/desktop/src/color/dcp/CLAUDE.md` (new) — document the two
+  discovery paths and the precedence rule.
+- `apps/desktop/src/color/CLAUDE.md` — update the DCP row to mention
+  Phase 3.3.
+- Docs: this file, `raw-roadmap.md`, `CHANGELOG.md`.

@@ -10,6 +10,10 @@
 //! ## What's implemented
 //!
 //! - Parser for the DCP TIFF-like format (`IIRC` magic).
+//! - **Embedded profile reader** ([`from_dng_tags`]) for DNGs whose own
+//!   main IFD carries the same profile tags. Smartphone DNGs (Pixel,
+//!   Galaxy, iPhone ProRAW) and Adobe-converted DNGs all ship their
+//!   profile this way.
 //! - Extraction of `ProfileName`, `ProfileCopyright`,
 //!   `UniqueCameraModel`, `ProfileCalibrationSignature`,
 //!   `CalibrationIlluminant1/2`, `ProfileHueSatMapDims`,
@@ -20,6 +24,18 @@
 //!   `~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/`,
 //!   with graceful fallback to the default pipeline when no match is
 //!   found (and no ACR install is required).
+//!
+//! ## Source precedence
+//!
+//! When a file carries both an embedded profile and a matching
+//! filesystem DCP exists, **embedded wins**. The manufacturer baked that
+//! profile into the file; it's the authoritative description of how the
+//! camera sees color. Users who want to override it can drop a DCP into
+//! `$PRVW_DCP_DIR` and rename it to match the camera's
+//! `UniqueCameraModel` — wait, no: embedded still wins. To override,
+//! they'd need to strip the profile tags from the DNG first. That's
+//! deliberate; overriding a manufacturer's profile is almost always a
+//! mistake.
 //!
 //! ## What's deferred
 //!
@@ -47,24 +63,94 @@
 
 pub mod apply;
 pub mod discovery;
+pub mod embedded;
 pub mod parser;
 
 pub use apply::apply_hue_sat_map;
 pub use discovery::{find_dcp_for_camera, log_search_summary_once};
+pub use embedded::from_dng_tags;
 pub use parser::Dcp;
 
-/// End-to-end "load a DCP and apply it" helper. Pass the camera's
-/// `"<Make> <Model>"` identity string and the linear-Rec.2020 buffer;
-/// returns `true` if a DCP was found and applied, `false` if we no-op'd.
+/// Where a matched DCP came from. Logged at INFO level so users can tell
+/// at a glance whether a decode picked up the DNG's own profile (almost
+/// always the best source) or fell back to a filesystem copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DcpSource {
+    /// Profile tags read from the DNG's own IFD. Smartphone DNGs (Pixel,
+    /// Galaxy, iPhone ProRAW) and Adobe-converted DNGs ship them here.
+    Embedded,
+    /// Profile loaded from a standalone `.dcp` file under
+    /// `$PRVW_DCP_DIR` or Adobe Camera Raw's default directory.
+    Filesystem,
+}
+
+impl DcpSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Embedded => "EMBEDDED",
+            Self::Filesystem => "filesystem",
+        }
+    }
+}
+
+/// End-to-end "find a DCP and apply it" helper. Pass the camera's
+/// `"<Make> <Model>"` identity string, an optional reference to the
+/// `dng_tags` map from the decoder, and the linear-Rec.2020 buffer.
 ///
-/// The `true` return is how the decoder logs "DCP was applied" without
-/// duplicating the discovery logic.
-pub fn apply_if_available(camera_id: &str, rgb: &mut [f32]) -> Option<Dcp> {
+/// Source precedence — embedded wins, always:
+///
+/// 1. **Embedded** ([`from_dng_tags`]): the DNG's own IFD carries profile
+///    tags. The camera manufacturer picked this, so it's the most
+///    trustworthy source. Pixel, Samsung Galaxy, iPhone ProRAW, and
+///    Adobe-converted DNGs all land here.
+/// 2. **Filesystem** ([`find_dcp_for_camera`]): no embedded profile — try
+///    a standalone `.dcp` matching the camera's `UniqueCameraModel`.
+///
+/// Returns `Some((dcp, source))` when a profile was applied, `None` when
+/// nothing matched.
+pub fn apply_if_available(
+    camera_id: &str,
+    dng_tags: Option<&std::collections::HashMap<u16, rawler::formats::tiff::Value>>,
+    rgb: &mut [f32],
+) -> Option<(Dcp, DcpSource)> {
+    // Prefer the embedded profile so smartphone DNGs "just work" without
+    // the user installing anything. The filesystem summary is still worth
+    // logging on the first call so power users see whether ACR is wired
+    // up.
     log_search_summary_once();
-    let dcp = find_dcp_for_camera(camera_id)?;
+    let embedded = if embedded_dcp_disabled() {
+        None
+    } else {
+        dng_tags.and_then(from_dng_tags)
+    };
+    let (dcp, source) = if let Some(dcp) = embedded {
+        (dcp, DcpSource::Embedded)
+    } else if let Some(dcp) = find_dcp_for_camera(camera_id) {
+        (dcp, DcpSource::Filesystem)
+    } else {
+        return None;
+    };
     let map = dcp.pick_hue_sat_map()?;
     apply_hue_sat_map(rgb, map, dcp.hue_sat_map_encoding);
-    Some(dcp)
+    Some((dcp, source))
+}
+
+/// Env var that lets the embedded-DCP smoke test and power users force
+/// the pipeline to ignore DNG-embedded profile tags. Set to `1` (or any
+/// non-empty value) to skip the embedded-profile read and fall through
+/// to filesystem discovery + the default pipeline.
+pub const EMBEDDED_DCP_DISABLE_ENV_VAR: &str = "PRVW_DISABLE_EMBEDDED_DCP";
+
+fn embedded_dcp_disabled() -> bool {
+    std::env::var_os(EMBEDDED_DCP_DISABLE_ENV_VAR)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+}
+
+/// Human-readable label for the DCP source. Used by the decoder so the
+/// INFO log line always spells out which code path produced the profile.
+pub fn source_label(source: DcpSource) -> &'static str {
+    source.label()
 }
 
 #[cfg(test)]

@@ -19,6 +19,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- RAW pipeline now applies **DCP profiles embedded in DNG files**. Every Pixel, Samsung Galaxy, iPhone ProRAW, and
+  Adobe-converted DNG ships with a `ProfileHueSatMap` baked into its main IFD; Prvw reads and applies it the same way
+  Phase 3.2 applies a standalone `.dcp` file, with zero user config. Embedded wins over a matching filesystem DCP — the
+  manufacturer's profile is the authoritative source. On sample2.dng (Pixel 6 Pro) the embedded "Google Embedded Camera
+  Profile" shifts 63 % of output bytes with a mean per-channel delta of 3.28, rendering a visibly more balanced image
+  (warmer tile grays, less cool / greenish cast). Non-DNG RAWs (Sony ARW, Canon CR2 / CR3, Nikon NEF, Olympus ORF,
+  Fujifilm RAF, Panasonic RW2, Pentax PEF, Samsung SRW) and DNGs without profile tags decode byte-for-byte identically
+  to Phase 3.2. INFO log line names the source (`"RAW applied EMBEDDED DCP 'Google Embedded Camera Profile' …"` vs.
+  `"RAW applied filesystem DCP …"`). See `docs/notes/raw-support-phase3.md`
 - RAW pipeline gained **opt-in Adobe DCP (Digital Camera Profile) support**. If the user has a `.dcp` matching the
   camera's `UniqueCameraModel` in `$PRVW_DCP_DIR` or Adobe Camera Raw's default directory
   (`~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/`), Prvw applies its `ProfileHueSatMap` as a
