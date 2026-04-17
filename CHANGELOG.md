@@ -4,6 +4,56 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-04-17
+
+### Added
+
+- Settings window: new sidebar layout with General, Zoom, Color, and File associations sections. Cross-dependencies
+  disable dependent toggles automatically (ICC off → Color match / Relative colorimetric disabled; Auto-fit on →
+  Enlarge disabled) ([dc43505](https://github.com/vdavid/prvw/commit/dc43505),
+  [0dd4849](https://github.com/vdavid/prvw/commit/0dd4849))
+- File associations panel: per-UTI toggles, "Set all" master toggle, 1-second polling of handler state, previous
+  handler rollback when you turn a toggle off ([0dd4849](https://github.com/vdavid/prvw/commit/0dd4849),
+  [17b76a3](https://github.com/vdavid/prvw/commit/17b76a3))
+- Rendering intent toggle (View menu + Settings > Color, Cmd+Shift+R). Default is perceptual; toggle to relative
+  colorimetric. Disabled when ICC color management is off. Persisted as `use_relative_colorimetric`
+  ([b42814f](https://github.com/vdavid/prvw/commit/b42814f))
+- Scroll-to-zoom toggle in Settings > General (off by default). When off, scroll navigates between images (down = next,
+  up = prev). Cmd+scroll always zooms regardless of the setting
+  ([d55b7e9](https://github.com/vdavid/prvw/commit/d55b7e9))
+- Pinch-to-zoom on trackpad, cursor-centered. Works with auto-fit window resize, same as scroll zoom
+  ([ef8d0bf](https://github.com/vdavid/prvw/commit/ef8d0bf))
+- Keyboard shortcuts for zoom: Cmd+= (zoom in), Cmd+- (zoom out), Cmd+0 (actual size)
+  ([ec2aba4](https://github.com/vdavid/prvw/commit/ec2aba4))
+- Title bar toggle in Settings > General (on by default): reserves a 32px strip at the top so the filename and zoom
+  pills don't cover the image. Screenshot-friendly when off
+  ([64e0d87](https://github.com/vdavid/prvw/commit/64e0d87))
+- Title bar vibrancy: Liquid Glass on macOS 26, classic frosted glass on older versions. The area around the image
+  (when the image doesn't fill the window) gets a darker HUD-style vibrancy. Fullscreen switches both to opaque black
+  so screenshots and projector-style viewing aren't distracted by the desktop blurring through
+  ([7eede14](https://github.com/vdavid/prvw/commit/7eede14))
+- Integration test suite (17 tests): Settings open/close/switch, zoom in/out, fit/actual, auto-fit toggle, navigate,
+  refresh, window geometry. Each test spawns its own app instance on a dynamic port
+  ([0dd4849](https://github.com/vdavid/prvw/commit/0dd4849))
+
+### Changed
+
+- Source layout: flat `src/` with infrastructure (`app/`, `render/`, `platform/`) and features (`about`, `color`,
+  `decoding`, `navigation`, `onboarding`, `qa`, `settings`, `window`, `zoom`, …) as siblings. Each feature owns its
+  runtime state via a `State` struct on `App` instead of ~20 flat fields. No behavior change
+  ([27eca5e](https://github.com/vdavid/prvw/commit/27eca5e),
+  [e88027b](https://github.com/vdavid/prvw/commit/e88027b))
+
+### Fixed
+
+- Closing the onboarding window now quits the app. Previously, a no-file launch (Dock or `cargo run` with no args)
+  left the event loop running with nothing visible after the user clicked Close, because the onboarding is a raw
+  AppKit window and doesn't generate a winit close event
+  ([e81bbdf](https://github.com/vdavid/prvw/commit/e81bbdf))
+- CGColor / CGColorSpace encoding crashes in `setColorspace:` (display profile) and the Settings separator:
+  `msg_send!` encoded these as `^v` instead of `^{CGColorSpace=}` / `^{CGColor=}`. Fix uses raw `objc_msgSend` to
+  bypass the type check ([17b76a3](https://github.com/vdavid/prvw/commit/17b76a3))
+
 ## [0.7.0] - 2026-04-16
 
 ### Added
