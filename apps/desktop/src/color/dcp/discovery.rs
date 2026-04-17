@@ -73,7 +73,14 @@ pub fn find_dcp_for_camera(camera_id: &str) -> Option<Dcp> {
             Err(e) => log::debug!("DCP: couldn't scan {}: {e}", dir.display()),
         }
     }
-    log::debug!("DCP: no match for camera '{camera_id}'; falling back to default pipeline");
+    if env::var_os(DCP_DIR_ENV_VAR).is_some() {
+        log::info!(
+            "DCP: no matching profile for camera '{camera_id}' in {}; falling back to default pipeline",
+            DCP_DIR_ENV_VAR
+        );
+    } else {
+        log::debug!("DCP: no match for camera '{camera_id}'; falling back to default pipeline");
+    }
     None
 }
 

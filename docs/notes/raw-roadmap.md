@@ -132,6 +132,23 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
 
 ### Phase 3.x — still ahead
 
+- [ ] **Apply DCP data embedded in DNG files.** Smartphone DNGs (Pixel,
+      Samsung Galaxy, iPhone ProRAW) ship without standalone `.dcp` files
+      because they embed `ProfileHueSatMap`, `ProfileToneCurve`,
+      `ForwardMatrix`, and related tags directly in the DNG. Rawler already
+      parses these tags into `raw.dng_tags`; we just don't apply them yet.
+      Extending our DCP applier to read from the DNG's own IFD would
+      unlock per-camera color for every smartphone DNG out of the box, no
+      user config required. ~300 LoC, same HueSatMap application code we
+      already have. High ROI: Pixel, Samsung, and iPhone ProRAW photos all
+      benefit immediately. Discovered 2026-04-18 while testing sample2.dng
+      (Pixel 6 Pro) — its `strings` output literally says "Google Embedded
+      Camera Profile".
+- [ ] Fuzzy DCP matching fallback. Currently requires exact
+      `UniqueCameraModel` match. If a user has a DCP for a close-family
+      camera (e.g., `SONY ILCE-6000` while shooting with an α5000), the
+      match silently fails. Add a fallback that tries known-compatible
+      camera families with a user-visible warning.
 - [ ] Retune defaults against a wider reference set. The 2.5b rerun grid-
       searched against a single Preview.app screenshot (a vibrant outdoor
       scene with a subject). Likely scene-class gaps: portraits / skin
@@ -144,8 +161,39 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       per-camera one when the DCP carries one.
 - [ ] Settings UI: a "Custom DCP directory" picker + "per-camera profile"
       toggle in the Color panel.
+- [ ] GainMap: honor `Planes > MapPlanes` fallback ("last plane applies to
+      remaining planes"). Currently the RGB applier only touches
+      `map.plane`. No current fixture hits this; the bug in the CFA path
+      was fixed in 723d143.
+- [ ] Bad-pixel opcodes: honor `bayer_phase`. Current interpolation pulls
+      from all 8 neighbors regardless of CFA color. Quality nit, not a
+      spec violation; no current fixture exercises this.
 
-## Phase 4 — HDR / EDR output
+## Phase 4 — Lens correction (via lensfun-rs)
+
+Complements Phase 3's color work. Phase 3 handles color fidelity (DCP,
+HueSatMap, DNG opcodes); Phase 4 handles geometry — distortion, transverse
+chromatic aberration, and vignetting. Different math, different data,
+different upstream source of truth.
+
+Approach: port LensFun's C++ core to pure Rust in a **separate crate**
+(`github.com/vdavid/lensfun-rs`), then depend on it from Prvw. The port spec
+is at `docs/notes/lensfun-rs.md` — 7,756 LoC of C++ with minimal deps,
+~6-8 weeks focused work. Delivering it as a standalone crate keeps Prvw
+pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
+
+- [ ] Build `lensfun-rs` crate per `docs/notes/lensfun-rs.md`. LGPL-3.0.
+      v0.1 covers distortion + TCA + vignetting for the 1,543 lenses and
+      1,041 camera bodies in LensFun's database. Standalone release on
+      crates.io.
+- [ ] Integrate into Prvw. Look up body + lens via rawler's metadata,
+      fetch a `Modifier` from `lensfun-rs`, apply distortion + TCA +
+      vignetting post-demosaic. ~100 LoC in Prvw; the heavy lifting lives
+      in the crate.
+- [ ] Settings toggle to disable lens correction for photographers who
+      prefer uncorrected output.
+
+## Phase 5 — HDR / EDR output
 
 - [ ] Don't clip highlights to 1.0 during tone curve. Shape the shoulder to
       asymptote around 2-4× (classical filmic tone mapping).
@@ -157,7 +205,7 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
 - [ ] Graceful SDR fallback: re-clamp to 1.0 when no EDR headroom is
       available (external SDR monitor, battery save, etc.).
 
-## Phase 5 — nice-to-haves, probably never
+## Phase 6 — nice-to-haves, probably never
 
 - [ ] Better Bayer demosaic: AMaZE or RCD instead of PPG. Editor-grade
       sharpness on edges. ~2000 LoC per algorithm.
