@@ -22,20 +22,30 @@
 //!   sat / val axes.
 //! - Discovery from `$PRVW_DCP_DIR` and
 //!   `~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/`,
-//!   with graceful fallback to the default pipeline when no match is
-//!   found (and no ACR install is required).
+//!   then from the bundled RawTherapee collection (Phase 3.5), with
+//!   graceful fallback to the default pipeline when no match is found.
+//! - **Bundled collection** (Phase 3.5): 161 RawTherapee community-
+//!   contributed DCPs packed at build time into a gzip-compressed blob.
+//!   They live in `color::dcp::bundled` and require zero user setup.
+//! - **Fuzzy family matching** (Phase 3.5): when exact matching fails on
+//!   all tiers, try known-compatible camera families from
+//!   `color::dcp::family_aliases`. A conservative curated seed list.
+//!   Logs at INFO so users see the substitution.
 //!
 //! ## Source precedence
 //!
-//! When a file carries both an embedded profile and a matching
-//! filesystem DCP exists, **embedded wins**. The manufacturer baked that
-//! profile into the file; it's the authoritative description of how the
-//! camera sees color. Users who want to override it can drop a DCP into
-//! `$PRVW_DCP_DIR` and rename it to match the camera's
-//! `UniqueCameraModel` — wait, no: embedded still wins. To override,
-//! they'd need to strip the profile tags from the DNG first. That's
-//! deliberate; overriding a manufacturer's profile is almost always a
-//! mistake.
+//! 1. **Embedded** — DNG's own IFD. Manufacturer profile; most trustworthy.
+//! 2. **`$PRVW_DCP_DIR`** — user-provided override. Always beats bundled.
+//! 3. **Adobe Camera Raw install dir** — system DCP library.
+//! 4. **Bundled collection** — RawTherapee's 161 community profiles.
+//! 5. **Fuzzy family alias** — tried across all tiers above for each alias.
+//! 6. **None** — fall back to the default matrix-only pipeline.
+//!
+//! When a file carries both an embedded profile and a matching filesystem
+//! DCP exists, **embedded wins**. The manufacturer baked that profile into
+//! the file; it's the authoritative description of how the camera sees
+//! color. Users who want to force the filesystem path can set
+//! `PRVW_DISABLE_EMBEDDED_DCP=1`.
 //!
 //! ## What's covered since Phase 3.4
 //!
@@ -65,14 +75,18 @@
 //! after the WB+matrix assembly. See `crate::decoding::raw`.
 
 pub mod apply;
+pub mod bundled;
 pub mod discovery;
 pub mod embedded;
+pub mod family_aliases;
 pub mod illuminant;
 pub mod parser;
 
 pub use apply::apply_hue_sat_map;
+pub use bundled::find_bundled_dcp;
 pub use discovery::{find_dcp_for_camera, log_search_summary_once};
 pub use embedded::from_dng_tags;
+pub use family_aliases::aliases_for;
 pub use illuminant::{estimate_scene_temp_k, interpolate_hue_sat_maps};
 pub use parser::Dcp;
 
@@ -87,6 +101,17 @@ pub enum DcpSource {
     /// Profile loaded from a standalone `.dcp` file under
     /// `$PRVW_DCP_DIR` or Adobe Camera Raw's default directory.
     Filesystem,
+    /// Profile loaded from the bundled RawTherapee collection (Phase 3.5).
+    /// Exact match — the camera's own profile was present in the bundle.
+    Bundled,
+    /// Profile loaded from the bundled collection via a fuzzy family alias
+    /// (Phase 3.5). A different but sensor-compatible camera's profile is
+    /// being used as a substitute. Logged at INFO so users see it.
+    BundledAlias,
+    /// Profile loaded from the filesystem via a fuzzy family alias (Phase
+    /// 3.5). Same family-substitution logic, but the hit came from the
+    /// user's own DCP directory or Adobe Camera Raw.
+    FilesystemAlias,
 }
 
 impl DcpSource {
@@ -94,6 +119,9 @@ impl DcpSource {
         match self {
             Self::Embedded => "EMBEDDED",
             Self::Filesystem => "filesystem",
+            Self::Bundled => "bundled",
+            Self::BundledAlias => "bundled (alias)",
+            Self::FilesystemAlias => "filesystem (alias)",
         }
     }
 }
@@ -103,14 +131,20 @@ impl DcpSource {
 /// `dng_tags` map from the decoder, the camera's `wb_coeffs` (for
 /// dual-illuminant blending), and the linear-Rec.2020 buffer.
 ///
-/// Source precedence — embedded wins, always:
+/// ## Source precedence (Phase 3.5)
 ///
 /// 1. **Embedded** ([`from_dng_tags`]): the DNG's own IFD carries profile
 ///    tags. The camera manufacturer picked this, so it's the most
 ///    trustworthy source. Pixel, Samsung Galaxy, iPhone ProRAW, and
 ///    Adobe-converted DNGs all land here.
-/// 2. **Filesystem** ([`find_dcp_for_camera`]): no embedded profile — try
-///    a standalone `.dcp` matching the camera's `UniqueCameraModel`.
+/// 2. **Filesystem exact** ([`find_dcp_for_camera`]): no embedded profile —
+///    try a standalone `.dcp` under `$PRVW_DCP_DIR` or Adobe Camera Raw.
+/// 3. **Bundled exact** ([`find_bundled_dcp`]): try the RawTherapee
+///    community collection (161 profiles, gzip-packed at build time).
+/// 4. **Fuzzy family alias** ([`aliases_for`]): for each alias of the
+///    camera, repeat tiers 2 and 3. First hit wins. Logs at INFO so
+///    users see the substitution.
+/// 5. **None** — fall back to the default matrix-only pipeline.
 ///
 /// Whichever source wins, the whole profile (HueSatMap, optional
 /// LookTable, optional ProfileToneCurve) comes from that source — we
@@ -150,12 +184,25 @@ pub fn apply_if_available(
     } else {
         dng_tags.and_then(from_dng_tags)
     };
+
+    // Tier 1: embedded (DNG's own profile).
+    // Tier 2: filesystem exact (user dir + Adobe dir).
+    // Tier 3: bundled exact (RawTherapee community collection).
     let (dcp, source) = if let Some(dcp) = embedded {
         (dcp, DcpSource::Embedded)
     } else if let Some(dcp) = find_dcp_for_camera(camera_id) {
         (dcp, DcpSource::Filesystem)
+    } else if let Some(dcp) = find_bundled_dcp(camera_id) {
+        (dcp, DcpSource::Bundled)
     } else {
-        return None;
+        // Tier 4: fuzzy family alias — try each alias on filesystem then
+        // bundled tiers. First hit wins.
+        let aliases = aliases_for(camera_id);
+        if let Some((alias_dcp, alias_source)) = try_aliases(camera_id, aliases) {
+            (alias_dcp, alias_source)
+        } else {
+            return None;
+        }
     };
     let scene_temp_k = estimate_scene_temp_k(wb_coeffs);
     if let Some(map) = interpolate_hue_sat_maps(&dcp, scene_temp_k) {
@@ -180,6 +227,39 @@ pub fn apply_if_available(
         apply_hue_sat_map(rgb, look, dcp.look_table_encoding);
     }
     Some((dcp, source))
+}
+
+/// Try each alias for a camera across the filesystem and bundled tiers.
+///
+/// Returns the first matching `(Dcp, DcpSource)` where `DcpSource` is
+/// `FilesystemAlias` or `BundledAlias`. Returns `None` if none of the
+/// aliases yield a hit.
+fn try_aliases(camera_id: &str, aliases: &[&str]) -> Option<(Dcp, DcpSource)> {
+    for alias in aliases {
+        if let Some(dcp) = find_dcp_for_camera(alias) {
+            log::info!(
+                "DCP: no exact match for '{}'; using compatible profile '{}' from filesystem",
+                camera_id,
+                dcp.profile_name
+                    .as_deref()
+                    .or(dcp.unique_camera_model.as_deref())
+                    .unwrap_or(*alias)
+            );
+            return Some((dcp, DcpSource::FilesystemAlias));
+        }
+        if let Some(dcp) = find_bundled_dcp(alias) {
+            log::info!(
+                "DCP: no exact match for '{}'; using compatible profile '{}' from bundled collection",
+                camera_id,
+                dcp.profile_name
+                    .as_deref()
+                    .or(dcp.unique_camera_model.as_deref())
+                    .unwrap_or(*alias)
+            );
+            return Some((dcp, DcpSource::BundledAlias));
+        }
+    }
+    None
 }
 
 /// Env var that lets the embedded-DCP smoke test and power users force

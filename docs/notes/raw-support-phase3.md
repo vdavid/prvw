@@ -1,4 +1,4 @@
-# Camera RAW support: Phase 3.0 + 3.1 + 3.2 + 3.3 + 3.4
+# Camera RAW support: Phase 3.0 + 3.1 + 3.2 + 3.3 + 3.4 + 3.5
 
 Phase 2 closed the viewer-polish gap against Preview.app: wide-gamut
 intermediate, baseline exposure, tone curve, saturation, and capture
@@ -22,7 +22,11 @@ Phase 3.4 closes the three Phase 3.2-deferred items: DCP **`LookTable`**
 **dual-illuminant interpolation** (blend `HueSatMap1` and `HueSatMap2` by
 scene color temperature).
 
-Last updated: 2026-04-17 (Phase 3.4 shipped).
+Phase 3.5 bundles 161 RawTherapee community DCPs into the binary and adds
+**fuzzy camera family matching** so most cameras get per-camera color
+fidelity with zero user setup.
+
+Last updated: 2026-04-17 (Phase 3.5 shipped).
 
 ## Scope
 
@@ -1009,3 +1013,110 @@ default; the Pixel curve is punchier in the midtones.
   thread `wb_coeffs` into the DCP call, swap the tone-curve stage when
   the DCP carries one, log which curve ran.
 - Docs: `raw-roadmap.md`, this file, `color/CLAUDE.md`, `color/dcp/CLAUDE.md`.
+
+## Phase 3.5 — bundled DCP collection + fuzzy family matching
+
+Phase 3.2 made DCP matching opt-in: users with Adobe Camera Raw or a custom
+`PRVW_DCP_DIR` got per-camera color. Everyone else got the default pipeline.
+Phase 3.5 closes that gap: 161 RawTherapee community profiles are bundled
+into the binary, and a fuzzy alias table catches cameras whose exact model
+isn't in the collection.
+
+### Bundled collection
+
+**Source**: [RawTherapee `dev` branch, `rtdata/dcpprofiles/`](https://github.com/Beep6581/RawTherapee/tree/dev/rtdata/dcpprofiles).
+161 DCP files, community-contributed by Maciej Dworak, Lawrence Lee, Alberto
+Griggio, Thanatomanic, Morgan Hardwood, and others. Source RAW files used to
+generate the profiles were released under CC0 by their respective photographers.
+Attribution in `apps/desktop/build-assets/dcps/LICENSE`.
+
+**Bundle strategy — Strategy B (compressed blob)**:
+
+`build.rs` reads all `.dcp` files from `apps/desktop/build-assets/dcps/`,
+concatenates them in sorted order, and compresses the result with zstd at
+level 10. Output: `OUT_DIR/bundled_dcps.zst` + `OUT_DIR/bundled_dcps.idx`
+(plain-text offset index). Both are `include_bytes!`'d into the binary by
+`color::dcp::bundled`.
+
+Why zstd over gzip: DCP float arrays barely compress file-by-file (gzip best:
+~81 % of original). Concatenating all 161 DCPs before compressing lets zstd
+exploit cross-file repetition in the float data (same HSV grid structures
+appear across cameras from the same manufacturer). Result: ~11 MB binary delta
+vs. ~67 MB with gzip or ~83 MB uncompressed.
+
+**Binary size delta**: 26.5 MB → 34.9 MB (+9.7 MB for 161 DCPs).
+
+**Runtime**: the blob decompresses once on first DCP lookup (a `OnceLock`),
+then stays in memory for the process lifetime (~83 MB heap). Parse is
+always done by the shared `parser::parse`; no separate code path.
+
+**Search tier order** (updated from Phase 3.2):
+1. Embedded (DNG's own IFD)
+2. Filesystem exact (`PRVW_DCP_DIR` + Adobe dir)
+3. Bundled exact (new)
+4. Fuzzy aliases, each trying filesystem then bundled (new)
+5. None — fall back to default pipeline
+
+### Fuzzy family matching
+
+`color::dcp::family_aliases::FAMILY_ALIASES` is a conservative curated table
+of `(camera, &[aliases])` pairs. Each alias represents a known-compatible
+camera — same sensor chip or close product family — that the caller can
+substitute for an exact match. Current seed: 20 entries across Sony, Fujifilm,
+Nikon, Canon, Olympus, and Panasonic.
+
+**Matching policy**: conservative is correct. It's better to fall through to
+the default matrix pipeline than to apply a Canon profile to a Nikon body.
+Add entries via PR with evidence (same sensor chip, DxOMark comparison, or
+side-by-side color analysis). Don't add based on brand or marketing alone.
+
+**Log output**: when a fuzzy match fires, an INFO line names the substitution:
+
+```
+DCP: no exact match for 'Sony ILCE-5000'; using compatible profile
+    'SONY ILCE-6000' from bundled collection
+```
+
+The `BundledAlias` and `FilesystemAlias` variants of `DcpSource` carry this
+distinction all the way to the INFO log in `decoding::raw`.
+
+### Unit-test coverage
+
+`color::dcp::bundled::tests`:
+- `bundled_count_is_nonzero` — build packed at least one DCP.
+- `bundled_count_matches_build_assets` — at least 100 DCPs (sanity).
+- `find_bundled_dcp_returns_known_camera` — `SONY ILCE-7M3` is in the
+  collection; returned DCP has the expected `UniqueCameraModel`.
+- `find_bundled_dcp_returns_none_for_unknown_camera` — made-up model
+  returns `None`.
+
+`color::dcp::family_aliases::tests`:
+- `aliases_for_known_camera_returns_nonempty` — `Sony ILCE-5000` resolves
+  to a non-empty alias list including `Sony ILCE-6000`.
+- `aliases_for_unknown_camera_returns_empty` — unknown model → empty slice.
+- `aliases_for_is_case_and_space_insensitive` — normalization consistent
+  with the primary path.
+- `all_alias_entries_have_at_least_one_alias` — table integrity check.
+
+### Reproducibility
+
+`scripts/sync-bundled-dcps.sh` re-downloads the full collection from RT's
+`dev` branch. Run it to update the bundle when RT ships new profiles. The
+script is idempotent (skips files already present) and prints a summary.
+
+### Files touched
+
+- `apps/desktop/build.rs` (new) — concatenates + zstd-compresses DCPs at
+  build time.
+- `apps/desktop/build-assets/dcps/` (new dir) — 161 `.dcp` files + LICENSE.
+- `apps/desktop/src/color/dcp/bundled.rs` (new) — runtime loader.
+- `apps/desktop/src/color/dcp/family_aliases.rs` (new) — alias table.
+- `apps/desktop/src/color/dcp/mod.rs` — new tiers in `apply_if_available`,
+  `try_aliases` helper, `DcpSource::{Bundled, BundledAlias, FilesystemAlias}`
+  variants, updated module doc.
+- `apps/desktop/src/color/dcp/discovery.rs` — `normalize` made `pub(super)`.
+- `apps/desktop/Cargo.toml` — `zstd = "0.13.3"` added (build + runtime).
+- `apps/desktop/src/color/dcp/CLAUDE.md` — updated search-order table.
+- `apps/desktop/src/color/CLAUDE.md` — updated DCP row.
+- `docs/notes/` — this file + `raw-roadmap.md` updated.
+- `CHANGELOG.md` — added Phase 3.5 bullets.

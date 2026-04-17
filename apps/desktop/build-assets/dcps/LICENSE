@@ -1,0 +1,25 @@
+The DCP (DNG Color Profile) files in this directory are sourced from the
+RawTherapee project (https://github.com/Beep6581/RawTherapee) and contributed
+by their respective authors. RawTherapee is distributed under the GNU General
+Public License v3. The DCP files themselves are community-contributed works
+created from color-target measurements and distributed within the RawTherapee
+project for the benefit of open-source raw processing.
+
+Principal DCP contributors include:
+- Maciej Dworak (the majority of profiles in this collection)
+- Lawrence Lee
+- Alberto Griggio
+- Thanatomanic
+- Morgan Hardwood
+- And other RawTherapee contributors
+
+The color-target RAW files used to generate many of these profiles were
+released by their photographers under the CC0 license
+(https://creativecommons.org/publicdomain/zero/1.0/).
+
+Redistribution of these DCP files is consistent with RawTherapee's own
+practice of including them in their open-source distribution and packaging.
+If you are a DCP author listed here and have concerns about redistribution,
+please file an issue at https://github.com/vdavid/prvw.
+
+Source: https://github.com/Beep6581/RawTherapee/tree/dev/rtdata/dcpprofiles

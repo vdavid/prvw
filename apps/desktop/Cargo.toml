@@ -26,6 +26,7 @@ serde_json = "1.0.149"
 base64 = "0.22.1"
 nom-exif = { version = "2.7.0", default-features = false }
 rawler = "0.7.2"
+zstd = "0.13.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
 glyphon = { git = "https://github.com/grovesNL/glyphon.git", rev = "28f1cb9" }
 
@@ -72,6 +73,9 @@ objc2-core-services = { version = "0.3", features = ["LSInfo"] }
 
 [profile.dev.package.zune-jpeg]
 opt-level = 3
+
+[build-dependencies]
+zstd = "0.13.3"
 
 [dev-dependencies]
 tempfile = "3.27.0"

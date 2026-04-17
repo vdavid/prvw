@@ -164,7 +164,7 @@ fn dcp_matches(dcp: &Dcp, target: &str) -> bool {
 }
 
 /// Normalize a camera identity string: lowercase + collapse whitespace.
-fn normalize(s: &str) -> String {
+pub(super) fn normalize(s: &str) -> String {
     // Small alloc but we rarely hit this (once per decode + per file scan).
     let mut out = String::with_capacity(s.len());
     let mut last_was_space = false;

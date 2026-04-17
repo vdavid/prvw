@@ -6,6 +6,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Added
+
+- **Bundled DCP library** (Phase 3.5): 161 community-contributed RawTherapee DCP profiles are now packed into the
+  binary at build time (~10 MB via zstd, Strategy B). They serve as a fourth search tier after `PRVW_DCP_DIR`,
+  Adobe Camera Raw's install dir, and ahead of "return None." Zero user setup required — cameras in the collection
+  get per-camera color fidelity out of the box. DCPs are from
+  [RawTherapee's repository](https://github.com/Beep6581/RawTherapee/tree/dev/rtdata/dcpprofiles), contributed
+  by Maciej Dworak, Lawrence Lee, Alberto Griggio, and others; attribution in
+  `apps/desktop/build-assets/dcps/LICENSE`. User-provided profiles (`PRVW_DCP_DIR`) always win.
+- **Fuzzy DCP family matching** (Phase 3.5): when exact `UniqueCameraModel` matching fails across all tiers, Prvw
+  now tries a curated list of known-compatible camera families. For example, a Sony α5000 falls back to the α6000
+  profile (same 20.1 MP sensor). Logs at INFO so users see the substitution. The seed list is conservative (20
+  cameras across Sony, Fujifilm, Nikon, Canon, Olympus, and Panasonic); extend via PR with evidence (same sensor
+  chip or close-family color science).
+
 ### Fixed
 
 - iPhone / Pixel DNGs no longer render with a radial red cast. Phase 3.0's DNG `OpcodeList2` applier treated the

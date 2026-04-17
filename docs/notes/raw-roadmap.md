@@ -4,7 +4,7 @@ Quick checklist across phases. Detailed design notes live in
 `raw-support-phase1.md` and `raw-support-phase2.md`. This file is the single
 source for "what's done, what's next."
 
-Last updated: 2026-04-17 (Phase 3.4 shipped).
+Last updated: 2026-04-17 (Phase 3.5 shipped).
 
 ## Phase 1 — shipped in v0.9.0 🎉
 
@@ -171,12 +171,19 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       viewer. See `docs/notes/raw-support-phase3.md` for the algorithm
       choice and limitations.
 
+### Phase 3.5 — bundled collection + fuzzy matching (done, 2026-04-17)
+
+- [x] Bundle RawTherapee DCP collection (161 profiles, BSD-redistributable)
+      at build time into a zstd-compressed blob (~10 MB binary delta).
+      New search tier: embedded → PRVW_DCP_DIR → Adobe dir → bundled →
+      fuzzy aliases → None.
+- [x] Fuzzy DCP matching fallback via a curated `FAMILY_ALIASES` table
+      (20 entries covering Sony, Fujifilm, Nikon, Canon, Olympus,
+      Panasonic). When exact matching fails on all tiers, try each alias
+      across filesystem then bundled tiers. Logs at INFO so users see the
+      substitution. Conservative seed list — better to miss than mismatch.
+
 ### Phase 3.x — still ahead
-- [ ] Fuzzy DCP matching fallback. Currently requires exact
-      `UniqueCameraModel` match. If a user has a DCP for a close-family
-      camera (e.g., `SONY ILCE-6000` while shooting with an α5000), the
-      match silently fails. Add a fallback that tries known-compatible
-      camera families with a user-visible warning.
 - [ ] DCP dual-illuminant, full fidelity: iterate ForwardMatrix1/2 +
       `AsShotNeutral` to converge a proper scene CCT instead of the
       one-shot WB-ratio approximation.
