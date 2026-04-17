@@ -30,7 +30,7 @@ sit as siblings. `App` holds per-feature state via `zoom::State`, `color::State`
 | --------------------- | --------------------------------------------------------------------------------------- |
 | `about.rs`            | About window                                                                            |
 | `color/`              | ICC transform + display-profile detection (macOS) + Color settings panel + `color::State` |
-| `decoding.rs`         | Image format decoders (JPEG via zune-jpeg; PNG/GIF/WebP/BMP/TIFF via `image`)           |
+| `decoding/`           | Image format decoders (JPEG via zune-jpeg; camera RAW via rawler; PNG/GIF/WebP/BMP/TIFF via `image`) |
 | `diagnostics.rs`      | Performance observability — `NavigationRecord` + `build_text`                           |
 | `file_associations/`  | LaunchServices FFI + File associations settings panel                                   |
 | `navigation/`         | Directory scan + background preloader + LRU cache + `navigation::State`                 |

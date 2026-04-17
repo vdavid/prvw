@@ -21,7 +21,7 @@ src/
 │   Features:
 ├── about.rs                 About window
 ├── color/                   ICC transform + display profile (macOS) + Color settings panel + color::State
-├── decoding.rs              Image format decoders
+├── decoding/                Image format decoders (JPEG via zune-jpeg, RAW via rawler, generic via `image`)
 ├── diagnostics.rs           Performance observability (cache/nav/RSS formatter)
 ├── file_associations/       LaunchServices FFI + File associations settings panel
 ├── navigation/              Directory scan + preloader + LRU cache + navigation::State
@@ -33,9 +33,9 @@ src/
 └── zoom/                    ViewState + zoom/pan math + Zoom settings panel + zoom::State
 ```
 
-Single-file features (`about.rs`, `decoding.rs`, `diagnostics.rs`, `onboarding.rs`,
-`updater.rs`, `window.rs`) use their `//!` module docs in place of a `CLAUDE.md`.
-Directory-based features have a colocated `CLAUDE.md`.
+Single-file features (`about.rs`, `diagnostics.rs`, `onboarding.rs`, `updater.rs`,
+`window.rs`) use their `//!` module docs in place of a `CLAUDE.md`. Directory-based
+features have a colocated `CLAUDE.md`.
 
 ## Per-feature state
 

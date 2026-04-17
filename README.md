@@ -7,8 +7,9 @@ Inspired by ACDSee 2.41, which was an amazing piece of non-bloated software in t
 
 Open an image, see it instantly, zoom and pan, use arrow keys for next/prev.
 In the background, there is Rust, GPU acceleration, background preloading of images, which make it the fastest image viewer imaginable on macOS.
+Prvw opens camera RAW files from all major brands too, so Sony, Canon, Nikon, Fujifilm, iPhone ProRAW, and the rest go straight from the SD card to the screen.
 
-No editing tools, no fancy anims, just a ~8 MB binary and your pics.
+No editing tools, no fancy anims, a ~8 MB binary and your pics.
 
 Built in Rust with `winit` + `wgpu` + `muda`. Native macOS menus, Metal rendering, ~19 MB binary.
 
@@ -30,7 +31,8 @@ Built in Rust with `winit` + `wgpu` + `muda`. Native macOS menus, Metal renderin
 
 - **EXIF orientation**: phone photos display right-side-up automatically.
 - **Transparency support**: checkerboard background for transparent PNGs (Photoshop-style, fixed in screen space).
-- **Format support**: JPEG (SIMD-accelerated via `zune-jpeg`), PNG, GIF (first frame only for now for anims), WebP, BMP, TIFF.
+- **Format support**: JPEG (SIMD-accelerated via `zune-jpeg`), PNG, GIF (first frame only for now for anims), WebP, BMP, TIFF, plus camera RAW: DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, and SRW.
+  - Phase 1 caveat: Fujifilm RAF uses a bilinear X-Trans demosaic, so fine detail is a bit softer than what dedicated RAW tools produce. iPhone ProRAW DNGs render fine but may not match Apple Photos pixel-for-pixel until DNG opcode-list support lands in a later phase.
 - **Native macOS feel**: real system menus, SF Pro overlay text, transparent titlebar, Finder double-click integration.
   This is actually surprisingly tricky to integrate with the GPU-accelerated main window.
 - **Auto-fit window**: Window resizes to match each image. Zoom in/out and the window follows. Toggle in View menu.
@@ -47,7 +49,7 @@ Built in Rust with `winit` + `wgpu` + `muda`. Native macOS menus, Metal renderin
 ## Tech stack
 
 Pure **Rust**: `winit` for windowing, `wgpu` for GPU rendering (Metal on macOS), `muda` for native menus, `glyphon`
-for text rendering, `zune-jpeg` for fast JPEG decoding, `image` for other formats, `objc2` for AppKit integration.
+for text rendering, `zune-jpeg` for fast JPEG decoding, `rawler` for camera RAW, `image` for other formats, `objc2` for AppKit integration.
 
 An embedded MCP/HTTP server (`PRVW_QA_PORT=19447`) lets AI agents and E2E tests control the viewer programmatically.
 Good for testing and debugging, but if it's also handy for your agents, use it.
