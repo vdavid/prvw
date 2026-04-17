@@ -1,4 +1,4 @@
-# Camera RAW support: Phase 3.0
+# Camera RAW support: Phase 3.0 + 3.1
 
 Phase 2 closed the viewer-polish gap against Preview.app: wide-gamut
 intermediate, baseline exposure, tone curve, saturation, and capture
@@ -6,7 +6,10 @@ sharpening. Phase 3.0 closes the **DNG correctness** gap. Rawler parses a
 handful of DNG tags that its own develop pipeline then ignores. We pick up
 those tags and apply them ourselves, per Adobe's DNG spec 1.6 chapter 6.
 
-Last updated: 2026-04-17.
+Phase 3.1 adds **highlight recovery**: a desaturate-to-luminance step that
+keeps near-clip pixels from drifting magenta / cyan.
+
+Last updated: 2026-04-17 (Phase 3.1 shipped).
 
 ## Scope
 
@@ -196,3 +199,121 @@ zero overhead.
   matches Adobe's implementation exactly (there's a normalisation-axis
   choice — image-diagonal vs. longer-side — that different decoders pick
   differently).
+
+## Phase 3.1 — highlight recovery
+
+The pre-3.1 pipeline would pass a clipped channel straight to the tone
+curve. A pixel like `(R=1.10, G=0.86, B=0.80)` (bright cloud, R clipped by
+exposure lift) hit the tone curve with R still above 1.0, came out as
+`(1.0, 0.86→curve, 0.80→curve)`, and landed in RGBA8 at something like
+`(255, 205, 195)` — a visibly pink cloud where it should read neutral.
+Real RAW renderers handle this by reconstructing the clipped channel from
+the unclipped ones.
+
+### Algorithm — desaturate to luminance via smoothstep
+
+For every pixel (R, G, B) in linear Rec.2020:
+
+```text
+m = max(R, G, B)
+if m <= threshold: no change
+else:
+  t = smoothstep(threshold, ceiling, m)
+  Y = luma_rec2020(R, G, B)
+  (R, G, B) = mix((R, G, B), (Y, Y, Y), t)
+```
+
+Result: in-gamut pixels pass through bit-identical. Near-clip pixels drift
+toward their own luminance, preserving perceived brightness while
+surrendering chroma. Above `ceiling`, the pixel is pure gray at luminance
+`Y`; the downstream tone curve then compresses that gray to near-white
+without any hue shift.
+
+We don't clamp to 1.0: an over-ceiling neutral stays above 1.0 so the tone
+curve shoulder still shapes it the way it would shape a normal highlight.
+
+Luma weights are the Rec.2020 coefficients, matching the tone curve and
+saturation modules.
+
+### Why desaturate-to-luminance rather than rebuild
+
+dcraw's "rebuild" modes reconstruct clipped channels from the unclipped
+ones. That can recover actual color detail, but it risks colored fringe
+artifacts at clip boundaries. For a viewer (not an editor), blend-to-
+neutral is reliable, has no artifacts, preserves hue direction (no R:G:B
+inversion), and matches the natural eye expectation that bright
+highlights drift toward white, not magenta.
+
+### Parameter choices
+
+- **`DEFAULT_THRESHOLD = 0.95`**: sits just under the sensor clip point.
+  Catches pixels that are about to lose a channel while leaving safely
+  in-gamut content alone. Close to dcraw's blend-mode default.
+- **`DEFAULT_CEILING = 1.20`**: gives a ~0.25-wide transition region. The
+  +0.25 headroom above 1.0 covers the range that a +0.5 EV baseline-
+  exposure lift (clamp ±2 EV) can plausibly push a near-clip pixel into.
+
+Both are `pub const`s on the module; the parametric
+`apply_highlight_recovery(rgb, threshold, ceiling)` is exposed alongside
+`apply_default_highlight_recovery(rgb)` so future per-camera tuning (Phase
+3.3 DCP) can override them.
+
+### Pipeline position
+
+Inserted between `apply_exposure` and `apply_default_tone_curve`. Reasons:
+
+- Exposure can push in-gamut values above 1.0 into recovery territory; we
+  want the recovery pass to see the post-lift values so we address both
+  native sensor clipping and exposure-induced overflow in one step.
+- The tone curve has to see a hue-consistent input. If a magenta-shifted
+  near-clip pixel survived into the tone curve, no luminance-only curve
+  would remove the magenta.
+
+The saturation boost stays where it was (post-tone, pre-ICC). It doesn't
+touch recovered pixels much because those are near-neutral by construction
+and the boost's `(R - Y)` delta is already small on them.
+
+### Smoke-test observations
+
+On `/tmp/raw/sample1.arw` (silhouettes against bright sky, M3 Max release
+build):
+
+- **Pixels changed**: ~304 K out of ~20 M (1.5 %). The rest pass through
+  byte-identical, as expected — the rest of the frame is well inside the
+  threshold after exposure.
+- **Biggest hue rescues** (before → after RGB8, post-pipeline):
+  `(255, 205, 195)` → `(229, 224, 223)` — pink cloud to near-neutral
+  white. `(194, 249, 255)` → `(226, 240, 246)` — cyan highlight to
+  near-white. That's the textbook case: R (or B) clipped, the other two
+  channels kept rising, and the pre-3.1 output ended up hue-shifted.
+- **Preview comparison**: the `post-exposure.png` preview in `raw-dev-
+  dump` looks similar to `post-highlight-recovery.png` because the
+  preview's own sRGB clip to `[0, 1]` hides the changes on already-
+  clipped pixels. The real win shows up in `final.png`: fewer pink /
+  cyan artifacts in the brightest regions.
+- **Per-stage runtime**: ~260 ms on a 20 MP buffer (rayon-parallel, one
+  traversal). In line with the other linear-domain stages.
+
+### Regression coverage
+
+- `color::highlight_recovery::tests` — 13 pure-function unit tests:
+  pass-through, threshold / ceiling endpoints, partial recovery matches
+  the formula, monotonic recovery amount `t` across the transition, hue
+  direction preserved, neutral inputs unchanged, NaN and negative inputs
+  safe, degenerate / inverted parameters fall back to a hard step.
+- `decoding::tests::synthetic_dng_matches_golden` — the Phase 2 golden
+  regenerated after recovery landed. The synthetic Bayer fixture's
+  saturated-magenta gradient desaturates toward neutral above threshold,
+  which is the expected behavior.
+
+### Files touched
+
+- `apps/desktop/src/color/highlight_recovery.rs` (new)
+- `apps/desktop/src/color/mod.rs` — register module
+- `apps/desktop/src/decoding/raw.rs` — wire the step, update module doc
+- `apps/desktop/examples/raw-dev-dump.rs` — add `post-highlight-recovery`
+  stage
+- `apps/desktop/tests/fixtures/raw/synthetic-bayer-128.golden.png` —
+  regenerated
+- docs: `raw-roadmap.md`, `raw-support-phase3.md`, `CLAUDE.md`s,
+  `CHANGELOG.md`

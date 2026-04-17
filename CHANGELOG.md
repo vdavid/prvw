@@ -8,6 +8,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- RAW pipeline now applies highlight recovery between the baseline-exposure lift and the tone curve. Pixels whose
+  brightest channel exceeds 0.95 in linear Rec.2020 blend toward their own luminance via a smoothstep that finishes at
+  1.20, and pass through untouched below that. Keeps bright skies and specular highlights from drifting magenta / cyan
+  when one channel clips while the others keep rising, which used to produce pink clouds and cyan window-frames in
+  high-contrast scenes. In-gamut pixels are byte-identical; a ~20 MP decode pays about one extra linear-domain pass
+  (~260 ms, rayon-parallel). Parametric `apply_highlight_recovery` is exposed alongside the default wrapper so Phase
+  3.3's per-camera DCP work can override the thresholds. See `docs/notes/raw-support-phase3.md`
 - RAW pipeline now applies DNG `OpcodeList1`, `OpcodeList2`, and `OpcodeList3` per Adobe's DNG spec 1.6. `rawler`
   parses those tags but doesn't apply them; we pick them up in a new `decoding::dng_opcodes` module. `GainMap`
   (opcode 9), `WarpRectilinear` (opcode 1), `FixBadPixelsConstant` (opcode 4), and `FixBadPixelsList` (opcode 5) are

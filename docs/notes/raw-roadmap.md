@@ -4,7 +4,7 @@ Quick checklist across phases. Detailed design notes live in
 `raw-support-phase1.md` and `raw-support-phase2.md`. This file is the single
 source for "what's done, what's next."
 
-Last updated: 2026-04-17 (Phase 3.0 shipped).
+Last updated: 2026-04-17 (Phase 3.1 shipped).
 
 ## Phase 1 — shipped in v0.9.0 🎉
 
@@ -92,6 +92,17 @@ Last updated: 2026-04-17 (Phase 3.0 shipped).
 See `docs/notes/raw-support-phase3.md` for per-opcode status, pipeline
 diagram, and iPhone ProRAW specifics.
 
+### Phase 3.1 — highlight recovery (done, 2026-04-17)
+
+- [x] Desaturate-to-neutral highlight recovery in linear Rec.2020. Pixels
+      whose brightest channel exceeds 0.95 are blended toward their own
+      luminance via a smoothstep that lands at full desaturation by 1.20.
+      Runs between exposure and tone curve; in-gamut pixels pass through
+      untouched. Fixes the magenta / cyan drift that appeared in bright
+      skies and specular highlights when one channel clipped while the
+      other two kept rising. See `docs/notes/raw-support-phase3.md` for
+      algorithm, parameter rationale, and smoke-test observations.
+
 ### Phase 3.x — still ahead
 
 - [ ] Retune defaults against a wider reference set. The 2.5b rerun grid-
@@ -99,8 +110,6 @@ diagram, and iPhone ProRAW specifics.
       scene with a subject). Likely scene-class gaps: portraits / skin
       tones, low-light / high-ISO, near-neutral scenes. Collect three to
       five more Preview.app screenshot references and rerun the grid.
-- [ ] Highlight recovery: reconstruct blown channels from unclipped ones
-      (desaturate-to-neutral or channel-blend).
 - [ ] DCP profile support: parse Adobe `.dcp` files, apply `HueSatMap` 3D LUT,
       per-camera tone curve. Biggest single quality lift for portraits.
 - [ ] DCP discovery: bundle common profiles or read from the user's

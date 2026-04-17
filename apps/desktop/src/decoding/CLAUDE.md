@@ -86,6 +86,16 @@ can keep the intermediate wide-gamut:
    by `baseline_exposure_ev` (DNG `BaselineExposure` tag first, fallback
    +0.5 EV, clamped to [-2, +2]). Linear-space multiply so relative luminance
    stays correct.
+4a. **Phase 3.1: highlight recovery**
+    (`color::highlight_recovery::apply_default_highlight_recovery`). Pixels
+    whose brightest channel exceeds `DEFAULT_THRESHOLD` (0.95) are blended
+    toward their own luminance via a smoothstep between threshold and
+    `DEFAULT_CEILING` (1.20) in linear Rec.2020. In-gamut pixels pass
+    through untouched. Keeps bright skies and specular highlights from
+    drifting magenta/cyan when one channel clips while the other two
+    keep rising. Runs post-exposure so it catches exposure-induced
+    overflow too, and pre-tone-curve so the curve sees a hue-consistent
+    input.
 5. `color::tone_curve::apply_default_tone_curve` shapes **luminance only** on
    the linear buffer with a mild filmic S-curve: shadow Hermite → midtone
    line (slope 1.08, anchored at 0.25) → highlight shoulder. Each pixel's

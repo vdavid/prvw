@@ -2,6 +2,7 @@
 //! Settings panel.
 
 pub mod delta_e;
+pub mod highlight_recovery;
 pub mod profiles;
 pub mod saturation;
 pub mod sharpen;

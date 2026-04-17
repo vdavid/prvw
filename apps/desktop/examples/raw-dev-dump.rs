@@ -22,6 +22,12 @@
 //! - `post-exposure` — linear Rec.2020 after the baseline-exposure lift
 //!   (Phase 2.2). Same sRGB-ish preview encoding as `linear-rec2020` so
 //!   side-by-side brightness changes are eyeballable.
+//! - `post-highlight-recovery` — linear Rec.2020 after the desaturate-to-
+//!   luminance highlight recovery (Phase 3.1). Near-clip pixels (bright
+//!   skies, specular highlights) drift toward their luminance instead of
+//!   shifting hue. Side-by-side with `post-exposure` the change is most
+//!   visible in the brightest regions of the frame; in-gamut pixels
+//!   pass through identical.
 //! - `post-tone` — linear Rec.2020 after the default tone curve (Phase 2.3,
 //!   moved to luminance-only in Phase 2.5a). Same sRGB-ish preview encoding;
 //!   the mild S-curve's contrast punch and highlight shoulder should be
@@ -225,12 +231,23 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
     let post_exposure_preview = linear_to_srgb_preview(&rec2020_lifted);
     let post_exposure_ms = t0.elapsed().as_millis();
 
+    // Stage 4b: highlight recovery (Phase 3.1). Desaturate near-clip pixels
+    // toward their luminance so bright skies and specular highlights
+    // don't drift magenta / cyan when one channel clips while the other
+    // two keep rising. Same sRGB-ish preview encoding so the hue rescue
+    // is eyeballable against `post-exposure`.
+    let t0 = Instant::now();
+    let mut rec2020_recovered = rec2020_lifted.clone();
+    apply_default_highlight_recovery(&mut rec2020_recovered);
+    let post_highlight_recovery_preview = linear_to_srgb_preview(&rec2020_recovered);
+    let post_highlight_recovery_ms = t0.elapsed().as_millis();
+
     // Stage 5: default tone curve (Phase 2.3 / 2.5a). Mild filmic S-curve
     // shaped on luminance only; every pixel's RGB is scaled uniformly by
     // `Y_out / Y_in`. Same sRGB-ish preview encoding so the added contrast
-    // is eyeballable against `post-exposure`.
+    // is eyeballable against `post-highlight-recovery`.
     let t0 = Instant::now();
-    let mut rec2020_toned = rec2020_lifted.clone();
+    let mut rec2020_toned = rec2020_recovered.clone();
     apply_default_tone_curve(&mut rec2020_toned);
     let post_tone_preview = linear_to_srgb_preview(&rec2020_toned);
     let post_tone_ms = t0.elapsed().as_millis();
@@ -310,6 +327,13 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
             height: demosaic_h,
             rgb: post_exposure_preview,
             took_ms: post_exposure_ms,
+        },
+        Stage {
+            name: "post-highlight-recovery",
+            width: demosaic_w,
+            height: demosaic_h,
+            rgb: post_highlight_recovery_preview,
+            took_ms: post_highlight_recovery_ms,
         },
         Stage {
             name: "post-tone",
@@ -394,6 +418,37 @@ fn apply_default_tone_curve(rgb: &mut [f32]) {
         pixel[0] = r * scale;
         pixel[1] = g * scale;
         pixel[2] = b * scale;
+    }
+}
+
+/// Highlight recovery — mirrors `src/color/highlight_recovery.rs`.
+/// Desaturates near-clip pixels toward their luminance via a smoothstep
+/// ramp between `threshold` and `ceiling`. Inlined so the example stays
+/// standalone; keep constants and formula in sync with the real module.
+const HIGHLIGHT_RECOVERY_THRESHOLD: f32 = 0.95;
+const HIGHLIGHT_RECOVERY_CEILING: f32 = 1.20;
+
+fn apply_default_highlight_recovery(rgb: &mut [f32]) {
+    let (threshold, ceiling) = (HIGHLIGHT_RECOVERY_THRESHOLD, HIGHLIGHT_RECOVERY_CEILING);
+    let denom = ceiling - threshold;
+    for pixel in rgb.chunks_exact_mut(3) {
+        let r = pixel[0];
+        let g = pixel[1];
+        let b = pixel[2];
+        let m = r.max(g).max(b);
+        if !m.is_finite() || m <= threshold {
+            continue;
+        }
+        let t = if denom <= 0.0 {
+            1.0
+        } else {
+            let s = ((m - threshold) / denom).clamp(0.0, 1.0);
+            s * s * (3.0 - 2.0 * s)
+        };
+        let y = TONE_LUMA_R * r + TONE_LUMA_G * g + TONE_LUMA_B * b;
+        pixel[0] = r + (y - r) * t;
+        pixel[1] = g + (y - g) * t;
+        pixel[2] = b + (y - b) * t;
     }
 }
 

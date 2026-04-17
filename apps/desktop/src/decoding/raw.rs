@@ -29,18 +29,23 @@
 //!    `BaselineExposure` tag (50730) when present, otherwise a +0.5 EV
 //!    default that matches what Adobe-neutral viewers apply silently. See
 //!    `baseline_exposure_ev` for the priority chain and clamp.
-//! 4. **Default tone curve.** A mild filmic S-curve shaped on **luminance
+//! 4. **Highlight recovery.** Pixels whose brightest channel approaches or
+//!    exceeds 1.0 are smoothly desaturated toward their luminance. Keeps
+//!    bright skies and specular highlights from drifting magenta / cyan
+//!    when one channel clips while the others keep rising. In-gamut
+//!    pixels pass through untouched. See `color::highlight_recovery`.
+//! 5. **Default tone curve.** A mild filmic S-curve shaped on **luminance
 //!    only** in the same linear Rec.2020 working space. Every pixel's RGB
 //!    is scaled by the same `Y_out / Y_in`, so hue and chroma are
 //!    preserved; only brightness reshapes. Adds midtone contrast with a
 //!    soft shoulder at 1.0, closing the "flat look" gap against
 //!    Preview.app and Affinity. See `color::tone_curve` for the curve
 //!    shape.
-//! 5. **Saturation boost.** A mild (+8 %) global chroma scale around the
+//! 6. **Saturation boost.** A mild (+8 %) global chroma scale around the
 //!    luminance axis in linear Rec.2020, approximating the "vibrancy" of
 //!    Apple's and Affinity's per-camera tuning tables. Preserves hue and
 //!    luminance exactly. See `color::saturation`.
-//! 6. **Capture sharpening.** After moxcms lands the pixels in display
+//! 7. **Capture sharpening.** After moxcms lands the pixels in display
 //!    space and we quantise to RGBA8, a separable-Gaussian unsharp mask
 //!    on **luminance only** closes the "crispness gap" against
 //!    Preview.app. Y-plane blur in f32, then per-pixel RGB scale by
@@ -213,6 +218,17 @@ pub(super) fn decode(
         path.display()
     );
     apply_exposure(&mut rec2020, ev);
+
+    check_cancelled(cancelled)?;
+
+    // Highlight recovery. Desaturate near-clip pixels toward their luminance
+    // so bright highlights don't drift magenta or cyan when one channel
+    // clips while the other two keep rising. Runs after exposure so it
+    // catches both native sensor clipping and exposure-induced overflow,
+    // and before the tone curve so the curve sees a hue-consistent input.
+    // In-gamut pixels pass through untouched. See
+    // `color::highlight_recovery` for the math and safety invariants.
+    color::highlight_recovery::apply_default_highlight_recovery(&mut rec2020);
 
     check_cancelled(cancelled)?;
 
