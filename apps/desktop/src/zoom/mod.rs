@@ -3,6 +3,7 @@
 //! The actual renderer lives under `crate::render`; this feature contributes the
 //! `ViewState` math, the zoom-related `AppCommand` handling, and its Settings panel.
 
+#[cfg(target_os = "macos")]
 pub mod settings_panel;
 pub mod view;
 

@@ -186,9 +186,9 @@ impl App {
             }
             AppCommand::ShowAbout => self.show_about_dialog(),
             AppCommand::ShowSettings => self.show_settings_dialog(),
-            AppCommand::ShowSettingsSection(ref section) => {
+            AppCommand::ShowSettingsSection(ref _section) => {
                 #[cfg(target_os = "macos")]
-                crate::settings::switch_settings_section(section);
+                crate::settings::switch_settings_section(_section);
             }
             AppCommand::CloseSettings => {
                 #[cfg(target_os = "macos")]
