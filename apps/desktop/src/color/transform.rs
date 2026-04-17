@@ -123,7 +123,11 @@ fn profile_description(profile: &ColorProfile) -> String {
     desc.unwrap_or("unknown").to_string()
 }
 
-#[cfg(test)]
+// Gated for macOS because `srgb_icc_bytes()` reads the system profile at
+// `/System/Library/ColorSync/Profiles/sRGB Profile.icc`, which only exists on macOS.
+// These assertions are about moxcms correctness, not platform behavior — running
+// them on one platform is enough.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
