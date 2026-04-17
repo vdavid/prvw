@@ -1,3 +1,9 @@
+//! End-to-end tests that spawn the real `prvw` binary and drive it via the QA HTTP
+//! server. macOS-only: the binary creates a wgpu/AppKit window, which requires a
+//! display — headless Linux CI can't run this.
+
+#![cfg(target_os = "macos")]
+
 use image::GenericImageView;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};

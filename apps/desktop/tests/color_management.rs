@@ -1,6 +1,10 @@
 //! Integration tests for ICC color management (Level 2).
 //!
 //! Tests the full pipeline: load image from disk -> extract ICC -> transform to target profile.
+//!
+//! macOS-only: reads sRGB / Display P3 ICC profiles from `/System/Library/ColorSync/Profiles/`.
+
+#![cfg(target_os = "macos")]
 
 use std::path::Path;
 
