@@ -96,22 +96,25 @@ can keep the intermediate wide-gamut:
     keep rising. Runs post-exposure so it catches exposure-induced
     overflow too, and pre-tone-curve so the curve sees a hue-consistent
     input.
-4b. **Phase 3.2: DCP (opt-in)** (`color::dcp::apply_if_available`).
-    Looks up a DCP matching the camera's `UniqueCameraModel` under
-    `$PRVW_DCP_DIR` and Adobe Camera Raw's default directory, then
-    applies its `ProfileHueSatMap` as a trilinearly-interpolated 3D LUT
-    in linear-light HSV. Per-camera color refinement (skin tones,
-    saturated reds / greens). Silent no-op for users without a matching
-    DCP, so the pipeline stays identical to Phase 3.1. Deferred:
-    `LookTable`, `ProfileToneCurve`, dual-illuminant interpolation,
-    `ForwardMatrix` swap. See `docs/notes/raw-support-phase3.md`.
-5. `color::tone_curve::apply_default_tone_curve` shapes **luminance only** on
-   the linear buffer with a mild filmic S-curve: shadow Hermite → midtone
-   line (slope 1.08, anchored at 0.25) → highlight shoulder. Each pixel's
-   RGB is scaled uniformly by `Y_out / Y_in` (Rec.2020 luma weights), so
-   hue and chroma are preserved through the highlight shoulder. Closes the
-   "flat look" gap against Preview.app without the desaturation a per-channel
-   curve caused in earlier Phase 2 iterations.
+4b. **Phase 3.2 / 3.3 / 3.4: DCP** (`color::dcp::apply_if_available`).
+    Finds a DCP matching the camera — either embedded in a DNG (Phase
+    3.3, preferred) or a standalone `.dcp` under `$PRVW_DCP_DIR` /
+    Adobe Camera Raw (Phase 3.2, fallback). Applies its
+    `ProfileHueSatMap` as a trilinearly-interpolated 3D LUT in
+    linear-light HSV. Since Phase 3.4: dual-illuminant profiles blend
+    `HueSatMap1` + `HueSatMap2` by the scene's estimated color
+    temperature (compromise fidelity), and a `ProfileLookTable` fires
+    after the HueSatMap when present. Silent no-op for files without a
+    matching profile. Still deferred: `ForwardMatrix` swap, full
+    iterative CCT convergence. See `docs/notes/raw-support-phase3.md`.
+5. **Tone curve.** When the active DCP carries a `ProfileToneCurve`
+   (Phase 3.4), `color::tone_curve::apply_tone_curve_lut` runs it via
+   piecewise-linear interpolation on the pixel's Rec.2020 luminance,
+   then scales RGB uniformly by `Y_out / Y_in` — same hue-preserving
+   pattern as the default curve. Otherwise `apply_default_tone_curve`
+   shapes luminance with a mild filmic S-curve: shadow Hermite →
+   midtone line (slope 1.08, anchored at 0.25) → highlight shoulder.
+   Either way hue and chroma are preserved through the shoulder.
 6. `color::saturation::apply_saturation_boost` scales each pixel's chroma
    around its luminance axis by `(1 + 0.08)` in linear Rec.2020 space.
    Preserves hue and luminance; adds the "vibrancy" Apple/Affinity bake in

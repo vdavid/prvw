@@ -56,6 +56,22 @@ pub struct Dcp {
     /// Encoding flag for the hue/sat map values. `0` = linear (default), `1`
     /// = sRGB gamma. Affects how the value-division axis is interpreted.
     pub hue_sat_map_encoding: u32,
+    /// Optional `ProfileLookTable` — a second 3D HSV LUT applied **after**
+    /// the HueSatMap per DNG 1.6 § 6.2.3. Same shape and math as the hue/sat
+    /// map; captures Adobe's "Look" refinement on top of the camera's
+    /// neutral calibration. Single-illuminant (no per-illuminant variant),
+    /// so one map for the whole profile.
+    pub look_table: Option<HueSatMap>,
+    /// Encoding flag for the look table's value axis. `0` = linear
+    /// (default), `1` = sRGB gamma. Same semantics as `hue_sat_map_encoding`.
+    pub look_table_encoding: u32,
+    /// Optional `ProfileToneCurve` (tag 50940) — a list of `(x, y)` float
+    /// pairs defining a per-camera tone curve the profile author prefers
+    /// over a generic one. Monotonically increasing on both axes, endpoints
+    /// at (0, 0) and (1, 1) by spec. When present, Prvw applies it
+    /// **instead of** our default tone curve so the camera's intended
+    /// tonality wins.
+    pub tone_curve: Option<Vec<(f32, f32)>>,
 }
 
 impl Dcp {
@@ -132,6 +148,8 @@ pub enum ParseError {
     /// An IFD claims more entries than the buffer can possibly hold. Guards
     /// against adversarial inputs.
     ImplausibleEntryCount,
+    /// `ProfileToneCurve` (50940) has a byte length that overflows on multiply.
+    BadToneCurve,
 }
 
 impl fmt::Display for ParseError {
@@ -145,6 +163,7 @@ impl fmt::Display for ParseError {
             }
             Self::BadHueSatMap => write!(f, "hue/sat map dimensions or payload malformed"),
             Self::ImplausibleEntryCount => write!(f, "implausible IFD entry count"),
+            Self::BadToneCurve => write!(f, "tone curve payload overflows"),
         }
     }
 }
@@ -164,8 +183,12 @@ const TAG_PROFILE_NAME: u16 = 50936;
 const TAG_PROFILE_HUE_SAT_MAP_DIMS: u16 = 50937;
 const TAG_PROFILE_HUE_SAT_MAP_DATA_1: u16 = 50938;
 const TAG_PROFILE_HUE_SAT_MAP_DATA_2: u16 = 50939;
+const TAG_PROFILE_TONE_CURVE: u16 = 50940;
 const TAG_PROFILE_COPYRIGHT: u16 = 50942;
+const TAG_PROFILE_LOOK_TABLE_DIMS: u16 = 50981;
+const TAG_PROFILE_LOOK_TABLE_DATA: u16 = 50982;
 const TAG_PROFILE_HUE_SAT_MAP_ENCODING: u16 = 51107;
+const TAG_PROFILE_LOOK_TABLE_ENCODING: u16 = 51108;
 
 // TIFF type codes used by the tags above.
 const TYPE_ASCII: u16 = 2;
@@ -203,6 +226,9 @@ pub fn parse(bytes: &[u8]) -> Result<Dcp, ParseError> {
         hue_sat_map_1: None,
         hue_sat_map_2: None,
         hue_sat_map_encoding: 0,
+        look_table: None,
+        look_table_encoding: 0,
+        tone_curve: None,
     };
 
     // First pass: collect entries. We need the dims tag resolved before we
@@ -211,6 +237,8 @@ pub fn parse(bytes: &[u8]) -> Result<Dcp, ParseError> {
     let mut hsm_dims: Option<[u32; 3]> = None;
     let mut hsm_data_1_offset: Option<(usize, usize)> = None;
     let mut hsm_data_2_offset: Option<(usize, usize)> = None;
+    let mut look_dims: Option<[u32; 3]> = None;
+    let mut look_data_offset: Option<(usize, usize)> = None;
 
     for i in 0..entry_count {
         let eo = ifd_offset + 2 + i * 12;
@@ -305,6 +333,94 @@ pub fn parse(bytes: &[u8]) -> Result<Dcp, ParseError> {
                     value_field[3],
                 ]);
             }
+            TAG_PROFILE_LOOK_TABLE_DIMS if typ == TYPE_LONG && count == 3 => {
+                // Same 3×u32 layout as HueSatMap dims; always out-of-line.
+                let off = u32::from_le_bytes([
+                    value_field[0],
+                    value_field[1],
+                    value_field[2],
+                    value_field[3],
+                ]) as usize;
+                if off + 12 > bytes.len() {
+                    return Err(ParseError::BadEntryOffset { tag });
+                }
+                let h = u32::from_le_bytes([
+                    bytes[off],
+                    bytes[off + 1],
+                    bytes[off + 2],
+                    bytes[off + 3],
+                ]);
+                let s = u32::from_le_bytes([
+                    bytes[off + 4],
+                    bytes[off + 5],
+                    bytes[off + 6],
+                    bytes[off + 7],
+                ]);
+                let v = u32::from_le_bytes([
+                    bytes[off + 8],
+                    bytes[off + 9],
+                    bytes[off + 10],
+                    bytes[off + 11],
+                ]);
+                look_dims = Some([h, s, v]);
+            }
+            TAG_PROFILE_LOOK_TABLE_DATA if typ == TYPE_FLOAT => {
+                let off = u32::from_le_bytes([
+                    value_field[0],
+                    value_field[1],
+                    value_field[2],
+                    value_field[3],
+                ]) as usize;
+                look_data_offset = Some((off, count));
+            }
+            TAG_PROFILE_LOOK_TABLE_ENCODING if typ == TYPE_LONG && count == 1 => {
+                dcp.look_table_encoding = u32::from_le_bytes([
+                    value_field[0],
+                    value_field[1],
+                    value_field[2],
+                    value_field[3],
+                ]);
+            }
+            TAG_PROFILE_TONE_CURVE if typ == TYPE_FLOAT => {
+                // A list of (x, y) pairs, so count is 2 × number_of_points.
+                // Always out-of-line (min count is 4 for the required
+                // endpoints, 4 × 4 bytes = 16 > 4-byte inline slot).
+                let off = u32::from_le_bytes([
+                    value_field[0],
+                    value_field[1],
+                    value_field[2],
+                    value_field[3],
+                ]) as usize;
+                if count < 4 || !count.is_multiple_of(2) {
+                    // Spec requires at least the two endpoints, and points
+                    // come in pairs. Malformed → skip, don't abort the
+                    // whole parse.
+                    continue;
+                }
+                let byte_len = count.checked_mul(4).ok_or(ParseError::BadToneCurve)?;
+                if off.checked_add(byte_len).is_none_or(|e| e > bytes.len()) {
+                    return Err(ParseError::BadEntryOffset { tag });
+                }
+                let mut points = Vec::with_capacity(count / 2);
+                for i in 0..(count / 2) {
+                    let xo = off + i * 8;
+                    let yo = xo + 4;
+                    let x = f32::from_le_bytes([
+                        bytes[xo],
+                        bytes[xo + 1],
+                        bytes[xo + 2],
+                        bytes[xo + 3],
+                    ]);
+                    let y = f32::from_le_bytes([
+                        bytes[yo],
+                        bytes[yo + 1],
+                        bytes[yo + 2],
+                        bytes[yo + 3],
+                    ]);
+                    points.push((x, y));
+                }
+                dcp.tone_curve = Some(points);
+            }
             _ => {
                 // Silently ignore unknown tags. Lots of DCPs in the wild
                 // carry vendor-specific extras and we don't want to log-spam
@@ -342,6 +458,25 @@ pub fn parse(bytes: &[u8]) -> Result<Dcp, ParseError> {
                 v,
             )?);
         }
+    }
+
+    // Look table: same shape as HueSatMap. Single-illuminant (there is no
+    // LookTableData2 — the profile ships one look for all illuminants).
+    if let (Some([h, s, v]), Some((off, count))) = (look_dims, look_data_offset) {
+        let expected_count = (h as usize)
+            .checked_mul(s as usize)
+            .and_then(|x| x.checked_mul(v as usize))
+            .and_then(|x| x.checked_mul(3))
+            .ok_or(ParseError::BadHueSatMap)?;
+        dcp.look_table = Some(read_hue_sat_map(
+            bytes,
+            off,
+            count,
+            expected_count,
+            h,
+            s,
+            v,
+        )?);
     }
 
     Ok(dcp)
@@ -631,6 +766,9 @@ mod tests {
                 data: vec![20.0, 3.0, 3.0], // distinctive
             }),
             hue_sat_map_encoding: 0,
+            look_table: None,
+            look_table_encoding: 0,
+            tone_curve: None,
         };
         let picked = dcp.pick_hue_sat_map().expect("should pick one");
         assert_eq!(picked.data, vec![20.0, 3.0, 3.0]);
@@ -653,9 +791,173 @@ mod tests {
             }),
             hue_sat_map_2: None,
             hue_sat_map_encoding: 0,
+            look_table: None,
+            look_table_encoding: 0,
+            tone_curve: None,
         };
         let picked = dcp.pick_hue_sat_map().expect("should pick map 1");
         assert_eq!(picked.data, vec![5.0, 1.5, 1.5]);
+    }
+
+    /// Build a DCP that includes optional `ProfileLookTable*` and
+    /// `ProfileToneCurve` alongside the required HueSatMap. Shares its IFD
+    /// scaffolding with [`build_minimal_dcp`] but adds three more entries.
+    fn build_dcp_with_look_and_curve(
+        hsm_dims: [u32; 3],
+        hsm_data: &[f32],
+        look_dims: [u32; 3],
+        look_data: &[f32],
+        curve_points: &[(f32, f32)],
+    ) -> Vec<u8> {
+        // Seven entries: UniqueCameraModel, ProfileName, HSM dims, HSM data
+        // 1, LookTable dims, LookTable data, ToneCurve.
+        let num_entries: u16 = 7;
+        let ifd_end = 8 + 2 + (num_entries as usize) * 12 + 4;
+
+        let ucm_bytes = b"Test Camera\0".to_vec();
+        let ucm_offset = ifd_end;
+        let ucm_count = ucm_bytes.len();
+
+        let pn_bytes = b"Test Profile\0".to_vec();
+        let pn_offset = ucm_offset + ucm_count;
+        let pn_count = pn_bytes.len();
+
+        let dims_offset = pn_offset + pn_count;
+        let dims_bytes: Vec<u8> = hsm_dims
+            .iter()
+            .flat_map(|v| v.to_le_bytes().to_vec())
+            .collect();
+
+        let hsm_data_offset = dims_offset + 12;
+        let hsm_data_bytes: Vec<u8> = hsm_data
+            .iter()
+            .flat_map(|f| f.to_le_bytes().to_vec())
+            .collect();
+
+        let look_dims_offset = hsm_data_offset + hsm_data_bytes.len();
+        let look_dims_bytes: Vec<u8> = look_dims
+            .iter()
+            .flat_map(|v| v.to_le_bytes().to_vec())
+            .collect();
+
+        let look_data_offset = look_dims_offset + 12;
+        let look_data_bytes: Vec<u8> = look_data
+            .iter()
+            .flat_map(|f| f.to_le_bytes().to_vec())
+            .collect();
+
+        let curve_offset = look_data_offset + look_data_bytes.len();
+        let curve_floats: Vec<f32> = curve_points.iter().flat_map(|(x, y)| [*x, *y]).collect();
+        let curve_bytes: Vec<u8> = curve_floats
+            .iter()
+            .flat_map(|f| f.to_le_bytes().to_vec())
+            .collect();
+
+        let total_len = curve_offset + curve_bytes.len();
+        let mut out = vec![0u8; total_len];
+        out[0..4].copy_from_slice(b"IIRC");
+        out[4..8].copy_from_slice(&8u32.to_le_bytes());
+        out[8..10].copy_from_slice(&num_entries.to_le_bytes());
+
+        let mut eo = 10;
+        write_entry(
+            &mut out,
+            eo,
+            TAG_UNIQUE_CAMERA_MODEL,
+            TYPE_ASCII,
+            ucm_count as u32,
+            ucm_offset as u32,
+        );
+        eo += 12;
+        write_entry(
+            &mut out,
+            eo,
+            TAG_PROFILE_NAME,
+            TYPE_ASCII,
+            pn_count as u32,
+            pn_offset as u32,
+        );
+        eo += 12;
+        write_entry(
+            &mut out,
+            eo,
+            TAG_PROFILE_HUE_SAT_MAP_DIMS,
+            TYPE_LONG,
+            3,
+            dims_offset as u32,
+        );
+        eo += 12;
+        write_entry(
+            &mut out,
+            eo,
+            TAG_PROFILE_HUE_SAT_MAP_DATA_1,
+            TYPE_FLOAT,
+            hsm_data.len() as u32,
+            hsm_data_offset as u32,
+        );
+        eo += 12;
+        write_entry(
+            &mut out,
+            eo,
+            TAG_PROFILE_LOOK_TABLE_DIMS,
+            TYPE_LONG,
+            3,
+            look_dims_offset as u32,
+        );
+        eo += 12;
+        write_entry(
+            &mut out,
+            eo,
+            TAG_PROFILE_LOOK_TABLE_DATA,
+            TYPE_FLOAT,
+            look_data.len() as u32,
+            look_data_offset as u32,
+        );
+        eo += 12;
+        write_entry(
+            &mut out,
+            eo,
+            TAG_PROFILE_TONE_CURVE,
+            TYPE_FLOAT,
+            curve_floats.len() as u32,
+            curve_offset as u32,
+        );
+
+        out[ucm_offset..ucm_offset + ucm_count].copy_from_slice(&ucm_bytes);
+        out[pn_offset..pn_offset + pn_count].copy_from_slice(&pn_bytes);
+        out[dims_offset..dims_offset + 12].copy_from_slice(&dims_bytes);
+        out[hsm_data_offset..hsm_data_offset + hsm_data_bytes.len()]
+            .copy_from_slice(&hsm_data_bytes);
+        out[look_dims_offset..look_dims_offset + 12].copy_from_slice(&look_dims_bytes);
+        out[look_data_offset..look_data_offset + look_data_bytes.len()]
+            .copy_from_slice(&look_data_bytes);
+        out[curve_offset..curve_offset + curve_bytes.len()].copy_from_slice(&curve_bytes);
+
+        out
+    }
+
+    #[test]
+    fn parses_dcp_with_look_table_and_tone_curve() {
+        let hsm_data = vec![
+            0.0_f32, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0,
+        ];
+        let look_data = vec![
+            5.0_f32, 1.2, 1.0, 5.0, 1.2, 1.0, 5.0, 1.2, 1.0, 5.0, 1.2, 1.0,
+        ];
+        let curve = vec![(0.0, 0.0), (0.5, 0.45), (1.0, 1.0)];
+        let bytes =
+            build_dcp_with_look_and_curve([2, 2, 1], &hsm_data, [2, 2, 1], &look_data, &curve);
+        let dcp = parse(&bytes).expect("parse should succeed");
+        // HueSatMap still there.
+        let hsm = dcp.hue_sat_map_1.expect("hsm present");
+        assert_eq!((hsm.hue_divs, hsm.sat_divs, hsm.val_divs), (2, 2, 1));
+        // LookTable carried through.
+        let look = dcp.look_table.expect("look present");
+        assert_eq!((look.hue_divs, look.sat_divs, look.val_divs), (2, 2, 1));
+        assert_eq!(look.data, look_data);
+        // ToneCurve carried through.
+        let tc = dcp.tone_curve.expect("tone curve present");
+        assert_eq!(tc, curve);
     }
 
     #[test]

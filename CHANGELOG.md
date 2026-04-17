@@ -19,6 +19,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- RAW pipeline closes the three Phase 3.2-deferred DCP items: **`LookTable`**, **`ProfileToneCurve`**, and
+  **dual-illuminant interpolation**. `LookTable` (tags 50981 / 50982 / 51108) runs as a second HSV LUT after the
+  `HueSatMap`, capturing Adobe's "Look" refinement on top of the neutral calibration. When the active DCP ships a
+  `ProfileToneCurve` (tag 50940), Prvw applies it piecewise-linearly on luminance only in place of the default
+  Hermite S-curve — the camera's intended tonality wins, and an INFO log line spells out which curve ran. For
+  profiles that carry both `HueSatMap1` and `HueSatMap2`, the two maps now blend based on the scene's estimated color
+  temperature (compromise fidelity: a one-shot formula `temp ≈ 7000 − 2000 × (R/G − 1)` from the camera's WB
+  coefficients, clamped to `[2000, 10000] K`, feeds a linear blend between the illuminant temperatures). All three
+  features fire on sample2.dng's embedded Pixel 6 Pro profile and on the SONY ILCE-7M3 DCP; mean per-byte Δ vs. Phase
+  3.3 is ~17 on the Pixel sample (up from 3.28) because `ProfileToneCurve` is a big part of a profile's visual
+  character. DCPs that carry only a single map, no `LookTable`, or no tone curve continue to no-op through those
+  stages. Still deferred: `ForwardMatrix1/2` swap, the spec's full iterative CCT convergence. See
+  `docs/notes/raw-support-phase3.md`
 - RAW pipeline now applies **DCP profiles embedded in DNG files**. Every Pixel, Samsung Galaxy, iPhone ProRAW, and
   Adobe-converted DNG ships with a `ProfileHueSatMap` baked into its main IFD; Prvw reads and applies it the same way
   Phase 3.2 applies a standalone `.dcp` file, with zero user config. Embedded wins over a matching filesystem DCP — the

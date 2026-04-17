@@ -37,22 +37,25 @@
 //! deliberate; overriding a manufacturer's profile is almost always a
 //! mistake.
 //!
-//! ## What's deferred
+//! ## What's covered since Phase 3.4
 //!
-//! - **LookTable** (`ProfileLookTableData`). Same shape and application
-//!   math as HueSatMap but applied as a second pass; low priority because
-//!   HueSatMap alone captures the bulk of the per-camera color
-//!   refinement.
-//! - **ProfileToneCurve**. Our default luminance-only tone curve is
-//!   already doing the heavy lifting; swapping it in per image would
-//!   change the baseline contrast of the whole app.
+//! - **LookTable** (`ProfileLookTableData`) applied post-HueSatMap,
+//!   pre-tone-curve. Same algorithm, same apply code.
+//! - **ProfileToneCurve** swapped in for our default tone curve when
+//!   the active DCP ships one. See `crate::color::tone_curve`.
+//! - **Dual-illuminant interpolation** via `illuminant.rs`:
+//!   scene-temperature estimate from white-balance coefficients, linear
+//!   blend between `HueSatMap1` and `HueSatMap2`.
+//!
+//! ## What's still deferred
+//!
 //! - **Forward matrix swap** (`ForwardMatrix1/2`). Our Rec.2020 path
 //!   targets Rec.2020; DCP forward matrices target ProPhoto D50. A
 //!   proper swap would need a full chromatic-adaptation re-pipe.
-//! - **Dual-illuminant interpolation**. We currently pick the D65 map
-//!   (illuminant 21) straight through. Adobe's color-temperature-aware
-//!   interpolation between illuminants 1 and 2 is the main phase-3.x
-//!   upgrade path.
+//! - **Full iterative CCT convergence.** The current dual-illuminant
+//!   blend uses a one-shot WB-ratio estimate, not the spec's iterative
+//!   ForwardMatrix1/2 + scene-neutral procedure. Good enough for a
+//!   viewer; a later refinement.
 //!
 //! ## Pipeline slot
 //!
@@ -64,11 +67,13 @@
 pub mod apply;
 pub mod discovery;
 pub mod embedded;
+pub mod illuminant;
 pub mod parser;
 
 pub use apply::apply_hue_sat_map;
 pub use discovery::{find_dcp_for_camera, log_search_summary_once};
 pub use embedded::from_dng_tags;
+pub use illuminant::{estimate_scene_temp_k, interpolate_hue_sat_maps};
 pub use parser::Dcp;
 
 /// Where a matched DCP came from. Logged at INFO level so users can tell
@@ -95,7 +100,8 @@ impl DcpSource {
 
 /// End-to-end "find a DCP and apply it" helper. Pass the camera's
 /// `"<Make> <Model>"` identity string, an optional reference to the
-/// `dng_tags` map from the decoder, and the linear-Rec.2020 buffer.
+/// `dng_tags` map from the decoder, the camera's `wb_coeffs` (for
+/// dual-illuminant blending), and the linear-Rec.2020 buffer.
 ///
 /// Source precedence — embedded wins, always:
 ///
@@ -106,11 +112,32 @@ impl DcpSource {
 /// 2. **Filesystem** ([`find_dcp_for_camera`]): no embedded profile — try
 ///    a standalone `.dcp` matching the camera's `UniqueCameraModel`.
 ///
+/// Whichever source wins, the whole profile (HueSatMap, optional
+/// LookTable, optional ProfileToneCurve) comes from that source — we
+/// never mix them.
+///
+/// ## Pipeline order (Phase 3.4)
+///
+/// 1. **Dual-illuminant blend.** When the DCP ships both `HueSatMap1` and
+///    `HueSatMap2` at different calibration illuminants, merge them by
+///    the scene's estimated color temperature. Single-map DCPs skip this.
+/// 2. **`HueSatMap` apply.** Trilinear 3D HSV LUT.
+/// 3. **`LookTable` apply** (if present). Same algorithm on the same
+///    buffer — Adobe's "Look" refinement on top of the neutral
+///    calibration. Single-illuminant; no blending.
+///
+/// The profile's optional `ProfileToneCurve` is **not** applied inside
+/// this function — it belongs to a later pipeline stage
+/// (`color::tone_curve`). Callers read [`Dcp::tone_curve`] off the
+/// returned DCP and decide whether to swap it in for our default tone
+/// curve.
+///
 /// Returns `Some((dcp, source))` when a profile was applied, `None` when
 /// nothing matched.
 pub fn apply_if_available(
     camera_id: &str,
     dng_tags: Option<&std::collections::HashMap<u16, rawler::formats::tiff::Value>>,
+    wb_coeffs: [f32; 4],
     rgb: &mut [f32],
 ) -> Option<(Dcp, DcpSource)> {
     // Prefer the embedded profile so smartphone DNGs "just work" without
@@ -130,8 +157,28 @@ pub fn apply_if_available(
     } else {
         return None;
     };
-    let map = dcp.pick_hue_sat_map()?;
-    apply_hue_sat_map(rgb, map, dcp.hue_sat_map_encoding);
+    let scene_temp_k = estimate_scene_temp_k(wb_coeffs);
+    if let Some(map) = interpolate_hue_sat_maps(&dcp, scene_temp_k) {
+        let blended = dcp.hue_sat_map_1.is_some()
+            && dcp.hue_sat_map_2.is_some()
+            && dcp.calibration_illuminant_1 != dcp.calibration_illuminant_2;
+        if blended {
+            log::debug!(
+                "DCP dual-illuminant blend at scene temp {:.0} K",
+                scene_temp_k
+            );
+        }
+        apply_hue_sat_map(rgb, &map, dcp.hue_sat_map_encoding);
+    }
+    if let Some(look) = &dcp.look_table {
+        log::debug!(
+            "DCP LookTable apply ({}×{}×{})",
+            look.hue_divs,
+            look.sat_divs,
+            look.val_divs
+        );
+        apply_hue_sat_map(rgb, look, dcp.look_table_encoding);
+    }
     Some((dcp, source))
 }
 

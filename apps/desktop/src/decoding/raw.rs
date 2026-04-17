@@ -34,21 +34,24 @@
 //!    bright skies and specular highlights from drifting magenta / cyan
 //!    when one channel clips while the others keep rising. In-gamut
 //!    pixels pass through untouched. See `color::highlight_recovery`.
-//! 5. **DCP (Adobe Digital Camera Profile) — opt-in.** If the user has a
-//!    `.dcp` matching the camera's `UniqueCameraModel` in
-//!    `$PRVW_DCP_DIR` or `~/Library/Application Support/Adobe/CameraRaw/
-//!    CameraProfiles/`, we apply its `ProfileHueSatMap` 3D LUT in HSV
-//!    space. No DCP means no-op — the pipeline stays identical to the
-//!    pre-3.2 output. See `color::dcp` for the format, matching rules,
-//!    and deferred features (LookTable, ProfileToneCurve, dual-
-//!    illuminant interpolation, forward-matrix swap).
-//! 6. **Default tone curve.** A mild filmic S-curve shaped on **luminance
-//!    only** in the same linear Rec.2020 working space. Every pixel's RGB
-//!    is scaled by the same `Y_out / Y_in`, so hue and chroma are
-//!    preserved; only brightness reshapes. Adds midtone contrast with a
-//!    soft shoulder at 1.0, closing the "flat look" gap against
-//!    Preview.app and Affinity. See `color::tone_curve` for the curve
-//!    shape.
+//! 5. **DCP (Adobe Digital Camera Profile).** When a matching profile is
+//!    available — either embedded in a DNG (Pixel, iPhone ProRAW,
+//!    Adobe-converted DNGs, etc.) or discovered as a `.dcp` file under
+//!    `$PRVW_DCP_DIR` / Adobe Camera Raw's install dir — apply its
+//!    `ProfileHueSatMap` 3D LUT in HSV (Phase 3.2 / 3.3). Since Phase
+//!    3.4: a `ProfileLookTable` runs after the HueSatMap when present,
+//!    and dual-illuminant profiles blend `HueSatMap1` / `HueSatMap2` by
+//!    the scene's estimated color temperature. No DCP means no-op. See
+//!    `color::dcp` for format, matching rules, and the still-deferred
+//!    `ForwardMatrix` swap.
+//! 6. **Tone curve.** When the active DCP ships a `ProfileToneCurve`
+//!    (Phase 3.4), it runs in place of our default Hermite S-curve; the
+//!    camera's intended tonality wins. Otherwise the default fires:
+//!    shadow Hermite → midtone line → highlight shoulder, shaped on
+//!    **luminance only** so hue and chroma are preserved through the
+//!    shoulder. Adds midtone contrast with a soft 1.0 roll-off, closing
+//!    the "flat look" gap against Preview.app. See `color::tone_curve`
+//!    for the curve math.
 //! 7. **Saturation boost.** A mild (+8 %) global chroma scale around the
 //!    luminance axis in linear Rec.2020, approximating the "vibrancy" of
 //!    Apple's and Affinity's per-camera tuning tables. Preserves hue and
@@ -261,29 +264,63 @@ pub(super) fn decode(
     // swap, dual-illuminant interpolation).
     let camera_id = format!("{} {}", raw.camera.make, raw.camera.model);
     let dng_tags_for_dcp = collect_dng_profile_tags(decoder.as_ref(), &raw);
-    if let Some((dcp, source)) =
-        color::dcp::apply_if_available(&camera_id, dng_tags_for_dcp.as_ref(), &mut rec2020)
-    {
+    // Pass the raw white-balance coefficients into `apply_if_available`
+    // so the dual-illuminant blend can estimate the scene's color
+    // temperature. Rawler encodes "missing" as NaN in slot 0; we
+    // flatten that to neutral here so the DCP path sees a clean [1,1,1,1]
+    // and picks the D65-preferring fallback.
+    let wb_for_dcp = if raw.wb_coeffs[0].is_nan() {
+        [1.0, 1.0, 1.0, 1.0]
+    } else {
+        raw.wb_coeffs
+    };
+    let dcp_info = color::dcp::apply_if_available(
+        &camera_id,
+        dng_tags_for_dcp.as_ref(),
+        wb_for_dcp,
+        &mut rec2020,
+    );
+    if let Some((dcp, source)) = &dcp_info {
         log::info!(
-            "RAW applied {} DCP '{}' for camera '{}' on {}",
-            color::dcp::source_label(source),
+            "RAW applied {} DCP '{}' for camera '{}' on {}{}{}",
+            color::dcp::source_label(*source),
             dcp.profile_name.as_deref().unwrap_or("<unnamed profile>"),
             camera_id,
-            path.display()
+            path.display(),
+            if dcp.look_table.is_some() {
+                " [with LookTable]"
+            } else {
+                ""
+            },
+            if dcp.tone_curve.is_some() {
+                " [with ToneCurve]"
+            } else {
+                ""
+            },
         );
     }
 
     check_cancelled(cancelled)?;
 
-    // Default tone curve. Mild filmic S-curve shaped on luminance only in the
-    // linear Rec.2020 working space, right before the saturation boost and
-    // the ICC transform. Each pixel's RGB is scaled uniformly by
-    // `Y_out / Y_in` so hue and chroma are preserved — only brightness
-    // reshapes. Adds midtone contrast with a soft highlight shoulder so the
-    // output stops reading "flat" compared with Preview.app and Affinity.
-    // See `color::tone_curve` for the shape and safety invariants.
-    log::debug!("RAW applying default tone curve for {}", path.display());
-    color::tone_curve::apply_default_tone_curve(&mut rec2020);
+    // Tone curve. If the active DCP carries a `ProfileToneCurve`, apply
+    // it in place of our default — the camera's intended tonality is more
+    // authoritative than our generic Preview-tuned curve. Otherwise fall
+    // back to the default Hermite S-curve. Either way the math runs on
+    // luminance only in linear Rec.2020.
+    let dcp_tone_curve = dcp_info
+        .as_ref()
+        .and_then(|(dcp, _)| dcp.tone_curve.as_deref());
+    if let Some(points) = dcp_tone_curve {
+        log::info!(
+            "RAW used DCP tone curve ({} points) for {}",
+            points.len(),
+            path.display()
+        );
+        color::tone_curve::apply_tone_curve_lut(&mut rec2020, points);
+    } else {
+        log::info!("RAW used default tone curve for {}", path.display());
+        color::tone_curve::apply_default_tone_curve(&mut rec2020);
+    }
 
     check_cancelled(cancelled)?;
 
@@ -721,8 +758,12 @@ const DCP_PROFILE_TAG_IDS: &[u16] = &[
     DngTag::ProfileHueSatMapDims as u16,
     DngTag::ProfileHueSatMapData1 as u16,
     DngTag::ProfileHueSatMapData2 as u16,
+    DngTag::ProfileToneCurve as u16,
     DngTag::ProfileCopyright as u16,
+    DngTag::ProfileLookTableDims as u16,
+    DngTag::ProfileLookTableData as u16,
     DngTag::ProfileHueSatMapEncoding as u16,
+    DngTag::ProfileLookTableEncoding as u16,
 ];
 
 /// Collect the DNG profile tags for the DCP applier. Checks `raw.dng_tags`

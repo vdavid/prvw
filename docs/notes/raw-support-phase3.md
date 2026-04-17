@@ -1,4 +1,4 @@
-# Camera RAW support: Phase 3.0 + 3.1 + 3.2 + 3.3
+# Camera RAW support: Phase 3.0 + 3.1 + 3.2 + 3.3 + 3.4
 
 Phase 2 closed the viewer-polish gap against Preview.app: wide-gamut
 intermediate, baseline exposure, tone curve, saturation, and capture
@@ -17,7 +17,12 @@ Phase 3.3 extends that to **DNG-embedded profiles**: smartphone DNGs
 profile tags directly in their main IFD, and Prvw now honors them
 automatically with zero user config.
 
-Last updated: 2026-04-17 (Phase 3.3 shipped).
+Phase 3.4 closes the three Phase 3.2-deferred items: DCP **`LookTable`**
+(second HSV LUT), **`ProfileToneCurve`** (per-camera tone curve swap), and
+**dual-illuminant interpolation** (blend `HueSatMap1` and `HueSatMap2` by
+scene color temperature).
+
+Last updated: 2026-04-17 (Phase 3.4 shipped).
 
 ## Scope
 
@@ -753,3 +758,254 @@ its hand; it just picks the ones the spec calls out.
 - `apps/desktop/src/color/CLAUDE.md` — update the DCP row to mention
   Phase 3.3.
 - Docs: this file, `raw-roadmap.md`, `CHANGELOG.md`.
+
+## Phase 3.4 — DCP LookTable + tone curve + dual-illuminant
+
+Three deferred items from Phase 3.2 land together. All three share the
+same plumbing: tags read from either `.dcp` files or DNG IFDs, the same
+`Dcp` / `HueSatMap` types downstream, no new pipeline stage — just
+additional passes wired into the existing post-highlight-recovery /
+pre-tone-curve slot plus a conditional swap of the tone-curve stage
+itself.
+
+### LookTable
+
+**Spec**: DNG 1.6 § 6.2.3. Tag IDs 50981 (`ProfileLookTableDims`),
+50982 (`ProfileLookTableData`), 51108 (`ProfileLookTableEncoding`).
+Same shape and application math as `HueSatMap`: a 3D LUT indexed by
+`(hue, sat, val)`, each entry `(hue_shift_deg, sat_scale, val_scale)`,
+applied trilinearly in HSV. Single-illuminant — just one payload, no
+per-illuminant slots. Applied **after** `HueSatMap` per spec; logically,
+`HueSatMap` is the "neutral calibration" and `LookTable` is the Adobe
+"Look" that stacks on top.
+
+**Parsing**: extended `color::dcp::parser` and
+`color::dcp::embedded::from_dng_tags` to read the three new tags.
+Dims / data / encoding wired into the `Dcp` struct as optional
+`look_table: Option<HueSatMap>` + `look_table_encoding: u32`.
+
+**Application**: called straight through `apply_hue_sat_map`. The
+existing LUT code is agnostic to which tag fed it, so LookTable adds
+zero new math.
+
+**Fixture**: on sample2.dng the Pixel 6 Pro's embedded profile ships
+a LookTable. On the Sony ILCE-7M3 filesystem DCP too.
+
+### ProfileToneCurve
+
+**Spec**: DNG 1.6 § 6.2.4. Tag 50940. A flat float list interpreted as
+`(x, y)` pairs, monotonically increasing, with endpoints at `(0, 0)` and
+`(1, 1)`.
+
+**Application choice**: option A (cleaner). A new
+`color::tone_curve::apply_tone_curve_lut(rgb, points)` applies the curve
+in the **same luminance-only + uniform-RGB-scale** pattern
+`apply_default_tone_curve` already uses. The curve is sampled via
+piecewise-linear interpolation at the pixel's Rec.2020 luminance, then
+RGB is rescaled by `Y_out / Y_in`. Hue and chroma stay preserved,
+matching the invariants the rest of the pipeline assumes.
+
+**Policy**: when the active DCP (embedded or filesystem) carries a
+ProfileToneCurve, apply it **instead of** our default Hermite S-curve.
+The camera's intended tonality is more authoritative than our generic
+default; that's the whole reason a profile ships a tone curve to begin
+with. Logged at INFO ("used DCP tone curve" vs. "used default tone
+curve") so users can tell which curve rendered an image. No DCP →
+default runs unchanged.
+
+**Fixture findings**: sample2.dng's embedded profile ships a 257-point
+curve; the SONY ILCE-7M3 DCP ships an 8192-point curve. Both get picked
+up by the new path.
+
+**Sample-level delta**: mean |Δ| per byte on sample2.dng went from 3.28
+(Phase 3.3 — HueSatMap only) to 17.19 (Phase 3.4 — HueSatMap +
+LookTable + ProfileToneCurve). The tone curve dominates the increase,
+which is expected: our default curve was tuned against Preview.app and
+the Pixel's intended curve is visibly different (stronger shadow lift,
+more roll-off at the highlight shoulder, warmer midtones). Visual
+inspection on the bathroom shot confirms the Pixel-curve rendering
+reads closer to Google Photos' own display of the same DNG than the
+default curve did.
+
+### Dual-illuminant interpolation
+
+**Spec**: DNG 1.6 § 6.2.5. When a profile has `HueSatMap1` (at
+`CalibrationIlluminant1`) and `HueSatMap2` (at `CalibrationIlluminant2`),
+blend them based on the scene's correlated color temperature. The full
+procedure iterates `ForwardMatrix1/2` + `AsShotNeutral` until the
+temperature converges (~3 iterations typical).
+
+**Fidelity choice**: **compromise** (per the brief's recommendation).
+Smooth blend, simple temperature estimate. Specifically:
+
+1. `estimate_scene_temp_k(wb_coeffs)` uses the one-shot formula
+   `temp ≈ 7000 − 2000 × (R/G − 1)`, clamped to `[2000, 10000] K`.
+   Derived from the observation that camera WB coefficients neutralise
+   the scene: high R gain → warm scene, high B gain → cool scene.
+   Not the spec's procedure, but produces smooth results without the
+   discontinuity a discrete switch would create at the boundary.
+2. `illuminant_temp_k(code)` maps the DNG spec's `CalibrationIlluminant`
+   EXIF codes to Kelvin (17 = A ~ 2856 K, 21 = D65 ~ 6504 K, 23 = D50,
+   etc.). Unknown codes fall back to 5000 K.
+3. `interpolate_hue_sat_maps(dcp, scene_k)` computes a blend weight
+   `t = clamp((scene_k − low_k) / (high_k − low_k), 0, 1)` and
+   interpolates the two maps entry-by-entry. `low_k` and `high_k` get
+   sorted so `t` stays in `[0, 1]` regardless of which slot is which.
+   Single-map DCPs short-circuit to a clone. Shape-mismatched maps fall
+   back to the D65-preferring `Dcp::pick_hue_sat_map`.
+
+**Pipeline position**: merge produces a single `HueSatMap` that
+replaces what `pick_hue_sat_map` used to return. The rest of the
+pipeline (apply, LookTable, tone curve) runs unchanged.
+
+**Limitations we accept**: the WB-to-temp estimate can be off by
+several hundred K vs. the spec's iterative procedure on images with
+an unusual color-of-subject (heavy foliage, large skin area, etc.).
+Good enough for a viewer; color scientists reaching for Prvw can
+force a specific illuminant by editing the DCP or can wait for the
+full iterative procedure in a later refinement.
+
+### Precedence
+
+When both DCP-embedded and filesystem `.dcp` are available, embedded
+still wins (the Phase 3.3 decision). Whichever source wins, the WHOLE
+profile comes from that source — `HueSatMap`, `LookTable`, and
+`ProfileToneCurve` are never mixed across sources. That's an
+invariant: a filesystem DCP's tone curve stacking onto an embedded
+DCP's HueSatMap would produce nonsense because the profile author
+tuned those two pieces together.
+
+### New INFO log lines
+
+On a successful DCP apply, the decoder now logs both the source and
+which optional pieces fired:
+
+```
+RAW applied EMBEDDED DCP 'Google Embedded Camera Profile' for camera
+    'Google Pixel 6 Pro' on /tmp/raw/sample2.dng [with LookTable]
+    [with ToneCurve]
+RAW used DCP tone curve (257 points) for /tmp/raw/sample2.dng
+```
+
+For filesystem DCPs:
+
+```
+RAW applied filesystem DCP 'SONY ILCE-7M3' for camera 'SONY ILCE-5000'
+    on /tmp/raw/sample1.arw [with LookTable] [with ToneCurve]
+RAW used DCP tone curve (8192 points) for /tmp/raw/sample1.arw
+```
+
+### Unit-test coverage
+
+`color::dcp::parser::tests`:
+- `parses_dcp_with_look_table_and_tone_curve` — round-trips a synthesised
+  DCP carrying all three tag groups.
+
+`color::dcp::embedded::tests`:
+- `reads_optional_look_table` — happy-path LookTable from DNG IFD.
+- `returns_none_for_look_table_when_dims_or_data_missing` — graceful skip.
+- `reads_optional_tone_curve` — happy-path 3-point curve round-trip.
+- `tone_curve_rejects_odd_length` — parity check.
+- `tone_curve_accepts_double_payload` — f64 fallback.
+
+`color::dcp::apply::tests`:
+- `look_table_pass_after_hue_sat_map_darkens_target_band` — HueSatMap
+  no-op followed by LookTable that halves red-band brightness. Red
+  pixels halve, blue pixels untouched.
+
+`color::tone_curve::tests`:
+- `piecewise_linear_interpolates_between_points` — identity curve.
+- `piecewise_linear_clamps_outside_domain` — out-of-range clamp.
+- `piecewise_linear_three_point_s_curve` — known interior values.
+- `apply_tone_curve_lut_identity_is_noop` — identity curve through the
+  full buffer apply.
+- `apply_tone_curve_lut_preserves_hue` — R:G / R:B ratios invariant.
+- `apply_tone_curve_lut_darker_curve_darkens_output` — darker S-curve
+  darkens to the expected value.
+- `apply_tone_curve_lut_empty_is_noop` — zero-point safety.
+- `apply_tone_curve_lut_handles_dark_and_nan` — dark-pixel / NaN safety
+  matches the default curve's behaviour.
+
+`color::dcp::illuminant::tests`:
+- `scene_temp_warm_for_high_r_over_g` — tungsten-ish WB → warm temp.
+- `scene_temp_cool_for_low_r_over_g` — shade-ish WB → cool temp.
+- `scene_temp_neutral_for_equal_r_g` — neutral WB → 7000 K midpoint.
+- `scene_temp_falls_back_on_bad_coeffs` — NaN / zero safety.
+- `scene_temp_clamps_extremes` — pathological WB → clamped range.
+- `illuminant_temp_lookup` — spot-checks A, D65, D50.
+- `interpolate_single_map_returns_clone` — single-map degenerate case.
+- `interpolate_at_low_endpoint_matches_low_map` — scene at warm
+  illuminant temp → pure low-K map.
+- `interpolate_at_high_endpoint_matches_high_map` — scene at cool
+  illuminant temp → pure high-K map.
+- `interpolate_at_midpoint_averages` — scene at midpoint → 50/50 blend.
+- `interpolate_clamps_outside_range` — scene way outside endpoints →
+  clamp to nearest.
+- `interpolate_shape_mismatch_falls_back_to_pick` — graceful fallback.
+
+### Smoke-test observations
+
+`decoding::raw::tests::embedded_dcp_smoke` on sample2.dng:
+
+```
+RAW applied EMBEDDED DCP 'Google Embedded Camera Profile' for camera
+    'Google Pixel 6 Pro' on /tmp/raw/sample2.dng [with LookTable]
+    [with ToneCurve]
+RAW used DCP tone curve (257 points) for /tmp/raw/sample2.dng
+Embedded DCP smoke: 35274843/47880000 bytes changed (73.7%),
+    mean |Δ| = 17.19
+```
+
+`decoding::raw::tests::dcp_smoke` on sample1.arw + Sony ILCE-7M3 DCP:
+
+```
+RAW applied filesystem DCP 'SONY ILCE-7M3' for camera 'SONY ILCE-5000'
+    on /tmp/raw/sample1.arw [with LookTable] [with ToneCurve]
+RAW used DCP tone curve (8192 points) for /tmp/raw/sample1.arw
+DCP smoke: 52380003/79264768 bytes changed (66.1%), mean |Δ| = 14.58
+```
+
+Both smoke tests confirm the full stack fires. The mean |Δ| increase
+over Phase 3.3 is expected: ProfileToneCurve is typically a big part
+of a DCP's visual character, and our default curve (while close to
+Adobe's neutral default) is not identical to the per-camera curves the
+profile authors ship. The Sony curve lifts shadows harder than our
+default; the Pixel curve is punchier in the midtones.
+
+### Regression
+
+- **Synthetic Bayer DNG** (`synthetic-bayer-128.dng`): carries no
+  profile tags → DCP path short-circuits on `from_dng_tags` returning
+  `None`. The golden-image test passes unchanged.
+- **ARW / CR2 / NEF / RAF without a filesystem DCP match**: same
+  behaviour — `apply_if_available` returns `None`, default tone curve
+  runs, byte-for-byte identical to Phase 3.3.
+- **ARW with a filesystem DCP match but no LookTable / ToneCurve**: the
+  Phase 3.2 behaviour. Only HueSatMap applies, default tone curve
+  runs. (None of our bundled test DCPs hit this path cleanly — all
+  three RawTherapee profiles we use carry all three features — but
+  the unit tests cover the missing-tag branches.)
+
+### Files touched
+
+- `apps/desktop/src/color/dcp/parser.rs` — LookTable + ToneCurve tag
+  IDs, `Dcp` fields, parse loop extensions, tests.
+- `apps/desktop/src/color/dcp/embedded.rs` — same tag IDs + struct
+  fields + readers + tests for the embedded path.
+- `apps/desktop/src/color/dcp/apply.rs` — unit test for the
+  LookTable-after-HueSatMap sequence. The applier itself is reused
+  unchanged.
+- `apps/desktop/src/color/dcp/illuminant.rs` (new) — scene-temp
+  estimate, illuminant code table, `interpolate_hue_sat_maps` blend,
+  tests.
+- `apps/desktop/src/color/dcp/mod.rs` — `apply_if_available` signature
+  extended to accept `wb_coeffs`, calls the new blend + LookTable
+  apply, returns the DCP so the caller can read its tone curve.
+- `apps/desktop/src/color/dcp/discovery.rs` — `Dcp` field additions in
+  test fixtures.
+- `apps/desktop/src/color/tone_curve.rs` — new
+  `apply_tone_curve_lut` + `sample_piecewise_linear` + tests.
+- `apps/desktop/src/decoding/raw.rs` — collect the new tags,
+  thread `wb_coeffs` into the DCP call, swap the tone-curve stage when
+  the DCP carries one, log which curve ran.
+- Docs: `raw-roadmap.md`, this file, `color/CLAUDE.md`, `color/dcp/CLAUDE.md`.

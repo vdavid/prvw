@@ -240,6 +240,77 @@ fn highlight_hermite(x: f32, midtone_anchor: f32) -> f32 {
     hermite(x, x0, x1, y0, y1, m0, m1)
 }
 
+/// Apply a caller-supplied tone curve to a flat RGB f32 buffer in place,
+/// acting on **luminance only** via the same `Y_out / Y_in` scale pattern
+/// [`apply_default_tone_curve`] uses.
+///
+/// `curve_points` is a monotonic-increasing list of `(x, y)` pairs defining
+/// a piecewise-linear curve. Interior `x` values must be strictly
+/// increasing; extremes are extended by clamping (`x < first.x` → `first.y`,
+/// `x > last.x` → `last.y`). The DNG spec (§ 6.2.4) calls for the curve to
+/// include endpoints at `(0, 0)` and `(1, 1)`, and to be monotonic; we
+/// don't enforce that — the caller (the DCP parser) takes the spec's word
+/// and passes through whatever points the profile ships. Out-of-spec
+/// curves still produce sane output, they just don't match the spec.
+///
+/// Used by [`crate::decoding::raw`] to swap in a DCP's `ProfileToneCurve`
+/// when the camera's profile ships one. In that case the camera's
+/// intended tonality wins over our Preview-tuned default.
+///
+/// Dark-pixel safety and NaN handling match [`apply_default_tone_curve`].
+/// Empty `curve_points` is a no-op; a single-point curve degenerates to a
+/// constant output (Y_out = y) which is rarely useful but doesn't panic.
+pub fn apply_tone_curve_lut(rgb: &mut [f32], curve_points: &[(f32, f32)]) {
+    if curve_points.is_empty() {
+        return;
+    }
+    rgb.par_chunks_exact_mut(3).for_each(|pixel| {
+        let r = pixel[0];
+        let g = pixel[1];
+        let b = pixel[2];
+        let y_in = REC2020_LUMA_R * r + REC2020_LUMA_G * g + REC2020_LUMA_B * b;
+        if !y_in.is_finite() || y_in < DARK_EPSILON {
+            pixel[0] = 0.0;
+            pixel[1] = 0.0;
+            pixel[2] = 0.0;
+            return;
+        }
+        let y_out = sample_piecewise_linear(y_in, curve_points);
+        let scale = y_out / y_in;
+        pixel[0] = r * scale;
+        pixel[1] = g * scale;
+        pixel[2] = b * scale;
+    });
+}
+
+/// Piecewise-linear interpolation of `x` through a list of sorted
+/// `(x, y)` control points. Extremes clamp. Exposed for unit tests
+/// alongside [`apply_tone_curve_lut`].
+#[inline]
+pub fn sample_piecewise_linear(x: f32, points: &[(f32, f32)]) -> f32 {
+    if points.is_empty() {
+        return 0.0;
+    }
+    if x <= points[0].0 {
+        return points[0].1;
+    }
+    if x >= points[points.len() - 1].0 {
+        return points[points.len() - 1].1;
+    }
+    // Binary search for the right bracket. DCP tone curves ship with ~32 to
+    // ~128 points, so linear search is fine too, but binary keeps us linear
+    // in the count and avoids cache-miss amplification on a hot loop.
+    let idx = points.partition_point(|(px, _)| *px <= x);
+    let (x0, y0) = points[idx - 1];
+    let (x1, y1) = points[idx];
+    let dx = x1 - x0;
+    if dx <= 0.0 {
+        return y0;
+    }
+    let t = (x - x0) / dx;
+    y0 + (y1 - y0) * t
+}
+
 /// Cubic Hermite interpolation on `[x0, x1]` with endpoint values `y0`, `y1`
 /// and endpoint slopes `m0`, `m1`. Evaluates to `y0` at `x0` and `y1` at
 /// `x1`, with the given slopes. The canonical basis formulation, rescaled
@@ -472,6 +543,97 @@ mod tests {
         apply_default_tone_curve(&mut buf);
         for v in &buf {
             assert_eq!(*v, 0.0, "NaN pixel should zero out, got {v}");
+        }
+    }
+
+    #[test]
+    fn piecewise_linear_interpolates_between_points() {
+        // Simple two-point linear curve through (0, 0) → (1, 1). Sampling
+        // anywhere between returns the input unchanged.
+        let curve = [(0.0, 0.0), (1.0, 1.0)];
+        for x in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
+            let y = sample_piecewise_linear(x, &curve);
+            assert!((y - x).abs() < 1e-6, "identity curve drifted: f({x}) = {y}");
+        }
+    }
+
+    #[test]
+    fn piecewise_linear_clamps_outside_domain() {
+        let curve = [(0.0, 0.1), (1.0, 0.9)];
+        assert_eq!(sample_piecewise_linear(-1.0, &curve), 0.1);
+        assert_eq!(sample_piecewise_linear(2.0, &curve), 0.9);
+    }
+
+    #[test]
+    fn piecewise_linear_three_point_s_curve() {
+        // Three-point S-ish curve: (0,0), (0.5, 0.4), (1,1). At x=0.25 we
+        // get y = 0 + (0.25/0.5) * 0.4 = 0.2. At x=0.75 we get
+        // y = 0.4 + (0.25/0.5) * (1.0 - 0.4) = 0.7.
+        let curve = [(0.0, 0.0), (0.5, 0.4), (1.0, 1.0)];
+        assert!((sample_piecewise_linear(0.25, &curve) - 0.2).abs() < 1e-6);
+        assert!((sample_piecewise_linear(0.5, &curve) - 0.4).abs() < 1e-6);
+        assert!((sample_piecewise_linear(0.75, &curve) - 0.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_tone_curve_lut_identity_is_noop() {
+        // Identity curve (x == y) must leave the buffer byte-identical
+        // modulo float rounding.
+        let curve = [(0.0, 0.0), (1.0, 1.0)];
+        let mut buf = vec![0.8_f32, 0.3, 0.1, 0.5, 0.5, 0.5, 0.2, 0.7, 0.9];
+        let orig = buf.clone();
+        apply_tone_curve_lut(&mut buf, &curve);
+        for (got, want) in buf.iter().zip(orig.iter()) {
+            assert!((got - want).abs() < 1e-5, "got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn apply_tone_curve_lut_preserves_hue() {
+        // S-curve on luminance only. Every channel scales by the same
+        // factor, so R:G ratio stays constant.
+        let curve = [(0.0, 0.0), (0.5, 0.3), (1.0, 1.0)];
+        let (r, g, b) = (0.8_f32, 0.4, 0.2);
+        let mut buf = vec![r, g, b];
+        apply_tone_curve_lut(&mut buf, &curve);
+        assert!(
+            ((r / g) - (buf[0] / buf[1])).abs() < 1e-5,
+            "R:G ratio drifted"
+        );
+        assert!(
+            ((r / b) - (buf[0] / buf[2])).abs() < 1e-5,
+            "R:B ratio drifted"
+        );
+    }
+
+    #[test]
+    fn apply_tone_curve_lut_darker_curve_darkens_output() {
+        // Explicitly-darker curve: f(x) < x for every midtone. Output
+        // luminance must drop below input.
+        let curve = [(0.0, 0.0), (0.5, 0.2), (1.0, 0.8)];
+        let mut buf = vec![0.5_f32, 0.5, 0.5];
+        apply_tone_curve_lut(&mut buf, &curve);
+        // Y = 0.5 → sampled to 0.2; scale = 0.4; output = (0.2, 0.2, 0.2).
+        for v in &buf {
+            assert!((v - 0.2).abs() < 1e-5, "expected 0.2, got {v}");
+        }
+    }
+
+    #[test]
+    fn apply_tone_curve_lut_empty_is_noop() {
+        let mut buf = vec![0.5_f32, 0.25, 0.75];
+        let orig = buf.clone();
+        apply_tone_curve_lut(&mut buf, &[]);
+        assert_eq!(buf, orig);
+    }
+
+    #[test]
+    fn apply_tone_curve_lut_handles_dark_and_nan() {
+        let curve = [(0.0, 0.0), (1.0, 1.0)];
+        let mut buf = vec![1e-9_f32, 1e-9, 1e-9, f32::NAN, 0.5, 0.5];
+        apply_tone_curve_lut(&mut buf, &curve);
+        for v in &buf {
+            assert_eq!(*v, 0.0, "expected 0.0 for dark/NaN pixel, got {v}");
         }
     }
 }

@@ -22,21 +22,25 @@
 //! | Tag | Name                          | Required for a match? |
 //! |-----|-------------------------------|------------------------|
 //! | 50708 | `UniqueCameraModel`         | No, logged only |
-//! | 50778 | `CalibrationIlluminant1`    | No |
-//! | 50779 | `CalibrationIlluminant2`    | No |
+//! | 50778 | `CalibrationIlluminant1`    | No (drives dual-illuminant blend) |
+//! | 50779 | `CalibrationIlluminant2`    | No (drives dual-illuminant blend) |
 //! | 50932 | `ProfileCalibrationSignature` | No |
 //! | 50936 | `ProfileName`               | No |
 //! | 50937 | `ProfileHueSatMapDims`      | **Yes** |
 //! | 50938 | `ProfileHueSatMapData1`     | **Yes** (or `Data2`) |
 //! | 50939 | `ProfileHueSatMapData2`     | **Yes** (or `Data1`) |
+//! | 50940 | `ProfileToneCurve`          | No (Phase 3.4, swaps default curve) |
 //! | 50942 | `ProfileCopyright`          | No, logged only |
+//! | 50981 | `ProfileLookTableDims`      | No (Phase 3.4) |
+//! | 50982 | `ProfileLookTableData`      | No (Phase 3.4) |
 //! | 51107 | `ProfileHueSatMapEncoding`  | No, defaults to `0` (linear) |
+//! | 51108 | `ProfileLookTableEncoding`  | No (Phase 3.4), defaults to `0` |
 //!
-//! Tags we intentionally skip for now (Phase 3.3 scope): `ForwardMatrix1/2`,
-//! `CameraCalibration1/2`, `ProfileToneCurve`, `ProfileLookTable*`. These are
-//! tracked in the Phase 3.x roadmap; applying them all at once risks scope
-//! creep and double-correction with the work earlier pipeline stages
-//! already do.
+//! Tags we intentionally skip: `ForwardMatrix1/2`, `CameraCalibration1/2`.
+//! These are tracked in the Phase 3.x roadmap; our Rec.2020 working space
+//! already consumes the camera's D65 matrix directly, so a ProPhoto-D50
+//! forward-matrix swap would need a full chromatic-adaptation re-pipe
+//! that doesn't pay for itself in a viewer.
 //!
 //! ## Return value
 //!
@@ -61,8 +65,12 @@ const TAG_PROFILE_NAME: u16 = 50936;
 const TAG_PROFILE_HUE_SAT_MAP_DIMS: u16 = 50937;
 const TAG_PROFILE_HUE_SAT_MAP_DATA_1: u16 = 50938;
 const TAG_PROFILE_HUE_SAT_MAP_DATA_2: u16 = 50939;
+const TAG_PROFILE_TONE_CURVE: u16 = 50940;
 const TAG_PROFILE_COPYRIGHT: u16 = 50942;
+const TAG_PROFILE_LOOK_TABLE_DIMS: u16 = 50981;
+const TAG_PROFILE_LOOK_TABLE_DATA: u16 = 50982;
 const TAG_PROFILE_HUE_SAT_MAP_ENCODING: u16 = 51107;
+const TAG_PROFILE_LOOK_TABLE_ENCODING: u16 = 51108;
 
 /// Build a [`Dcp`] from a map of DNG tags. Returns `None` when the DNG
 /// carries no applicable profile (missing dims, missing both hue/sat map
@@ -102,6 +110,36 @@ pub fn from_dng_tags(tags: &HashMap<u16, Value>) -> Option<Dcp> {
         .and_then(u32_from_tag)
         .unwrap_or(0);
 
+    // Optional LookTable (DNG 1.6 § 6.2.3). Same shape as the HueSatMap but
+    // independently dimensioned, so we read its own dims tag. Single-
+    // illuminant (no Data1/Data2 split), just one payload.
+    let look_table = tags
+        .get(&TAG_PROFILE_LOOK_TABLE_DIMS)
+        .and_then(dims_from_tag)
+        .and_then(|[h, s, v]| {
+            let expected = (h as usize)
+                .checked_mul(s as usize)?
+                .checked_mul(v as usize)?
+                .checked_mul(3)?;
+            let data = floats_from_tag(tags.get(&TAG_PROFILE_LOOK_TABLE_DATA)?, expected)?;
+            Some(HueSatMap {
+                hue_divs: h,
+                sat_divs: s,
+                val_divs: v,
+                data,
+            })
+        });
+    let look_table_encoding = tags
+        .get(&TAG_PROFILE_LOOK_TABLE_ENCODING)
+        .and_then(u32_from_tag)
+        .unwrap_or(0);
+
+    // Optional ProfileToneCurve (DNG 1.6 § 6.2.4). A flat float list
+    // interpreted as `(x, y)` pairs.
+    let tone_curve = tags
+        .get(&TAG_PROFILE_TONE_CURVE)
+        .and_then(tone_curve_from_tag);
+
     Some(Dcp {
         unique_camera_model: tags.get(&TAG_UNIQUE_CAMERA_MODEL).and_then(string_from_tag),
         profile_name: tags.get(&TAG_PROFILE_NAME).and_then(string_from_tag),
@@ -118,7 +156,29 @@ pub fn from_dng_tags(tags: &HashMap<u16, Value>) -> Option<Dcp> {
         hue_sat_map_1: map_1,
         hue_sat_map_2: map_2,
         hue_sat_map_encoding: encoding,
+        look_table,
+        look_table_encoding,
+        tone_curve,
     })
+}
+
+/// Read a flat float list as a sequence of `(x, y)` pairs. Rejects
+/// odd-length lists (spec guarantees pairs) and anything under two points.
+fn tone_curve_from_tag(value: &Value) -> Option<Vec<(f32, f32)>> {
+    let floats: Vec<f32> = match value {
+        Value::Float(v) => v.clone(),
+        Value::Double(v) => v.iter().map(|&x| x as f32).collect(),
+        _ => return None,
+    };
+    if floats.len() < 4 || !floats.len().is_multiple_of(2) {
+        return None;
+    }
+    Some(
+        floats
+            .chunks_exact(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect(),
+    )
 }
 
 /// Read a `ProfileHueSatMapDims` value: three `LONG`s for hue, sat, val
@@ -325,6 +385,72 @@ mod tests {
             Value::Float(vec![0.0, 1.0, 1.0]),
         );
         assert!(from_dng_tags(&tags).is_none());
+    }
+
+    #[test]
+    fn reads_optional_look_table() {
+        let mut tags = minimal_tag_map(2, 2, 1);
+        tags.insert(TAG_PROFILE_LOOK_TABLE_DIMS, Value::Long(vec![2, 2, 1]));
+        tags.insert(
+            TAG_PROFILE_LOOK_TABLE_DATA,
+            Value::Float(identity_map_data(2, 2, 1)),
+        );
+        tags.insert(TAG_PROFILE_LOOK_TABLE_ENCODING, Value::Long(vec![0]));
+        let dcp = from_dng_tags(&tags).expect("should parse with look table");
+        let look = dcp.look_table.expect("look table present");
+        assert_eq!((look.hue_divs, look.sat_divs, look.val_divs), (2, 2, 1));
+        assert_eq!(look.data.len(), 12);
+        assert_eq!(dcp.look_table_encoding, 0);
+    }
+
+    #[test]
+    fn returns_none_for_look_table_when_dims_or_data_missing() {
+        // Dims present but no data → the look table silently goes None.
+        // HueSatMap still present, so parse itself succeeds.
+        let mut tags = minimal_tag_map(2, 2, 1);
+        tags.insert(TAG_PROFILE_LOOK_TABLE_DIMS, Value::Long(vec![2, 2, 1]));
+        let dcp = from_dng_tags(&tags).expect("hsm still valid");
+        assert!(dcp.look_table.is_none());
+    }
+
+    #[test]
+    fn reads_optional_tone_curve() {
+        let mut tags = minimal_tag_map(2, 2, 1);
+        // Three-point tone curve: (0,0), (0.5,0.4), (1,1).
+        tags.insert(
+            TAG_PROFILE_TONE_CURVE,
+            Value::Float(vec![0.0, 0.0, 0.5, 0.4, 1.0, 1.0]),
+        );
+        let dcp = from_dng_tags(&tags).expect("should parse with tone curve");
+        let curve = dcp.tone_curve.expect("tone curve present");
+        assert_eq!(curve.len(), 3);
+        assert_eq!(curve[0], (0.0, 0.0));
+        assert_eq!(curve[1], (0.5, 0.4));
+        assert_eq!(curve[2], (1.0, 1.0));
+    }
+
+    #[test]
+    fn tone_curve_rejects_odd_length() {
+        let mut tags = minimal_tag_map(2, 2, 1);
+        // 5 floats → not pair-aligned → skipped.
+        tags.insert(
+            TAG_PROFILE_TONE_CURVE,
+            Value::Float(vec![0.0, 0.0, 0.5, 0.4, 1.0]),
+        );
+        let dcp = from_dng_tags(&tags).expect("hsm still valid");
+        assert!(dcp.tone_curve.is_none());
+    }
+
+    #[test]
+    fn tone_curve_accepts_double_payload() {
+        let mut tags = minimal_tag_map(2, 2, 1);
+        tags.insert(
+            TAG_PROFILE_TONE_CURVE,
+            Value::Double(vec![0.0_f64, 0.0, 1.0, 1.0]),
+        );
+        let dcp = from_dng_tags(&tags).expect("should parse");
+        let curve = dcp.tone_curve.expect("tone curve present");
+        assert_eq!(curve, vec![(0.0, 0.0), (1.0, 1.0)]);
     }
 
     #[test]

@@ -238,6 +238,9 @@ mod tests {
             hue_sat_map_1: None,
             hue_sat_map_2: None,
             hue_sat_map_encoding: 0,
+            look_table: None,
+            look_table_encoding: 0,
+            tone_curve: None,
         };
         assert!(dcp_matches(&dcp, &normalize("Sony ILCE-7M3")));
         assert!(dcp_matches(&dcp, &normalize("SONY    ilce-7m3")));
@@ -256,6 +259,9 @@ mod tests {
             hue_sat_map_1: None,
             hue_sat_map_2: None,
             hue_sat_map_encoding: 0,
+            look_table: None,
+            look_table_encoding: 0,
+            tone_curve: None,
         };
         assert!(dcp_matches(&dcp, &normalize("custom-sig-xyz")));
     }

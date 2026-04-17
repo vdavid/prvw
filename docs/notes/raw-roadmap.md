@@ -4,7 +4,7 @@ Quick checklist across phases. Detailed design notes live in
 `raw-support-phase1.md` and `raw-support-phase2.md`. This file is the single
 source for "what's done, what's next."
 
-Last updated: 2026-04-17 (Phase 3.3 shipped).
+Last updated: 2026-04-17 (Phase 3.4 shipped).
 
 ## Phase 1 — shipped in v0.9.0 🎉
 
@@ -146,17 +146,40 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       (`"RAW applied EMBEDDED DCP 'Google Embedded Camera Profile' …"`).
       See `docs/notes/raw-support-phase3.md`.
 
+### Phase 3.4 — DCP LookTable + tone curve + dual-illuminant (done, 2026-04-17)
+
+- [x] DCP `LookTable` application (second HSV LUT after `HueSatMap`).
+      Parses tags 50981 / 50982 / 51108 from both standalone `.dcp` files
+      and embedded DNG IFDs. Applies via the existing `apply_hue_sat_map`
+      so the LUT math path stays single-sourced. Silent no-op when the
+      profile carries no LookTable.
+- [x] DCP `ProfileToneCurve` (tag 50940). Parsed as `(x, y)` float pairs,
+      applied via a new `tone_curve::apply_tone_curve_lut` helper that
+      shapes luminance only and scales RGB uniformly, matching the
+      default curve's pattern. When a DCP (embedded or filesystem)
+      carries a tone curve, we apply **it instead of** our default —
+      the camera's intended tonality wins. Logged at INFO so users can
+      tell which curve ran.
+- [x] DCP dual-illuminant interpolation. Compromise fidelity: simple
+      `temp ≈ 7000 − 2000 × (R/G − 1)` scene-temperature estimate from
+      rawler's `wb_coeffs`, linear blend between `HueSatMap1` and
+      `HueSatMap2` weighted by where the estimate falls between the two
+      illuminant temperatures (clamped outside the endpoints). The
+      spec's full iterative procedure (ForwardMatrix1/2 + scene neutral
+      + CCT convergence) remains future work — the compromise gets the
+      direction and order-of-magnitude right, which is enough for a
+      viewer. See `docs/notes/raw-support-phase3.md` for the algorithm
+      choice and limitations.
+
 ### Phase 3.x — still ahead
 - [ ] Fuzzy DCP matching fallback. Currently requires exact
       `UniqueCameraModel` match. If a user has a DCP for a close-family
       camera (e.g., `SONY ILCE-6000` while shooting with an α5000), the
       match silently fails. Add a fallback that tries known-compatible
       camera families with a user-visible warning.
-- [ ] DCP `LookTable` application (second LUT after `HueSatMap`).
-- [ ] DCP dual-illuminant interpolation (illuminants 1 and 2 blended by
-      scene color temperature).
-- [ ] DCP tone curve: optional swap of our default tone curve with the
-      per-camera one when the DCP carries one.
+- [ ] DCP dual-illuminant, full fidelity: iterate ForwardMatrix1/2 +
+      `AsShotNeutral` to converge a proper scene CCT instead of the
+      one-shot WB-ratio approximation.
 - [ ] Settings UI: a "Custom DCP directory" picker + "per-camera profile"
       toggle in the Color panel.
 - [ ] GainMap: honor `Planes > MapPlanes` fallback ("last plane applies to

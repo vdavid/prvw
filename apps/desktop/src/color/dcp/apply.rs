@@ -475,6 +475,43 @@ mod tests {
     }
 
     #[test]
+    fn look_table_pass_after_hue_sat_map_darkens_target_band() {
+        // Smoke test for the LookTable pipeline position: a HueSatMap that's
+        // a no-op, followed by a LookTable that halves the value of the
+        // red band only. A red pixel should come out half as bright; a
+        // blue pixel should pass through.
+        let hsm = make_identity_map(6, 1, 1);
+        // 6×1×1 LookTable: index 0 (red sector) halves V, others no-op.
+        let mut look_data = vec![0.0_f32; 6 * 3];
+        for i in 0..6 {
+            look_data[i * 3] = 0.0; // hue shift
+            look_data[i * 3 + 1] = 1.0; // sat scale
+            look_data[i * 3 + 2] = if i == 0 { 0.5 } else { 1.0 }; // val scale
+        }
+        let look = HueSatMap {
+            hue_divs: 6,
+            sat_divs: 1,
+            val_divs: 1,
+            data: look_data,
+        };
+
+        let mut pixels = vec![
+            1.0_f32, 0.0, 0.0, // red
+            0.0, 0.0, 1.0, // blue
+        ];
+        apply_hue_sat_map(&mut pixels, &hsm, 0); // no-op
+        apply_hue_sat_map(&mut pixels, &look, 0); // red only
+
+        // Red pixel halved in R; blue untouched.
+        assert!((pixels[0] - 0.5).abs() < 1e-4, "red R = {}", pixels[0]);
+        assert!(pixels[1].abs() < 1e-4, "red G = {}", pixels[1]);
+        assert!(pixels[2].abs() < 1e-4, "red B = {}", pixels[2]);
+        assert!(pixels[3].abs() < 1e-4, "blue R = {}", pixels[3]);
+        assert!(pixels[4].abs() < 1e-4, "blue G = {}", pixels[4]);
+        assert!((pixels[5] - 1.0).abs() < 1e-4, "blue B = {}", pixels[5]);
+    }
+
+    #[test]
     fn val_axis_single_slab_is_stable() {
         // Single-val-div profile (the common Adobe 2D case). Build a
         // 6×6×1 map with a known sat scale of 1.5.
