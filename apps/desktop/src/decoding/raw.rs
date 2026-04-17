@@ -3,19 +3,27 @@
 //! Covers the 10 formats listed in [`super::dispatch::is_raw_extension`]. The
 //! pipeline is a two-phase affair:
 //!
-//! 1. **Rawler's sensor-stage passes.** `raw_image` pulls the mosaic and
-//!    metadata out of the file. We then run rawler's own develop pipeline,
-//!    but only up through demosaic + active-area crop, skipping its built-in
-//!    calibrate/sRGB-gamma stages. The output is a 3-channel float buffer in
-//!    camera RGB, with black/white levels and demosaic already applied.
-//! 2. **Our wide-gamut color path.** We pull the camera's D65 color matrix and
-//!    white-balance coefficients off the raw metadata, combine them with our
-//!    own `XYZ → linear Rec.2020` matrix, and map every pixel through the
-//!    resulting `cam → linear Rec.2020` transform. Crucially, we do **not**
-//!    clip. Rawler's default pipeline clips to sRGB during `Calibrate`, which
-//!    throws away any P3/Rec.2020 coverage the sensor captured. The wide-gamut
-//!    intermediate preserves those colors all the way through the final ICC
-//!    transform to the display profile.
+//! 1. **Rawler's sensor-stage passes, with DNG opcode injection.** `raw_image`
+//!    pulls the mosaic and metadata out of the file. For DNGs carrying
+//!    `OpcodeList1` we apply them first (pre-linearization sensor
+//!    corrections). Then `raw.apply_scaling()` handles black-level and
+//!    linear rescale into [0, 1]. Then DNG `OpcodeList2` applies post-
+//!    linearization, pre-demosaic CFA-level corrections — the main
+//!    example is iPhone ProRAW's four per-Bayer-phase `GainMap`s for
+//!    lens shading. Then rawler's `Demosaic + CropActiveArea` lands us
+//!    at a 3-channel camera-RGB float buffer. `LinearizationTable`
+//!    (tag 50712) is already handled by rawler during its initial read.
+//! 2. **Our wide-gamut color path + DNG `OpcodeList3`.** We pull the
+//!    camera's D65 color matrix and white-balance coefficients off the
+//!    raw metadata, combine them with our own `XYZ → linear Rec.2020`
+//!    matrix, and map every pixel through the resulting
+//!    `cam → linear Rec.2020` transform. Crucially, we do **not** clip.
+//!    Rawler's default pipeline clips to sRGB during `Calibrate`, which
+//!    throws away any P3/Rec.2020 coverage the sensor captured. The
+//!    wide-gamut intermediate preserves those colors all the way through
+//!    the final ICC transform to the display profile. After the color
+//!    map we apply `OpcodeList3` (typically `WarpRectilinear` for lens
+//!    distortion correction).
 //! 3. **Baseline exposure lift.** Still in linear Rec.2020 land, we apply a
 //!    single EV scale (`linear *= 2^ev`). Source is the DNG
 //!    `BaselineExposure` tag (50730) when present, otherwise a +0.5 EV
@@ -74,14 +82,19 @@ use rawler::decoders::{Decoder, RawDecodeParams, WellKnownIFD};
 use rawler::formats::tiff::Value;
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
 use rawler::imgop::xyz::Illuminant;
+use rawler::rawimage::RawImageData;
 use rawler::rawsource::RawSource;
 use rawler::tags::DngTag;
 use rayon::prelude::*;
 
+use super::DecodedImage;
+use super::dng_opcodes::{
+    Opcode, OpcodeId, apply_fix_bad_pixels_constant, apply_fix_bad_pixels_list, apply_gain_map_cfa,
+    apply_gain_map_rgb, apply_warp_rectilinear_rgb, parse_fix_bad_pixels_constant,
+    parse_fix_bad_pixels_list, parse_gain_map, parse_opcode_list, parse_warp_rectilinear,
+};
 use crate::color;
 use crate::color::profiles::REC2020_TO_XYZ_D65;
-
-use super::DecodedImage;
 
 /// Fallback exposure lift when a RAW file doesn't carry a DNG `BaselineExposure`
 /// tag. +0.5 EV (~1.41× linear gain) is Adobe's neutral default and roughly
@@ -119,21 +132,44 @@ pub(super) fn decode(
     check_cancelled(cancelled)?;
 
     let params = RawDecodeParams::default();
-    let raw = decoder
+    let mut raw = decoder
         .raw_image(&src, &params, false)
         .map_err(|e| format!("Couldn't decode RAW {}: {e}", path.display()))?;
 
     check_cancelled(cancelled)?;
 
-    // Run rawler's sensor-level passes only: rescale, demosaic, and active-area
-    // crop. We hand-roll the calibrate + default-crop + gamma stages below so
-    // we can keep the intermediate in wide-gamut linear floats.
+    // DNG `OpcodeList1` (tag 51008): gain maps, bad-pixel fixes, etc. Runs
+    // on the raw sensor data *before* black-level subtraction / linear
+    // rescale. For non-DNG files and for DNGs without the tag this is a
+    // silent no-op. Rawler parses the tag but never applies it — exactly
+    // the gap we're filling here. See `docs/notes/raw-support-phase3.md`.
+    apply_opcode_list1(decoder.as_ref(), &mut raw, path);
+
+    check_cancelled(cancelled)?;
+
+    // Rawler's `Rescale` step does black-level subtraction and normalises
+    // every pixel into `[0, 1]` f32. We run it manually so we can slip
+    // `OpcodeList2` in between rescale and demosaic, matching the DNG spec
+    // (§ 6). After this call, `raw.data` is `RawImageData::Float` in [0, 1].
+    raw.apply_scaling()
+        .map_err(|e| format!("Couldn't rescale RAW {}: {e}", path.display()))?;
+
+    check_cancelled(cancelled)?;
+
+    // DNG `OpcodeList2` (tag 51009): pre-demosaic gain maps (lens shading)
+    // and bad-pixel fixes. Still operates on the CFA mosaic, so the opcodes
+    // can target individual Bayer sub-planes (iPhone ProRAW encodes its
+    // four-plane lens-shading correction this way: one GainMap per Bayer
+    // phase, starting at (0,0), (0,1), (1,0), (1,1) with pitch 2×2).
+    apply_opcode_list2(decoder.as_ref(), &mut raw, path);
+
+    check_cancelled(cancelled)?;
+
+    // Run rawler's remaining sensor-level passes: demosaic + active-area
+    // crop. `Rescale` is omitted because we just ran it by hand above. Our
+    // own wide-gamut matrix + default crop + color stages land below.
     let develop = RawDevelop {
-        steps: vec![
-            ProcessingStep::Rescale,
-            ProcessingStep::Demosaic,
-            ProcessingStep::CropActiveArea,
-        ],
+        steps: vec![ProcessingStep::Demosaic, ProcessingStep::CropActiveArea],
     };
     let intermediate = develop
         .develop_intermediate(&raw)
@@ -143,8 +179,18 @@ pub(super) fn decode(
 
     // Into wide-gamut linear floats. Also apply white-balance + camera matrix
     // in the same pass to save a buffer traversal on big sensor files.
-    let (width, height, rec2020) = camera_to_linear_rec2020(&raw, intermediate)
+    let (width, height, mut rec2020) = camera_to_linear_rec2020(&raw, intermediate)
         .ok_or_else(|| format!("Couldn't map camera to Rec.2020 for {}", path.display()))?;
+
+    check_cancelled(cancelled)?;
+
+    // DNG `OpcodeList3` (tag 51022): post-color-space opcodes. Mostly
+    // `WarpRectilinear` (lens distortion correction) on iPhone ProRAW. The
+    // spec defines this list as running *after* the camera→working-space
+    // matrix, so our linear Rec.2020 buffer is the right slot. Opcodes
+    // here that target CFA sub-planes are unreachable and logged as
+    // skipped.
+    apply_opcode_list3(decoder.as_ref(), width, height, &mut rec2020, path);
 
     check_cancelled(cancelled)?;
 
@@ -602,6 +648,238 @@ fn check_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), String> {
     Ok(())
 }
 
+/// Fetch the raw bytes of `DngTag::OpcodeList1/2/3` off a decoder's virtual
+/// DNG raw IFD. Returns `None` for non-DNG files or when the tag isn't
+/// present.
+fn fetch_opcode_list_bytes(decoder: &dyn Decoder, which: DngTag) -> Option<Vec<u8>> {
+    let ifd = decoder
+        .ifd(WellKnownIFD::VirtualDngRawTags)
+        .ok()
+        .flatten()?;
+    let entry = ifd.get_entry(which)?;
+    match &entry.value {
+        Value::Byte(bytes) => Some(bytes.clone()),
+        Value::Undefined(bytes) => Some(bytes.clone()),
+        other => {
+            log::debug!(
+                "DNG {:?} has unexpected TIFF type {}; skipping opcode list",
+                which,
+                other.value_type_name(),
+            );
+            None
+        }
+    }
+}
+
+/// Parse + apply `OpcodeList1` to the raw sensor buffer in place. Runs on
+/// the *pre-rescale* sensor data per DNG spec § 6. Silent no-op for non-DNG
+/// files or DNGs without the tag.
+fn apply_opcode_list1(decoder: &dyn Decoder, raw: &mut RawImage, path: &Path) {
+    apply_cfa_opcode_list(decoder, raw, path, DngTag::OpcodeList1, "OpcodeList1");
+}
+
+/// Parse + apply `OpcodeList2` to the raw sensor buffer in place. Per DNG
+/// spec § 6, OpcodeList2 runs *after* linearization-to-[0,1] but *before*
+/// demosaic, so it still operates on the CFA mosaic. That's where iPhone
+/// ProRAW files stash their per-Bayer-phase lens-shading `GainMap`s.
+fn apply_opcode_list2(decoder: &dyn Decoder, raw: &mut RawImage, path: &Path) {
+    apply_cfa_opcode_list(decoder, raw, path, DngTag::OpcodeList2, "OpcodeList2");
+}
+
+/// Shared core for OpcodeList1 and OpcodeList2. Both run on CFA-mosaic
+/// data; they only differ in whether rawler's `Rescale` has already run.
+fn apply_cfa_opcode_list(
+    decoder: &dyn Decoder,
+    raw: &mut RawImage,
+    path: &Path,
+    tag: DngTag,
+    list_label: &str,
+) {
+    let Some(bytes) = fetch_opcode_list_bytes(decoder, tag) else {
+        return;
+    };
+    let opcodes = match parse_opcode_list(&bytes) {
+        Ok(list) => list,
+        Err(e) => {
+            log::warn!("DNG {list_label} parse failed for {}: {e}", path.display());
+            return;
+        }
+    };
+    if opcodes.is_empty() {
+        return;
+    }
+    log::info!(
+        "DNG {list_label}: {} opcode(s) for {}",
+        opcodes.len(),
+        path.display()
+    );
+
+    let width = raw.width as u32;
+    let height = raw.height as u32;
+    let cpp = raw.cpp;
+    let cfa = raw.camera.cfa.clone();
+    let was_integer = matches!(raw.data, RawImageData::Integer(_));
+    let mut data = raw.data.as_f32().into_owned();
+
+    for opcode in &opcodes {
+        let label = format!("{list_label} {}", opcode.id);
+        match opcode.id {
+            OpcodeId::GainMap => match parse_gain_map(&opcode.params) {
+                Ok(map) => {
+                    log::debug!(
+                        "{label}: plane {} {}x{} gain grid over ({},{})-({},{}), pitch ({},{})",
+                        map.plane,
+                        map.map_points_v,
+                        map.map_points_h,
+                        map.top,
+                        map.left,
+                        map.bottom,
+                        map.right,
+                        map.row_pitch,
+                        map.col_pitch,
+                    );
+                    if cpp == 1 {
+                        let cfa_ref = cfa.clone();
+                        apply_gain_map_cfa(&mut data, width, height, &map, move |y, x| {
+                            cfa_ref.color_at(y as usize, x as usize) as u32
+                        });
+                    } else if cpp == 3 {
+                        // `LinearRaw` photometric: plane index is the RGB
+                        // channel, not the Bayer phase.
+                        apply_gain_map_rgb(&mut data, width, height, &map);
+                    } else {
+                        log::warn!("{label}: unsupported cpp={cpp}; skipping");
+                    }
+                }
+                Err(e) => report_opcode_error(&label, opcode, e, path),
+            },
+            OpcodeId::FixBadPixelsConstant if cpp == 1 => {
+                match parse_fix_bad_pixels_constant(&opcode.params) {
+                    Ok(op) => apply_fix_bad_pixels_constant(&mut data, width, height, &op),
+                    Err(e) => report_opcode_error(&label, opcode, e, path),
+                }
+            }
+            OpcodeId::FixBadPixelsList if cpp == 1 => {
+                match parse_fix_bad_pixels_list(&opcode.params) {
+                    Ok(op) => apply_fix_bad_pixels_list(&mut data, width, height, &op),
+                    Err(e) => report_opcode_error(&label, opcode, e, path),
+                }
+            }
+            _ => skip_unknown_opcode(&label, opcode, path),
+        }
+    }
+
+    // Write back in the same representation the caller handed us.
+    if was_integer {
+        let as_u16: Vec<u16> = data
+            .par_iter()
+            .map(|v| (v.clamp(0.0, 1.0) * u16::MAX as f32) as u16)
+            .collect();
+        raw.data = RawImageData::Integer(as_u16);
+    } else {
+        raw.data = RawImageData::Float(data);
+    }
+}
+
+/// Parse + apply `OpcodeList3` on the post-color-matrix linear Rec.2020
+/// buffer (3-channel, packed). The main opcode we care about here is
+/// `WarpRectilinear` for lens distortion. CFA-targeted opcodes in this
+/// list would be unreachable (the CFA mosaic is long gone) and log-skipped.
+fn apply_opcode_list3(
+    decoder: &dyn Decoder,
+    width: u32,
+    height: u32,
+    rec2020: &mut [f32],
+    path: &Path,
+) {
+    let Some(bytes) = fetch_opcode_list_bytes(decoder, DngTag::OpcodeList3) else {
+        return;
+    };
+    let opcodes = match parse_opcode_list(&bytes) {
+        Ok(list) => list,
+        Err(e) => {
+            log::warn!("DNG OpcodeList3 parse failed for {}: {e}", path.display());
+            return;
+        }
+    };
+    if opcodes.is_empty() {
+        return;
+    }
+    log::info!(
+        "DNG OpcodeList3: {} opcode(s) for {}",
+        opcodes.len(),
+        path.display()
+    );
+
+    for opcode in &opcodes {
+        let label = format!("OpcodeList3 {}", opcode.id);
+        match opcode.id {
+            OpcodeId::WarpRectilinear => match parse_warp_rectilinear(&opcode.params) {
+                Ok(warp) => {
+                    log::debug!(
+                        "{label}: {} plane(s), cx/cy = ({:.3}, {:.3})",
+                        warp.planes.len(),
+                        warp.planes[0].cx,
+                        warp.planes[0].cy,
+                    );
+                    apply_warp_rectilinear_rgb(rec2020, width, height, &warp);
+                }
+                Err(e) => report_opcode_error(&label, opcode, e, path),
+            },
+            OpcodeId::GainMap => match parse_gain_map(&opcode.params) {
+                Ok(map) => {
+                    log::debug!(
+                        "{label}: plane {} {}x{} gain grid",
+                        map.plane,
+                        map.map_points_v,
+                        map.map_points_h,
+                    );
+                    apply_gain_map_rgb(rec2020, width, height, &map);
+                }
+                Err(e) => report_opcode_error(&label, opcode, e, path),
+            },
+            _ => skip_unknown_opcode(&label, opcode, path),
+        }
+    }
+}
+
+/// Log a failed parse of an opcode and decide whether to tolerate it.
+fn report_opcode_error(
+    label: &str,
+    opcode: &Opcode,
+    err: super::dng_opcodes::OpcodeParseError,
+    path: &Path,
+) {
+    if opcode.is_optional() {
+        log::debug!(
+            "{label} parse failed (optional, skipping): {err} for {}",
+            path.display()
+        );
+    } else {
+        log::warn!(
+            "{label} parse failed (mandatory, skipping anyway): {err} for {}",
+            path.display()
+        );
+    }
+}
+
+/// Log an opcode we don't implement. We don't fail the decode even on
+/// mandatory unknown opcodes: a recognisable-but-plain output is always
+/// better than refusing to open the file.
+fn skip_unknown_opcode(label: &str, opcode: &Opcode, path: &Path) {
+    if opcode.is_optional() {
+        log::debug!(
+            "{label}: not implemented (optional, skipping) for {}",
+            path.display()
+        );
+    } else {
+        log::warn!(
+            "{label}: not implemented (mandatory, best-effort decode) for {}",
+            path.display()
+        );
+    }
+}
+
 // Gated to macOS because these tests go through `color::srgb_icc_bytes`, which
 // loads the system sRGB profile from `/System/Library/ColorSync/Profiles/` and
 // panics on other platforms. The RAW decoder itself is cross-platform.
@@ -678,6 +956,44 @@ mod tests {
         assert_eq!((img.width, img.height), (3990, 3000));
         assert!(matches!(orientation, 6 | 8));
         assert_eq!(img.rgba_data.len(), 3990 * 3000 * 4);
+    }
+
+    /// Smoke test: run the full RAW decode on sample2.dng with the logger
+    /// initialised. Verifies opcodes fire without panicking. `#[ignore]` —
+    /// run with
+    /// `RUST_LOG=info cargo test --release dng_opcodes_smoke -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dng_opcodes_smoke() {
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+        let path = Path::new("/tmp/raw/sample2.dng");
+        let bytes = std::fs::read(path).expect("fixture missing");
+        let (img, _) =
+            decode(path, bytes, None, color::srgb_icc_bytes(), false).expect("decode failed");
+        // Post-decode dimensions should still match.
+        assert_eq!((img.width, img.height), (3990, 3000));
+    }
+
+    /// Sony ARW files have no DNG opcode tags, so the opcode passes should
+    /// quietly no-op. Verifies decode still works end-to-end on the Phase
+    /// 2 regression fixtures.
+    #[test]
+    #[ignore]
+    fn arw_opcodes_noop_smoke() {
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+        for path_str in ["/tmp/raw/sample1.arw", "/tmp/raw/sample3.arw"] {
+            let path = Path::new(path_str);
+            if !path.exists() {
+                log::warn!("skipping missing fixture {path_str}");
+                continue;
+            }
+            let bytes = std::fs::read(path).expect("fixture missing");
+            let (img, _) =
+                decode(path, bytes, None, color::srgb_icc_bytes(), false).expect("decode failed");
+            assert_eq!((img.width, img.height), (5456, 3632));
+        }
     }
 
     #[test]

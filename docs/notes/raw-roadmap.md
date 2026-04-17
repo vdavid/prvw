@@ -4,7 +4,7 @@ Quick checklist across phases. Detailed design notes live in
 `raw-support-phase1.md` and `raw-support-phase2.md`. This file is the single
 source for "what's done, what's next."
 
-Last updated: 2026-04-17.
+Last updated: 2026-04-17 (Phase 3.0 shipped).
 
 ## Phase 1 — shipped in v0.9.0 🎉
 
@@ -74,19 +74,31 @@ Last updated: 2026-04-17.
 
 ## Phase 3 — per-camera color fidelity
 
+### Phase 3.0 — DNG correctness (done, 2026-04-17)
+
+- [x] DNG `OpcodeList1` application (pre-linearization gain maps + bad
+      pixels). No fixture exercises it, but the pipeline slot is wired.
+- [x] DNG `OpcodeList2` application (post-linearization, pre-demosaic
+      CFA-level `GainMap`s + bad-pixel fix). Closes the iPhone ProRAW
+      lens-shading correctness gap. Fires on sample2.dng (4 per-Bayer-
+      phase GainMaps).
+- [x] DNG `OpcodeList3` application (post-color `WarpRectilinear` for lens
+      distortion + bad pixels). Fires on sample2.dng (1 WarpRectilinear).
+- [x] DNG `LinearizationTable` investigation (tag 50712). **Rawler already
+      applies this** in its own `apply_linearization` path during raw
+      decode, so we skip reimplementing. Documented in
+      `raw-support-phase3.md`.
+
+See `docs/notes/raw-support-phase3.md` for per-opcode status, pipeline
+diagram, and iPhone ProRAW specifics.
+
+### Phase 3.x — still ahead
+
 - [ ] Retune defaults against a wider reference set. The 2.5b rerun grid-
       searched against a single Preview.app screenshot (a vibrant outdoor
       scene with a subject). Likely scene-class gaps: portraits / skin
       tones, low-light / high-ISO, near-neutral scenes. Collect three to
       five more Preview.app screenshot references and rerun the grid.
-- [ ] DNG `OpcodeList1` application (pre-demosaic gain maps, vignette fix,
-      bad pixels). Closes the iPhone ProRAW correctness gap.
-- [ ] DNG `OpcodeList2` application (post-demosaic lens distortion via
-      `WarpRectilinear`, bad-pixel fix).
-- [ ] DNG `OpcodeList3` application (post-color, rarely used in practice —
-      may skip).
-- [ ] DNG `LinearizationTable` application (tag 50712). Nikon NEFs use this
-      heavily; currently we rely on rawler's per-decoder LUT handling.
 - [ ] Highlight recovery: reconstruct blown channels from unclipped ones
       (desaturate-to-neutral or channel-blend).
 - [ ] DCP profile support: parse Adobe `.dcp` files, apply `HueSatMap` 3D LUT,

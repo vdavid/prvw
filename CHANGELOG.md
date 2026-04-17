@@ -8,6 +8,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- RAW pipeline now applies DNG `OpcodeList1`, `OpcodeList2`, and `OpcodeList3` per Adobe's DNG spec 1.6. `rawler`
+  parses those tags but doesn't apply them; we pick them up in a new `decoding::dng_opcodes` module. `GainMap`
+  (opcode 9), `WarpRectilinear` (opcode 1), `FixBadPixelsConstant` (opcode 4), and `FixBadPixelsList` (opcode 5) are
+  implemented end-to-end; other opcodes log and skip. iPhone ProRAW files now render with correct lens-shading and
+  optical distortion correction: sample2.dng's four per-Bayer-phase gain maps fire on the mosaic, and the post-color
+  `WarpRectilinear` fires after our color matrix. `LinearizationTable` (tag 50712) is already handled inside rawler
+  itself, so we don't reimplement it. ARW / CR2 / NEF and other non-DNG formats get a silent no-op — zero overhead.
+  The `raw-dev-dump` example gained `after-opcode1`, `after-opcode2`, and `after-opcode3` stages. See
+  `docs/notes/raw-support-phase3.md`
 - RAW pipeline test infrastructure: a tiny synthetic Bayer DNG fixture (128×128, ~33 KB, 0BSD), a `color::delta_e`
   CIE76 metric module, a `synthetic_dng_matches_golden` regression test that diffs `load_image` output against a
   checked-in golden PNG, and a `raw-dev-dump` example that dumps per-stage PNGs for visual inspection. Goldens

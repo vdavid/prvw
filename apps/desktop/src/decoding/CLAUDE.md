@@ -9,6 +9,7 @@ and hand a `DecodedImage` off to the renderer.
 | `dispatch.rs`    | `Backend` enum + extension-to-backend mapping                                    |
 | `jpeg.rs`        | Fast JPEG path via `zune-jpeg` (SIMD)                                            |
 | `raw.rs`         | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)       |
+| `dng_opcodes.rs` | DNG `OpcodeList1/2/3` parsing + application (Phase 3.0)                          |
 | `generic.rs`     | Fallback path via the `image` crate (PNG, GIF, WebP, BMP, TIFF)                  |
 | `orientation.rs` | EXIF orientation parsing and in-place pixel-buffer rotation                      |
 
@@ -46,17 +47,40 @@ and hand a `DecodedImage` off to the renderer.
 - **Fujifilm X-Trans demosaic is bilinear only.** Rawler ships a simple X-Trans
   bilinear demosaic, not Markesteijn. Usable in a viewer but less detailed than
   what dedicated RAW tools produce.
+- **Rawler applies `LinearizationTable` (tag 50712) itself.** Look in
+  `rawler-0.7.2/src/decoders/mod.rs::641` — the generic raw path
+  dither-interpolates every raw pixel through the table when the tag is
+  present, so we don't need a second pass in `dng_opcodes.rs`. The Phase 3.0
+  investigation (see `docs/notes/raw-support-phase3.md`) confirmed this.
+- **DNG opcode coordinates are raw-image-absolute.** For CFA opcodes (OpcodeList1
+  and 2) that's fine because we apply them before active-area crop. For
+  `OpcodeList3` on the demosaiced+cropped buffer we currently ignore the active-
+  area origin; every fixture we test starts the active area at (0, 0), so no
+  shift is needed today. Cameras with a nonzero origin would miscrop post-color
+  opcodes — tracked as Phase 3.x future work.
 
-## RAW pipeline (Phase 2.5a)
+## RAW pipeline (Phase 2.5a + Phase 3.0)
 
 `raw.rs` bypasses rawler's default `Calibrate`/`CropDefault`/`SRgb` stages so we
 can keep the intermediate wide-gamut:
 
-1. Rawler runs `Rescale → Demosaic → CropActiveArea` only, producing a
-   3-channel float buffer in camera RGB.
+1. Rawler's `raw_image` extracts the mosaic and metadata.
+1a. **Phase 3.0: DNG `OpcodeList1` applied** (`dng_opcodes.rs`). Pre-
+    linearization gain maps and bad-pixel fixes on the CFA mosaic.
+    Silent no-op for non-DNG files and for DNGs without the tag.
+1b. `raw.apply_scaling()` — rawler's black-level subtract + [0, 1] linear
+    rescale, split out so we can slip the next step in between.
+1c. **Phase 3.0: DNG `OpcodeList2` applied**. Post-linearization, pre-
+    demosaic CFA-level gain maps. This is where iPhone ProRAW stashes its
+    per-Bayer-phase lens-shading correction (4 `GainMap`s with pitch 2×2).
+1d. Rawler's remaining develop steps: `Demosaic → CropActiveArea`,
+    producing a 3-channel float buffer in camera RGB.
 2. `raw.rs::camera_to_linear_rec2020` applies white balance and
    `cam → linear Rec.2020` (via the camera's D65 matrix composed with
    `XYZ → linear Rec.2020`). No clip.
+2a. **Phase 3.0: DNG `OpcodeList3` applied**. Post-color `WarpRectilinear`
+    for lens distortion, `GainMap` if any. On iPhone ProRAW, the
+    optional `WarpRectilinear` fires here.
 3. Default crop.
 4. `raw.rs::apply_exposure` lifts the linear buffer by the baseline EV picked
    by `baseline_exposure_ev` (DNG `BaselineExposure` tag first, fallback

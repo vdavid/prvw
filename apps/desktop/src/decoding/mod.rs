@@ -23,6 +23,7 @@
 //! - [`is_supported_extension`] — format gate used by the directory scanner.
 
 mod dispatch;
+mod dng_opcodes;
 mod generic;
 mod jpeg;
 mod orientation;

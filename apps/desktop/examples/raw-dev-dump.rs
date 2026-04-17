@@ -3,14 +3,22 @@
 //! Takes a RAW file and dumps labeled PNGs for each meaningful pipeline stage.
 //! Current stages:
 //!
-//! - `post-demosaic` — rawler's sensor-level output: rescale + demosaic +
-//!   active-area crop only. Camera-native RGB, pre-white-balance. Looks green
-//!   and dark because WB and the camera matrix haven't landed yet.
+//! - `after-opcode1` — raw mosaic (u16) after any DNG `OpcodeList1` opcodes
+//!   are applied. For non-DNG files this is the plain rescaled mosaic. Same
+//!   as `after-opcode2` on ARW/CR2/NEF.
+//! - `after-opcode2` — mosaic after `OpcodeList2` (lens-shading gain maps
+//!   etc.). This is what rawler's demosaic sees.
+//! - `post-demosaic` — rawler's demosaic + active-area crop. Camera-native
+//!   RGB, pre-white-balance. Looks green and dark because WB and the camera
+//!   matrix haven't landed yet.
 //! - `post-wb` — same buffer, with white-balance coefficients applied.
 //! - `linear-rec2020` — after our `cam → XYZ → linear Rec.2020` matrix. Still
 //!   wide-gamut linear; PNG-encoded with an sRGB-like gamma so you can eyeball
 //!   it on a normal display. Values outside sRGB are clipped in the preview
 //!   only — the real pipeline keeps them.
+//! - `after-opcode3` — linear Rec.2020 after `OpcodeList3` (WarpRectilinear
+//!   lens distortion correction). For non-DNG files this matches
+//!   `linear-rec2020`.
 //! - `post-exposure` — linear Rec.2020 after the baseline-exposure lift
 //!   (Phase 2.2). Same sRGB-ish preview encoding as `linear-rec2020` so
 //!   side-by-side brightness changes are eyeballable.
@@ -57,6 +65,7 @@ use rawler::decoders::{Decoder, RawDecodeParams, WellKnownIFD};
 use rawler::formats::tiff::Value;
 use rawler::imgop::develop::{Intermediate, ProcessingStep, RawDevelop};
 use rawler::imgop::xyz::Illuminant;
+use rawler::rawimage::RawImageData;
 use rawler::rawsource::RawSource;
 use rawler::tags::DngTag;
 
@@ -143,16 +152,39 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
     let t_total = Instant::now();
     let decoder = rawler::get_decoder(&src)?;
     let params = RawDecodeParams::default();
-    let raw = decoder.raw_image(&src, &params, false)?;
+    let mut raw = decoder.raw_image(&src, &params, false)?;
 
-    // Stage 1: sensor-level develop (rescale + demosaic + active-area crop).
+    // Stage 0a: OpcodeList1 — applied on the unrescaled sensor buffer.
+    let t0 = Instant::now();
+    apply_opcode_list(
+        decoder.as_ref(),
+        &mut raw,
+        DngTag::OpcodeList1,
+        "OpcodeList1",
+    );
+    let after_opcode1_preview = cfa_preview(&raw);
+    let (raw_w, raw_h) = (raw.width as u32, raw.height as u32);
+    let after_opcode1_ms = t0.elapsed().as_millis();
+
+    // Rescale to linear [0, 1]. We split this off from rawler's batch so we
+    // can sneak OpcodeList2 in between.
+    raw.apply_scaling()?;
+
+    // Stage 0b: OpcodeList2 — applied on the rescaled mosaic.
+    let t0 = Instant::now();
+    apply_opcode_list(
+        decoder.as_ref(),
+        &mut raw,
+        DngTag::OpcodeList2,
+        "OpcodeList2",
+    );
+    let after_opcode2_preview = cfa_preview(&raw);
+    let after_opcode2_ms = t0.elapsed().as_millis();
+
+    // Stage 1: rawler's remaining sensor-level develop steps.
     let t0 = Instant::now();
     let develop = RawDevelop {
-        steps: vec![
-            ProcessingStep::Rescale,
-            ProcessingStep::Demosaic,
-            ProcessingStep::CropActiveArea,
-        ],
+        steps: vec![ProcessingStep::Demosaic, ProcessingStep::CropActiveArea],
     };
     let intermediate = develop.develop_intermediate(&raw)?;
     let (demosaic_w, demosaic_h, demosaic_rgb_f32) = intermediate_to_rgb_f32(&intermediate);
@@ -168,9 +200,15 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
     // Stage 3: full cam → linear Rec.2020. Encoded for preview with an sRGB
     // gamma so it's eyeballable on a normal display.
     let t0 = Instant::now();
-    let rec2020 = camera_to_linear_rec2020(&raw, &demosaic_rgb_f32, &wb);
+    let mut rec2020 = camera_to_linear_rec2020(&raw, &demosaic_rgb_f32, &wb);
     let linear_preview = linear_to_srgb_preview(&rec2020);
     let linear_rec2020_ms = t0.elapsed().as_millis();
+
+    // Stage 3b: OpcodeList3 (lens distortion / post-color opcodes).
+    let t0 = Instant::now();
+    apply_opcode_list3_rgb(decoder.as_ref(), demosaic_w, demosaic_h, &mut rec2020);
+    let after_opcode3_preview = linear_to_srgb_preview(&rec2020);
+    let after_opcode3_ms = t0.elapsed().as_millis();
 
     // Stage 4: baseline exposure lift (Phase 2.2). Same sRGB-ish preview
     // encoding as the linear stage above so brightness differences are
@@ -225,6 +263,20 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
 
     let stages = vec![
         Stage {
+            name: "after-opcode1",
+            width: raw_w,
+            height: raw_h,
+            rgb: after_opcode1_preview,
+            took_ms: after_opcode1_ms,
+        },
+        Stage {
+            name: "after-opcode2",
+            width: raw_w,
+            height: raw_h,
+            rgb: after_opcode2_preview,
+            took_ms: after_opcode2_ms,
+        },
+        Stage {
             name: "post-demosaic",
             width: demosaic_w,
             height: demosaic_h,
@@ -244,6 +296,13 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
             height: demosaic_h,
             rgb: linear_preview,
             took_ms: linear_rec2020_ms,
+        },
+        Stage {
+            name: "after-opcode3",
+            width: demosaic_w,
+            height: demosaic_h,
+            rgb: after_opcode3_preview,
+            took_ms: after_opcode3_ms,
         },
         Stage {
             name: "post-exposure",
@@ -769,6 +828,392 @@ fn linear_rec2020_profile() -> ColorProfile {
         "Linear Rec.2020 (Prvw)".to_string(),
     )]));
     profile
+}
+
+// ----- Opcode application (DNG spec § 6) -----------------------------------
+//
+// Minimal inline copy of `src/decoding/dng_opcodes.rs` + the pipeline entry
+// points in `src/decoding/raw.rs`. Keeps the example a standalone binary; the
+// real module has more opcodes and full unit-test coverage.
+
+fn fetch_opcode_list_bytes(decoder: &dyn Decoder, which: DngTag) -> Option<Vec<u8>> {
+    let ifd = decoder
+        .ifd(WellKnownIFD::VirtualDngRawTags)
+        .ok()
+        .flatten()?;
+    let entry = ifd.get_entry(which)?;
+    match &entry.value {
+        Value::Byte(bytes) | Value::Undefined(bytes) => Some(bytes.clone()),
+        _ => None,
+    }
+}
+
+fn parse_opcode_count_and_entries(bytes: &[u8]) -> Vec<(u32, u32, usize, Vec<u8>)> {
+    // Returns (id, flags, _byte_count, params) tuples for each opcode.
+    if bytes.len() < 4 {
+        return Vec::new();
+    }
+    let count = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let mut out = Vec::with_capacity(count);
+    let mut cursor = 4;
+    for _ in 0..count {
+        if cursor + 16 > bytes.len() {
+            break;
+        }
+        let id = u32::from_be_bytes([
+            bytes[cursor],
+            bytes[cursor + 1],
+            bytes[cursor + 2],
+            bytes[cursor + 3],
+        ]);
+        let flags = u32::from_be_bytes([
+            bytes[cursor + 8],
+            bytes[cursor + 9],
+            bytes[cursor + 10],
+            bytes[cursor + 11],
+        ]);
+        let len = u32::from_be_bytes([
+            bytes[cursor + 12],
+            bytes[cursor + 13],
+            bytes[cursor + 14],
+            bytes[cursor + 15],
+        ]) as usize;
+        cursor += 16;
+        if cursor + len > bytes.len() {
+            break;
+        }
+        out.push((id, flags, len, bytes[cursor..cursor + len].to_vec()));
+        cursor += len;
+    }
+    out
+}
+
+/// Apply the `OpcodeList1`/`OpcodeList2` opcodes on a CFA-mosaic `RawImage`.
+/// Only `GainMap` is supported in this example; other opcodes are skipped.
+fn apply_opcode_list(decoder: &dyn Decoder, raw: &mut RawImage, tag: DngTag, label: &str) {
+    let Some(bytes) = fetch_opcode_list_bytes(decoder, tag) else {
+        return;
+    };
+    let entries = parse_opcode_count_and_entries(&bytes);
+    if entries.is_empty() {
+        return;
+    }
+    println!("  {label}: {} opcode(s)", entries.len());
+    let width = raw.width as u32;
+    let height = raw.height as u32;
+    let cpp = raw.cpp;
+    let cfa = raw.camera.cfa.clone();
+    let was_integer = matches!(raw.data, RawImageData::Integer(_));
+    let mut data = raw.data.as_f32().into_owned();
+    for (id, _flags, _len, params) in &entries {
+        if *id == 9
+            && let Some(map) = parse_gain_map_params(params)
+            && cpp == 1
+        {
+            let cfa_ref = cfa.clone();
+            apply_gain_map_cfa(&mut data, width, height, &map, move |y, x| {
+                cfa_ref.color_at(y as usize, x as usize) as u32
+            });
+        }
+    }
+    if was_integer {
+        let as_u16: Vec<u16> = data
+            .iter()
+            .map(|v| (v.clamp(0.0, 1.0) * u16::MAX as f32) as u16)
+            .collect();
+        raw.data = RawImageData::Integer(as_u16);
+    } else {
+        raw.data = RawImageData::Float(data);
+    }
+}
+
+/// Apply `OpcodeList3` opcodes on a 3-channel RGB buffer.
+fn apply_opcode_list3_rgb(decoder: &dyn Decoder, width: u32, height: u32, rec2020: &mut [f32]) {
+    let Some(bytes) = fetch_opcode_list_bytes(decoder, DngTag::OpcodeList3) else {
+        return;
+    };
+    let entries = parse_opcode_count_and_entries(&bytes);
+    if entries.is_empty() {
+        return;
+    }
+    println!("  OpcodeList3: {} opcode(s)", entries.len());
+    for (id, _flags, _len, params) in &entries {
+        if *id == 1
+            && let Some(warp) = parse_warp_rectilinear_params(params)
+        {
+            apply_warp_rectilinear_rgb(rec2020, width, height, &warp);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GainMapInline {
+    top: u32,
+    left: u32,
+    bottom: u32,
+    right: u32,
+    plane: u32,
+    row_pitch: u32,
+    col_pitch: u32,
+    map_points_v: u32,
+    map_points_h: u32,
+    map_spacing_v: f64,
+    map_spacing_h: f64,
+    map_origin_v: f64,
+    map_origin_h: f64,
+    gains: Vec<f32>,
+}
+
+fn parse_gain_map_params(params: &[u8]) -> Option<GainMapInline> {
+    if params.len() < 76 {
+        return None;
+    }
+    let u = |o: usize| u32::from_be_bytes([params[o], params[o + 1], params[o + 2], params[o + 3]]);
+    let d = |o: usize| {
+        f64::from_be_bytes([
+            params[o],
+            params[o + 1],
+            params[o + 2],
+            params[o + 3],
+            params[o + 4],
+            params[o + 5],
+            params[o + 6],
+            params[o + 7],
+        ])
+    };
+    let map_planes = u(72).max(1);
+    let map_points_v = u(32);
+    let map_points_h = u(36);
+    let gain_count = (map_points_v as usize) * (map_points_h as usize) * (map_planes as usize);
+    if params.len() < 76 + gain_count * 4 {
+        return None;
+    }
+    let mut gains = Vec::with_capacity(gain_count);
+    for i in 0..gain_count {
+        let o = 76 + i * 4;
+        gains.push(f32::from_be_bytes([
+            params[o],
+            params[o + 1],
+            params[o + 2],
+            params[o + 3],
+        ]));
+    }
+    Some(GainMapInline {
+        top: u(0),
+        left: u(4),
+        bottom: u(8),
+        right: u(12),
+        plane: u(16),
+        row_pitch: u(24).max(1),
+        col_pitch: u(28).max(1),
+        map_points_v,
+        map_points_h,
+        map_spacing_v: d(40),
+        map_spacing_h: d(48),
+        map_origin_v: d(56),
+        map_origin_h: d(64),
+        gains,
+    })
+}
+
+fn apply_gain_map_cfa(
+    data: &mut [f32],
+    width: u32,
+    height: u32,
+    map: &GainMapInline,
+    cfa_color_at: impl Fn(u32, u32) -> u32,
+) {
+    let w = width as usize;
+    if data.len() != w * (height as usize) {
+        return;
+    }
+    let rect_h = map.right.saturating_sub(map.left).max(1) as f64;
+    let rect_v = map.bottom.saturating_sub(map.top).max(1) as f64;
+    let sample = |v: f64, h: f64| -> f32 {
+        let pv = map.map_points_v.max(1) as f64;
+        let ph = map.map_points_h.max(1) as f64;
+        let fy =
+            ((v - map.map_origin_v) / map.map_spacing_v.max(f64::EPSILON)).clamp(0.0, pv - 1.0);
+        let fx =
+            ((h - map.map_origin_h) / map.map_spacing_h.max(f64::EPSILON)).clamp(0.0, ph - 1.0);
+        let y0 = fy.floor() as usize;
+        let x0 = fx.floor() as usize;
+        let y1 = (y0 + 1).min(map.map_points_v.saturating_sub(1) as usize);
+        let x1 = (x0 + 1).min(map.map_points_h.saturating_sub(1) as usize);
+        let ty = (fy - y0 as f64) as f32;
+        let tx = (fx - x0 as f64) as f32;
+        let stride = map.map_points_h as usize;
+        let idx = |y: usize, x: usize| y * stride + x;
+        let g00 = map.gains[idx(y0, x0)];
+        let g01 = map.gains[idx(y0, x1)];
+        let g10 = map.gains[idx(y1, x0)];
+        let g11 = map.gains[idx(y1, x1)];
+        let g0 = g00 * (1.0 - tx) + g01 * tx;
+        let g1 = g10 * (1.0 - tx) + g11 * tx;
+        g0 * (1.0 - ty) + g1 * ty
+    };
+    for y in 0..height {
+        if y < map.top || y >= map.bottom {
+            continue;
+        }
+        if !(y - map.top).is_multiple_of(map.row_pitch) {
+            continue;
+        }
+        let v_norm = (y - map.top) as f64 / rect_v;
+        for x in 0..width {
+            if x < map.left || x >= map.right {
+                continue;
+            }
+            if !(x - map.left).is_multiple_of(map.col_pitch) {
+                continue;
+            }
+            if cfa_color_at(y, x) != map.plane {
+                continue;
+            }
+            let h_norm = (x - map.left) as f64 / rect_h;
+            let gain = sample(v_norm, h_norm);
+            data[y as usize * w + x as usize] *= gain;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WarpPlaneInline {
+    kr0: f64,
+    kr1: f64,
+    kr2: f64,
+    kr3: f64,
+    kt0: f64,
+    kt1: f64,
+    cx: f64,
+    cy: f64,
+}
+
+fn parse_warp_rectilinear_params(params: &[u8]) -> Option<Vec<WarpPlaneInline>> {
+    if params.len() < 4 {
+        return None;
+    }
+    let plane_count = u32::from_be_bytes([params[0], params[1], params[2], params[3]]) as usize;
+    if plane_count == 0 || plane_count > 4 {
+        return None;
+    }
+    if params.len() < 4 + plane_count * 64 {
+        return None;
+    }
+    let d = |o: usize| {
+        f64::from_be_bytes([
+            params[o],
+            params[o + 1],
+            params[o + 2],
+            params[o + 3],
+            params[o + 4],
+            params[o + 5],
+            params[o + 6],
+            params[o + 7],
+        ])
+    };
+    let mut out = Vec::with_capacity(plane_count);
+    let mut cursor = 4;
+    for _ in 0..plane_count {
+        out.push(WarpPlaneInline {
+            kr0: d(cursor),
+            kr1: d(cursor + 8),
+            kr2: d(cursor + 16),
+            kr3: d(cursor + 24),
+            kt0: d(cursor + 32),
+            kt1: d(cursor + 40),
+            cx: d(cursor + 48),
+            cy: d(cursor + 56),
+        });
+        cursor += 64;
+    }
+    Some(out)
+}
+
+fn apply_warp_rectilinear_rgb(data: &mut [f32], width: u32, height: u32, warp: &[WarpPlaneInline]) {
+    let w = width as usize;
+    let h = height as usize;
+    if data.len() != w * h * 3 || warp.is_empty() {
+        return;
+    }
+    let source = data.to_vec();
+    let half_w = (w as f64 - 1.0) * 0.5;
+    let half_h = (h as f64 - 1.0) * 0.5;
+    let norm = (half_w * half_w + half_h * half_h).sqrt().max(1.0);
+    let sample = |sx: f64, sy: f64, plane: usize| -> f32 {
+        if !sx.is_finite() || !sy.is_finite() {
+            return 0.0;
+        }
+        let max_x = (w as f64 - 1.0).max(0.0);
+        let max_y = (h as f64 - 1.0).max(0.0);
+        let x = sx.clamp(0.0, max_x);
+        let y = sy.clamp(0.0, max_y);
+        let x0 = x.floor() as usize;
+        let y0 = y.floor() as usize;
+        let x1 = (x0 + 1).min(w - 1);
+        let y1 = (y0 + 1).min(h - 1);
+        let tx = (x - x0 as f64) as f32;
+        let ty = (y - y0 as f64) as f32;
+        let at = |yy: usize, xx: usize| source[(yy * w + xx) * 3 + plane];
+        let a = at(y0, x0) * (1.0 - tx) + at(y0, x1) * tx;
+        let b = at(y1, x0) * (1.0 - tx) + at(y1, x1) * tx;
+        a * (1.0 - ty) + b * ty
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let chunk_off = (y * w + x) * 3;
+            for plane_idx in 0..3 {
+                let plane = if warp.len() == 1 {
+                    warp[0]
+                } else {
+                    warp[plane_idx.min(warp.len() - 1)]
+                };
+                let cx_pix = plane.cx * (w as f64 - 1.0);
+                let cy_pix = plane.cy * (h as f64 - 1.0);
+                let dx = (x as f64 - cx_pix) / norm;
+                let dy = (y as f64 - cy_pix) / norm;
+                let r2 = dx * dx + dy * dy;
+                let r4 = r2 * r2;
+                let r6 = r4 * r2;
+                let radial = plane.kr0 + plane.kr1 * r2 + plane.kr2 * r4 + plane.kr3 * r6;
+                let sx_rel =
+                    dx * radial + 2.0 * plane.kt0 * dx * dy + plane.kt1 * (r2 + 2.0 * dx * dx);
+                let sy_rel =
+                    dy * radial + plane.kt0 * (r2 + 2.0 * dy * dy) + 2.0 * plane.kt1 * dx * dy;
+                let sx = sx_rel * norm + cx_pix;
+                let sy = sy_rel * norm + cy_pix;
+                data[chunk_off + plane_idx] = sample(sx, sy, plane_idx);
+            }
+        }
+    }
+}
+
+/// Preview a CFA-mosaic (cpp=1) buffer as a grayscale PNG at roughly
+/// perceptual brightness. Used for `after-opcode1/2` stages.
+fn cfa_preview(raw: &RawImage) -> Vec<u8> {
+    let w = raw.width;
+    let h = raw.height;
+    let data = raw.data.as_f32();
+    let peak = data
+        .iter()
+        .copied()
+        .fold(0.0_f32, |a, b| if b > a { b } else { a });
+    let scale = if peak > f32::EPSILON { 1.0 / peak } else { 1.0 };
+    let mut rgb = Vec::with_capacity(w * h * 3);
+    for v in data.iter() {
+        let lum = (v * scale).clamp(0.0, 1.0);
+        // Apply sRGB gamma for eyeballable brightness.
+        let gamma = if lum <= 0.0031308 {
+            lum * 12.92
+        } else {
+            1.055 * lum.powf(1.0 / 2.4) - 0.055
+        };
+        let byte = (gamma * 255.0 + 0.5) as u8;
+        rgb.push(byte);
+        rgb.push(byte);
+        rgb.push(byte);
+    }
+    rgb
 }
 
 fn transform_f32_rec2020_to_srgb(rgb: &mut [f32]) {
