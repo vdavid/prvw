@@ -47,7 +47,7 @@ and hand a `DecodedImage` off to the renderer.
   bilinear demosaic, not Markesteijn. Usable in a viewer but less detailed than
   what dedicated RAW tools produce.
 
-## RAW pipeline (Phase 2.4)
+## RAW pipeline (Phase 2.5a)
 
 `raw.rs` bypasses rawler's default `Calibrate`/`CropDefault`/`SRgb` stages so we
 can keep the intermediate wide-gamut:
@@ -62,19 +62,27 @@ can keep the intermediate wide-gamut:
    by `baseline_exposure_ev` (DNG `BaselineExposure` tag first, fallback
    +0.5 EV, clamped to [-2, +2]). Linear-space multiply so relative luminance
    stays correct.
-5. `color::tone_curve::apply_default_tone_curve` shapes the linear buffer
-   with a mild filmic S-curve: shadow Hermite → midtone line (slope 1.08,
-   anchored at 0.25) → highlight shoulder. Analytical, monotonic,
-   endpoint-preserving. Closes the "flat look" gap against Preview.app.
-6. `color::transform_f32_with_profile` hands the buffer to moxcms for the
+5. `color::tone_curve::apply_default_tone_curve` shapes **luminance only** on
+   the linear buffer with a mild filmic S-curve: shadow Hermite → midtone
+   line (slope 1.08, anchored at 0.25) → highlight shoulder. Each pixel's
+   RGB is scaled uniformly by `Y_out / Y_in` (Rec.2020 luma weights), so
+   hue and chroma are preserved through the highlight shoulder. Closes the
+   "flat look" gap against Preview.app without the desaturation a per-channel
+   curve caused in earlier Phase 2 iterations.
+6. `color::saturation::apply_saturation_boost` scales each pixel's chroma
+   around its luminance axis by `(1 + 0.08)` in linear Rec.2020 space.
+   Preserves hue and luminance; adds the "vibrancy" Apple/Affinity bake in
+   via per-camera tuning tables.
+7. `color::transform_f32_with_profile` hands the buffer to moxcms for the
    linear-Rec.2020 → display-ICC conversion in f32. Clamp to [0, 1] on the
    way out to RGBA8.
-7. `color::sharpen::sharpen_rgba8_inplace` runs a mild unsharp mask on the
-   display-space RGBA8 buffer: separable Gaussian blur (σ = 0.8 px,
-   7 taps) + `output += (output - blurred) * 0.3`. Closes the "slightly
-   soft" gap against Preview.app and Lightroom. Post-ICC rather than
-   pre-ICC so we match the perceptual response of the gamma-encoded
-   buffer and avoid halos from linear-space unsharp on bright edges.
+8. `color::sharpen::sharpen_rgba8_inplace` runs a mild unsharp mask on
+   **luminance only** (Rec.709 weights) of the display-space RGBA8 buffer:
+   separable Gaussian blur (σ = 0.8 px, 7 taps) on Y in f32, unsharp-mask
+   formula on Y, then rescale RGB by `Y_out / Y_in`. Post-ICC rather than
+   pre-ICC so we match the perceptual response of the gamma-encoded buffer
+   and avoid halos. Luminance-only avoids the color fringes per-channel
+   sharpening produces at colored edges.
 
 The linear Rec.2020 `ColorProfile` is built programmatically in
 `color::profiles::linear_rec2020_profile`. No bundled ICC file.

@@ -384,6 +384,150 @@ A future user knob would slot in at the same pipeline step.
   for standalone build.
 - `tests/fixtures/raw/synthetic-bayer-128.golden.png` — regenerated.
 
+### Phase 2.5a — luminance-only tone + sharpen + saturation boost (done, 2026-04-17)
+
+**What changed.** The Phase 2.3 tone curve and the Phase 2.4 sharpening both
+ran per-channel. Per-channel math has two structural problems:
+
+- A per-channel tone curve desaturates colors near the highlight shoulder.
+  A pixel like `(R=1.0, G=0.9, B=0.6)` sees each channel compressed
+  independently, so the three channels get pushed toward one another. The
+  `R:G:B` ratio changes and chroma collapses.
+- Per-channel sharpening produces color fringes at colored edges, because
+  each channel amplifies its own edge and the three edges don't line up at
+  sub-pixel precision.
+
+Phase 2.5a keeps every parameter value unchanged (midtone anchor 0.25,
+sharpen amount 0.3) and fixes these two issues structurally by moving both
+passes to **luminance only**, then adds a mild **global saturation boost**
+to approximate the "vibrancy" Apple and Affinity bake into their per-camera
+tuning.
+
+**Pipeline diagram (delta over Phase 2.4).**
+
+```
+... apply_exposure
+  → color::tone_curve::apply_default_tone_curve (NOW luminance-only)
+  → NEW: color::saturation::apply_saturation_boost(&mut rec2020, 0.08)
+  → transform_f32_with_profile(..., target ICC)
+  → rec2020_to_rgba8
+  → color::sharpen::sharpen_rgba8_inplace (NOW luminance-only)
+  → apply_orientation
+```
+
+**Luminance-only pattern.** Same math applies to any scalar-on-Y operation:
+
+```
+Y_in   = luma_weighted_sum(R, G, B)
+Y_out  = operation(Y_in)                      // tone curve, or unsharp-mask
+scale  = Y_out / max(Y_in, epsilon)           // epsilon guards div-by-zero
+R_out  = R_in * scale
+G_out  = G_in * scale
+B_out  = B_in * scale
+```
+
+This preserves hue (the `R:G:B` ratio stays identical) and scales saturation
+uniformly with brightness. Near-black pixels (below `DARK_EPSILON`) are
+zeroed out for the tone curve and passed through for the sharpen, both to
+dodge the division blow-up.
+
+**Color spaces and luma weights.**
+
+- Tone curve runs in **linear Rec.2020** (pre-ICC), so we use the
+  **Rec.2020 luma weights** from ITU-R BT.2020-2 §5:
+  `Y = 0.2627 R + 0.6780 G + 0.0593 B`.
+- Sharpening runs in **display RGB8** (post-ICC), so we use the
+  **Rec.709 / sRGB luma weights**:
+  `Y = 0.2126 R + 0.7152 G + 0.0722 B`. Close enough to Display P3's own
+  weights (~0.228 R) that the ~2 % mismatch is irrelevant at our small
+  sharpen amplitude.
+
+**Saturation boost.** Classic "scale chroma around luma" formula applied
+after the tone curve and before the ICC transform:
+
+```
+Y     = luma(R, G, B)
+R_out = Y + (R - Y) * (1 + boost)
+G_out = Y + (G - Y) * (1 + boost)
+B_out = Y + (B - Y) * (1 + boost)
+```
+
+Preserves hue and luminance exactly; only chroma scales. We apply in
+**linear Rec.2020** rather than post-ICC because chroma math is most
+perceptually uniform in linear space — a +8 % scale on `(R − Y)` lifts
+shadows and highlights by the same visual amount, while doing the same
+operation on gamma-encoded RGB8 pushes shadows harder than highlights
+because of the gamma curve.
+
+Default boost is **+8 %** (`DEFAULT_SATURATION_BOOST = 0.08`). That's the
+smallest value that noticeably closes the vibrancy gap against Preview.app
+and Affinity on real photos without reading as "over-processed." The value
+is a structural default for Phase 2.5a; a separate Phase 2.5b pass will
+grid-search it against reference output.
+
+**Sharpening approach — Y-scale rather than YCbCr.** We blur the luminance
+plane (f32) and reconstruct RGB by scaling each pixel's existing `(R, G, B)`
+by `Y_out / Y_in`. Cleaner to implement than a full YCbCr round-trip and
+has the same end result for a scalar edge-boost operation. f32 intermediate
+math avoids the quantisation noise of doing the unsharp mask in u8.
+
+**Synthetic golden.** Regenerated. Same magenta-pink gradient, with
+subtly higher saturation — visually verified against the Phase 2.4 golden.
+
+**Smoke test (Sony ARW, 20 MP, mean 8-bit channel value).**
+
+| Stage                      | Mean R, G, B     | Notes                          |
+|----------------------------|-------------------|--------------------------------|
+| Phase 2.5a post-exposure   | 73.56, 74.93, 71.69 | same as Phase 2.4           |
+| Phase 2.5a post-tone       | 73.16, 74.43, 71.34 | brightness-neutral, chroma kept |
+| Phase 2.5a post-saturation | 73.07, 74.46, 70.98 | luminance preserved, chroma up |
+| Phase 2.5a post-icc        | 71.95, 74.57, 70.22 |                                |
+| Phase 2.5a final           | 71.97, 74.56, 70.20 | sharpen brightness-neutral     |
+| `sips` / Preview.app       | 75.06, 76.90, 71.65 | reference                      |
+
+Sharpen is brightness-neutral at the mean (delta < 0.03 on every channel),
+exactly as the Y-only math predicts. Saturation boost preserves luminance
+within float rounding. Visually on the ARW: green shirt and grass show
+the expected vibrancy bump; no color fringes land at edges of the tree
+silhouette; no magenta shifts near the bright sky. CIE76 Delta-E vs. `sips`
+mean is 11.57, expected given `sips`' conservative rendering and that we
+now hold chroma stronger.
+
+**Perf.** Sony ARW 20 MP end-to-end decode: **177–223 ms** (steady-state
+~180 ms) on an M3 Max, vs. Phase 2.4's 217–282 ms. The luminance-only
+sharpen is actually **faster** than per-channel because it only runs the
+separable blur on one plane instead of three. Saturation boost adds a few
+ms of parallel scalar math. No regression.
+
+**Files changed.**
+
+- `src/color/tone_curve.rs` — `apply_default_tone_curve` now shapes
+  luminance only, scales RGB by `Y_out / Y_in`. Unit tests added for
+  neutral-gray-at-anchor invariance, pure-primary hue preservation,
+  mixed-pixel `R:G:B` ratio preservation, near-black pixel guard, NaN
+  guard. Scalar `default_curve` unchanged.
+- `src/color/saturation.rs` (new) — `apply_saturation_boost`,
+  `DEFAULT_SATURATION_BOOST = 0.08`. Tests: zero-boost no-op, neutral gray
+  unchanged, pure primary retains hue, chroma grows by `(1 + boost)`,
+  luminance preserved, negative boost desaturates.
+- `src/color/sharpen.rs` — `sharpen_rgba8_inplace` now computes a single
+  luminance plane, blurs it, applies the unsharp-mask formula on Y, and
+  reconstructs RGB via the Y-scale pattern. Colored-edge hue-preservation
+  test added.
+- `src/color/mod.rs` — exposes `saturation` module.
+- `src/decoding/raw.rs` — saturation boost wired between the tone curve
+  and the ICC transform, with a cancellation check. Module doc updated
+  to list six steps (tone, saturation, ICC, sharpen, orientation).
+- `examples/raw-dev-dump.rs` — added `post-saturation.png` stage between
+  `post-tone.png` and `post-icc.png`. Mirrored the luminance-only
+  tone curve, saturation boost, and luminance-only sharpen.
+- `tests/fixtures/raw/synthetic-bayer-128.golden.png` — regenerated.
+
+**Parameters intentionally unchanged this commit.** Midtone anchor stays
+at 0.25. Sharpen amount stays at 0.3. A separate Phase 2.5b agent will
+grid-search all three (midtone anchor, sharpen amount, saturation boost)
+against reference output and pick empirically.
+
 ## Summary — Phase 2 wrap-up
 
 Phase 2 closed the four gaps between rawler's sensor-honest output and

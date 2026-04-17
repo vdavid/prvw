@@ -1,7 +1,9 @@
 //! Default tone curve for RAW rendering.
 //!
-//! Applied after the baseline exposure lift and before the ICC transform, on
-//! the linear wide-gamut buffer. Each RGB component is shaped independently.
+//! Applied after the baseline exposure lift and before the saturation boost
+//! and the ICC transform, on the linear wide-gamut buffer. The curve is
+//! applied to **luminance only**, then every RGB channel is scaled by the
+//! same per-pixel `Y_out / Y_in` ratio so the pixel's chroma is preserved.
 //!
 //! ## Why a tone curve
 //!
@@ -11,6 +13,24 @@
 //! bright and highlights roll off instead of hard-clipping. Skipping this
 //! step leaves our output reading "dull" compared with every other viewer the
 //! user owns.
+//!
+//! ## Why luminance-only (Phase 2.5a)
+//!
+//! Earlier in Phase 2 the curve ran per-channel. That's mathematically simple
+//! but desaturates colors near the highlight shoulder: a pixel like
+//! `(R=1.0, G=0.9, B=0.6)` has each channel compressed independently, which
+//! brings the three channels closer together and drops the chroma. The hue
+//! also wobbles because the three shoulders land at slightly different
+//! brightnesses.
+//!
+//! Running the curve on luminance only, then scaling the original RGB by
+//! `Y_out / Y_in`, preserves the `R:G:B` ratios exactly. Hue is untouched and
+//! saturation (distance from neutral in linear RGB) scales with brightness
+//! rather than collapsing near the shoulder.
+//!
+//! Luma weights are the **Rec.2020** coefficients (`0.2627 R + 0.6780 G +
+//! 0.0593 B`) because the buffer is in linear Rec.2020 at this point in the
+//! pipeline.
 //!
 //! ## Curve shape — Adobe-leaning shoulder via Hermite knees + lifted midtone line
 //!
@@ -38,23 +58,19 @@
 //! 0.0 (which the camera matrix can produce on out-of-gamut colors) it
 //! clamps to 0.0. NaN is folded to 0.0.
 //!
-//! Intuition: a Bezier-like S-curve where the central "straight" section is
-//! literally a straight line, anchored low on the diagonal so the curve
-//! mostly lifts rather than compresses. That keeps the shape readable and
-//! the code one scalar function.
-//!
 //! ## Safety invariants (enforced by unit tests)
 //!
-//! - **Monotonic**: `f(x1) < f(x2)` for any `x1 < x2` in `[0, 1]`. No hue
-//!   flips, no inverted regions.
-//! - **Endpoints**: `f(0) == 0`, `f(1) == 1` exactly.
-//! - **Anchor fixed point**: `f(MIDTONE_ANCHOR) == MIDTONE_ANCHOR` exactly
-//!   (the midtone line passes through it).
-//! - **Saturation**: `f(x) == 1` for `x >= 1`, `f(x) == 0` for `x <= 0`.
-//!
-//! Applied per-channel in RGB (not luminance-weighted), same as Lightroom's
-//! default. This desaturates saturated colors a hair but avoids the hue
-//! shifts a luma-only curve would produce on already-wide-gamut data.
+//! - **Monotonic scalar curve**: `default_curve(x1) < default_curve(x2)` for
+//!   any `x1 < x2` in `[0, 1]`.
+//! - **Scalar endpoints**: `default_curve(0) == 0`, `default_curve(1) == 1`.
+//! - **Anchor fixed point**: `default_curve(MIDTONE_ANCHOR) == MIDTONE_ANCHOR`.
+//! - **Hue preserved by the buffer apply**: a pure primary `(1, 0, 0)` stays
+//!   on the red axis; only its brightness changes.
+//! - **Neutral gray unchanged by the buffer apply at the anchor**: an
+//!   `(0.25, 0.25, 0.25)` pixel comes out unchanged (Y_in == Y_out == 0.25,
+//!   so scale == 1).
+//! - **Dark-pixel safety**: pixels with `Y_in < EPSILON` are set to all zeros
+//!   instead of triggering a divide-by-zero scale blow-up.
 
 use rayon::prelude::*;
 
@@ -88,16 +104,52 @@ const SHADOW_ENDPOINT_SLOPE: f32 = 1.0;
 /// the top end.
 const HIGHLIGHT_ENDPOINT_SLOPE: f32 = 0.30;
 
-/// Apply the default tone curve to a flat RGB f32 buffer, in place. Each
-/// component is transformed independently. Safe on buffers of any length
-/// including empty and non-multiple-of-3 (the curve is purely scalar).
+/// Rec.2020 luma coefficient for red. From ITU-R BT.2020-2, §5.
+pub(crate) const REC2020_LUMA_R: f32 = 0.2627;
+/// Rec.2020 luma coefficient for green.
+pub(crate) const REC2020_LUMA_G: f32 = 0.6780;
+/// Rec.2020 luma coefficient for blue.
+pub(crate) const REC2020_LUMA_B: f32 = 0.0593;
+
+/// Below this input luminance the `Y_out / Y_in` scale blows up. Below it we
+/// return black instead. One 8-bit gray level is ~3.9e-3, so 1e-5 is well
+/// under a gray level's worth of signal; we can't see the difference.
+const DARK_EPSILON: f32 = 1.0e-5;
+
+/// Apply the default tone curve to a flat RGB f32 buffer in place, acting on
+/// **luminance only**. Each pixel's RGB is scaled uniformly by
+/// `default_curve(Y_in) / Y_in`, so hue and chroma are preserved and only
+/// brightness reshapes.
+///
+/// Layout is `[R0, G0, B0, R1, G1, B1, …]`. The buffer length must be a
+/// multiple of 3. Pixels with luminance below [`DARK_EPSILON`] are set to
+/// all zeros to avoid divide-by-zero blow-ups.
 pub fn apply_default_tone_curve(rgb: &mut [f32]) {
-    rgb.par_iter_mut().for_each(|v| *v = default_curve(*v));
+    rgb.par_chunks_exact_mut(3).for_each(|pixel| {
+        let r = pixel[0];
+        let g = pixel[1];
+        let b = pixel[2];
+        let y_in = REC2020_LUMA_R * r + REC2020_LUMA_G * g + REC2020_LUMA_B * b;
+        // Guard against both NaN (propagated from the camera matrix on weird
+        // inputs) and near-zero luminance (where the scale factor would
+        // explode). Black out rather than poison the ICC transform.
+        if !y_in.is_finite() || y_in < DARK_EPSILON {
+            pixel[0] = 0.0;
+            pixel[1] = 0.0;
+            pixel[2] = 0.0;
+            return;
+        }
+        let y_out = default_curve(y_in);
+        let scale = y_out / y_in;
+        pixel[0] = r * scale;
+        pixel[1] = g * scale;
+        pixel[2] = b * scale;
+    });
 }
 
-/// Scalar default tone curve. Domain is all of `f32` (NaN passes through as
-/// the clamp path kicks in); range is `[0.0, 1.0]` with exact endpoints and
-/// exact midpoint.
+/// Scalar default tone curve. Domain is all of `f32` (NaN falls through the
+/// clamp path); range is `[0.0, 1.0]` with exact endpoints and exact
+/// midpoint.
 ///
 /// Exposed for unit tests and diagnostic tooling. Inlined for the per-pixel
 /// hot path inside [`apply_default_tone_curve`].
@@ -301,27 +353,86 @@ mod tests {
     }
 
     #[test]
-    fn buffer_apply_matches_scalar() {
-        // Spot-check that the parallel per-pixel apply returns the same
-        // values as calling the scalar curve directly. Guards against
-        // off-by-one errors in the Rayon closure.
-        let inputs = [0.0_f32, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0, 1.5, -0.5];
-        let mut buf = inputs.to_vec();
-        apply_default_tone_curve(&mut buf);
-        for (i, x) in inputs.iter().enumerate() {
-            let expected = default_curve(*x);
-            assert!(
-                (buf[i] - expected).abs() < 1e-6,
-                "buffer[{i}] = {}, scalar = {expected}",
-                buf[i]
-            );
-        }
-    }
-
-    #[test]
     fn apply_handles_empty_buffer() {
         let mut buf: Vec<f32> = Vec::new();
         apply_default_tone_curve(&mut buf); // must not panic
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn apply_neutral_anchor_gray_is_unchanged() {
+        // A neutral pixel at the midtone anchor has Y_in == Y_out == anchor,
+        // so the scale factor is exactly 1. Output equals input to within
+        // float rounding.
+        let anchor = MIDTONE_ANCHOR;
+        let mut buf = vec![anchor, anchor, anchor];
+        apply_default_tone_curve(&mut buf);
+        for (got, want) in buf.iter().zip([anchor, anchor, anchor]) {
+            assert!((got - want).abs() < 1e-6, "got {got}, want {want}");
+        }
+    }
+
+    #[test]
+    fn apply_preserves_pure_primary_hue() {
+        // A pure red pixel (1, 0, 0) should stay on the red axis: green and
+        // blue stay at exactly 0 (their input was 0, and the scale factor
+        // multiplies 0 by anything to get 0). Only red changes brightness.
+        let mut buf = vec![1.0, 0.0, 0.0];
+        apply_default_tone_curve(&mut buf);
+        assert!(buf[1].abs() < 1e-6, "green leaked: {}", buf[1]);
+        assert!(buf[2].abs() < 1e-6, "blue leaked: {}", buf[2]);
+        // Red itself gets scaled by default_curve(Y_red) / Y_red where
+        // Y_red = REC2020_LUMA_R. Just check it's bounded and nonzero.
+        assert!(buf[0] > 0.0, "red vanished: {}", buf[0]);
+        assert!(buf[0].is_finite(), "red NaN/inf: {}", buf[0]);
+    }
+
+    #[test]
+    fn apply_preserves_hue_on_mixed_pixel() {
+        // Pick a moderately bright colored pixel. The ratio R:G:B must stay
+        // the same before and after the tone curve, since every channel
+        // gets multiplied by the same scale factor.
+        let r_in = 0.8_f32;
+        let g_in = 0.5_f32;
+        let b_in = 0.2_f32;
+        let mut buf = vec![r_in, g_in, b_in];
+        apply_default_tone_curve(&mut buf);
+        let (r_out, g_out, b_out) = (buf[0], buf[1], buf[2]);
+        // Same ratio check: r_out / g_out == r_in / g_in.
+        let ratio_rg_in = r_in / g_in;
+        let ratio_rg_out = r_out / g_out;
+        assert!(
+            (ratio_rg_in - ratio_rg_out).abs() < 1e-5,
+            "R:G ratio drifted: in={ratio_rg_in}, out={ratio_rg_out}"
+        );
+        let ratio_rb_in = r_in / b_in;
+        let ratio_rb_out = r_out / b_out;
+        assert!(
+            (ratio_rb_in - ratio_rb_out).abs() < 1e-5,
+            "R:B ratio drifted: in={ratio_rb_in}, out={ratio_rb_out}"
+        );
+    }
+
+    #[test]
+    fn apply_zeroes_near_black_pixels() {
+        // Input luminance below DARK_EPSILON: output is all-zero rather than
+        // a divide-by-zero blow-up.
+        let mut buf = vec![1e-9_f32, 1e-9_f32, 1e-9_f32];
+        apply_default_tone_curve(&mut buf);
+        for v in &buf {
+            assert_eq!(*v, 0.0, "tiny pixel should zero out, got {v}");
+        }
+    }
+
+    #[test]
+    fn apply_zeroes_nan_pixels() {
+        // If any RGB component is NaN, the luminance is NaN, so we zero out.
+        // Guards against the camera matrix emitting NaN on pathological
+        // inputs and poisoning the ICC transform.
+        let mut buf = vec![f32::NAN, 0.5, 0.5];
+        apply_default_tone_curve(&mut buf);
+        for v in &buf {
+            assert_eq!(*v, 0.0, "NaN pixel should zero out, got {v}");
+        }
     }
 }

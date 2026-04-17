@@ -14,15 +14,21 @@
 //! - `post-exposure` — linear Rec.2020 after the baseline-exposure lift
 //!   (Phase 2.2). Same sRGB-ish preview encoding as `linear-rec2020` so
 //!   side-by-side brightness changes are eyeballable.
-//! - `post-tone` — linear Rec.2020 after the default tone curve (Phase 2.3).
-//!   Same sRGB-ish preview encoding; the mild S-curve's contrast punch and
-//!   highlight shoulder should be visible side-by-side with `post-exposure`.
+//! - `post-tone` — linear Rec.2020 after the default tone curve (Phase 2.3,
+//!   moved to luminance-only in Phase 2.5a). Same sRGB-ish preview encoding;
+//!   the mild S-curve's contrast punch and highlight shoulder should be
+//!   visible side-by-side with `post-exposure`, with saturation preserved
+//!   through the shoulder.
+//! - `post-saturation` — linear Rec.2020 after the mild global saturation
+//!   boost (Phase 2.5a). Same sRGB-ish preview encoding; chroma should be
+//!   slightly higher than `post-tone`, hue unchanged.
 //! - `post-icc` — RGBA8 after the ICC transform to sRGB but BEFORE capture
 //!   sharpening. Useful for eyeballing the pre-sharpen softness next to
 //!   `final`.
 //! - `final` — the RGBA8 buffer Prvw actually renders, after ICC transform
-//!   AND capture sharpening (Phase 2.4). Side-by-side with `post-icc` the
-//!   mild crispening should be visible at 1:1 zoom.
+//!   AND capture sharpening (luminance-only since Phase 2.5a). Side-by-side
+//!   with `post-icc` the mild crispening should be visible at 1:1 zoom
+//!   without color fringes at edges.
 //!
 //! ## Usage
 //!
@@ -181,25 +187,35 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
     let post_exposure_preview = linear_to_srgb_preview(&rec2020_lifted);
     let post_exposure_ms = t0.elapsed().as_millis();
 
-    // Stage 5: default tone curve (Phase 2.3). Mild filmic S-curve, linear
-    // Rec.2020 space, per-channel. Same sRGB-ish preview encoding so the
-    // added contrast is eyeballable against `post-exposure`.
+    // Stage 5: default tone curve (Phase 2.3 / 2.5a). Mild filmic S-curve
+    // shaped on luminance only; every pixel's RGB is scaled uniformly by
+    // `Y_out / Y_in`. Same sRGB-ish preview encoding so the added contrast
+    // is eyeballable against `post-exposure`.
     let t0 = Instant::now();
     let mut rec2020_toned = rec2020_lifted.clone();
     apply_default_tone_curve(&mut rec2020_toned);
     let post_tone_preview = linear_to_srgb_preview(&rec2020_toned);
     let post_tone_ms = t0.elapsed().as_millis();
 
-    // Stage 6: ICC-transformed sRGB output, pre-sharpening. Same code
-    // path as what Prvw lands in before the capture-sharpen pass.
+    // Stage 6: saturation boost (Phase 2.5a). Mild +8 % chroma scale in
+    // linear Rec.2020, preserving hue and luminance.
     let t0 = Instant::now();
-    let mut rec2020_for_icc = rec2020_toned;
+    let mut rec2020_sat = rec2020_toned.clone();
+    apply_saturation_boost(&mut rec2020_sat, SATURATION_BOOST);
+    let post_saturation_preview = linear_to_srgb_preview(&rec2020_sat);
+    let post_saturation_ms = t0.elapsed().as_millis();
+
+    // Stage 7: ICC-transformed sRGB output, pre-sharpening.
+    let t0 = Instant::now();
+    let mut rec2020_for_icc = rec2020_sat;
     transform_f32_rec2020_to_srgb(&mut rec2020_for_icc);
     let post_icc_rgb = f32_to_rgb8(&rec2020_for_icc);
     let post_icc_ms = t0.elapsed().as_millis();
 
-    // Stage 7: capture sharpening (Phase 2.4). Mild unsharp mask on the
-    // display-space RGB8 buffer. Output is what Prvw actually renders.
+    // Stage 8: capture sharpening (Phase 2.5a). Luminance-only unsharp
+    // mask on the display-space RGB8 buffer: blur Y, apply the unsharp
+    // formula on Y, scale RGB by `Y_out / Y_in`. Output is what Prvw
+    // actually renders.
     let t0 = Instant::now();
     let mut final_rgb = post_icc_rgb.clone();
     sharpen_rgb8_inplace(&mut final_rgb, demosaic_w, demosaic_h);
@@ -244,6 +260,13 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
             took_ms: post_tone_ms,
         },
         Stage {
+            name: "post-saturation",
+            width: demosaic_w,
+            height: demosaic_h,
+            rgb: post_saturation_preview,
+            took_ms: post_saturation_ms,
+        },
+        Stage {
             name: "post-icc",
             width: demosaic_w,
             height: demosaic_h,
@@ -275,7 +298,8 @@ fn apply_exposure(rec2020: &mut [f32], ev: f32) {
 }
 
 /// Default tone curve — mirrors `src/color/tone_curve.rs`. Inlined so the
-/// example stays a standalone binary. Keep the constants and shape in sync.
+/// example stays a standalone binary. Keep the constants, shape, and
+/// luminance-only apply pattern in sync.
 const TONE_SHADOW_KNEE: f32 = 0.10;
 const TONE_HIGHLIGHT_KNEE: f32 = 0.90;
 const TONE_MIDTONE_SLOPE: f32 = 1.08;
@@ -283,9 +307,52 @@ const TONE_MIDTONE_ANCHOR: f32 = 0.25;
 const TONE_SHADOW_ENDPOINT_SLOPE: f32 = 1.0;
 const TONE_HIGHLIGHT_ENDPOINT_SLOPE: f32 = 0.30;
 
+/// Rec.2020 luma coefficients — tone curve runs in linear Rec.2020.
+const TONE_LUMA_R: f32 = 0.2627;
+const TONE_LUMA_G: f32 = 0.6780;
+const TONE_LUMA_B: f32 = 0.0593;
+
+/// Keep in sync with `src/color/tone_curve.rs::DARK_EPSILON`.
+const TONE_DARK_EPSILON: f32 = 1.0e-5;
+
+/// Keep in sync with `src/color/saturation.rs::DEFAULT_SATURATION_BOOST`.
+const SATURATION_BOOST: f32 = 0.08;
+
 fn apply_default_tone_curve(rgb: &mut [f32]) {
-    for v in rgb.iter_mut() {
-        *v = default_tone_curve(*v);
+    for pixel in rgb.chunks_exact_mut(3) {
+        let r = pixel[0];
+        let g = pixel[1];
+        let b = pixel[2];
+        let y_in = TONE_LUMA_R * r + TONE_LUMA_G * g + TONE_LUMA_B * b;
+        if !y_in.is_finite() || y_in < TONE_DARK_EPSILON {
+            pixel[0] = 0.0;
+            pixel[1] = 0.0;
+            pixel[2] = 0.0;
+            continue;
+        }
+        let y_out = default_tone_curve(y_in);
+        let scale = y_out / y_in;
+        pixel[0] = r * scale;
+        pixel[1] = g * scale;
+        pixel[2] = b * scale;
+    }
+}
+
+/// Saturation boost — mirrors `src/color/saturation.rs`. Scales each
+/// channel's delta-from-luma by `1 + boost`, preserving hue and luminance.
+fn apply_saturation_boost(rgb: &mut [f32], boost: f32) {
+    if boost == 0.0 {
+        return;
+    }
+    let scale = 1.0 + boost;
+    for pixel in rgb.chunks_exact_mut(3) {
+        let r = pixel[0];
+        let g = pixel[1];
+        let b = pixel[2];
+        let y = TONE_LUMA_R * r + TONE_LUMA_G * g + TONE_LUMA_B * b;
+        pixel[0] = y + (r - y) * scale;
+        pixel[1] = y + (g - y) * scale;
+        pixel[2] = y + (b - y) * scale;
     }
 }
 
@@ -325,14 +392,23 @@ fn tone_midtone_line(x: f32) -> f32 {
     TONE_MIDTONE_SLOPE * (x - TONE_MIDTONE_ANCHOR) + TONE_MIDTONE_ANCHOR
 }
 
-/// Capture sharpening — mirrors `src/color/sharpen.rs`. Inlined so the
-/// example stays a standalone binary. Keep params in sync.
+/// Capture sharpening — mirrors `src/color/sharpen.rs` (Phase 2.5a). Works
+/// on luminance only: blur Y, apply the unsharp-mask formula on Y, rescale
+/// RGB by `Y_out / Y_in`. Keep params and weights in sync with the real
+/// module.
 const SHARPEN_SIGMA: f32 = 0.8;
 const SHARPEN_AMOUNT: f32 = 0.3;
 
+/// Rec.709 / sRGB luma weights — post-ICC, display-space RGB.
+const SHARPEN_LUMA_R: f32 = 0.2126;
+const SHARPEN_LUMA_G: f32 = 0.7152;
+const SHARPEN_LUMA_B: f32 = 0.0722;
+
+const SHARPEN_DARK_EPSILON: f32 = 1.0e-4;
+
 /// Sharpen a packed RGB8 buffer in place. The real app path uses RGBA8;
 /// this example works on RGB8 so we strip the alpha channel altogether.
-/// Same algorithm: separable Gaussian blur, then unsharp mask.
+/// Luminance-only unsharp mask: blur Y, combine, scale RGB.
 fn sharpen_rgb8_inplace(rgb: &mut [u8], width: u32, height: u32) {
     if width == 0 || height == 0 {
         return;
@@ -344,45 +420,29 @@ fn sharpen_rgb8_inplace(rgb: &mut [u8], width: u32, height: u32) {
     let kernel = sharpen_gaussian_kernel(SHARPEN_SIGMA);
     let radius = kernel.len() / 2;
 
-    let (mut r, mut g, mut b) = sharpen_split_planes(rgb);
+    let mut luma = Vec::with_capacity(pixels);
+    for px in rgb.chunks_exact(3) {
+        let r = px[0] as f32;
+        let g = px[1] as f32;
+        let b = px[2] as f32;
+        luma.push(SHARPEN_LUMA_R * r + SHARPEN_LUMA_G * g + SHARPEN_LUMA_B * b);
+    }
+
     let mut tmp = vec![0.0_f32; pixels];
-    let mut br = vec![0.0_f32; pixels];
-    let mut bg = vec![0.0_f32; pixels];
-    let mut bb = vec![0.0_f32; pixels];
-
-    sharpen_blur_h(&r, &mut tmp, width, height, &kernel, radius);
-    sharpen_blur_v(&tmp, &mut br, width, height, &kernel, radius);
-    sharpen_blur_h(&g, &mut tmp, width, height, &kernel, radius);
-    sharpen_blur_v(&tmp, &mut bg, width, height, &kernel, radius);
-    sharpen_blur_h(&b, &mut tmp, width, height, &kernel, radius);
-    sharpen_blur_v(&tmp, &mut bb, width, height, &kernel, radius);
-
-    for ((ov, &bv), amount_in) in r
-        .iter_mut()
-        .zip(br.iter())
-        .zip(std::iter::repeat(SHARPEN_AMOUNT))
-    {
-        *ov += (*ov - bv) * amount_in;
-    }
-    for ((ov, &bv), amount_in) in g
-        .iter_mut()
-        .zip(bg.iter())
-        .zip(std::iter::repeat(SHARPEN_AMOUNT))
-    {
-        *ov += (*ov - bv) * amount_in;
-    }
-    for ((ov, &bv), amount_in) in b
-        .iter_mut()
-        .zip(bb.iter())
-        .zip(std::iter::repeat(SHARPEN_AMOUNT))
-    {
-        *ov += (*ov - bv) * amount_in;
-    }
+    let mut blurred = vec![0.0_f32; pixels];
+    sharpen_blur_h(&luma, &mut tmp, width, height, &kernel, radius);
+    sharpen_blur_v(&tmp, &mut blurred, width, height, &kernel, radius);
 
     for (i, px) in rgb.chunks_exact_mut(3).enumerate() {
-        px[0] = (r[i].clamp(0.0, 255.0) + 0.5) as u8;
-        px[1] = (g[i].clamp(0.0, 255.0) + 0.5) as u8;
-        px[2] = (b[i].clamp(0.0, 255.0) + 0.5) as u8;
+        let y_in = luma[i];
+        if y_in < SHARPEN_DARK_EPSILON {
+            continue;
+        }
+        let y_out = y_in + (y_in - blurred[i]) * SHARPEN_AMOUNT;
+        let scale = y_out / y_in;
+        px[0] = ((px[0] as f32 * scale).clamp(0.0, 255.0) + 0.5) as u8;
+        px[1] = ((px[1] as f32 * scale).clamp(0.0, 255.0) + 0.5) as u8;
+        px[2] = ((px[2] as f32 * scale).clamp(0.0, 255.0) + 0.5) as u8;
     }
 }
 
@@ -403,19 +463,6 @@ fn sharpen_gaussian_kernel(sigma: f32) -> Vec<f32> {
         *w /= sum;
     }
     kernel
-}
-
-fn sharpen_split_planes(rgb: &[u8]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let pixels = rgb.len() / 3;
-    let mut r = Vec::with_capacity(pixels);
-    let mut g = Vec::with_capacity(pixels);
-    let mut b = Vec::with_capacity(pixels);
-    for px in rgb.chunks_exact(3) {
-        r.push(px[0] as f32);
-        g.push(px[1] as f32);
-        b.push(px[2] as f32);
-    }
-    (r, g, b)
 }
 
 fn sharpen_blur_h(

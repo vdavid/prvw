@@ -39,6 +39,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   edge energy on a Sony ARW jumps ~18 % vs. pre-sharpen; brightness is unchanged. Closes the "slightly soft"
   perception gap against Preview.app. Adds ~60 ms to a 20 MP decode. Concludes Phase 2 of RAW polish. See
   `docs/notes/raw-support-phase2.md`
+- RAW tone curve and capture sharpening now act on luminance only rather than per-channel, and a mild global
+  saturation boost sits between them. Per-channel tone curves were desaturating colors near the highlight shoulder,
+  and per-channel sharpening was introducing color fringes at colored edges. Both passes now compute luminance in f32
+  (Rec.2020 weights for the linear-space tone curve, Rec.709 for the display-space sharpen), reshape Y, and scale
+  each pixel's RGB by `Y_out / Y_in` so hue and chroma are preserved. The saturation boost (+8 % default) scales
+  chroma around the luminance axis in linear Rec.2020, approximating the "vibrancy" Apple and Affinity bake into
+  their per-camera tuning tables. Hue and luminance are preserved exactly. Parameter values unchanged (midtone anchor
+  0.25, sharpen amount 0.3); empirical tuning lands in Phase 2.5b. Sony ARW end-to-end decode speeds up a bit
+  (~180 ms steady-state vs. ~220 ms pre-change) since the luminance-only sharpen runs the separable blur on one
+  plane instead of three. See `docs/notes/raw-support-phase2.md`
 
 ## [0.9.0] - 2026-04-17
 

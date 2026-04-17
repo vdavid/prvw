@@ -21,15 +21,24 @@
 //!    `BaselineExposure` tag (50730) when present, otherwise a +0.5 EV
 //!    default that matches what Adobe-neutral viewers apply silently. See
 //!    `baseline_exposure_ev` for the priority chain and clamp.
-//! 4. **Default tone curve.** A mild filmic S-curve applied per-channel in
-//!    the same linear Rec.2020 working space. Adds ~10 % midtone contrast
-//!    with a soft shoulder at 1.0, closing the "flat look" gap against
-//!    Preview.app and Affinity. See `color::tone_curve` for the curve shape.
-//! 5. **Capture sharpening.** After moxcms lands the pixels in display
+//! 4. **Default tone curve.** A mild filmic S-curve shaped on **luminance
+//!    only** in the same linear Rec.2020 working space. Every pixel's RGB
+//!    is scaled by the same `Y_out / Y_in`, so hue and chroma are
+//!    preserved; only brightness reshapes. Adds midtone contrast with a
+//!    soft shoulder at 1.0, closing the "flat look" gap against
+//!    Preview.app and Affinity. See `color::tone_curve` for the curve
+//!    shape.
+//! 5. **Saturation boost.** A mild (+8 %) global chroma scale around the
+//!    luminance axis in linear Rec.2020, approximating the "vibrancy" of
+//!    Apple's and Affinity's per-camera tuning tables. Preserves hue and
+//!    luminance exactly. See `color::saturation`.
+//! 6. **Capture sharpening.** After moxcms lands the pixels in display
 //!    space and we quantise to RGBA8, a separable-Gaussian unsharp mask
-//!    closes the "crispness gap" against Preview.app. Radius 0.8 px,
-//!    amount 0.4 — viewer-grade, not editor-grade. See `color::sharpen`
-//!    for algorithm and safety invariants.
+//!    on **luminance only** closes the "crispness gap" against
+//!    Preview.app. Y-plane blur in f32, then per-pixel RGB scale by
+//!    `Y_out / Y_in`. Avoids the color fringes per-channel sharpening
+//!    produces at colored edges. See `color::sharpen` for algorithm and
+//!    safety invariants.
 //!
 //! Moxcms transforms `linear Rec.2020 → display ICC` in f32 land so
 //! out-of-[0, 1] values stay meaningful up to the final 8-bit conversion,
@@ -161,13 +170,28 @@ pub(super) fn decode(
 
     check_cancelled(cancelled)?;
 
-    // Default tone curve. Mild filmic S-curve applied per-channel in the
-    // linear Rec.2020 working space, right before the ICC transform. Adds
-    // ~10 % midtone contrast with a soft highlight shoulder so the output
-    // stops reading "flat" compared with Preview.app and Affinity. See
-    // `color::tone_curve` for the shape and safety invariants.
+    // Default tone curve. Mild filmic S-curve shaped on luminance only in the
+    // linear Rec.2020 working space, right before the saturation boost and
+    // the ICC transform. Each pixel's RGB is scaled uniformly by
+    // `Y_out / Y_in` so hue and chroma are preserved — only brightness
+    // reshapes. Adds midtone contrast with a soft highlight shoulder so the
+    // output stops reading "flat" compared with Preview.app and Affinity.
+    // See `color::tone_curve` for the shape and safety invariants.
     log::debug!("RAW applying default tone curve for {}", path.display());
     color::tone_curve::apply_default_tone_curve(&mut rec2020);
+
+    check_cancelled(cancelled)?;
+
+    // Saturation boost. Linear Rec.2020 space, after the tone curve and
+    // before the ICC transform. Pushes chroma out from the luminance axis
+    // by a small multiplicative factor, approximating the "vibrancy" Apple
+    // and Affinity bake into their per-camera tuning tables. Hue and
+    // luminance are both preserved; see `color::saturation` for the
+    // formula.
+    color::saturation::apply_saturation_boost(
+        &mut rec2020,
+        color::saturation::DEFAULT_SATURATION_BOOST,
+    );
 
     check_cancelled(cancelled)?;
 
@@ -194,8 +218,10 @@ pub(super) fn decode(
     // Capture sharpening. Runs on the display-space RGBA8 buffer, right
     // after the ICC transform and before orientation, so we sharpen in
     // the same perceptual space the user will see the image in. The
-    // kernel is small (σ = 0.8 px, 7 taps) and parallelised via rayon;
-    // on a 20 MP buffer this adds a few tens of ms at worst.
+    // kernel is small (σ = 0.8 px, 7 taps) and parallelised via rayon.
+    // Operates on luminance only: we blur Y, apply the unsharp-mask
+    // formula on Y, then scale the original RGB by `Y_out / Y_in` so
+    // hue is preserved and no color fringes land at colored edges.
     color::sharpen::sharpen_rgba8_inplace(&mut rgba, width, height);
 
     check_cancelled(cancelled)?;
