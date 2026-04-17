@@ -9,7 +9,6 @@ use crate::commands::AppCommand;
 use crate::input;
 use crate::navigation::directory;
 use crate::pixels::{Logical, from_physical_size, to_logical_pos, to_logical_size};
-#[cfg(target_os = "macos")]
 use crate::settings;
 use crate::window;
 use winit::event_loop::ActiveEventLoop;
