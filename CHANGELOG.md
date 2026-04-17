@@ -32,6 +32,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   Analytical, monotonic, and endpoint-preserving. Adds the contrast punch and highlight roll-off that viewers like
   Preview.app and Affinity bake in by default, closing the "flat look" gap on linear wide-gamut output. See
   `docs/notes/raw-support-phase2.md`
+- RAW decode now applies a mild capture-sharpening pass on the display-space RGBA8 buffer as the last step before
+  orientation. Separable 1D Gaussian blur (σ = 0.8 px, 7 taps) followed by an unsharp-mask combine (amount = 0.3).
+  Runs post-ICC so the sharpening sees the same gamma-encoded buffer the eye will see, matching Lightroom and Camera
+  Raw's traditional slot and avoiding the halos linear-space unsharp produces on bright edges. Measured Laplacian
+  edge energy on a Sony ARW jumps ~18 % vs. pre-sharpen; brightness is unchanged. Closes the "slightly soft"
+  perception gap against Preview.app. Adds ~60 ms to a 20 MP decode. Concludes Phase 2 of RAW polish. See
+  `docs/notes/raw-support-phase2.md`
 
 ## [0.9.0] - 2026-04-17
 

@@ -17,8 +17,12 @@
 //! - `post-tone` — linear Rec.2020 after the default tone curve (Phase 2.3).
 //!   Same sRGB-ish preview encoding; the mild S-curve's contrast punch and
 //!   highlight shoulder should be visible side-by-side with `post-exposure`.
-//! - `final` — the RGBA8 buffer Prvw actually renders, after ICC transform to
-//!   sRGB (or whatever `--target-icc` points at).
+//! - `post-icc` — RGBA8 after the ICC transform to sRGB but BEFORE capture
+//!   sharpening. Useful for eyeballing the pre-sharpen softness next to
+//!   `final`.
+//! - `final` — the RGBA8 buffer Prvw actually renders, after ICC transform
+//!   AND capture sharpening (Phase 2.4). Side-by-side with `post-icc` the
+//!   mild crispening should be visible at 1:1 zoom.
 //!
 //! ## Usage
 //!
@@ -186,12 +190,19 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
     let post_tone_preview = linear_to_srgb_preview(&rec2020_toned);
     let post_tone_ms = t0.elapsed().as_millis();
 
-    // Stage 6: final ICC-transformed sRGB output, same as what Prvw ships on
-    // an sRGB display.
+    // Stage 6: ICC-transformed sRGB output, pre-sharpening. Same code
+    // path as what Prvw lands in before the capture-sharpen pass.
     let t0 = Instant::now();
     let mut rec2020_for_icc = rec2020_toned;
     transform_f32_rec2020_to_srgb(&mut rec2020_for_icc);
-    let final_rgb = f32_to_rgb8(&rec2020_for_icc);
+    let post_icc_rgb = f32_to_rgb8(&rec2020_for_icc);
+    let post_icc_ms = t0.elapsed().as_millis();
+
+    // Stage 7: capture sharpening (Phase 2.4). Mild unsharp mask on the
+    // display-space RGB8 buffer. Output is what Prvw actually renders.
+    let t0 = Instant::now();
+    let mut final_rgb = post_icc_rgb.clone();
+    sharpen_rgb8_inplace(&mut final_rgb, demosaic_w, demosaic_h);
     let final_ms = t0.elapsed().as_millis();
 
     println!("Total decode    : {} ms", t_total.elapsed().as_millis());
@@ -231,6 +242,13 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
             height: demosaic_h,
             rgb: post_tone_preview,
             took_ms: post_tone_ms,
+        },
+        Stage {
+            name: "post-icc",
+            width: demosaic_w,
+            height: demosaic_h,
+            rgb: post_icc_rgb,
+            took_ms: post_icc_ms,
         },
         Stage {
             name: "final",
@@ -305,6 +323,155 @@ fn default_tone_curve(x: f32) -> f32 {
 
 fn tone_midtone_line(x: f32) -> f32 {
     TONE_MIDTONE_SLOPE * (x - TONE_MIDTONE_ANCHOR) + TONE_MIDTONE_ANCHOR
+}
+
+/// Capture sharpening — mirrors `src/color/sharpen.rs`. Inlined so the
+/// example stays a standalone binary. Keep params in sync.
+const SHARPEN_SIGMA: f32 = 0.8;
+const SHARPEN_AMOUNT: f32 = 0.3;
+
+/// Sharpen a packed RGB8 buffer in place. The real app path uses RGBA8;
+/// this example works on RGB8 so we strip the alpha channel altogether.
+/// Same algorithm: separable Gaussian blur, then unsharp mask.
+fn sharpen_rgb8_inplace(rgb: &mut [u8], width: u32, height: u32) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let pixels = (width as usize) * (height as usize);
+    if rgb.len() != pixels * 3 || pixels < 2 {
+        return;
+    }
+    let kernel = sharpen_gaussian_kernel(SHARPEN_SIGMA);
+    let radius = kernel.len() / 2;
+
+    let (mut r, mut g, mut b) = sharpen_split_planes(rgb);
+    let mut tmp = vec![0.0_f32; pixels];
+    let mut br = vec![0.0_f32; pixels];
+    let mut bg = vec![0.0_f32; pixels];
+    let mut bb = vec![0.0_f32; pixels];
+
+    sharpen_blur_h(&r, &mut tmp, width, height, &kernel, radius);
+    sharpen_blur_v(&tmp, &mut br, width, height, &kernel, radius);
+    sharpen_blur_h(&g, &mut tmp, width, height, &kernel, radius);
+    sharpen_blur_v(&tmp, &mut bg, width, height, &kernel, radius);
+    sharpen_blur_h(&b, &mut tmp, width, height, &kernel, radius);
+    sharpen_blur_v(&tmp, &mut bb, width, height, &kernel, radius);
+
+    for ((ov, &bv), amount_in) in r
+        .iter_mut()
+        .zip(br.iter())
+        .zip(std::iter::repeat(SHARPEN_AMOUNT))
+    {
+        *ov += (*ov - bv) * amount_in;
+    }
+    for ((ov, &bv), amount_in) in g
+        .iter_mut()
+        .zip(bg.iter())
+        .zip(std::iter::repeat(SHARPEN_AMOUNT))
+    {
+        *ov += (*ov - bv) * amount_in;
+    }
+    for ((ov, &bv), amount_in) in b
+        .iter_mut()
+        .zip(bb.iter())
+        .zip(std::iter::repeat(SHARPEN_AMOUNT))
+    {
+        *ov += (*ov - bv) * amount_in;
+    }
+
+    for (i, px) in rgb.chunks_exact_mut(3).enumerate() {
+        px[0] = (r[i].clamp(0.0, 255.0) + 0.5) as u8;
+        px[1] = (g[i].clamp(0.0, 255.0) + 0.5) as u8;
+        px[2] = (b[i].clamp(0.0, 255.0) + 0.5) as u8;
+    }
+}
+
+fn sharpen_gaussian_kernel(sigma: f32) -> Vec<f32> {
+    let sigma = sigma.max(1e-3);
+    let radius = (3.0 * sigma).ceil() as usize;
+    let len = 2 * radius + 1;
+    let mut kernel = Vec::with_capacity(len);
+    let two_sigma_sq = 2.0 * sigma * sigma;
+    let mut sum = 0.0_f32;
+    for i in 0..len {
+        let x = i as f32 - radius as f32;
+        let w = (-(x * x) / two_sigma_sq).exp();
+        kernel.push(w);
+        sum += w;
+    }
+    for w in kernel.iter_mut() {
+        *w /= sum;
+    }
+    kernel
+}
+
+fn sharpen_split_planes(rgb: &[u8]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+    let pixels = rgb.len() / 3;
+    let mut r = Vec::with_capacity(pixels);
+    let mut g = Vec::with_capacity(pixels);
+    let mut b = Vec::with_capacity(pixels);
+    for px in rgb.chunks_exact(3) {
+        r.push(px[0] as f32);
+        g.push(px[1] as f32);
+        b.push(px[2] as f32);
+    }
+    (r, g, b)
+}
+
+fn sharpen_blur_h(
+    input: &[f32],
+    output: &mut [f32],
+    width: u32,
+    height: u32,
+    kernel: &[f32],
+    radius: usize,
+) {
+    let w = width as usize;
+    let h = height as usize;
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = 0.0_f32;
+            for (k_idx, &k) in kernel.iter().enumerate() {
+                let offset = k_idx as isize - radius as isize;
+                let sx = sharpen_clamp(x as isize + offset, w);
+                acc += input[y * w + sx] * k;
+            }
+            output[y * w + x] = acc;
+        }
+    }
+}
+
+fn sharpen_blur_v(
+    input: &[f32],
+    output: &mut [f32],
+    width: u32,
+    height: u32,
+    kernel: &[f32],
+    radius: usize,
+) {
+    let w = width as usize;
+    let h = height as usize;
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = 0.0_f32;
+            for (k_idx, &k) in kernel.iter().enumerate() {
+                let offset = k_idx as isize - radius as isize;
+                let sy = sharpen_clamp(y as isize + offset, h);
+                acc += input[sy * w + x] * k;
+            }
+            output[y * w + x] = acc;
+        }
+    }
+}
+
+fn sharpen_clamp(i: isize, len: usize) -> usize {
+    if i < 0 {
+        0
+    } else if (i as usize) >= len {
+        len - 1
+    } else {
+        i as usize
+    }
 }
 
 fn tone_hermite(x: f32, x0: f32, x1: f32, y0: f32, y1: f32, m0: f32, m1: f32) -> f32 {

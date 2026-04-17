@@ -47,7 +47,7 @@ and hand a `DecodedImage` off to the renderer.
   bilinear demosaic, not Markesteijn. Usable in a viewer but less detailed than
   what dedicated RAW tools produce.
 
-## RAW pipeline (Phase 2.3)
+## RAW pipeline (Phase 2.4)
 
 `raw.rs` bypasses rawler's default `Calibrate`/`CropDefault`/`SRgb` stages so we
 can keep the intermediate wide-gamut:
@@ -69,6 +69,12 @@ can keep the intermediate wide-gamut:
 6. `color::transform_f32_with_profile` hands the buffer to moxcms for the
    linear-Rec.2020 → display-ICC conversion in f32. Clamp to [0, 1] on the
    way out to RGBA8.
+7. `color::sharpen::sharpen_rgba8_inplace` runs a mild unsharp mask on the
+   display-space RGBA8 buffer: separable Gaussian blur (σ = 0.8 px,
+   7 taps) + `output += (output - blurred) * 0.3`. Closes the "slightly
+   soft" gap against Preview.app and Lightroom. Post-ICC rather than
+   pre-ICC so we match the perceptual response of the gamma-encoded
+   buffer and avoid halos from linear-space unsharp on bright edges.
 
 The linear Rec.2020 `ColorProfile` is built programmatically in
 `color::profiles::linear_rec2020_profile`. No bundled ICC file.

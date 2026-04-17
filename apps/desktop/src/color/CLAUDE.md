@@ -9,6 +9,7 @@ and the Settings → Color panel.
 | `transform.rs`       | `moxcms`-based ICC transform, `srgb_icc_bytes`, `profiles_match` byte-equality     |
 | `profiles.rs`        | Linear Rec.2020 `ColorProfile` factory + Rec.2020↔XYZ matrices (RAW working space) |
 | `tone_curve.rs`      | Default tone curve applied to linear RAW output (Phase 2.3). Hermite knees + midtone line, analytical |
+| `sharpen.rs`         | Capture sharpening for RAW output (Phase 2.4). Separable Gaussian unsharp mask on display-space RGBA8, σ = 0.8 px, amount = 0.3 |
 | `delta_e.rs`         | CIE76 Delta-E for comparing RGBA8 buffers (used by RAW pipeline regression tests)  |
 | `display_profile.rs` | macOS: `CGDisplayCopyColorSpace`, `CAMetalLayer` colorspace, screen-change observer |
 | `settings_panel.rs`  | Settings → Color: ICC color management + Color match display + Relative colorimetric |

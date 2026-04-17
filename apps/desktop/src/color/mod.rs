@@ -3,6 +3,7 @@
 
 pub mod delta_e;
 pub mod profiles;
+pub mod sharpen;
 pub mod tone_curve;
 mod transform;
 

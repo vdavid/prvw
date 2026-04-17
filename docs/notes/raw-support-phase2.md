@@ -283,11 +283,163 @@ reasoning as Phase 2.2.
   standalone-binary builds.
 - `tests/fixtures/raw/synthetic-bayer-128.golden.png` — regenerated.
 
-### Phase 2.4 — Light sharpening (TBD)
+### Phase 2.4 — Capture sharpening (done, 2026-04-17)
 
-Unsharp mask with a small radius (0.8 pixel) and modest amount (30-50 %).
-Runs on the final RGB buffer before ICC. Keep it optional if it noticeably
-hurts cold-open time.
+**What changed.** After the ICC transform lands pixels in display-space
+RGBA8, the pipeline applies a mild unsharp mask: `output = original +
+(original - blurred) * 0.3`. Blur is a separable 1D Gaussian (σ = 0.8 px,
+7 taps), run horizontally then vertically. Parallel over rows via Rayon.
+Closes the "slightly soft" gap against Preview.app and Lightroom, both of
+which apply similar capture sharpening silently on open.
+
+**Pipeline diagram (delta over Phase 2.3).**
+
+```
+... color::tone_curve::apply_default_tone_curve
+  → color::transform_f32_with_profile(..., target ICC)
+  → rec2020_to_rgba8 (f32 → clamped RGBA8)
+  → NEW: color::sharpen::sharpen_rgba8_inplace
+  → apply_orientation (unchanged)
+```
+
+**Option B (post-ICC, display-space RGB8) over Option A (pre-ICC,
+linear Rec.2020 f32).** We considered both:
+
+- **A.** Conceptually cleaner (aesthetic processing in linear space before
+  gamut conversion). Cheap to run on f32.
+- **B.** Matches Lightroom/Camera Raw's own slot. Avoids the "over-sharpened
+  halos on bright edges" failure mode linear-space unsharp produces — the
+  subtraction has more headroom on the linear side, so edges that look
+  fine in gamma-encoded preview read as over-brightened on a display.
+
+We picked **B**. Rationale: 8-bit quantisation is below one gray level at
+our modest amount (≤ 0.3), and matching the perceptual response of the
+final gamma-encoded buffer is the primary goal of capture sharpening. It's
+also the last pre-orientation step, so we never sharpen pixels we're
+about to throw away.
+
+**Parameters.** Baked in, no user knob:
+
+- **Radius σ = 0.8 px.** Small enough to target fine detail (grass, bark,
+  fabric) without chasing wide edges that'd produce halos. Kernel sized
+  to `2 × ceil(3σ) + 1 = 7` taps.
+- **Amount = 0.3.** Mild. On the Sony ARW test image, Laplacian edge
+  energy jumps from 5.39 (post-ICC) to 6.39 (post-sharpen), a +18 %
+  crispness bump. Amount 0.4 lifts that another ~15 % but reads as
+  over-sharpened next to Preview.app at 1:1 zoom; 0.2 is under the
+  Preview.app crispness floor.
+- **Threshold = 0.** No edge discrimination. Noise reduction is out of
+  scope for a viewer.
+
+**Edge handling.** Clamp-to-edge replication. Simpler than reflection and
+visually indistinguishable for a 7-tap kernel.
+
+**Safety invariants (unit-tested).** Flat buffers pass through unchanged
+(no edges → no sharpening); overshoot at bright edges saturates at 255
+rather than wrapping; undershoot at dark edges clamps at 0; alpha bytes
+are never read or written; output dimensions equal input dimensions;
+Gaussian kernel sums to 1.0 and is symmetric.
+
+**Effect on the synthetic golden.** Almost nothing. The fixture's
+magenta-pink gradient has no edges worth sharpening, so the regenerated
+golden differs from Phase 2.3's only in a handful of near-endpoint
+pixels (Delta-E well below the mean < 0.5 threshold). As expected.
+
+**Smoke-test measurements (Sony ARW, 20 MP).** `post-icc` vs. `final`
+snapshots from `raw-dev-dump`:
+
+| Metric                      | post-icc          | final (post-sharpen) | Preview.app (sips) |
+|----------------------------|-------------------|----------------------|--------------------|
+| Mean R, G, B (8-bit)       | 72.18, 74.59, 70.85 | 72.19, 74.59, 70.85 | 75.48, 76.97, 72.17 |
+| Laplacian edge energy      | 5.39              | 6.39                 | 4.59               |
+| Mean brightness ratio vs Preview | 96.8 %       | 96.8 %               | 100 %              |
+
+Sharpening is brightness-neutral at the mean (good — unsharp mask's
+`original - blurred` integrates to zero over a flat integral). Edge
+energy rises by ~18 %. `sips` renders conservatively (its own export
+does not appear to apply capture sharpening), so our final crispness
+sitting above `sips` is expected; Preview.app on-screen renders closer
+to our `final`.
+
+**Perf.** Isolated 20 MP sharpen on this dev machine: **58–73 ms** in
+release mode with Rayon. End-to-end Sony ARW decode: **217–282 ms**
+across five runs (vs. ~160 ms pre-sharpen). The sharpen adds ~60 ms,
+slightly above the 50 ms guidance but well under 100 ms. Further
+micro-optimisation (SIMD on the inner tap loop, tile-based cache
+locality) is tracked as a Phase 3 follow-up; for a viewer-grade default
+the current perf is acceptable.
+
+**Not configurable.** Consistent with exposure and tone-curve defaults.
+A future user knob would slot in at the same pipeline step.
+
+**Files changed.**
+
+- `src/color/sharpen.rs` (new) — `sharpen_rgba8_inplace`, separable
+  Gaussian blur, unsharp combine, with extensive unit tests.
+- `src/color/mod.rs` — exposes `sharpen` module.
+- `src/decoding/raw.rs` — pipeline wire-up after `rec2020_to_rgba8`,
+  with cancellation checks on both sides; module doc lists step 5.
+- `examples/raw-dev-dump.rs` — new `post-icc.png` and `final.png`
+  stages (renamed from the old single `final.png`), mirror-constants
+  for standalone build.
+- `tests/fixtures/raw/synthetic-bayer-128.golden.png` — regenerated.
+
+## Summary — Phase 2 wrap-up
+
+Phase 2 closed the four gaps between rawler's sensor-honest output and
+what viewers like Preview.app and Apple Photos ship:
+
+```
+rawler::RawDevelop { Rescale, Demosaic, CropActiveArea }
+  → camera_to_linear_rec2020  (WB + cam → linear Rec.2020, no clip)
+  → apply_default_crop
+  → apply_exposure            (+0.5 EV default, or DNG BaselineExposure tag)
+  → apply_default_tone_curve  (Hermite knees + midtone line, anchor at 0.25)
+  → transform_f32_with_profile (linear Rec.2020 → display ICC, in f32)
+  → rec2020_to_rgba8          (clamp + quantise)
+  → sharpen_rgba8_inplace     (σ 0.8 px, amount 0.3, unsharp mask)
+  → apply_orientation
+```
+
+**Sony ARW measured deltas (20 MP, mean 8-bit channel).**
+
+| Stage                        | Mean R, G, B (8-bit) | Laplacian |
+|------------------------------|----------------------|-----------|
+| Phase 2.1 linear-Rec.2020     | 62.78 (single channel quoted earlier) | – |
+| Phase 2.2 post-exposure       | 73.39                | – |
+| Phase 2.3 post-tone           | 73.05                | – |
+| Phase 2.3 post-ICC            | 72.18, 74.59, 70.85 | 5.39 |
+| **Phase 2.4 final**           | **72.19, 74.59, 70.85** | **6.39** |
+| sips / Preview.app export     | 75.48, 76.97, 72.17 | 4.59 |
+
+Brightness lands at ~97 % of Preview.app's `sips` export (note: `sips`
+itself renders conservatively; Preview.app on-screen is brighter still).
+Tone-curve contrast punch and highlight roll-off match Preview.app's feel.
+Sharpening closes the crispness gap without pushing into halo territory.
+
+**Perf.** Sony ARW 20 MP decode on this dev machine: **~220–280 ms**
+release-build end-to-end. Phase 1's develop step alone was ~170 ms on
+an M3 Max. Phase 2's extra stages (wide-gamut matrix, exposure, tone,
+sharpen) each cost a few tens of ms, but the switch to f32 ICC is
+faster than Phase 1's f32→u16→ICC path, so total time isn't dramatically
+worse for a much better picture.
+
+**What's next (Phase 3 hints).** Remaining gaps where Preview.app /
+Lightroom still pull ahead on specific files:
+
+- **DNG OpcodeList2/3 application.** iPhone ProRAW gain maps, corner
+  shading, and lens corrections sit in these opcodes. Rawler parses them
+  but doesn't apply them. Visible on iPhone and some mirrorless RAWs.
+- **Per-camera tone/baseline tuning.** Adobe ships DNG camera-profile
+  tables (DCP files) per body. Lightroom's "Camera Standard" profile
+  varies the tone curve subtly per sensor. A DCP parser + applier is a
+  Phase 3 target.
+- **Highlight recovery.** Today we clip at the matrix/ICC stage. Real
+  recovery blends the two unsaturated channels into the clipped one.
+  Separate pass, linear-space.
+- **Sharpening inner-loop SIMD.** The current implementation is
+  Rayon-parallel but not SIMD-vectorised. A ~3× speedup is plausible
+  with explicit NEON/SSE taps for the kernel convolution.
 
 ## Out of scope for Phase 2
 

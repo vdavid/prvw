@@ -25,9 +25,16 @@
 //!    the same linear Rec.2020 working space. Adds ~10 % midtone contrast
 //!    with a soft shoulder at 1.0, closing the "flat look" gap against
 //!    Preview.app and Affinity. See `color::tone_curve` for the curve shape.
+//! 5. **Capture sharpening.** After moxcms lands the pixels in display
+//!    space and we quantise to RGBA8, a separable-Gaussian unsharp mask
+//!    closes the "crispness gap" against Preview.app. Radius 0.8 px,
+//!    amount 0.4 — viewer-grade, not editor-grade. See `color::sharpen`
+//!    for algorithm and safety invariants.
 //!
-//! Then moxcms transforms `linear Rec.2020 → display ICC` in f32 land so
-//! out-of-[0, 1] values stay meaningful up to the final 8-bit conversion.
+//! Moxcms transforms `linear Rec.2020 → display ICC` in f32 land so
+//! out-of-[0, 1] values stay meaningful up to the final 8-bit conversion,
+//! and sharpening runs on the display-space RGB8 buffer so we match the
+//! perceptual response human eyes have on gamma-encoded data.
 //!
 //! ## Why Rec.2020 instead of Display P3
 //!
@@ -179,8 +186,19 @@ pub(super) fn decode(
 
     // Down to RGBA8 for the renderer. Clip to [0, 1] here — the display ICC
     // transform has already placed every in-gamut color in the target space.
-    let rgba = rec2020_to_rgba8(&rec2020);
+    let mut rgba = rec2020_to_rgba8(&rec2020);
     drop(rec2020); // free the big float buffer (~12 bytes/pixel) before returning
+
+    check_cancelled(cancelled)?;
+
+    // Capture sharpening. Runs on the display-space RGBA8 buffer, right
+    // after the ICC transform and before orientation, so we sharpen in
+    // the same perceptual space the user will see the image in. The
+    // kernel is small (σ = 0.8 px, 7 taps) and parallelised via rayon;
+    // on a 20 MP buffer this adds a few tens of ms at worst.
+    color::sharpen::sharpen_rgba8_inplace(&mut rgba, width, height);
+
+    check_cancelled(cancelled)?;
 
     let orientation = decoder
         .raw_metadata(&src, &params)
