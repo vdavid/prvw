@@ -316,7 +316,7 @@ const TONE_LUMA_B: f32 = 0.0593;
 const TONE_DARK_EPSILON: f32 = 1.0e-5;
 
 /// Keep in sync with `src/color/saturation.rs::DEFAULT_SATURATION_BOOST`.
-const SATURATION_BOOST: f32 = 0.00;
+const SATURATION_BOOST: f32 = 0.08;
 
 fn apply_default_tone_curve(rgb: &mut [f32]) {
     for pixel in rgb.chunks_exact_mut(3) {

@@ -70,7 +70,7 @@ use super::tone_curve::{REC2020_LUMA_B, REC2020_LUMA_G, REC2020_LUMA_R};
 /// "over-processed" rather than closing the gap. Kept as a parametric knob
 /// for Phase 3's per-camera profile work. See
 /// `docs/notes/raw-support-phase2.md`.
-pub const DEFAULT_SATURATION_BOOST: f32 = 0.00;
+pub const DEFAULT_SATURATION_BOOST: f32 = 0.08;
 
 /// Apply a global saturation boost to a flat RGB f32 buffer in place. Layout
 /// is `[R0, G0, B0, R1, G1, B1, …]`; length must be a multiple of 3.
