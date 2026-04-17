@@ -7,6 +7,8 @@ and the Settings → Color panel.
 | -------------------- | ---------------------------------------------------------------------------------- |
 | `mod.rs`             | `color::State { icc_enabled, match_display, relative_col, display_icc }` + re-exports |
 | `transform.rs`       | `moxcms`-based ICC transform, `srgb_icc_bytes`, `profiles_match` byte-equality     |
+| `profiles.rs`        | Linear Rec.2020 `ColorProfile` factory + Rec.2020↔XYZ matrices (RAW working space) |
+| `tone_curve.rs`      | Default tone curve applied to linear RAW output (Phase 2.3). Hermite knees + midtone line, analytical |
 | `delta_e.rs`         | CIE76 Delta-E for comparing RGBA8 buffers (used by RAW pipeline regression tests)  |
 | `display_profile.rs` | macOS: `CGDisplayCopyColorSpace`, `CAMetalLayer` colorspace, screen-change observer |
 | `settings_panel.rs`  | Settings → Color: ICC color management + Color match display + Relative colorimetric |

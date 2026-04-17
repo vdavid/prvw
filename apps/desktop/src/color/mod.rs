@@ -3,6 +3,7 @@
 
 pub mod delta_e;
 pub mod profiles;
+pub mod tone_curve;
 mod transform;
 
 pub use profiles::linear_rec2020_profile;

@@ -47,7 +47,7 @@ and hand a `DecodedImage` off to the renderer.
   bilinear demosaic, not Markesteijn. Usable in a viewer but less detailed than
   what dedicated RAW tools produce.
 
-## RAW pipeline (Phase 2.2)
+## RAW pipeline (Phase 2.3)
 
 `raw.rs` bypasses rawler's default `Calibrate`/`CropDefault`/`SRgb` stages so we
 can keep the intermediate wide-gamut:
@@ -62,7 +62,11 @@ can keep the intermediate wide-gamut:
    by `baseline_exposure_ev` (DNG `BaselineExposure` tag first, fallback
    +0.5 EV, clamped to [-2, +2]). Linear-space multiply so relative luminance
    stays correct.
-5. `color::transform_f32_with_profile` hands the buffer to moxcms for the
+5. `color::tone_curve::apply_default_tone_curve` shapes the linear buffer
+   with a mild filmic S-curve: shadow Hermite → midtone line (slope 1.08,
+   anchored at 0.25) → highlight shoulder. Analytical, monotonic,
+   endpoint-preserving. Closes the "flat look" gap against Preview.app.
+6. `color::transform_f32_with_profile` hands the buffer to moxcms for the
    linear-Rec.2020 → display-ICC conversion in f32. Clamp to [0, 1] on the
    way out to RGBA8.
 

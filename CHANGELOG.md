@@ -27,6 +27,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   roughly what Preview.app and Apple Photos apply silently. Clamped to ±2 EV for safety. Real-world RAW output now
   lands within ~97 % of Preview.app's brightness; the final gap closes when Phase 2.3's tone curve lands. See
   `docs/notes/raw-support-phase2.md`
+- RAW decode now applies a default tone curve between the exposure lift and the ICC transform. Mild filmic S with a
+  shadow Hermite knee, a midtone line of slope 1.08 anchored at 0.25, and a highlight shoulder landing softly on 1.0.
+  Analytical, monotonic, and endpoint-preserving. Adds the contrast punch and highlight roll-off that viewers like
+  Preview.app and Affinity bake in by default, closing the "flat look" gap on linear wide-gamut output. See
+  `docs/notes/raw-support-phase2.md`
 
 ## [0.9.0] - 2026-04-17
 

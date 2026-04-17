@@ -14,6 +14,9 @@
 //! - `post-exposure` — linear Rec.2020 after the baseline-exposure lift
 //!   (Phase 2.2). Same sRGB-ish preview encoding as `linear-rec2020` so
 //!   side-by-side brightness changes are eyeballable.
+//! - `post-tone` — linear Rec.2020 after the default tone curve (Phase 2.3).
+//!   Same sRGB-ish preview encoding; the mild S-curve's contrast punch and
+//!   highlight shoulder should be visible side-by-side with `post-exposure`.
 //! - `final` — the RGBA8 buffer Prvw actually renders, after ICC transform to
 //!   sRGB (or whatever `--target-icc` points at).
 //!
@@ -174,10 +177,19 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
     let post_exposure_preview = linear_to_srgb_preview(&rec2020_lifted);
     let post_exposure_ms = t0.elapsed().as_millis();
 
-    // Stage 5: final ICC-transformed sRGB output, same as what Prvw ships on
+    // Stage 5: default tone curve (Phase 2.3). Mild filmic S-curve, linear
+    // Rec.2020 space, per-channel. Same sRGB-ish preview encoding so the
+    // added contrast is eyeballable against `post-exposure`.
+    let t0 = Instant::now();
+    let mut rec2020_toned = rec2020_lifted.clone();
+    apply_default_tone_curve(&mut rec2020_toned);
+    let post_tone_preview = linear_to_srgb_preview(&rec2020_toned);
+    let post_tone_ms = t0.elapsed().as_millis();
+
+    // Stage 6: final ICC-transformed sRGB output, same as what Prvw ships on
     // an sRGB display.
     let t0 = Instant::now();
-    let mut rec2020_for_icc = rec2020_lifted;
+    let mut rec2020_for_icc = rec2020_toned;
     transform_f32_rec2020_to_srgb(&mut rec2020_for_icc);
     let final_rgb = f32_to_rgb8(&rec2020_for_icc);
     let final_ms = t0.elapsed().as_millis();
@@ -214,6 +226,13 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
             took_ms: post_exposure_ms,
         },
         Stage {
+            name: "post-tone",
+            width: demosaic_w,
+            height: demosaic_h,
+            rgb: post_tone_preview,
+            took_ms: post_tone_ms,
+        },
+        Stage {
             name: "final",
             width: demosaic_w,
             height: demosaic_h,
@@ -235,6 +254,69 @@ fn apply_exposure(rec2020: &mut [f32], ev: f32) {
     for v in rec2020.iter_mut() {
         *v *= gain;
     }
+}
+
+/// Default tone curve — mirrors `src/color/tone_curve.rs`. Inlined so the
+/// example stays a standalone binary. Keep the constants and shape in sync.
+const TONE_SHADOW_KNEE: f32 = 0.10;
+const TONE_HIGHLIGHT_KNEE: f32 = 0.90;
+const TONE_MIDTONE_SLOPE: f32 = 1.08;
+const TONE_MIDTONE_ANCHOR: f32 = 0.25;
+const TONE_SHADOW_ENDPOINT_SLOPE: f32 = 1.0;
+const TONE_HIGHLIGHT_ENDPOINT_SLOPE: f32 = 0.30;
+
+fn apply_default_tone_curve(rgb: &mut [f32]) {
+    for v in rgb.iter_mut() {
+        *v = default_tone_curve(*v);
+    }
+}
+
+fn default_tone_curve(x: f32) -> f32 {
+    if x.is_nan() || x <= 0.0 {
+        return 0.0;
+    }
+    if x >= 1.0 {
+        return 1.0;
+    }
+    if x < TONE_SHADOW_KNEE {
+        tone_hermite(
+            x,
+            0.0,
+            TONE_SHADOW_KNEE,
+            0.0,
+            tone_midtone_line(TONE_SHADOW_KNEE),
+            TONE_SHADOW_ENDPOINT_SLOPE,
+            TONE_MIDTONE_SLOPE,
+        )
+    } else if x > TONE_HIGHLIGHT_KNEE {
+        tone_hermite(
+            x,
+            TONE_HIGHLIGHT_KNEE,
+            1.0,
+            tone_midtone_line(TONE_HIGHLIGHT_KNEE),
+            1.0,
+            TONE_MIDTONE_SLOPE,
+            TONE_HIGHLIGHT_ENDPOINT_SLOPE,
+        )
+    } else {
+        tone_midtone_line(x)
+    }
+}
+
+fn tone_midtone_line(x: f32) -> f32 {
+    TONE_MIDTONE_SLOPE * (x - TONE_MIDTONE_ANCHOR) + TONE_MIDTONE_ANCHOR
+}
+
+fn tone_hermite(x: f32, x0: f32, x1: f32, y0: f32, y1: f32, m0: f32, m1: f32) -> f32 {
+    let dx = x1 - x0;
+    let t = (x - x0) / dx;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+    h00 * y0 + h10 * dx * m0 + h01 * y1 + h11 * dx * m1
 }
 
 /// Same EV-source priority and clamp as `src/decoding/raw.rs`. Inlined for

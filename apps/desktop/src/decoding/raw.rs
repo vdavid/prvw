@@ -21,6 +21,10 @@
 //!    `BaselineExposure` tag (50730) when present, otherwise a +0.5 EV
 //!    default that matches what Adobe-neutral viewers apply silently. See
 //!    `baseline_exposure_ev` for the priority chain and clamp.
+//! 4. **Default tone curve.** A mild filmic S-curve applied per-channel in
+//!    the same linear Rec.2020 working space. Adds ~10 % midtone contrast
+//!    with a soft shoulder at 1.0, closing the "flat look" gap against
+//!    Preview.app and Affinity. See `color::tone_curve` for the curve shape.
 //!
 //! Then moxcms transforms `linear Rec.2020 → display ICC` in f32 land so
 //! out-of-[0, 1] values stay meaningful up to the final 8-bit conversion.
@@ -147,6 +151,16 @@ pub(super) fn decode(
         path.display()
     );
     apply_exposure(&mut rec2020, ev);
+
+    check_cancelled(cancelled)?;
+
+    // Default tone curve. Mild filmic S-curve applied per-channel in the
+    // linear Rec.2020 working space, right before the ICC transform. Adds
+    // ~10 % midtone contrast with a soft highlight shoulder so the output
+    // stops reading "flat" compared with Preview.app and Affinity. See
+    // `color::tone_curve` for the shape and safety invariants.
+    log::debug!("RAW applying default tone curve for {}", path.display());
+    color::tone_curve::apply_default_tone_curve(&mut rec2020);
 
     check_cancelled(cancelled)?;
 

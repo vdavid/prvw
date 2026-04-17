@@ -186,11 +186,102 @@ the same pipeline slot; for now, we hard-code the priority chain.
   standalone-binary style.
 - `tests/fixtures/raw/synthetic-bayer-128.golden.png` — regenerated.
 
-### Phase 2.3 — Tone curve (TBD)
+### Phase 2.3 — Default tone curve (done, 2026-04-17)
 
-Replace rawler's plain sRGB gamma with a filmic-style S-curve (Reinhard or
-similar, maybe a camera-style LUT). This is the biggest look change. Land it
-with per-fixture before/after PNGs in `docs/notes/`.
+**What changed.** Between the exposure lift and the ICC transform, the
+pipeline now runs a mild filmic tone curve per-channel in linear Rec.2020
+space. Closes the "flat look" gap against Preview.app and Affinity without
+touching hue or gamut.
+
+**Pipeline diagram (delta over Phase 2.2).**
+
+```
+... apply_exposure
+  → NEW: color::tone_curve::apply_default_tone_curve(&mut rec2020)
+  → color::transform_f32_with_profile(...)
+```
+
+**Curve shape — Hermite knees + lifted midtone line.** Three pieces, all
+C¹-continuous at the joins:
+
+- **Shadow knee** `[0, 0.10]` — cubic Hermite from `(0, 0)` with slope
+  `1.0` (tangent to the linear reference at the origin — deep shadows
+  neither crush nor lift) up to `(0.10, midtone_line(0.10))` with slope
+  `1.08` (tangent to the midtone line at the knee).
+- **Midtone line** `[0.10, 0.90]` — straight line with slope `1.08`
+  anchored at `(0.25, 0.25)`. Picking the anchor at a low quarter tone
+  (not `0.5`) puts the line *above* the diagonal across most of the
+  midtone and highlight range, so the curve mostly lifts the image rather
+  than darkens it. A slope of `1.08` adds mild (~8 %) midtone contrast.
+- **Highlight shoulder** `[0.90, 1.0]` — cubic Hermite from `(0.90,
+  midtone_line(0.90))` with slope `1.08` to `(1.0, 1.0)` with slope
+  `0.30`. Values approaching 1.0 roll off gently below the midtone line's
+  extension, so the curve lands on 1.0 without overshoot and without a
+  hard ceiling.
+
+**Why this shape (instead of Option B's sigmoid or Option C's LUT).** The
+Hermite-with-linear-midtone formulation is analytical (no table lookup,
+no root-finder), monotonic by construction for these slopes, has exact
+endpoints, and fits in ~40 LoC of scalar math. Sigmoids (Option B) have
+zero slopes at 0 and 1 which flatten shadows and highlights too much for
+a viewer default. An Adobe-like LUT (Option C) sources cleanly but adds a
+data-file ownership question we can skip by staying analytical.
+
+**Why anchor the midtone line at 0.25 (not 0.5).** Real photos have more
+content in shadows and lower midtones than in highlights. A midtone line
+anchored at `(0.5, 0.5)` with slope > 1 darkens the lower half and
+brightens the upper half; mean brightness drops. Anchoring at `(0.25,
+0.25)` shifts the crossing with the diagonal low enough that `f(x) > x`
+across most of the mid-to-upper range, matching how Preview.app and
+Lightroom render linear sensor data by default.
+
+**Safety invariants (unit-tested).** Strict monotonicity across 256
+samples in `[0, 1]`; exact endpoints `f(0) == 0`, `f(1) == 1`; fixed
+point `f(0.25) == 0.25`; continuity at both knees; saturation above 1.0
+and clamp-to-0.0 below (including NaN). Applied per-channel in RGB, not
+luminance-weighted — matches Lightroom's default and avoids hue shifts.
+
+**Smoke-test brightness check (Sony ARW, 20 MP, mean 8-bit channel).**
+
+| Stage                | Mean 8-bit |
+|----------------------|------------|
+| Phase 2.1 `linear-rec2020` preview | 62.78      |
+| Phase 2.2 `post-exposure`          | 73.39      |
+| Phase 2.3 `post-tone` (this)       | 73.05      |
+| Phase 2.3 `final` (post-ICC)       | 72.54      |
+| `sips` / Preview.app               | 74.72      |
+
+The curve is roughly brightness-neutral on this scene (73.39 → 73.05)
+while visibly adding midtone contrast and rolling off the highlight sky.
+Our `final` lands at ~97 % of Preview.app's mean brightness; visually,
+the contrast character is now much closer. Remaining gap is sharpening
+(Phase 2.4) and per-camera tuning (Phase 3).
+
+**Effect on the synthetic golden.** The magenta-pink gradient's
+saturated reds lifted slightly (upper-midtone brightening) and saturated
+highlights rolled off instead of slamming into the sRGB red corner. Mean
+Delta-E against the Phase 2.2 golden was in the 20s — expected drift,
+not a bug, same reasoning as Phase 2.1 (the synthetic's hypersaturated
+gradient lives deep in Rec.2020 territory, so every pipeline change
+moves those pixels). Golden regenerated and visually verified.
+
+**Not configurable.** Still no user knob. Baseline render policy, same
+reasoning as Phase 2.2.
+
+**Files changed.**
+
+- `src/color/tone_curve.rs` (new) — `apply_default_tone_curve`,
+  `default_curve`, piecewise Hermite + midtone-line implementation,
+  extensive unit tests (endpoints, monotonicity, knee continuity, NaN
+  handling).
+- `src/color/mod.rs` — exposes `tone_curve` module.
+- `src/decoding/raw.rs` — pipeline wire-up between `apply_exposure` and
+  the ICC transform, with a cancellation check afterwards; module doc
+  lists step 4.
+- `examples/raw-dev-dump.rs` — new `post-tone.png` stage between
+  `post-exposure.png` and `final.png`, mirrors the curve constants for
+  standalone-binary builds.
+- `tests/fixtures/raw/synthetic-bayer-128.golden.png` — regenerated.
 
 ### Phase 2.4 — Light sharpening (TBD)
 
