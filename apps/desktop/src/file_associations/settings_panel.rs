@@ -2,6 +2,11 @@
 //! master toggle plus per-UTI toggles. Master toggles show a tri-state indicator when
 //! some — but not all — formats in the section are handled by Prvw.
 //!
+//! Each per-UTI row shows a live handler-transparency caption beneath the format name:
+//! "Currently opens with Preview.app." or "Before Prvw, these opened with Preview.app."
+//! The captions refresh on every toggle and on the 1-second polling tick, so the user
+//! always sees the truth even when another app steals the association via Get Info.
+//!
 //! The panel is self-contained: `build` creates the widgets, wires `FileAssocDelegate`
 //! for toggle and 1-second polling callbacks, and returns just the outer `NSStackView`
 //! for the Settings window to slot in. All `Retained` handles go into `retained_views`.
@@ -35,9 +40,18 @@ const TAG_RAW_MASTER: isize = 1001;
 const SWITCH_ALPHA_MIXED: f64 = 0.55;
 const SWITCH_ALPHA_FULL: f64 = 1.0;
 
+/// Which group a master row covers, for status-copy selection.
+#[derive(Copy, Clone)]
+enum Section {
+    Standard,
+    Raw,
+}
+
 struct FileAssocDelegateIvars {
     /// Per-UTI toggles, combined order: standard formats then RAW.
     uti_toggles: [*const NSSwitch; TOTAL_COUNT],
+    /// Per-UTI secondary captions showing live handler state.
+    uti_secondary: [*const NSTextField; TOTAL_COUNT],
     /// "Set all standard formats" row widgets.
     standard_master: MasterRowPtrs,
     /// "Set all RAW formats" row widgets.
@@ -49,6 +63,7 @@ struct MasterRowPtrs {
     toggle: *const NSSwitch,
     mixed_pill: *const NSTextField,
     secondary: *const NSTextField,
+    section: Section,
 }
 
 // SAFETY: Raw pointers are only used on the main thread within the window's lifetime.
@@ -119,11 +134,11 @@ impl FileAssocDelegate {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// Re-query handler state and update every toggle plus both section masters.
+    /// Re-query handler state and update every toggle, every per-row caption, and both
+    /// section masters.
     fn refresh_all(&self) {
         let ivars = self.ivars();
 
-        // Per-UTI toggles
         for (idx, entry) in SUPPORTED_STANDARD_UTIS
             .iter()
             .chain(SUPPORTED_RAW_UTIS.iter())
@@ -139,6 +154,13 @@ impl FileAssocDelegate {
                 };
                 unsafe {
                     let _: () = msg_send![toggle, setState: state];
+                }
+            }
+            let secondary = ivars.uti_secondary[idx];
+            if !secondary.is_null() {
+                let caption = row_caption(entry.uti, is_prvw);
+                unsafe {
+                    (*secondary).setStringValue(&NSString::from_str(&caption));
                 }
             }
         }
@@ -169,6 +191,48 @@ fn section_state(group: &[file_associations::UtiEntry]) -> GroupState {
     GroupState::from_flags(&flags)
 }
 
+/// Per-row handler-state caption. Uses the pure [`format_row_caption`] helper so the
+/// wording has unit test coverage; this thin wrapper does the live lookups.
+fn row_caption(uti: &str, is_prvw: bool) -> String {
+    if is_prvw {
+        format_row_caption(is_prvw, file_associations::previous_handler_name(uti))
+    } else {
+        format_row_caption(
+            is_prvw,
+            file_associations::get_handler_bundle_id(uti)
+                .map(|id| file_associations::bundle_id_to_app_name(&id)),
+        )
+    }
+}
+
+/// Pure formatter for the per-row caption. `other` is the app name to mention —
+/// the previous handler when Prvw is current, or the current handler when Prvw isn't.
+fn format_row_caption(is_prvw: bool, other: Option<String>) -> String {
+    if is_prvw {
+        match other {
+            Some(name) => format!("Before Prvw, these opened with {name}."),
+            None => "Before Prvw, these opened with another app.".to_string(),
+        }
+    } else {
+        match other {
+            Some(name) => format!("Currently opens with {name}."),
+            None => "Currently opens with another app.".to_string(),
+        }
+    }
+}
+
+/// Copy for a master-row secondary caption. Pure, so it's unit-testable.
+fn master_caption(section: Section, state: GroupState) -> &'static str {
+    match (section, state) {
+        (Section::Standard, GroupState::All) => "Prvw handles every standard format.",
+        (Section::Standard, GroupState::None) => "Other apps handle the standard formats.",
+        (Section::Standard, GroupState::Mixed) => "Some standard formats open with other apps.",
+        (Section::Raw, GroupState::All) => "Prvw handles every camera RAW format.",
+        (Section::Raw, GroupState::None) => "Other apps handle the camera RAW formats.",
+        (Section::Raw, GroupState::Mixed) => "Some camera RAW formats open with other apps.",
+    }
+}
+
 /// Apply a tri-state to a master row's switch + mixed pill + secondary text.
 fn render_master_row(ptrs: &MasterRowPtrs, state: GroupState) {
     unsafe {
@@ -193,11 +257,7 @@ fn render_master_row(ptrs: &MasterRowPtrs, state: GroupState) {
             let _: () = msg_send![ptrs.mixed_pill, setHidden: hidden];
         }
         if !ptrs.secondary.is_null() {
-            let text = match state {
-                GroupState::All => "Prvw handles every format in this group.",
-                GroupState::None => "Other apps handle these formats right now.",
-                GroupState::Mixed => "Some formats in this group open with other apps.",
-            };
+            let text = master_caption(ptrs.section, state);
             (*ptrs.secondary).setStringValue(&NSString::from_str(text));
         }
     }
@@ -305,19 +365,33 @@ fn make_section_header(title: &str, mtm: MainThreadMarker) -> Retained<NSTextFie
     label
 }
 
-/// Build a compact per-UTI row: small switch on the right, label + detail on the left.
+/// Format the primary per-row label, inlining the detail (vendor or extension list)
+/// in parens. Example: `"JPEG (*.jpg, *.jpeg)"`, `"DNG (Universal)"`, `"CR2 (Canon)"`.
+fn primary_label_text(entry: &file_associations::UtiEntry) -> String {
+    format!("{} ({})", entry.label, entry.detail)
+}
+
+/// Build a per-UTI row: primary label + live handler caption stacked on the left, small
+/// switch on the right. Returns the row view, the switch, and the caption label — the
+/// delegate needs the caption label to refresh text on every tick.
 fn build_uti_row(
     entry: &file_associations::UtiEntry,
     tag: isize,
     mtm: MainThreadMarker,
     extras: &mut Vec<Retained<AnyObject>>,
-) -> (Retained<NSStackView>, Retained<NSSwitch>) {
-    let primary = make_label(entry.label, 13.0, mtm);
+) -> (
+    Retained<NSStackView>,
+    Retained<NSSwitch>,
+    Retained<NSTextField>,
+) {
+    let primary = make_label(&primary_label_text(entry), 13.0, mtm);
     primary.setAlignment(NSTextAlignment(0));
 
-    let detail = make_label(entry.detail, 12.0, mtm);
-    detail.setAlignment(NSTextAlignment(0));
-    detail.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    // Start with the caption the initial refresh will overwrite — having a non-empty
+    // string here keeps the row's vertical size stable before the first refresh tick.
+    let caption = make_label(" ", 12.0, mtm);
+    caption.setAlignment(NSTextAlignment(0));
+    caption.setTextColor(Some(&NSColor::secondaryLabelColor()));
 
     let toggle = NSSwitch::new(mtm);
     unsafe {
@@ -333,11 +407,11 @@ fn build_uti_row(
     }
 
     let label_stack = NSStackView::new(mtm);
-    label_stack.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    label_stack.setAlignment(NSLayoutAttribute::CenterY);
-    label_stack.setSpacing(8.0);
+    label_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    label_stack.setAlignment(NSLayoutAttribute::Leading);
+    label_stack.setSpacing(2.0);
     label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&primary) });
-    label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&detail) });
+    label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&caption) });
 
     let row = NSStackView::new(mtm);
     row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
@@ -349,12 +423,11 @@ fn build_uti_row(
 
     unsafe {
         extras.push(Retained::cast_unchecked(primary));
-        extras.push(Retained::cast_unchecked(detail));
         extras.push(Retained::cast_unchecked(spacer));
         extras.push(Retained::cast_unchecked(label_stack));
     }
 
-    (row, toggle)
+    (row, toggle, caption)
 }
 
 /// Build the File associations panel. Wires toggles, starts the 1-second polling timer,
@@ -375,22 +448,29 @@ pub(crate) fn build(
     let raw_header = make_section_header("Camera RAW formats", mtm);
 
     let mut uti_toggle_ptrs: [*const NSSwitch; TOTAL_COUNT] = [std::ptr::null(); TOTAL_COUNT];
+    let mut uti_secondary_ptrs: [*const NSTextField; TOTAL_COUNT] = [std::ptr::null(); TOTAL_COUNT];
     let mut uti_toggle_retained: Vec<Retained<NSSwitch>> = Vec::with_capacity(TOTAL_COUNT);
+    let mut uti_caption_retained: Vec<Retained<NSTextField>> = Vec::with_capacity(TOTAL_COUNT);
     let mut uti_rows: Vec<Retained<NSStackView>> = Vec::with_capacity(TOTAL_COUNT);
     let mut uti_row_extras: Vec<Retained<AnyObject>> = Vec::new();
 
     for (offset, entry) in SUPPORTED_STANDARD_UTIS.iter().enumerate() {
         let tag = offset as isize;
-        let (row, toggle) = build_uti_row(entry, tag, mtm, &mut uti_row_extras);
+        let (row, toggle, caption) = build_uti_row(entry, tag, mtm, &mut uti_row_extras);
         uti_toggle_ptrs[offset] = &*toggle as *const NSSwitch;
+        uti_secondary_ptrs[offset] = &*caption as *const NSTextField;
         uti_toggle_retained.push(toggle);
+        uti_caption_retained.push(caption);
         uti_rows.push(row);
     }
     for (offset, entry) in SUPPORTED_RAW_UTIS.iter().enumerate() {
         let tag = (STANDARD_COUNT + offset) as isize;
-        let (row, toggle) = build_uti_row(entry, tag, mtm, &mut uti_row_extras);
-        uti_toggle_ptrs[STANDARD_COUNT + offset] = &*toggle as *const NSSwitch;
+        let (row, toggle, caption) = build_uti_row(entry, tag, mtm, &mut uti_row_extras);
+        let idx = STANDARD_COUNT + offset;
+        uti_toggle_ptrs[idx] = &*toggle as *const NSSwitch;
+        uti_secondary_ptrs[idx] = &*caption as *const NSTextField;
         uti_toggle_retained.push(toggle);
+        uti_caption_retained.push(caption);
         uti_rows.push(row);
     }
 
@@ -438,15 +518,18 @@ pub(crate) fn build(
     // ── Delegate + target/action + polling timer ──────────────────────
     let ivars = FileAssocDelegateIvars {
         uti_toggles: uti_toggle_ptrs,
+        uti_secondary: uti_secondary_ptrs,
         standard_master: MasterRowPtrs {
             toggle: &*standard_master.toggle as *const NSSwitch,
             mixed_pill: &*standard_master.mixed_pill as *const NSTextField,
             secondary: &*standard_master.secondary as *const NSTextField,
+            section: Section::Standard,
         },
         raw_master: MasterRowPtrs {
             toggle: &*raw_master.toggle as *const NSSwitch,
             mixed_pill: &*raw_master.mixed_pill as *const NSTextField,
             secondary: &*raw_master.secondary as *const NSTextField,
+            section: Section::Raw,
         },
     };
     let delegate = FileAssocDelegate::new(mtm, ivars);
@@ -509,6 +592,9 @@ pub(crate) fn build(
     for toggle in uti_toggle_retained {
         retained_views.push(unsafe { Retained::cast_unchecked(toggle) });
     }
+    for caption in uti_caption_retained {
+        retained_views.push(unsafe { Retained::cast_unchecked(caption) });
+    }
     retained_views.push(unsafe { Retained::cast_unchecked(delegate) });
     retained_views.push(poll_timer);
 
@@ -530,4 +616,77 @@ fn pin_width(
     };
     c.setActive(true);
     retained_views.push(unsafe { Retained::cast_unchecked(c) });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_caption_when_prvw_with_known_previous() {
+        assert_eq!(
+            format_row_caption(true, Some("Preview.app".to_string())),
+            "Before Prvw, these opened with Preview.app."
+        );
+    }
+
+    #[test]
+    fn row_caption_when_prvw_with_unknown_previous() {
+        assert_eq!(
+            format_row_caption(true, None),
+            "Before Prvw, these opened with another app."
+        );
+    }
+
+    #[test]
+    fn row_caption_when_other_app_is_known() {
+        assert_eq!(
+            format_row_caption(false, Some("Photos.app".to_string())),
+            "Currently opens with Photos.app."
+        );
+    }
+
+    #[test]
+    fn row_caption_when_other_app_is_unknown() {
+        assert_eq!(
+            format_row_caption(false, None),
+            "Currently opens with another app."
+        );
+    }
+
+    #[test]
+    fn master_caption_reads_per_section_and_state() {
+        assert_eq!(
+            master_caption(Section::Standard, GroupState::All),
+            "Prvw handles every standard format."
+        );
+        assert_eq!(
+            master_caption(Section::Standard, GroupState::None),
+            "Other apps handle the standard formats."
+        );
+        assert_eq!(
+            master_caption(Section::Standard, GroupState::Mixed),
+            "Some standard formats open with other apps."
+        );
+        assert_eq!(
+            master_caption(Section::Raw, GroupState::All),
+            "Prvw handles every camera RAW format."
+        );
+        assert_eq!(
+            master_caption(Section::Raw, GroupState::None),
+            "Other apps handle the camera RAW formats."
+        );
+        assert_eq!(
+            master_caption(Section::Raw, GroupState::Mixed),
+            "Some camera RAW formats open with other apps."
+        );
+    }
+
+    #[test]
+    fn primary_label_inlines_detail() {
+        let jpeg = &SUPPORTED_STANDARD_UTIS[0];
+        assert_eq!(primary_label_text(jpeg), "JPEG (*.jpg, *.jpeg)");
+        let dng = &SUPPORTED_RAW_UTIS[0];
+        assert_eq!(primary_label_text(dng), "DNG (Universal)");
+    }
 }

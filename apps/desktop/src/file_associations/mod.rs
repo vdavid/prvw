@@ -155,14 +155,6 @@ impl GroupState {
     }
 }
 
-/// Returns true if the running binary is inside a `.app` bundle.
-pub fn is_app_bundle() -> bool {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.to_str().map(|s| s.contains(".app/Contents/MacOS/")))
-        .unwrap_or(false)
-}
-
 /// Returns true if the `.app` bundle is in /Applications.
 pub fn is_in_applications() -> bool {
     std::env::current_exe()
@@ -184,6 +176,20 @@ pub fn get_handler_bundle_id(uti: &str) -> Option<String> {
 pub fn bundle_id_to_app_name(bundle_id: &str) -> String {
     let app_name = bundle_id.rsplit('.').next().unwrap_or(bundle_id);
     format!("{app_name}.app")
+}
+
+/// Display name of the app that handled this UTI before Prvw claimed it.
+///
+/// Reads from `Settings.previous_handlers`, populated by `set_prvw_as_handler`.
+/// Returns `None` if we never saw a pre-Prvw handler — common for RAW formats
+/// (Finder often had no handler assigned), or after upgrading from a pre-tracking
+/// build. Callers decide the fallback wording.
+pub fn previous_handler_name(uti: &str) -> Option<String> {
+    let settings = crate::settings::Settings::load();
+    settings
+        .previous_handlers
+        .get(uti)
+        .map(|bundle_id| bundle_id_to_app_name(bundle_id))
 }
 
 /// Returns true if Prvw is the current default handler for the given UTI.
@@ -245,25 +251,6 @@ pub fn set_as_default_viewer() {
         set_prvw_as_handler(entry.uti);
     }
     log::info!("Set Prvw as default viewer for all supported image types");
-}
-
-/// Short, human-readable summary of current handlers for JPEG and PNG. Used as the
-/// onboarding window's "Current defaults" line — we only show the two flagship formats
-/// to keep the window compact.
-pub fn query_handler_status() -> String {
-    let mut lines = String::new();
-    for entry in SUPPORTED_STANDARD_UTIS.iter().take(2) {
-        let handler = get_handler_bundle_id(entry.uti)
-            .map(|id| bundle_id_to_app_name(&id))
-            .unwrap_or_else(|| "unknown".to_string());
-        let marker = if is_prvw_default(entry.uti) {
-            " (you)"
-        } else {
-            ""
-        };
-        lines.push_str(&format!("  {}: {handler}{marker}\n", entry.label));
-    }
-    lines
 }
 
 #[cfg(test)]
@@ -351,5 +338,13 @@ mod tests {
     fn group_state_empty_reports_all() {
         // Both real groups are non-empty, but keep the helper total.
         assert_eq!(GroupState::from_flags(&[]), GroupState::All);
+    }
+
+    #[test]
+    fn bundle_id_renders_last_segment_with_app_suffix() {
+        assert_eq!(bundle_id_to_app_name("com.apple.Preview"), "Preview.app");
+        assert_eq!(bundle_id_to_app_name("com.veszelovszki.prvw"), "prvw.app");
+        // No dots → falls back to the whole string.
+        assert_eq!(bundle_id_to_app_name("nodots"), "nodots.app");
     }
 }

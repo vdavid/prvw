@@ -22,7 +22,20 @@ Two sections, each built the same way:
 
 - Section header label
 - Master row: title (bold) + status secondary + optional "Mixed" pill + large `NSSwitch`
-- One compact row per UTI: label + detail + small `NSSwitch`
+- One row per UTI: primary label (format + ext/vendor in parens) + live handler caption + small `NSSwitch`
+
+The per-row handler caption is the main UX transparency signal. It says
+`"Currently opens with Preview.app."` when Prvw isn't the handler, or
+`"Before Prvw, these opened with Preview.app."` when Prvw is. Unknown apps render as
+`"another app"`. The caption pointer is stored per row in `FileAssocDelegateIvars`
+and `refresh_all` rewrites all 16 captions on every 1-second tick — that way the
+text stays truthful even when another app steals the association behind our back.
+
+Storage: the "before" app is looked up from `Settings.previous_handlers` via
+`previous_handler_name(uti)`. `set_prvw_as_handler` records this on the way in.
+RAW UTIs often have no previous handler (Finder doesn't assign one by default), so
+`previous_handler_name` returns `Option<String>` and the caption falls back to
+"another app" rather than misleadingly naming Preview.
 
 `NSSwitch` has no native mixed/indeterminate state. When a section is partially enabled
 we signal it by:

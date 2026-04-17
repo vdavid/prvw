@@ -25,7 +25,7 @@ src/
 ├── diagnostics.rs           Performance observability (cache/nav/RSS formatter)
 ├── file_associations/       LaunchServices FFI + File associations settings panel
 ├── navigation/              Directory scan + preloader + LRU cache + navigation::State
-├── onboarding.rs            Onboarding window
+├── onboarding/              Onboarding window + defaults-sentence generator + SVG checkmark renderer
 ├── qa/                      Embedded HTTP + MCP server
 ├── settings/                JSON persistence + Settings window shell + widgets + General panel
 ├── updater.rs               Auto-update
@@ -33,9 +33,9 @@ src/
 └── zoom/                    ViewState + zoom/pan math + Zoom settings panel + zoom::State
 ```
 
-Single-file features (`about.rs`, `diagnostics.rs`, `onboarding.rs`, `updater.rs`,
-`window.rs`) use their `//!` module docs in place of a `CLAUDE.md`. Directory-based
-features have a colocated `CLAUDE.md`.
+Single-file features (`about.rs`, `diagnostics.rs`, `updater.rs`, `window.rs`) use
+their `//!` module docs in place of a `CLAUDE.md`. Directory-based features have a
+colocated `CLAUDE.md` or rely on `//!` docs on each submodule (`onboarding/`).
 
 ## Per-feature state
 

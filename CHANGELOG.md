@@ -26,6 +26,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- Onboarding window: redesigned into a four-step checklist (Install Prvw.app, Set as default viewer, Move to
+  /Applications, Open images). Each step uses a custom green checkmark (dimmed for pending steps) rendered at runtime
+  from the source SVG path via `NSBezierPath`. Step 2 holds the "Set Prvw as the default viewer for all of these
+  files" button and shows a natural-language sentence summarizing which app currently opens each of the 16 supported
+  image formats. Step 3 checks whether the binary is in `/Applications/` and shows a drag hint when it isn't. Step 4's
+  copy adapts to step 2's state: "double-click any image" once Prvw is the default, or "right-click any image and
+  choose Open with → Prvw" beforehand. Content is left-aligned, the window is wider and taller to give the checklist
+  breathing room, and the title drops the `v` prefix ("Prvw 0.8.0")
 - Decoding module: single-file `decoding.rs` split into a `decoding/` module with per-backend files (`jpeg.rs`,
   `generic.rs`, `raw.rs`) plus shared `dispatch.rs` and `orientation.rs`. Public API unchanged
   ([b4bc775](https://github.com/vdavid/prvw/commit/b4bc775))
@@ -40,6 +48,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 - `apply_orientation` underflowed on zero-width or zero-height input for EXIF orientation 2. Now early-returns
   ([b4bc775](https://github.com/vdavid/prvw/commit/b4bc775))
+- Restored per-row handler transparency in Settings > File associations: each format row again shows which app currently
+  handles it, or which app handled it before Prvw took over. Covers all 16 formats (6 standard + 10 RAW)
 
 ## [0.8.0] - 2026-04-17
 
