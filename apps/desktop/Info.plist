@@ -130,6 +130,166 @@
             <key>LSHandlerRank</key>
             <string>Default</string>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Adobe DNG raw image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>dng</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.adobe.raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Canon raw image (CR2)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>cr2</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.canon.cr2-raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Canon raw image (CR3)</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>cr3</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.canon.cr3-raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Nikon raw image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>nef</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.nikon.raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Sony raw image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>arw</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.sony.arw-raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Olympus raw image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>orf</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.olympus.or-raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Fujifilm raw image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>raf</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.fuji.raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Panasonic raw image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>rw2</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.panasonic.rw2-raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Pentax raw image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>pef</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.pentax.raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Samsung raw image</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>srw</string>
+            </array>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.samsung.raw-image</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+        </dict>
     </array>
 </dict>
 </plist>

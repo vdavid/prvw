@@ -4,6 +4,43 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Camera RAW support via `rawler`: open DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, and SRW files. Decode pipeline
+  includes black/white level correction, PPG demosaic for Bayer sensors, bilinear for Fuji X-Trans, white balance,
+  camera color matrix with Bradford chromatic adaptation, and sRGB gamma. NEON SIMD on Apple Silicon, rayon
+  parallelism. Orientation is pulled from EXIF metadata since `rawler` hard-codes `RawImage.orientation`. Known limits
+  in this first pass: no DNG `OpcodeList` interpretation (iPhone ProRAW gain maps), no DCP profiles, X-Trans demosaic
+  is bilinear. See `docs/notes/raw-support-phase1.md` for design decisions and the Phase 2/3 outlook
+  ([b4bc775](https://github.com/vdavid/prvw/commit/b4bc775))
+- File associations for all 10 RAW formats: Finder now recognizes Prvw as a handler for DNG, CR2, CR3, NEF, ARW, ORF,
+  RAF, RW2, PEF, and SRW via their standard Apple UTIs. `Info.plist` carries all 16 document types now (6 standard + 10
+  RAW)
+- Settings > File associations: redesigned into two sections, "Standard image formats" (JPEG, PNG, GIF, WebP, BMP,
+  TIFF) and "Camera RAW formats" (DNG, CR2 + CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW) with vendor labels. Each section
+  has a master "Set all" toggle with tri-state support: when some formats are on and others off, the master shows a
+  "Mixed" indicator; clicking mixed or off sets all on, clicking on sets all off. Per-format small toggles keep fine
+  control
+
+### Changed
+
+- Decoding module: single-file `decoding.rs` split into a `decoding/` module with per-backend files (`jpeg.rs`,
+  `generic.rs`, `raw.rs`) plus shared `dispatch.rs` and `orientation.rs`. Public API unchanged
+  ([b4bc775](https://github.com/vdavid/prvw/commit/b4bc775))
+- CI: macOS-only modules (AppKit settings panels, color transform tests) gated behind `#[cfg(target_os = "macos")]`
+  so cross-platform builds compile cleanly. Groundwork for Windows and Linux support later
+  ([e9b5de4](https://github.com/vdavid/prvw/commit/e9b5de4),
+  [3f00979](https://github.com/vdavid/prvw/commit/3f00979),
+  [815b727](https://github.com/vdavid/prvw/commit/815b727),
+  [96218dd](https://github.com/vdavid/prvw/commit/96218dd))
+
+### Fixed
+
+- `apply_orientation` underflowed on zero-width or zero-height input for EXIF orientation 2. Now early-returns
+  ([b4bc775](https://github.com/vdavid/prvw/commit/b4bc775))
+
 ## [0.8.0] - 2026-04-17
 
 ### Added
