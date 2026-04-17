@@ -43,14 +43,23 @@
 //!
 //! ## Reference dimensions
 //!
-//! The `sips` PNG must match the RAW's pre-orientation decoded dimensions
-//! (the buffer size Prvw produces before `apply_orientation` runs). For
-//! Sony ARW files `sips` exports at native dimensions, which matches.
-//! For DNG files with non-identity EXIF orientation (for example an iPhone
-//! ProRAW carrying orientation 6 or 8), `sips` exports the rotated image
-//! but the DNG sensor is pre-rotation. The tuner either matches directly
-//! or rotates the reference PNG 90° to match — otherwise it bails rather
-//! than auto-resize (which would hide pipeline bugs).
+//! Two reference kinds are supported:
+//!
+//! 1. **`sips` PNG exports.** Match the RAW's pre-orientation decoded
+//!    dimensions. Sony ARW files pass straight through; iPhone ProRAW DNGs
+//!    carry an EXIF rotation that `sips` applies to the export, so the
+//!    tuner rotates the reference back 90° to match our pre-orientation
+//!    buffer. Exact dimension match (or a clean 90° rotation) is required.
+//!
+//! 2. **Preview.app screenshots.** CleanShot / screenshot captures of
+//!    Preview.app rendering a RAW at fit-to-window zoom. Screenshots are
+//!    always smaller than the decoded buffer; the tuner **downsamples the
+//!    decoded output with Lanczos3** to match the screenshot's dimensions
+//!    before running Delta-E. Downsampling (not upsampling the screenshot)
+//!    keeps the Delta-E metric honest: upsampling a screenshot invents
+//!    detail that biases toward fuzzy output. A warning fires and bilinear
+//!    upsampling falls back if the reference is somehow larger than the
+//!    decoded buffer (shouldn't happen in practice).
 //!
 //! ## Relationship to the production modules
 //!
@@ -65,7 +74,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use clap::Parser;
-use image::{ImageBuffer, Rgb};
+use image::imageops::FilterType;
+use image::{DynamicImage, ImageBuffer, Rgb, Rgba, RgbaImage};
 use moxcms::{
     ColorProfile, InPlaceTransformExecutor, Layout, LocalizableString, ProfileText,
     RenderingIntent, ToneReprCurve, TransformOptions,
@@ -125,8 +135,8 @@ const SHARPEN_DARK_EPSILON: f32 = 1.0e-4;
 const SRGB_PROFILE_PATH: &str = "/System/Library/ColorSync/Profiles/sRGB Profile.icc";
 
 const DEFAULT_ANCHORS: &[f32] = &[0.25, 0.30, 0.35, 0.40, 0.45, 0.50];
-const DEFAULT_AMOUNTS: &[f32] = &[0.30, 0.35, 0.40, 0.45, 0.50, 0.55];
-const DEFAULT_BOOSTS: &[f32] = &[0.00, 0.04, 0.08, 0.12, 0.16, 0.20];
+const DEFAULT_AMOUNTS: &[f32] = &[0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65];
+const DEFAULT_BOOSTS: &[f32] = &[0.00, 0.05, 0.10, 0.15, 0.20, 0.25];
 
 #[derive(Parser, Debug)]
 #[command(about = "Grid-search the Phase 2 RAW parameters against one or more sips references")]
@@ -175,6 +185,23 @@ struct DeltaE {
     mean: f32,
     max: f32,
     p95: f32,
+}
+
+/// A loaded reference image with its native dimensions. The Delta-E metric
+/// runs at these dimensions: if the reference is a Preview.app screenshot
+/// smaller than the decoded buffer, the evaluator downsamples our output to
+/// match before scoring.
+struct Reference {
+    width: u32,
+    height: u32,
+    /// RGBA8 at `width × height`. Length is always `width * height * 4`.
+    rgba: Vec<u8>,
+}
+
+struct Input {
+    path: PathBuf,
+    shared: SharedDecode,
+    reference: Reference,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -234,19 +261,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Decode each RAW once and load its reference. Collect into a `Vec`
     // so the grid can hit every file per combo.
-    let mut inputs: Vec<(PathBuf, SharedDecode, Vec<u8>)> = Vec::with_capacity(args.raw.len());
+    let mut inputs: Vec<Input> = Vec::with_capacity(args.raw.len());
     for (raw_path, ref_path) in args.raw.iter().zip(args.reference.iter()) {
         let t_decode = Instant::now();
         let shared = decode_shared(raw_path)?;
         let reference = load_and_match_reference(ref_path, shared.width, shared.height)?;
         println!(
-            "Decoded  : {} ({} ms) → {}x{} reference",
+            "Decoded  : {} ({} ms)  decoded={}x{}  reference={}x{}",
             raw_path.display(),
             t_decode.elapsed().as_millis(),
             shared.width,
             shared.height,
+            reference.width,
+            reference.height,
         );
-        inputs.push((raw_path.clone(), shared, reference));
+        inputs.push(Input {
+            path: raw_path.clone(),
+            shared,
+            reference,
+        });
     }
 
     // Build the combo grid. Parallel evaluate across (combo × input), then
@@ -271,9 +304,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .par_iter()
         .map(|&combo| {
             let mut stats = Vec::with_capacity(inputs.len());
-            for (_, shared, reference) in &inputs {
-                let rgba = evaluate_combo(shared, combo, &icc);
-                stats.push(delta_e_stats(reference, &rgba));
+            for input in &inputs {
+                let rgba = evaluate_combo(&input.shared, combo, &icc);
+                let resized = resize_to_reference(&rgba, &input.shared, &input.reference);
+                stats.push(delta_e_stats(&input.reference.rgba, &resized));
             }
             (combo, stats)
         })
@@ -314,14 +348,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         winning_combo.boost,
         mean_of_means(winning_stats),
     );
-    for ((raw_path, shared, _), stats) in inputs.iter().zip(winning_stats.iter()) {
-        let stem = raw_path
+    for (input, stats) in inputs.iter().zip(winning_stats.iter()) {
+        let stem = input
+            .path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("input");
-        let rgba = evaluate_combo(shared, *winning_combo, &icc);
+        let rgba = evaluate_combo(&input.shared, *winning_combo, &icc);
         let path = args.out_dir.join(format!("best-{stem}.png"));
-        save_rgba_png(&path, shared.width, shared.height, &rgba)?;
+        save_rgba_png(&path, input.shared.width, input.shared.height, &rgba)?;
         println!(
             "  {}  mean {:.3}  max {:.1}  p95 {:.2}  → {}",
             stem,
@@ -412,54 +447,114 @@ fn evaluate_combo(
     rgba
 }
 
-/// Load the reference PNG and promote to RGBA8. If dimensions don't match
-/// the decoded buffer exactly, try rotating the reference (90 / 180 / 270)
-/// to cover the orientation mismatch you get when `sips` rotates but Prvw's
-/// pre-orientation buffer is the sensor's native layout. If nothing matches,
-/// bail out rather than auto-resize (that'd hide pipeline bugs).
+/// Load the reference PNG at its native dimensions. Three cases handled:
+///
+/// 1. Dimensions match the decoded buffer exactly → return as-is.
+/// 2. Dimensions match after a 90° CW rotation → rotate, return. Covers
+///    iPhone ProRAW DNGs where `sips` applies EXIF orientation but our
+///    pre-orientation buffer is at sensor-native layout.
+/// 3. Otherwise → return at the reference's own dimensions. The evaluator
+///    resamples our decoded output to this size before scoring. Catches
+///    Preview.app screenshot references, which are always smaller than the
+///    decoded RAW (CleanShot fit-to-window zoom ≈ 2/3 resolution).
 fn load_and_match_reference(
     path: &Path,
     target_w: u32,
     target_h: u32,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<Reference, Box<dyn std::error::Error>> {
     let img = image::open(path)?.to_rgba8();
     let (w, h) = (img.width(), img.height());
 
     if (w, h) == (target_w, target_h) {
-        return Ok(img.into_raw());
+        return Ok(Reference {
+            width: w,
+            height: h,
+            rgba: img.into_raw(),
+        });
     }
     if (h, w) == (target_w, target_h) {
-        // Reference is rotated 90° relative to the decoded buffer. Try
-        // both rotation directions; the one with lower Delta-E on a
-        // neutral synthetic check wins, but for this tool we just pick
-        // 90 CW and rely on visual verification. If the colors come back
-        // looking shuffled, the dev rerun with the other rotation.
-        let cw = image::imageops::rotate90(&img);
-        if (cw.width(), cw.height()) == (target_w, target_h) {
-            return Ok(cw.into_raw());
-        }
+        let rotated = image::imageops::rotate90(&img);
+        return Ok(Reference {
+            width: rotated.width(),
+            height: rotated.height(),
+            rgba: rotated.into_raw(),
+        });
     }
 
-    Err(format!(
-        "Reference {w}x{h} doesn't match decoded {target_w}x{target_h} \
-         (and a 90° rotation doesn't either). Fix the reference before retrying.",
-    )
-    .into())
+    // Fall through: reference dimensions don't match. Accept anyway — the
+    // evaluator downsamples the decoded output to the reference's size.
+    // We just log the ratio so a badly-cropped reference is easy to spot.
+    let ratio_w = w as f32 / target_w as f32;
+    let ratio_h = h as f32 / target_h as f32;
+    println!(
+        "Reference {}: {}x{} vs decoded {}x{} (scale {:.3}x{:.3}). \
+         Output will be resampled to match before Delta-E.",
+        path.display(),
+        w,
+        h,
+        target_w,
+        target_h,
+        ratio_w,
+        ratio_h,
+    );
+    if (ratio_w - ratio_h).abs() > 0.01 {
+        return Err(format!(
+            "Reference {w}x{h} and decoded {target_w}x{target_h} have \
+             non-uniform scale ({ratio_w:.3} vs {ratio_h:.3}). Aspect ratios \
+             differ, so one axis would stretch. Fix the reference before retrying.",
+        )
+        .into());
+    }
+    Ok(Reference {
+        width: w,
+        height: h,
+        rgba: img.into_raw(),
+    })
+}
+
+/// Bring the decoded RGBA8 output to the reference's dimensions. Three
+/// cases:
+///
+/// - Exact match → return a clone (no-op resize).
+/// - Output larger than reference → downsample with Lanczos3. Preview.app
+///   screenshots land here.
+/// - Output smaller than reference → warn and upsample with bilinear.
+///   Shouldn't happen in normal use; we don't panic because it's still
+///   useful to eyeball an out-of-shape reference.
+fn resize_to_reference(rgba: &[u8], shared: &SharedDecode, reference: &Reference) -> Vec<u8> {
+    if shared.width == reference.width && shared.height == reference.height {
+        return rgba.to_vec();
+    }
+    let src: RgbaImage =
+        ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(shared.width, shared.height, rgba.to_vec())
+            .expect("rgba length must equal width * height * 4");
+    let src = DynamicImage::ImageRgba8(src);
+    let filter = if shared.width >= reference.width && shared.height >= reference.height {
+        FilterType::Lanczos3
+    } else {
+        // Upsampling our output would invent detail that biases Delta-E
+        // downward. Bilinear is the least-biased filter for this case;
+        // worth a one-line log so the dev notices.
+        eprintln!(
+            "warn: decoded {}x{} smaller than reference {}x{} — upsampling with bilinear",
+            shared.width, shared.height, reference.width, reference.height,
+        );
+        FilterType::Triangle
+    };
+    let resized = src.resize_exact(reference.width, reference.height, filter);
+    resized.to_rgba8().into_raw()
 }
 
 /// Print a ranked top-N table with the overall score plus per-input
 /// mean Delta-E. Compact enough to eyeball across 3–5 inputs.
-fn print_cross_top_table(
-    per_combo: &[(Combo, Vec<DeltaE>)],
-    inputs: &[(PathBuf, SharedDecode, Vec<u8>)],
-    top_n: usize,
-) {
+fn print_cross_top_table(per_combo: &[(Combo, Vec<DeltaE>)], inputs: &[Input], top_n: usize) {
     print!(
         "{:>4}  {:>6}  {:>6}  {:>6}  {:>10}",
         "rank", "anchor", "amount", "boost", "mean-of-m",
     );
-    for (raw_path, _, _) in inputs {
-        let stem = raw_path
+    for input in inputs {
+        let stem = input
+            .path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("input");
@@ -485,13 +580,14 @@ fn print_cross_top_table(
 fn write_cross_csv(
     path: &Path,
     per_combo: &[(Combo, Vec<DeltaE>)],
-    inputs: &[(PathBuf, SharedDecode, Vec<u8>)],
+    inputs: &[Input],
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
     let mut f = std::fs::File::create(path)?;
     write!(f, "rank,anchor,amount,boost,mean_of_means")?;
-    for (raw_path, _, _) in inputs {
-        let stem = raw_path
+    for input in inputs {
+        let stem = input
+            .path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("input");

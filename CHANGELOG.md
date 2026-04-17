@@ -49,6 +49,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   0.25, sharpen amount 0.3); empirical tuning lands in Phase 2.5b. Sony ARW end-to-end decode speeds up a bit
   (~180 ms steady-state vs. ~220 ms pre-change) since the luminance-only sharpen runs the separable blur on one
   plane instead of three. See `docs/notes/raw-support-phase2.md`
+- RAW defaults retuned against a Preview.app screenshot rather than `sips` output. The first Phase 2.5b tuner run
+  grid-searched against Apple's conservative `sips -s format png` export and shipped the Phase 2.5a educated-guess
+  values unchanged; the resulting output read as "washed out and blurrier" next to Preview.app on XDR displays.
+  Rerun against a CleanShot capture of Preview.app rendering the same RAW: midtone anchor 0.25 → 0.40, saturation
+  boost +0.08 → 0.00, sharpen amount stays at 0.30. New defaults beat the old ones by 0.81 Delta-E on the reference
+  scene. The tuner now handles references smaller than the decoded buffer (typical for fit-to-window screenshots) by
+  Lanczos3-downsampling our output before the metric runs. See `docs/notes/raw-support-phase2.md`
 
 ## [0.9.0] - 2026-04-17
 

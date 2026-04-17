@@ -89,12 +89,14 @@ const HIGHLIGHT_KNEE: f32 = 0.90;
 const MIDTONE_SLOPE: f32 = 1.08;
 
 /// Default `MIDTONE_ANCHOR` used by [`apply_default_tone_curve`]. The midtone
-/// line crosses the diagonal `y = x` at this x value. Set at a low quarter
-/// tone so `f(x) > x` across most of the middle and upper range — the
-/// overall "lift" that matches how Preview.app and Affinity render RAW
-/// files by default. Tuned empirically against `sips` references in Phase
-/// 2.5b; see `docs/notes/raw-support-phase2.md`.
-pub const DEFAULT_MIDTONE_ANCHOR: f32 = 0.25;
+/// line crosses the diagonal `y = x` at this x value. Set in the low midtone
+/// range so the curve still lifts shadows and upper midtones (both sit above
+/// the diagonal) while crossing below the upper-midtone range where
+/// Preview.app stops lifting. Tuned empirically against a Preview.app
+/// screenshot reference in the Phase 2.5b rerun; see
+/// `docs/notes/raw-support-phase2.md`. The earlier `sips`-tuned value was
+/// 0.25 — too bright, read as "washed out" against Preview on XDR displays.
+pub const DEFAULT_MIDTONE_ANCHOR: f32 = 0.40;
 
 /// Slope at `x = 0`. 1.0 keeps the curve tangent to the linear reference at
 /// the origin, so deep shadows stay where they are instead of crushing

@@ -63,11 +63,14 @@ use rayon::prelude::*;
 use super::tone_curve::{REC2020_LUMA_B, REC2020_LUMA_G, REC2020_LUMA_R};
 
 /// Default global saturation boost, applied after the tone curve and before
-/// the ICC transform. +8 % (`0.08`) is the smallest value that noticeably
-/// closes the "vibrancy" gap against Preview.app and Affinity on real photo
-/// content without tipping into "over-processed" territory; see
-/// `docs/notes/raw-support-phase2.md` for the Phase 2.5a decision.
-pub const DEFAULT_SATURATION_BOOST: f32 = 0.08;
+/// the ICC transform. `0.00` — the Phase 2.5b rerun against a Preview.app
+/// screenshot showed boost above zero pushes chroma past what Preview lands.
+/// The linear-Rec.2020 intermediate already preserves strong chroma through
+/// the luminance-only tone curve; an extra global lift ended up reading as
+/// "over-processed" rather than closing the gap. Kept as a parametric knob
+/// for Phase 3's per-camera profile work. See
+/// `docs/notes/raw-support-phase2.md`.
+pub const DEFAULT_SATURATION_BOOST: f32 = 0.00;
 
 /// Apply a global saturation boost to a flat RGB f32 buffer in place. Layout
 /// is `[R0, G0, B0, R1, G1, B1, …]`; length must be a multiple of 3.
@@ -129,11 +132,14 @@ mod tests {
 
     #[test]
     fn pure_primary_retains_hue() {
-        // Pure red (1, 0, 0): after the boost, R should still be the max,
-        // G and B should remain equal to each other (they both get scaled
-        // identically from their (−Y) starting point).
+        // Pure red (1, 0, 0): after a positive boost, R should still be the
+        // max, G and B should remain equal to each other (they both get
+        // scaled identically from their (−Y) starting point). Uses an
+        // explicit non-default boost so the math gets exercised even when
+        // `DEFAULT_SATURATION_BOOST` drops to 0 (Phase 2.5b Preview-tuned
+        // default — no-op by design).
         let mut buf = vec![1.0_f32, 0.0, 0.0];
-        apply_saturation_boost(&mut buf, DEFAULT_SATURATION_BOOST);
+        apply_saturation_boost(&mut buf, 0.08);
         assert!(buf[0] > buf[1], "red no longer dominant");
         assert!(buf[0] > buf[2], "red no longer dominant");
         assert!(
@@ -149,8 +155,9 @@ mod tests {
         // For any non-gray pixel, the distance from the luminance axis
         // `sqrt((R-Y)^2 + (G-Y)^2 + (B-Y)^2)` should grow by exactly
         // (1 + boost) after the boost. Numerical check on a mid-saturation
-        // pixel.
-        let boost = DEFAULT_SATURATION_BOOST;
+        // pixel. Uses an explicit non-default boost so the formula is
+        // exercised even when `DEFAULT_SATURATION_BOOST` is 0.
+        let boost = 0.08_f32;
         let r = 0.6_f32;
         let g = 0.3_f32;
         let b = 0.1_f32;

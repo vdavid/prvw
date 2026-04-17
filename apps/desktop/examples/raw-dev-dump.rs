@@ -303,7 +303,7 @@ fn apply_exposure(rec2020: &mut [f32], ev: f32) {
 const TONE_SHADOW_KNEE: f32 = 0.10;
 const TONE_HIGHLIGHT_KNEE: f32 = 0.90;
 const TONE_MIDTONE_SLOPE: f32 = 1.08;
-const TONE_MIDTONE_ANCHOR: f32 = 0.25;
+const TONE_MIDTONE_ANCHOR: f32 = 0.40;
 const TONE_SHADOW_ENDPOINT_SLOPE: f32 = 1.0;
 const TONE_HIGHLIGHT_ENDPOINT_SLOPE: f32 = 0.30;
 
@@ -316,7 +316,7 @@ const TONE_LUMA_B: f32 = 0.0593;
 const TONE_DARK_EPSILON: f32 = 1.0e-5;
 
 /// Keep in sync with `src/color/saturation.rs::DEFAULT_SATURATION_BOOST`.
-const SATURATION_BOOST: f32 = 0.08;
+const SATURATION_BOOST: f32 = 0.00;
 
 fn apply_default_tone_curve(rgb: &mut [f32]) {
     for pixel in rgb.chunks_exact_mut(3) {

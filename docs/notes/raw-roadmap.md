@@ -45,25 +45,40 @@ Last updated: 2026-04-17.
 ### Phase 2.5b — empirical tuning (done, 2026-04-17)
 
 - [x] Empirical parameter tuning harness: `apps/desktop/examples/raw-tune.rs`,
-      grid-searches against `sips` references, cross-validates across N files,
-      ranks by mean-of-means Delta-E.
+      grid-searches against reference PNGs, cross-validates across N files,
+      ranks by mean-of-means Delta-E. Since the 2.5b rerun, the tuner
+      Lanczos3-downsamples our output when the reference is smaller
+      (Preview.app screenshot references land at fit-to-window resolution).
 - [x] Structural refactor: `DEFAULT_MIDTONE_ANCHOR` + `apply_tone_curve`
       (parametric), `DEFAULT_SIGMA` / `DEFAULT_AMOUNT` +
       `sharpen_rgba8_inplace_with` (parametric). Production stays on
       `apply_default_*` wrappers; Phase 3's DCP work will thread per-camera
       values through the parametric entry points.
-- [x] Grid searched: anchor ∈ {0.25..0.50}, amount ∈ {0.30..0.55},
-      boost ∈ {0.00..0.20}. 216 combos × 3 RAW files (2 Sony ARW + 1 iPhone
-      DNG) cross-validation. Winning combo `anchor=0.25, amount=0.30,
-      boost=+0.08` — exactly the Phase 2.5a educated-guess defaults.
-      **No change to production constants.** The grid's basin is flat at
-      ~±0.01 Delta-E across rank-1-through-10, so the educated guess was
-      already in the local optimum. See `raw-support-phase2.md` for the
-      ranked table, per-file sub-optima, and wider-grid probe that went as
-      low as anchor 0.10 but didn't cross the perceptibility threshold.
+- [x] First pass: grid searched against `sips -s format png` references
+      across three RAW files. Winning combo matched the Phase 2.5a
+      educated-guess defaults (`anchor=0.25, amount=0.30, boost=+0.08`).
+      Shipped unchanged. On visual QA against Preview.app on an M3 XDR
+      display, the output read as "washed out and blurrier" — `sips` is
+      Apple's conservative export path, not what Preview renders on screen.
+- [x] Rerun: grid searched against a Preview.app screenshot of
+      `sample3.arw` (single reference, 288 combos). New winner:
+      `anchor=0.40, amount=0.30, boost=+0.00`. Beat the old defaults by
+      0.81 Delta-E on sample3 and 0.50 Delta-E on sample1 (reference-vs-
+      reference). Visual spot-check on sample1 and sample2 confirmed no
+      broken output under the new defaults. Amount stays at 0.30 — the
+      screenshot metric is resolution-limited and Delta-E couldn't
+      distinguish amount 0.10 from 0.65; Phase 2.4's Laplacian measurement
+      remains the authority. See `raw-support-phase2.md` for the full
+      ranked table, per-axis sub-optima, and the single-reference overfit
+      caveat.
 
 ## Phase 3 — per-camera color fidelity
 
+- [ ] Retune defaults against a wider reference set. The 2.5b rerun grid-
+      searched against a single Preview.app screenshot (a vibrant outdoor
+      scene with a subject). Likely scene-class gaps: portraits / skin
+      tones, low-light / high-ISO, near-neutral scenes. Collect three to
+      five more Preview.app screenshot references and rerun the grid.
 - [ ] DNG `OpcodeList1` application (pre-demosaic gain maps, vignette fix,
       bad pixels). Closes the iPhone ProRAW correctness gap.
 - [ ] DNG `OpcodeList2` application (post-demosaic lens distortion via
