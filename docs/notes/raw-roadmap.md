@@ -149,11 +149,6 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       camera (e.g., `SONY ILCE-6000` while shooting with an α5000), the
       match silently fails. Add a fallback that tries known-compatible
       camera families with a user-visible warning.
-- [ ] Retune defaults against a wider reference set. The 2.5b rerun grid-
-      searched against a single Preview.app screenshot (a vibrant outdoor
-      scene with a subject). Likely scene-class gaps: portraits / skin
-      tones, low-light / high-ISO, near-neutral scenes. Collect three to
-      five more Preview.app screenshot references and rerun the grid.
 - [ ] DCP `LookTable` application (second LUT after `HueSatMap`).
 - [ ] DCP dual-illuminant interpolation (illuminants 1 and 2 blended by
       scene color temperature).
