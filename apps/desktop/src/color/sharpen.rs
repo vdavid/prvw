@@ -78,12 +78,14 @@ use rayon::prelude::*;
 /// Gaussian standard deviation in pixels. 0.8 is the "capture sharpening"
 /// default — small enough for fine detail, broad enough to clear demosaic
 /// softening.
-const SIGMA: f32 = 0.8;
+pub const DEFAULT_SIGMA: f32 = 0.8;
 
-/// Unsharp-mask amount. 0.3 is the conservative "capture sharpening"
-/// default — enough to close the crispness gap against Preview.app without
-/// pushing into oversharpened territory.
-const AMOUNT: f32 = 0.3;
+/// Default unsharp-mask amount, tuned empirically against `sips` references
+/// in Phase 2.5b. See `docs/notes/raw-support-phase2.md` for the grid-search
+/// table and rationale for holding the amount at or above 0.3 (anything
+/// lower starts fitting to `sips`' own conservative rendering rather than
+/// the crispness Preview.app shows on screen).
+pub const DEFAULT_AMOUNT: f32 = 0.3;
 
 /// Rec.709 / sRGB luma coefficient for red. Close enough to Display P3's
 /// own (~0.228) that the ~2 % mismatch is negligible for a small unsharp
@@ -100,13 +102,30 @@ const LUMA_B: f32 = 0.0722;
 /// fewer floating-point hazards).
 const DARK_EPSILON: f32 = 1.0e-4;
 
-/// Sharpen an RGBA8 buffer in place. Alpha is left untouched.
+/// Sharpen an RGBA8 buffer in place with the default capture-sharpening
+/// parameters ([`DEFAULT_SIGMA`], [`DEFAULT_AMOUNT`]). Alpha is left
+/// untouched.
 ///
 /// `width * height * 4` must equal `rgba.len()`; on mismatch the function
 /// is a no-op (same defensive posture as the rest of the color pipeline).
 /// Empty buffers and 1×1 images are safe — the blur degenerates to the
 /// identity and the unsharp mask becomes a no-op.
 pub fn sharpen_rgba8_inplace(rgba: &mut [u8], width: u32, height: u32) {
+    sharpen_rgba8_inplace_with(rgba, width, height, DEFAULT_SIGMA, DEFAULT_AMOUNT);
+}
+
+/// Parametric variant of [`sharpen_rgba8_inplace`]. Same luminance-only
+/// unsharp-mask algorithm, but σ and amount are caller-supplied so the
+/// empirical parameter tuner in `examples/raw-tune.rs` can sweep across
+/// candidate values. Production code stays on [`sharpen_rgba8_inplace`]
+/// with the [`DEFAULT_SIGMA`] / [`DEFAULT_AMOUNT`] pair.
+pub fn sharpen_rgba8_inplace_with(
+    rgba: &mut [u8],
+    width: u32,
+    height: u32,
+    sigma: f32,
+    amount: f32,
+) {
     if width == 0 || height == 0 {
         return;
     }
@@ -117,8 +136,11 @@ pub fn sharpen_rgba8_inplace(rgba: &mut [u8], width: u32, height: u32) {
     if pixels < 2 {
         return; // one pixel has no neighbours; blur == input, sharpen == no-op
     }
+    if amount == 0.0 {
+        return; // zero amount is a cheap no-op
+    }
 
-    let kernel = gaussian_kernel_1d(SIGMA);
+    let kernel = gaussian_kernel_1d(sigma);
     let radius = kernel.len() / 2;
 
     // Compute luminance plane from the RGBA bytes.
@@ -141,7 +163,7 @@ pub fn sharpen_rgba8_inplace(rgba: &mut [u8], width: u32, height: u32) {
             if y_in < DARK_EPSILON {
                 return;
             }
-            let y_out = y_in + (y_in - y_blurred) * AMOUNT;
+            let y_out = y_in + (y_in - y_blurred) * amount;
             let scale = y_out / y_in;
             let r = px[0] as f32 * scale;
             let g = px[1] as f32 * scale;

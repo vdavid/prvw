@@ -74,7 +74,7 @@ pub const DEFAULT_SATURATION_BOOST: f32 = 0.08;
 ///
 /// `boost == 0.0` is a cheap no-op. Negative `boost` desaturates (down to
 /// `-1.0` which would collapse every pixel to neutral luminance); we don't
-/// clamp the argument here — callers are expected to pass a sane default
+/// clamp the argument here — callers are expected to pass a sensible default
 /// like [`DEFAULT_SATURATION_BOOST`].
 pub fn apply_saturation_boost(rgb: &mut [f32], boost: f32) {
     if boost == 0.0 {

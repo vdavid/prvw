@@ -8,9 +8,9 @@ and the Settings → Color panel.
 | `mod.rs`             | `color::State { icc_enabled, match_display, relative_col, display_icc }` + re-exports |
 | `transform.rs`       | `moxcms`-based ICC transform, `srgb_icc_bytes`, `profiles_match` byte-equality     |
 | `profiles.rs`        | Linear Rec.2020 `ColorProfile` factory + Rec.2020↔XYZ matrices (RAW working space) |
-| `tone_curve.rs`      | Default tone curve applied to linear RAW output (Phase 2.3 / 2.5a). Hermite knees + midtone line; since 2.5a shaped on **luminance only** (Rec.2020 weights), so hue and chroma are preserved through the highlight shoulder |
-| `saturation.rs`      | Global saturation boost for RAW output (Phase 2.5a). Scales chroma around luma in linear Rec.2020 by `(1 + 0.08)`. Preserves hue and luminance |
-| `sharpen.rs`         | Capture sharpening for RAW output (Phase 2.4 / 2.5a). Separable Gaussian unsharp mask on display-space RGBA8 acting on **luminance only** (Rec.709 weights), σ = 0.8 px, amount = 0.3; avoids color fringes at colored edges |
+| `tone_curve.rs`      | Default tone curve applied to linear RAW output (Phase 2.3 / 2.5a). Hermite knees + midtone line; since 2.5a shaped on **luminance only** (Rec.2020 weights), so hue and chroma are preserved through the highlight shoulder. Since 2.5b: `apply_default_tone_curve` wraps a parametric `apply_tone_curve(rgb, midtone_anchor)` around the `DEFAULT_MIDTONE_ANCHOR` const |
+| `saturation.rs`      | Global saturation boost for RAW output (Phase 2.5a). Scales chroma around luma in linear Rec.2020 by `(1 + DEFAULT_SATURATION_BOOST)`. Already parametric. Preserves hue and luminance |
+| `sharpen.rs`         | Capture sharpening for RAW output (Phase 2.4 / 2.5a). Separable Gaussian unsharp mask on display-space RGBA8 acting on **luminance only** (Rec.709 weights), σ = `DEFAULT_SIGMA`, amount = `DEFAULT_AMOUNT`; avoids color fringes at colored edges. Since 2.5b: `sharpen_rgba8_inplace` wraps a parametric `sharpen_rgba8_inplace_with(rgba, w, h, sigma, amount)` around the default constants |
 | `delta_e.rs`         | CIE76 Delta-E for comparing RGBA8 buffers (used by RAW pipeline regression tests)  |
 | `display_profile.rs` | macOS: `CGDisplayCopyColorSpace`, `CAMetalLayer` colorspace, screen-change observer |
 | `settings_panel.rs`  | Settings → Color: ICC color management + Color match display + Relative colorimetric |
@@ -36,6 +36,14 @@ Display ICC bytes: `CGDisplayCopyColorSpace` (at startup) → `App.display_icc` 
   embedded profile are assumed sRGB.
 - **Perceptual intent by default.** "Relative colorimetric" toggle is opt-in for
   photographers comparing specific color values.
+- **Parametric + default wrapper pattern (Phase 2.5b).** `tone_curve.rs` and
+  `sharpen.rs` both expose a parametric entry point (`apply_tone_curve`,
+  `sharpen_rgba8_inplace_with`) alongside the `apply_default_*` /
+  `sharpen_rgba8_inplace` wrappers. Production stays on the wrappers; the
+  `raw-tune` dev example and future Phase 3 per-camera DCP apply code call
+  the parametric ones. Keeps the runtime pipeline path unchanged while
+  setting up scene- or sensor-specific values without a second fork of the
+  math.
 
 ## Gotchas
 

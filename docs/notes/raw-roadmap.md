@@ -42,16 +42,25 @@ Last updated: 2026-04-17.
 - [x] Mild global saturation boost (default +8%, linear Rec.2020, post-tone
       pre-ICC).
 
-### Phase 2.5b — empirical tuning
+### Phase 2.5b — empirical tuning (done, 2026-04-17)
 
-- [ ] Sharpen amount tuning: currently 0.3, target around 0.4-0.5 after
-      luminance-only change.
-- [ ] Tone curve midtone anchor tuning: currently 0.25 (over-bright), target
-      around 0.35-0.45 after luminance-only change.
-- [ ] Saturation boost tuning: currently +8%, data-drive the final value.
-- [ ] Empirical parameter tuning harness: grid-search against Preview.app or
-      `sips` reference output, report Delta-E per combo, pick winner. Or
-      env-var overrides for live eyeball tuning.
+- [x] Empirical parameter tuning harness: `apps/desktop/examples/raw-tune.rs`,
+      grid-searches against `sips` references, cross-validates across N files,
+      ranks by mean-of-means Delta-E.
+- [x] Structural refactor: `DEFAULT_MIDTONE_ANCHOR` + `apply_tone_curve`
+      (parametric), `DEFAULT_SIGMA` / `DEFAULT_AMOUNT` +
+      `sharpen_rgba8_inplace_with` (parametric). Production stays on
+      `apply_default_*` wrappers; Phase 3's DCP work will thread per-camera
+      values through the parametric entry points.
+- [x] Grid searched: anchor ∈ {0.25..0.50}, amount ∈ {0.30..0.55},
+      boost ∈ {0.00..0.20}. 216 combos × 3 RAW files (2 Sony ARW + 1 iPhone
+      DNG) cross-validation. Winning combo `anchor=0.25, amount=0.30,
+      boost=+0.08` — exactly the Phase 2.5a educated-guess defaults.
+      **No change to production constants.** The grid's basin is flat at
+      ~±0.01 Delta-E across rank-1-through-10, so the educated guess was
+      already in the local optimum. See `raw-support-phase2.md` for the
+      ranked table, per-file sub-optima, and wider-grid probe that went as
+      low as anchor 0.10 but didn't cross the perceptibility threshold.
 
 ## Phase 3 — per-camera color fidelity
 

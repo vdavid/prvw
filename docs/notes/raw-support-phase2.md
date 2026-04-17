@@ -528,6 +528,172 @@ at 0.25. Sharpen amount stays at 0.3. A separate Phase 2.5b agent will
 grid-search all three (midtone anchor, sharpen amount, saturation boost)
 against reference output and pick empirically.
 
+### Phase 2.5b — empirical parameter tuning (done, 2026-04-17)
+
+**Goal.** Replace the educated-guess defaults from Phase 2.5a with
+empirically-tuned values. Grid-search the three knobs (tone curve midtone
+anchor, sharpen amount, saturation boost) against `sips` reference
+output, cross-validated across three RAW files.
+
+**Tool.** `apps/desktop/examples/raw-tune.rs` (new). Decode-once /
+tune-many: the expensive stages (rawler demosaic, WB + camera matrix,
+exposure, default crop) don't depend on the tuned parameters, so we run
+them once per input and sweep only the cheap post-tone stages. ~150 ms
+per combo × file on an M3 Max. Supports multiple `--raw`/`--reference`
+pairs for cross-validation; ranks combos by mean-of-means Delta-E across
+every input.
+
+**Structural refactor.** Promoted the module constants to named
+`DEFAULT_*` values with parametric apply functions next to the existing
+default wrappers:
+
+- `color::tone_curve::apply_tone_curve(rgb, midtone_anchor)` +
+  `DEFAULT_MIDTONE_ANCHOR` const. `apply_default_tone_curve` stays as
+  the production entry point.
+- `color::sharpen::sharpen_rgba8_inplace_with(rgba, w, h, sigma, amount)`
+  + `DEFAULT_SIGMA` / `DEFAULT_AMOUNT`. `sharpen_rgba8_inplace` stays
+  as the default.
+- `color::saturation` already took `boost` as a parameter; no change
+  needed beyond docs.
+
+The production pipeline still goes through the `apply_default_*` and
+`sharpen_rgba8_inplace` wrappers, so nothing changes at runtime. The
+refactor sets up Phase 3's per-camera DCP profile work — Lightroom's
+per-camera profiles vary the tone curve subtly, and we'll want to plumb
+those values through the same parametric apply.
+
+**Reference set.** Three RAW files, all on this dev machine (not in the
+repo — the Phase 3 agent will wire up a committed fixture). All three
+references are Apple `sips -s format png` exports:
+
+| File                     | Dimensions | Scene                                   |
+|--------------------------|------------|-----------------------------------------|
+| `/tmp/raw/sample1.arw`   | 5456×3632  | Sony ARW, silhouetted trees on bright sky (limited skin tones, muted palette) |
+| `/tmp/raw/sample2.dng`   | 3990×3000  | iPhone DNG, ProRAW, vertical portrait   |
+| `/tmp/raw/sample3.arw`   | 5456×3632  | Sony ARW, different outdoor scene       |
+
+**Grid searched.**
+
+- Tone curve midtone anchor: 0.25, 0.30, 0.35, 0.40, 0.45, 0.50
+- Sharpen amount: 0.30, 0.35, 0.40, 0.45, 0.50, 0.55
+- Saturation boost: 0.00, 0.04, 0.08, 0.12, 0.16, 0.20
+
+216 combos. Ranked by mean Delta-E across the three files
+(mean-of-means).
+
+**Top 10 (from `cross-full/cross-validation.csv`).**
+
+| rank | anchor | amount | boost | mean-of-m | sample1 | sample2 | sample3 |
+|------|--------|--------|-------|-----------|---------|---------|---------|
+| 1    | 0.25   | 0.30   | +0.08 | 11.442    | 11.544  | 6.238   | 16.544  |
+| 2    | 0.25   | 0.30   | +0.04 | 11.444    | 11.440  | 6.165   | 16.728  |
+| 3    | 0.25   | 0.35   | +0.08 | 11.445    | 11.548  | 6.241   | 16.546  |
+| 4    | 0.25   | 0.35   | +0.04 | 11.447    | 11.444  | 6.168   | 16.729  |
+| 5    | 0.25   | 0.40   | +0.08 | 11.447    | 11.551  | 6.244   | 16.547  |
+| 6    | 0.25   | 0.40   | +0.04 | 11.450    | 11.447  | 6.171   | 16.731  |
+| 7    | 0.25   | 0.45   | +0.08 | 11.450    | 11.554  | 6.248   | 16.548  |
+| 8    | 0.25   | 0.50   | +0.08 | 11.452    | 11.556  | 6.251   | 16.549  |
+| 9    | 0.25   | 0.45   | +0.04 | 11.452    | 11.450  | 6.175   | 16.732  |
+| 10   | 0.25   | 0.55   | +0.08 | 11.454    | 11.559  | 6.254   | 16.550  |
+
+Full rank range across the 216-combo grid: **11.442** (rank 1) to
+**12.418** (rank 216). Spread ~1.0 Delta-E, mostly driven by anchor —
+rank 1 is always anchor 0.25 in this grid, and anchor 0.50 lands near
+the bottom.
+
+**Winning combo.** `anchor=0.25, amount=0.30, boost=+0.08` — the
+Phase 2.5a "educated-guess" defaults. **No change to the production
+constants.**
+
+**Before/after on sample1.arw.** Baseline mean Delta-E: 11.57 (Phase
+2.5a). Winning combo mean Delta-E: 11.544. A 0.03 improvement — below
+the perceptible threshold (~1.0). Across all three files the winning
+combo is at the bottom of a very flat basin. Every combo in the top 10
+is within 0.012 Delta-E of the winner.
+
+**Per-file sub-optima.** Each file has a slightly different preferred
+combo when ranked on its own, but they all point at `anchor=0.25`:
+
+| file     | best combo                      | mean dE |
+|----------|---------------------------------|---------|
+| sample1  | anchor 0.25, amount 0.30, boost +0.00 | 11.34   |
+| sample2  | anchor 0.50, amount 0.55, boost +0.00 | 6.09    |
+| sample3  | anchor 0.25, amount 0.55, boost +0.16 | 16.39   |
+
+sample1 wants less saturation boost. sample3 wants more. sample2 is a
+different scene type (iPhone ProRAW, vertical portrait) and lands well
+lower in Delta-E overall (6.09 vs 11.34 and 16.39). The mean-of-means
+winner splits the difference at boost +0.08.
+
+**Wider-grid probe.** After the main grid confirmed a 0.25-anchor
+winner, we also probed `anchor ∈ {0.05, 0.10, 0.12, 0.15, 0.18}`.
+Lowest mean-of-means landed at anchor 0.10 (11.301) — a further ~0.14
+improvement vs. the 0.25-anchor winner. **We did not ship that value.**
+Reasoning:
+
+1. The improvement is well below the "barely perceptible" Delta-E 1.0
+   threshold. Every anchor in `[0.05, 0.25]` lands in the same flat
+   basin.
+2. `sips` is known to render more conservatively than Preview.app
+   (the Phase 2.4 agent measured `sips` Laplacian 4.6 vs. Preview.app
+   on-screen ~6.4). Pushing our tone curve toward `sips`'s look fits
+   to `sips` specifically, not to "a viewer default human eyes expect".
+3. The Phase 2.5a rationale for anchoring at 0.25 was that real photos
+   have more content in shadows and lower midtones; anchor 0.25 lifts
+   the mid-to-upper range across the diagonal. Lower anchors (0.10,
+   0.05) would over-lift and could look "washed out" on scenes with
+   already-bright subjects.
+4. Phase 3's DCP profile work will bring per-camera curves. That's the
+   cleaner place to pick scene-specific tone, rather than shifting the
+   single global anchor to match `sips` on three files.
+
+**Scene-dependence observed.** The three files disagree on optimal
+saturation boost (sample1 prefers 0.00, sample3 prefers 0.12–0.16, with
+sample2 happiest at 0.00). This confirms what Phase 3's DCP profile
+work is meant to handle: scene- and sensor-specific tone + saturation
+tuning. The single-global-default is a compromise; DCP gives us a
+per-camera LUT, which will move the needle further than any tuning of
+a global default can.
+
+**Caveats documented.**
+
+- The ARW references (sample1, sample3) are silhouette/outdoor scenes
+  with muted palettes. A portrait with normal skin tones would exercise
+  the tone curve and saturation boost differently; re-running the grid
+  when a vendor RAW fixture lands (Phase 3 ancillary) is advisable.
+- `sips` is the closest automated proxy for "Apple's look" but not a
+  perfect one. It skips capture sharpening that Preview.app shows
+  on-screen. Our sharpen amount 0.30 is at the floor of the grid (we
+  intentionally didn't go below — anything lower would fit to `sips`'s
+  unsharpened export rather than Preview.app's on-screen rendering).
+- Cross-validation uses three files, two of which are the same camera
+  (Sony). More camera diversity in the reference set would catch
+  per-camera quirks that a global tune can't see.
+
+**Files changed.**
+
+- `apps/desktop/examples/raw-tune.rs` (new) — the grid-search tool.
+  Decodes once per input, sweeps combos in parallel, ranks by
+  mean-of-means Delta-E, writes per-file `best-<stem>.png` and a
+  `cross-validation.csv`. Mirrors the tone/saturation/sharpen math
+  inline (same reason as `raw-dev-dump.rs`).
+- `apps/desktop/src/color/tone_curve.rs` — added
+  `pub const DEFAULT_MIDTONE_ANCHOR` + `pub fn apply_tone_curve(rgb,
+  midtone_anchor)` + `pub fn curve(x, midtone_anchor)`. The existing
+  `apply_default_tone_curve` and `default_curve` stay as the default
+  wrappers. A `parametric_curve_anchors_at_supplied_value` test
+  verifies the curve still passes through `(anchor, anchor)` for
+  every anchor in the grid.
+- `apps/desktop/src/color/sharpen.rs` — renamed `SIGMA` / `AMOUNT` to
+  `pub const DEFAULT_SIGMA` / `DEFAULT_AMOUNT`. Added
+  `pub fn sharpen_rgba8_inplace_with(rgba, w, h, sigma, amount)` as
+  the parametric entry point; `sharpen_rgba8_inplace` delegates.
+- `apps/desktop/src/color/saturation.rs` — wording polish only; the
+  module already took `boost` as a parameter.
+- No change to `raw.rs`: pipeline stays on the default apply wrappers.
+- No change to the synthetic-DNG golden: defaults are unchanged, so
+  the regenerated golden is byte-identical to Phase 2.5a's.
+
 ## Summary — Phase 2 wrap-up
 
 Phase 2 closed the four gaps between rawler's sensor-honest output and

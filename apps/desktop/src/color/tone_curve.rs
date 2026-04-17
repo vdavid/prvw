@@ -43,7 +43,7 @@
 //!   neither crush nor lift (they stay on the linear reference), then ramp
 //!   smoothly up into the midtone line.
 //! - **Midtone line** `[SHADOW_KNEE, HIGHLIGHT_KNEE]` — straight line through
-//!   `(MIDTONE_ANCHOR, MIDTONE_ANCHOR)` with slope `m`. The anchor sits at
+//!   `(midtone_anchor, midtone_anchor)` with slope `m`. The anchor sits at
 //!   0.25 (low quarter tones), so the line passes **above** the linear
 //!   reference across the middle and upper midtones. That's the "lifts the
 //!   image" part of an Adobe-neutral tone curve, combined with `m > 1` for
@@ -63,7 +63,8 @@
 //! - **Monotonic scalar curve**: `default_curve(x1) < default_curve(x2)` for
 //!   any `x1 < x2` in `[0, 1]`.
 //! - **Scalar endpoints**: `default_curve(0) == 0`, `default_curve(1) == 1`.
-//! - **Anchor fixed point**: `default_curve(MIDTONE_ANCHOR) == MIDTONE_ANCHOR`.
+//! - **Anchor fixed point**: `default_curve(DEFAULT_MIDTONE_ANCHOR) ==
+//!   DEFAULT_MIDTONE_ANCHOR`.
 //! - **Hue preserved by the buffer apply**: a pure primary `(1, 0, 0)` stays
 //!   on the red axis; only its brightness changes.
 //! - **Neutral gray unchanged by the buffer apply at the anchor**: an
@@ -87,11 +88,13 @@ const HIGHLIGHT_KNEE: f32 = 0.90;
 /// "Medium Contrast" defaults.
 const MIDTONE_SLOPE: f32 = 1.08;
 
-/// Where the midtone line crosses the diagonal `y = x`. Set to 0.25 (low
-/// quarter tones), so that `f(x) > x` across most of the middle and upper
-/// range. That's what gives the overall "lift" that matches how Preview.app
-/// and Affinity render RAW files by default, rather than darkening them.
-const MIDTONE_ANCHOR: f32 = 0.25;
+/// Default `MIDTONE_ANCHOR` used by [`apply_default_tone_curve`]. The midtone
+/// line crosses the diagonal `y = x` at this x value. Set at a low quarter
+/// tone so `f(x) > x` across most of the middle and upper range — the
+/// overall "lift" that matches how Preview.app and Affinity render RAW
+/// files by default. Tuned empirically against `sips` references in Phase
+/// 2.5b; see `docs/notes/raw-support-phase2.md`.
+pub const DEFAULT_MIDTONE_ANCHOR: f32 = 0.25;
 
 /// Slope at `x = 0`. 1.0 keeps the curve tangent to the linear reference at
 /// the origin, so deep shadows stay where they are instead of crushing
@@ -125,6 +128,19 @@ const DARK_EPSILON: f32 = 1.0e-5;
 /// multiple of 3. Pixels with luminance below [`DARK_EPSILON`] are set to
 /// all zeros to avoid divide-by-zero blow-ups.
 pub fn apply_default_tone_curve(rgb: &mut [f32]) {
+    apply_tone_curve(rgb, DEFAULT_MIDTONE_ANCHOR);
+}
+
+/// Parametric variant of [`apply_default_tone_curve`]. Same luminance-only
+/// apply pattern, but the midtone anchor is caller-supplied. Used by the
+/// empirical parameter tuner in `examples/raw-tune.rs` to sweep across a
+/// grid of candidate values; production code stays on
+/// [`apply_default_tone_curve`] with [`DEFAULT_MIDTONE_ANCHOR`].
+///
+/// `midtone_anchor` is clamped into `(0, 1)` at the caller's contract — this
+/// function trusts the input and will produce nonsense curves for values
+/// outside that range.
+pub fn apply_tone_curve(rgb: &mut [f32], midtone_anchor: f32) {
     rgb.par_chunks_exact_mut(3).for_each(|pixel| {
         let r = pixel[0];
         let g = pixel[1];
@@ -139,7 +155,7 @@ pub fn apply_default_tone_curve(rgb: &mut [f32]) {
             pixel[2] = 0.0;
             return;
         }
-        let y_out = default_curve(y_in);
+        let y_out = curve(y_in, midtone_anchor);
         let scale = y_out / y_in;
         pixel[0] = r * scale;
         pixel[1] = g * scale;
@@ -152,9 +168,18 @@ pub fn apply_default_tone_curve(rgb: &mut [f32]) {
 /// midpoint.
 ///
 /// Exposed for unit tests and diagnostic tooling. Inlined for the per-pixel
-/// hot path inside [`apply_default_tone_curve`].
+/// hot path inside [`apply_default_tone_curve`]; [`apply_tone_curve`] goes
+/// straight through [`curve`] for the same reason.
 #[inline]
+#[allow(dead_code)] // used by tests + diag tooling; `apply_*` inlines via `curve`
 pub fn default_curve(x: f32) -> f32 {
+    curve(x, DEFAULT_MIDTONE_ANCHOR)
+}
+
+/// Parametric scalar tone curve. Same shape as [`default_curve`], but the
+/// midtone anchor is caller-supplied so the tuner can sweep it.
+#[inline]
+pub fn curve(x: f32, midtone_anchor: f32) -> f32 {
     // Clamp first: negative values (out-of-gamut matrix outputs) saturate to
     // 0, and post-exposure values above 1.0 saturate to 1.0. The shape below
     // assumes x in [0, 1]. NaN falls through the `>` / `>=` ladder and gets
@@ -168,20 +193,20 @@ pub fn default_curve(x: f32) -> f32 {
     }
 
     if x < SHADOW_KNEE {
-        shadow_hermite(x)
+        shadow_hermite(x, midtone_anchor)
     } else if x > HIGHLIGHT_KNEE {
-        highlight_hermite(x)
+        highlight_hermite(x, midtone_anchor)
     } else {
-        midtone_line(x)
+        midtone_line(x, midtone_anchor)
     }
 }
 
-/// Midtone line through `(MIDTONE_ANCHOR, MIDTONE_ANCHOR)` with slope
+/// Midtone line through `(midtone_anchor, midtone_anchor)` with slope
 /// [`MIDTONE_SLOPE`]. Written in the point-slope form so the intent reads
 /// straight off the code.
 #[inline]
-fn midtone_line(x: f32) -> f32 {
-    MIDTONE_SLOPE * (x - MIDTONE_ANCHOR) + MIDTONE_ANCHOR
+fn midtone_line(x: f32, midtone_anchor: f32) -> f32 {
+    MIDTONE_SLOPE * (x - midtone_anchor) + midtone_anchor
 }
 
 /// Shadow region: cubic Hermite from `(0, 0)` with slope
@@ -189,11 +214,11 @@ fn midtone_line(x: f32) -> f32 {
 /// with slope [`MIDTONE_SLOPE`]. Matches the midtone line in both value and
 /// slope at the join (C¹ continuity), so there's no visible kink.
 #[inline]
-fn shadow_hermite(x: f32) -> f32 {
+fn shadow_hermite(x: f32, midtone_anchor: f32) -> f32 {
     let x0 = 0.0;
     let x1 = SHADOW_KNEE;
     let y0 = 0.0;
-    let y1 = midtone_line(SHADOW_KNEE);
+    let y1 = midtone_line(SHADOW_KNEE, midtone_anchor);
     let m0 = SHADOW_ENDPOINT_SLOPE;
     let m1 = MIDTONE_SLOPE;
     hermite(x, x0, x1, y0, y1, m0, m1)
@@ -203,10 +228,10 @@ fn shadow_hermite(x: f32) -> f32 {
 /// midtone_line(HIGHLIGHT_KNEE))` with slope [`MIDTONE_SLOPE`] to `(1, 1)`
 /// with slope [`HIGHLIGHT_ENDPOINT_SLOPE`]. Same C¹ join as the shadow knee.
 #[inline]
-fn highlight_hermite(x: f32) -> f32 {
+fn highlight_hermite(x: f32, midtone_anchor: f32) -> f32 {
     let x0 = HIGHLIGHT_KNEE;
     let x1 = 1.0;
-    let y0 = midtone_line(HIGHLIGHT_KNEE);
+    let y0 = midtone_line(HIGHLIGHT_KNEE, midtone_anchor);
     let y1 = 1.0;
     let m0 = MIDTONE_SLOPE;
     let m1 = HIGHLIGHT_ENDPOINT_SLOPE;
@@ -244,11 +269,23 @@ mod tests {
 
     #[test]
     fn midtone_anchor_is_preserved() {
-        // The midtone line passes through (MIDTONE_ANCHOR, MIDTONE_ANCHOR),
-        // so f(MIDTONE_ANCHOR) == MIDTONE_ANCHOR exactly. This anchors the
-        // curve's crossing with the diagonal and keeps its lift direction
-        // predictable.
-        assert!((default_curve(MIDTONE_ANCHOR) - MIDTONE_ANCHOR).abs() < 1e-6);
+        // The midtone line passes through (DEFAULT_MIDTONE_ANCHOR,
+        // DEFAULT_MIDTONE_ANCHOR), so f(DEFAULT_MIDTONE_ANCHOR) ==
+        // DEFAULT_MIDTONE_ANCHOR exactly. This anchors the curve's crossing
+        // with the diagonal and keeps its lift direction predictable.
+        assert!((default_curve(DEFAULT_MIDTONE_ANCHOR) - DEFAULT_MIDTONE_ANCHOR).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parametric_curve_anchors_at_supplied_value() {
+        // Sweep a few candidate anchors and check the curve's fixed point
+        // lands on the anchor for each.
+        for anchor in [0.25_f32, 0.30, 0.35, 0.40, 0.45, 0.50] {
+            assert!(
+                (curve(anchor, anchor) - anchor).abs() < 1e-6,
+                "curve(anchor={anchor}, anchor={anchor}) != {anchor}"
+            );
+        }
     }
 
     #[test]
@@ -292,7 +329,7 @@ mod tests {
 
     #[test]
     fn midtone_lifts_the_image() {
-        // With the anchor at MIDTONE_ANCHOR (0.25) and slope > 1, the midtone
+        // With the anchor at DEFAULT_MIDTONE_ANCHOR and slope > 1, the midtone
         // line sits above the diagonal for every x above the anchor. Check a
         // few representative points: neutral midtone (0.50), upper midtone
         // (0.75), and a highlight knee sample (0.85).
@@ -334,8 +371,8 @@ mod tests {
     fn continuous_at_shadow_knee() {
         // The Hermite knee shares value + slope with the midtone line, so
         // numerical evaluation should agree to within float rounding.
-        let shadow_side = shadow_hermite(SHADOW_KNEE);
-        let midtone_side = midtone_line(SHADOW_KNEE);
+        let shadow_side = shadow_hermite(SHADOW_KNEE, DEFAULT_MIDTONE_ANCHOR);
+        let midtone_side = midtone_line(SHADOW_KNEE, DEFAULT_MIDTONE_ANCHOR);
         assert!(
             (shadow_side - midtone_side).abs() < 1e-5,
             "shadow knee discontinuity: {shadow_side} vs {midtone_side}"
@@ -344,8 +381,8 @@ mod tests {
 
     #[test]
     fn continuous_at_highlight_knee() {
-        let highlight_side = highlight_hermite(HIGHLIGHT_KNEE);
-        let midtone_side = midtone_line(HIGHLIGHT_KNEE);
+        let highlight_side = highlight_hermite(HIGHLIGHT_KNEE, DEFAULT_MIDTONE_ANCHOR);
+        let midtone_side = midtone_line(HIGHLIGHT_KNEE, DEFAULT_MIDTONE_ANCHOR);
         assert!(
             (highlight_side - midtone_side).abs() < 1e-5,
             "highlight knee discontinuity: {highlight_side} vs {midtone_side}"
@@ -364,7 +401,7 @@ mod tests {
         // A neutral pixel at the midtone anchor has Y_in == Y_out == anchor,
         // so the scale factor is exactly 1. Output equals input to within
         // float rounding.
-        let anchor = MIDTONE_ANCHOR;
+        let anchor = DEFAULT_MIDTONE_ANCHOR;
         let mut buf = vec![anchor, anchor, anchor];
         apply_default_tone_curve(&mut buf);
         for (got, want) in buf.iter().zip([anchor, anchor, anchor]) {
