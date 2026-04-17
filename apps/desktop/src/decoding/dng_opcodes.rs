@@ -54,9 +54,28 @@
 //!   pixels and rectangles; each gets replaced with the average of its good
 //!   neighbors.
 //! - **Opcode 9 — `GainMap`**. Lens-shading / vignette correction. Bilinear
-//!   interpolation over the gain grid, Bayer-aware for CFA data (pixel
-//!   modified only when CFA color index matches the opcode's `plane`),
-//!   plain RGB-plane scaling for LinearRaw / post-demosaic buffers.
+//!   interpolation over the gain grid. On a CFA mosaic the gain scales
+//!   every pixel the rect/pitch selects, regardless of Bayer color — see
+//!   the note below on the `Plane`/`Planes` fields. On a 3-plane
+//!   post-demosaic RGB buffer the `Plane` field names the channel and the
+//!   gain only touches that channel.
+//!
+//! ## DNG spec on `GainMap` `Plane` / `Planes` (§ 6.2.2 / Ch. 7)
+//!
+//! > "The first plane, and the number of planes, to be modified are
+//! >  specified by the Plane and Planes parameters. If RowPitch not equal
+//! >  to one, then only every RowPitch rows starting at the Top are
+//! >  affected. If ColPitch is not equal to one, then only every ColPitch
+//! >  columns starting at Left are affected."
+//!
+//! `Plane` indexes into *image planes* of the photometric interpretation,
+//! NOT CFA color channels. A CFA photometric image has exactly one plane
+//! (the mosaic itself); Bayer phase selection happens via `Top/Left`
+//! offsets combined with `RowPitch`/`ColPitch`. iPhone ProRAW relies on
+//! this: it ships four CFA `GainMap`s, all with `Plane = 0, Planes = 1`,
+//! differing only in `(Top, Left)` offsets with pitch 2×2, one per Bayer
+//! position. Misreading `Plane` as a CFA color index applies the gain to
+//! the red plane only and corners the output into a radial red cast.
 //!
 //! Stubbed (log + skip if optional, warn if mandatory):
 //!
@@ -446,17 +465,17 @@ impl GainMap {
     }
 }
 
-/// Apply a `GainMap` opcode on a CFA (Bayer) buffer. `data` is a single-plane
-/// mosaic, `cfa_color_at(y, x)` returns the CFA color index at that pixel.
-/// The opcode's `plane` is the CFA color index it applies to; only pixels of
-/// that plane are scaled.
-pub fn apply_gain_map_cfa(
-    data: &mut [f32],
-    width: u32,
-    height: u32,
-    map: &GainMap,
-    cfa_color_at: impl Fn(u32, u32) -> u32 + Sync,
-) {
+/// Apply a `GainMap` opcode on a CFA (Bayer) buffer. `data` is the
+/// single-plane mosaic. Per DNG spec § 6.2.2, a CFA photometric image is
+/// a single plane: `Plane` and `Planes` don't select a Bayer color here.
+/// Bayer-phase selection comes from the spatial `(Top, Left)` offset and
+/// the `(RowPitch, ColPitch)` step — a file wanting per-phase correction
+/// emits one `GainMap` per phase at the right offset with pitch 2×2.
+/// Every pixel the rect and pitch select gets its gain applied, regardless
+/// of CFA color. The `Plane` / `Planes` fields stay carried on the struct
+/// for spec completeness; on CFA input only `Plane = 0, Planes = 1` is
+/// well-defined and any other value is out-of-spec.
+pub fn apply_gain_map_cfa(data: &mut [f32], width: u32, height: u32, map: &GainMap) {
     let w = width as usize;
     let h = height as usize;
     if data.len() != w * h {
@@ -464,7 +483,6 @@ pub fn apply_gain_map_cfa(
     }
     let rect_h = map.right.saturating_sub(map.left).max(1) as f64;
     let rect_v = map.bottom.saturating_sub(map.top).max(1) as f64;
-    let target_plane = map.plane;
 
     data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
         let y_u = y as u32;
@@ -485,9 +503,6 @@ pub fn apply_gain_map_cfa(
                 continue;
             }
             if !(x_u - map.left).is_multiple_of(map.col_pitch) {
-                continue;
-            }
-            if cfa_color_at(y_u, x_u) != target_plane {
                 continue;
             }
             let h_norm = (x_u - map.left) as f64 / rect_h;
@@ -1031,7 +1046,7 @@ mod tests {
         );
         let map = parse_gain_map(&params).unwrap();
         let mut data = vec![0.5_f32; 16];
-        apply_gain_map_cfa(&mut data, 4, 4, &map, |_y, _x| 0);
+        apply_gain_map_cfa(&mut data, 4, 4, &map);
         for v in &data {
             assert!((v - 0.5).abs() < 1e-6);
         }
@@ -1059,7 +1074,7 @@ mod tests {
         );
         let map = parse_gain_map(&params).unwrap();
         let mut data = vec![1.0_f32; 16];
-        apply_gain_map_cfa(&mut data, 4, 4, &map, |_y, _x| 0);
+        apply_gain_map_cfa(&mut data, 4, 4, &map);
         // Every pixel multiplied by 2.0
         for v in &data {
             assert!((v - 2.0).abs() < 1e-6);
@@ -1067,43 +1082,74 @@ mod tests {
     }
 
     #[test]
-    fn gain_map_is_bayer_aware() {
-        // Applies plane=0 (R) to an RGGB pattern. Only the R pixels should be scaled.
+    fn gain_map_cfa_planes_1_touches_every_pixel_regardless_of_bayer() {
+        // DNG spec § 6.2.2: on a CFA photometric (single-plane) image,
+        // `Plane = 0, Planes = 1` means "the whole plane", and Bayer-phase
+        // selection happens via `Top/Left + RowPitch/ColPitch`. The gain
+        // must scale every pixel the rect + pitch select, regardless of
+        // CFA color. This is the iPhone ProRAW case.
         let params = build_gain_map_params(
             0,
             0,
             4,
-            4,
+            4, // rect covers the whole 4×4 buffer
             1,
-            1,
+            1, // row_pitch = col_pitch = 1: every pixel is selected
             0,
-            1,
+            1, // Plane = 0, Planes = 1
             2,
-            2,
+            2, // 2×2 gain grid
             1.0,
             1.0,
             0.0,
             0.0,
-            &[3.0, 3.0, 3.0, 3.0],
+            &[2.0, 2.0, 2.0, 2.0], // uniform gain of 2.0
         );
         let map = parse_gain_map(&params).unwrap();
         let mut data = vec![1.0_f32; 16];
-        apply_gain_map_cfa(&mut data, 4, 4, &map, |y, x| {
-            // RGGB: plane 0 = R at (0,0), (0,2), (2,0), (2,2) and so on
-            match (y % 2, x % 2) {
-                (0, 0) => 0, // R
-                (0, 1) => 1, // G
-                (1, 0) => 1, // G
-                (1, 1) => 2, // B
-                _ => unreachable!(),
-            }
-        });
+        apply_gain_map_cfa(&mut data, 4, 4, &map);
+        // ALL pixels scaled by 2.0, regardless of where they sit in the CFA
+        // mosaic. A pre-fix applier keyed on `cfa_color_at == map.plane`
+        // would have scaled only R pixels and left G/G/B untouched — which
+        // is exactly the bug that produced sample2.dng's radial red cast.
+        for (i, v) in data.iter().enumerate() {
+            assert!((v - 2.0).abs() < 1e-6, "pixel {i}: got {v}, expected 2.0");
+        }
+    }
+
+    #[test]
+    fn gain_map_cfa_pitch_2_reaches_only_the_matching_bayer_positions() {
+        // Mirror of the iPhone ProRAW pattern: one GainMap with offset
+        // (0, 0) and pitch (2, 2) only touches the top-left of each 2×2
+        // block. The Bayer phase is selected spatially, not by plane.
+        let params = build_gain_map_params(
+            0,
+            0,
+            4,
+            4, //
+            2,
+            2, // pitch 2×2: every other row/column
+            0,
+            1, // Plane = 0, Planes = 1
+            2,
+            2, //
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            &[5.0, 5.0, 5.0, 5.0],
+        );
+        let map = parse_gain_map(&params).unwrap();
+        let mut data = vec![1.0_f32; 16];
+        apply_gain_map_cfa(&mut data, 4, 4, &map);
         for y in 0..4 {
             for x in 0..4 {
-                let v = data[y * 4 + x];
-                let is_red = y % 2 == 0 && x % 2 == 0;
-                let want = if is_red { 3.0 } else { 1.0 };
-                assert!((v - want).abs() < 1e-6, "y={y} x={x} v={v} want={want}");
+                let want = if y % 2 == 0 && x % 2 == 0 { 5.0 } else { 1.0 };
+                let got = data[y * 4 + x];
+                assert!(
+                    (got - want).abs() < 1e-6,
+                    "y={y} x={x}: got {got}, want {want}"
+                );
             }
         }
     }
@@ -1139,6 +1185,43 @@ mod tests {
     }
 
     #[test]
+    fn gain_map_on_rgb_with_plane_0_leaves_g_and_b_untouched() {
+        // `Planes = 3, Plane = 0` on an RGB buffer should still target only
+        // the R channel — `Plane` indexes into planes, the count is in
+        // `Planes`. Today's RGB applier ignores `Planes` and touches only
+        // `map.plane`; this test pins the current per-channel behavior so
+        // we don't regress the Bayer-CFA fix onto the RGB path.
+        let params = build_gain_map_params(
+            0,
+            0,
+            4,
+            4, //
+            1,
+            1, //
+            0,
+            3, // Plane = 0, Planes = 3 (R, G, and B nominally)
+            2,
+            2, //
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            &[2.0, 2.0, 2.0, 2.0],
+        );
+        let map = parse_gain_map(&params).unwrap();
+        let mut data = vec![1.0_f32; 4 * 4 * 3];
+        apply_gain_map_rgb(&mut data, 4, 4, &map);
+        for chunk in data.chunks_exact(3) {
+            assert!((chunk[0] - 2.0).abs() < 1e-6, "R should have scaled");
+            assert!(
+                (chunk[1] - 1.0).abs() < 1e-6,
+                "G untouched (Planes > 1 not yet honored on RGB; see `apply_gain_map_rgb`)"
+            );
+            assert!((chunk[2] - 1.0).abs() < 1e-6, "B untouched");
+        }
+    }
+
+    #[test]
     fn gain_map_bilinear_interpolates_between_corners() {
         // 2×2 grid, corners at 1.0, 2.0, 2.0, 3.0. Image 2×2 with rect
         // covering the whole image. Each map point lands on a pixel corner
@@ -1162,7 +1245,7 @@ mod tests {
         );
         let map = parse_gain_map(&params).unwrap();
         let mut data = vec![1.0_f32; 4];
-        apply_gain_map_cfa(&mut data, 2, 2, &map, |_y, _x| 0);
+        apply_gain_map_cfa(&mut data, 2, 2, &map);
         // h_norm = (x - left) / (right - left); x = 0 -> 0, x = 1 -> 0.5.
         // (Right edge x = 1 is the *last pixel*, not "one past"; rect is
         // half-open [left, right) in our apply but the normalisation uses

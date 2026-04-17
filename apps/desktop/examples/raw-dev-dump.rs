@@ -957,7 +957,6 @@ fn apply_opcode_list(decoder: &dyn Decoder, raw: &mut RawImage, tag: DngTag, lab
     let width = raw.width as u32;
     let height = raw.height as u32;
     let cpp = raw.cpp;
-    let cfa = raw.camera.cfa.clone();
     let was_integer = matches!(raw.data, RawImageData::Integer(_));
     let mut data = raw.data.as_f32().into_owned();
     for (id, _flags, _len, params) in &entries {
@@ -965,10 +964,9 @@ fn apply_opcode_list(decoder: &dyn Decoder, raw: &mut RawImage, tag: DngTag, lab
             && let Some(map) = parse_gain_map_params(params)
             && cpp == 1
         {
-            let cfa_ref = cfa.clone();
-            apply_gain_map_cfa(&mut data, width, height, &map, move |y, x| {
-                cfa_ref.color_at(y as usize, x as usize) as u32
-            });
+            // CFA photometric = one plane per DNG spec § 6.2.2. Bayer-
+            // phase selection is spatial (rect + pitch), not per-color.
+            apply_gain_map_cfa(&mut data, width, height, &map);
         }
     }
     if was_integer {
@@ -1007,6 +1005,10 @@ struct GainMapInline {
     left: u32,
     bottom: u32,
     right: u32,
+    /// Parsed for spec completeness. On CFA photometric input (the only
+    /// case `apply_gain_map_cfa` is called with here) there's one plane
+    /// per DNG spec § 6.2.2, so this is always 0.
+    #[allow(dead_code)]
     plane: u32,
     row_pitch: u32,
     col_pitch: u32,
@@ -1071,13 +1073,10 @@ fn parse_gain_map_params(params: &[u8]) -> Option<GainMapInline> {
     })
 }
 
-fn apply_gain_map_cfa(
-    data: &mut [f32],
-    width: u32,
-    height: u32,
-    map: &GainMapInline,
-    cfa_color_at: impl Fn(u32, u32) -> u32,
-) {
+/// CFA GainMap apply. Per DNG spec § 6.2.2, CFA photometric data has one
+/// plane; Bayer-phase selection is spatial (rect + pitch), not per-color.
+/// Keep in sync with `src/decoding/dng_opcodes.rs::apply_gain_map_cfa`.
+fn apply_gain_map_cfa(data: &mut [f32], width: u32, height: u32, map: &GainMapInline) {
     let w = width as usize;
     if data.len() != w * (height as usize) {
         return;
@@ -1120,9 +1119,6 @@ fn apply_gain_map_cfa(
                 continue;
             }
             if !(x - map.left).is_multiple_of(map.col_pitch) {
-                continue;
-            }
-            if cfa_color_at(y, x) != map.plane {
                 continue;
             }
             let h_norm = (x - map.left) as f64 / rect_h;

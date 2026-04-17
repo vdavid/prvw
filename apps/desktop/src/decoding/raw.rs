@@ -761,7 +761,6 @@ fn apply_cfa_opcode_list(
     let width = raw.width as u32;
     let height = raw.height as u32;
     let cpp = raw.cpp;
-    let cfa = raw.camera.cfa.clone();
     let was_integer = matches!(raw.data, RawImageData::Integer(_));
     let mut data = raw.data.as_f32().into_owned();
 
@@ -783,10 +782,10 @@ fn apply_cfa_opcode_list(
                         map.col_pitch,
                     );
                     if cpp == 1 {
-                        let cfa_ref = cfa.clone();
-                        apply_gain_map_cfa(&mut data, width, height, &map, move |y, x| {
-                            cfa_ref.color_at(y as usize, x as usize) as u32
-                        });
+                        // CFA mosaic = one plane per DNG spec § 6.2.2.
+                        // Bayer-phase selection is spatial (rect + pitch),
+                        // NOT per-color; see `dng_opcodes` module docs.
+                        apply_gain_map_cfa(&mut data, width, height, &map);
                     } else if cpp == 3 {
                         // `LinearRaw` photometric: plane index is the RGB
                         // channel, not the Bayer phase.

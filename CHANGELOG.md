@@ -6,6 +6,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- iPhone / Pixel DNGs no longer render with a radial red cast. Phase 3.0's DNG `OpcodeList2` applier treated the
+  `GainMap` opcode's `Plane` field as a CFA color index, which meant the R-phase lens-shading correction fired while
+  the G1 / G2 / B ones were skipped — corners of the frame wanted a uniform gain lift but got it on the red channel
+  only. Per DNG spec 1.6 § 6.2.2, `Plane` indexes into photometric image planes, not CFA colors; a CFA image is a
+  single plane, and Bayer-phase selection comes from `Top/Left` + `RowPitch`/`ColPitch`. The applier now scales every
+  pixel the rect and pitch select, matching what LibRaw, RawTherapee, and Adobe's own SDK do. Non-DNG files (ARW,
+  CR2, NEF, and so on) and DNGs without `GainMap` opcodes decode byte-for-byte identically to before. See
+  `docs/notes/raw-support-phase3.md`
+
 ### Added
 
 - RAW pipeline gained **opt-in Adobe DCP (Digital Camera Profile) support**. If the user has a `.dcp` matching the

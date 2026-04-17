@@ -127,9 +127,19 @@ are present — the opcode passes are silent no-ops.
 - `parse_refuses_insane_count` — guard against adversarial counts
 - `gain_map_identity_leaves_data_unchanged` — all-ones gain on CFA
 - `gain_map_scales_corner_pixels` — uniform non-unity gain on CFA
-- `gain_map_is_bayer_aware` — plane=0 on RGGB only modifies R pixels
+- `gain_map_cfa_planes_1_touches_every_pixel_regardless_of_bayer` —
+  pins the Phase 3.3 bugfix: on CFA photometric, `Plane = 0, Planes = 1`
+  applies to every pixel the rect + pitch select, NOT only to pixels of
+  a matching CFA color
+- `gain_map_cfa_pitch_2_reaches_only_the_matching_bayer_positions` —
+  the iPhone ProRAW pattern: spatial pitch `(2, 2)` picks one Bayer
+  phase per GainMap entry
 - `gain_map_on_rgb_only_touches_target_plane` — plane=1 on RGB only
   modifies G channel
+- `gain_map_on_rgb_with_plane_0_leaves_g_and_b_untouched` — counterpart
+  to the CFA test: on a 3-plane RGB buffer, `Plane` IS the channel index
+  (spec § 6.2.2); the RGB applier currently only touches `map.plane`
+  regardless of `Planes` (see follow-ups below)
 - `gain_map_bilinear_interpolates_between_corners` — 2×2 grid, four
   known-output pixels
 - `warp_rectilinear_identity_is_noop` — kr0=1 identity warp leaves input
@@ -544,3 +554,62 @@ cargo run --example dcp-inspect -- /tmp/prvw-dcp-test/SONY_ILCE-7M3.dcp
 - `apps/desktop/examples/dcp-inspect.rs` (new): standalone DCP dumper.
 - Docs: `raw-roadmap.md`, this file, `color/CLAUDE.md`,
   `decoding/CLAUDE.md`, `CHANGELOG.md`.
+
+## Phase 3.3 — CFA GainMap plane-semantics bugfix
+
+Sample2.dng was rendering with a strong red cast that grew with radial
+distance from the center — a textbook sign of a lens-shading correction
+being applied to one channel only. Root cause: `apply_gain_map_cfa`
+filtered each pixel by `cfa_color_at(y, x) == map.plane`, treating the
+opcode's `Plane` field as a CFA color index. On iPhone ProRAW, all four
+OpcodeList2 `GainMap`s carry `Plane = 0, Planes = 1` and differ only by
+their `(Top, Left)` offsets combined with pitch `(2, 2)`. The R-phase
+GainMap passed the filter, so R pixels got their corner lift. The
+G1/G2/B-phase GainMaps failed the filter and skipped every pixel.
+Corners that wanted a ~+30 % uniform gain across all channels got +30 %
+on R only, which is the red cast.
+
+DNG spec 1.6 § 6.2.2 (Chapter 7 in the PDF) is clear: "The first plane,
+and the number of planes, to be modified are specified by the Plane and
+Planes parameters." `Plane` indexes into the photometric interpretation's
+image planes, NOT CFA color channels. A CFA photometric image has one
+plane — the mosaic itself. Bayer-phase selection comes from `Top/Left`
+plus `RowPitch`/`ColPitch`. Apple, LibRaw, RawTherapee, and Adobe's own
+SDK all handle it this way.
+
+Fix: `apply_gain_map_cfa` drops the CFA-color filter and its
+`cfa_color_at` closure parameter. Every pixel the rect and pitch select
+gets the gain. On sample2.dng the red cast is gone and the bathroom reads
+neutral end-to-end; on the synthetic DNG and on ARW / CR2 / NEF files
+(none of which carry CFA `GainMap`s) the decode is byte-for-byte
+identical to Phase 3.2. `apply_gain_map_rgb` is untouched — on a 3-plane
+post-demosaic RGB buffer, `Plane` IS the channel index per spec, and the
+current one-channel-per-opcode behavior is correct.
+
+Pinned with two new unit tests:
+`gain_map_cfa_planes_1_touches_every_pixel_regardless_of_bayer` asserts
+every pixel in a rect+pitch 1 rect gets scaled, and
+`gain_map_cfa_pitch_2_reaches_only_the_matching_bayer_positions` asserts
+the iPhone pattern (one Bayer phase per offset + pitch 2 GainMap).
+
+### Follow-ups (not fixed in this commit)
+
+- `apply_gain_map_rgb` ignores `Planes` — it always modifies only the
+  single `map.plane` channel. A `Plane = 0, Planes = 3, MapPlanes = 1`
+  GainMap on a post-demosaic buffer would touch R only, though spec
+  § 6.2.2 says it should touch all three channels with the same gain.
+  None of our fixtures ship this pattern; flagged for a future phase.
+- `FixBadPixelsConstant` / `FixBadPixelsList` ignore their `bayer_phase`
+  field. A red bad pixel is currently interpolated from all eight
+  neighbors regardless of CFA color; a Bayer-aware applier would restrict
+  to same-color neighbors. This is a quality nit, not a spec bug. No
+  fixture exercises either opcode today.
+
+### Files touched
+
+- `apps/desktop/src/decoding/dng_opcodes.rs` — drop the CFA-color filter
+  in `apply_gain_map_cfa`; module doc quotes the spec.
+- `apps/desktop/src/decoding/raw.rs` — caller drops the `cfa_color_at`
+  closure; no more `cfa` clone.
+- `apps/desktop/examples/raw-dev-dump.rs` — mirror the fix.
+- Docs: this file, `CHANGELOG.md`.
