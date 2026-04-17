@@ -14,6 +14,13 @@
 //!
 //! Timing: `main()` delays 500ms after `EventLoop::new()` before showing the window. If
 //! an Apple Event arrives in that window, onboarding is skipped entirely.
+//!
+//! **Close = quit.** While the onboarding is up, no winit window exists — so a raw
+//! AppKit close wouldn't propagate to winit's event loop, and the process would hang.
+//! `OnboardingDelegate::windowWillClose:` is set as the window's delegate and sends
+//! `AppCommand::Exit` when the user dismisses it. `close_window()` (called when a file
+//! arrives via Apple Event) detaches the delegate before closing so the file-arrived
+//! transition isn't misread as a user dismiss.
 
 use crate::platform::macos::ui_common::{
     add_vibrancy_background, as_view, center_window, is_window_already_open, load_app_icon,
@@ -149,6 +156,16 @@ define_class!(
         fn poll_status(&self, _timer: &AnyObject) {
             let state = OnboardingState::current(self.ivars().is_dev_build);
             self.ivars().ui.render(&state);
+        }
+
+        /// NSWindowDelegate callback. Fires when the user dismisses the onboarding
+        /// window (Close button, red traffic light, ESC). The file-arrived path detaches
+        /// this delegate before calling `close`, so this only runs for user-initiated
+        /// closes — which means "quit," since there's nothing else to show.
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &AnyObject) {
+            log::info!("Onboarding dismissed by user, exiting");
+            crate::commands::send_command(crate::commands::AppCommand::Exit);
         }
     }
 );
@@ -302,6 +319,9 @@ pub fn show_window() {
     unsafe {
         set_default_button.setTarget(Some(&onboarding_delegate as &AnyObject));
         set_default_button.setAction(Some(sel!(setAsDefault:)));
+        // Route the close (Close button / red traffic light / ESC) through our
+        // windowWillClose: handler so a user dismiss turns into AppCommand::Exit.
+        let _: () = msg_send![&*window, setDelegate: &*onboarding_delegate];
     };
 
     // Non-modal: Close button uses performClose: (not stopModalWithCode:)
@@ -422,7 +442,9 @@ pub fn show_window() {
     log::debug!("Non-modal onboarding window shown");
 }
 
-/// Close the onboarding window if it's open.
+/// Close the onboarding window if it's open. Detaches the window delegate first so
+/// the windowWillClose: handler doesn't mistake this for a user dismiss (which would
+/// send AppCommand::Exit — we're transitioning to the viewer, not quitting).
 pub fn close_window() {
     unsafe {
         let mtm = MainThreadMarker::new_unchecked();
@@ -436,6 +458,8 @@ pub fn close_window() {
                 let win_title: Retained<NSString> = msg_send![win, title];
                 let visible: bool = msg_send![win, isVisible];
                 if visible && win_title.isEqualToString(&target) {
+                    let null_delegate: *const AnyObject = std::ptr::null();
+                    let _: () = msg_send![win, setDelegate: null_delegate];
                     let _: () = msg_send![win, close];
                     log::debug!("Closed onboarding window");
                     return;
