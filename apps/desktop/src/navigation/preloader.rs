@@ -1,4 +1,4 @@
-use crate::imaging::loader::{self, DecodedImage};
+use crate::decoding::{self, DecodedImage};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -307,7 +307,7 @@ impl Preloader {
                     .to_string_lossy()
                     .to_string();
                 let start = Instant::now();
-                match loader::load_image_cancellable(
+                match decoding::load_image_cancellable(
                     &path,
                     &cancelled,
                     &display_icc,

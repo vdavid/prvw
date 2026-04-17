@@ -1,3 +1,31 @@
+//! # Window (main viewer window)
+//!
+//! Everything about the main image-viewer window: creation, fullscreen, auto-fit resize,
+//! title-bar vibrancy.
+//!
+//! Not to be confused with `features/settings/window.rs` (the Settings window) or
+//! `features/about/` / `features/onboarding/` (those AppKit panels). This is `winit`'s
+//! main window.
+//!
+//! ## Key patterns
+//!
+//! - **Window + wgpu surface in `resumed()`.** Not at startup. Required by winit 0.30
+//!   on macOS.
+//! - **Auto-fit resize.** `resize_to_fit_image` computes physical size and returns it
+//!   synchronously — callers can pass it straight to `renderer.resize()` instead of
+//!   waiting for the asynchronous `Resized` event.
+//! - **Title-bar vibrancy.** `NSVisualEffectView` layered under the wgpu Metal layer,
+//!   cfg-gated for macOS. `set_titlebar_vibrancy_visible` toggles based on the
+//!   `title_bar` setting and fullscreen state.
+//!
+//! ## Gotchas
+//!
+//! - **`request_inner_size` is async on macOS.** After calling it, `inner_size()` still
+//!   returns the OLD value. That's why `resize_to_fit_image` returns the computed size.
+//! - **Fullscreen appearance hand-off.** Toggling fullscreen triggers a `Resized` event
+//!   which calls `set_fullscreen_appearance` to swap the background (vibrancy → solid
+//!   black in fullscreen).
+
 use crate::pixels::{
     Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
     to_logical_size,

@@ -4,6 +4,8 @@
 //! Uses CoreServices FFI directly (via objc2-core-services) — near-instant,
 //! no Swift toolchain dependency.
 
+pub mod settings_panel;
+
 // These CoreServices functions are deprecated in favor of NSWorkspace async methods,
 // but the sync versions are simpler and work fine for our use case.
 use objc2_core_foundation::CFString;

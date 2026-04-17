@@ -5,19 +5,25 @@
 //! `execute_command` (see `executor.rs`).
 
 mod executor;
+mod shared_state;
 
+pub(crate) use shared_state::SharedAppState;
+
+#[cfg(target_os = "macos")]
+use crate::color::display_profile;
 use crate::commands::{self, AppCommand};
-use crate::imaging::{color, directory, loader, preloader};
+use crate::diagnostics::NavigationRecord;
+use crate::navigation::{directory, preloader};
 use crate::pixels::{
     Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
     to_logical_size,
 };
+use crate::render::{renderer, text};
 #[cfg(target_os = "macos")]
-use crate::platform::macos::{display_profile, native_ui, updater};
-use crate::qa::{self, SharedAppState};
-use crate::render::{renderer, text, view};
-use crate::{TITLE_BAR_HEIGHT, input, menu, settings, window};
-use std::collections::VecDeque;
+use crate::updater;
+use crate::{
+    TITLE_BAR_HEIGHT, color, decoding, input, menu, navigation, qa, settings, window, zoom,
+};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -27,73 +33,47 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
-/// A record of a single navigation event, for performance diagnostics.
-pub struct NavigationRecord {
-    pub from_index: usize,
-    pub to_index: usize,
-    pub was_cached: bool,
-    pub total_time: Duration,
-    pub timestamp: Instant,
-}
-
 /// Application state, created before the event loop starts.
 /// The window and renderer are initialized in `resumed()` (required by winit 0.30 on macOS).
 pub(crate) struct App {
-    file_path: PathBuf,
-    /// If multiple files were passed on the CLI, use them as the navigation set instead of
-    /// scanning the directory.
-    explicit_files: Option<Vec<PathBuf>>,
-    window: Option<Arc<Window>>,
-    renderer: Option<renderer::Renderer>,
-    view_state: view::ViewState,
-    app_menu: Option<menu::AppMenu>,
-    dir_list: Option<directory::DirectoryList>,
-    preloader: Option<preloader::Preloader>,
-    image_cache: preloader::ImageCache,
-    /// Keyboard modifier state (Cmd, Shift, etc.)
-    modifiers: ModifiersState,
-    /// Mouse drag tracking
-    drag_start: Option<(Logical<f64>, Logical<f64>)>,
-    last_mouse_pos: (Logical<f64>, Logical<f64>),
-    /// Double-click detection
-    last_click_time: Option<Instant>,
-    /// Whether we need to re-render next frame
-    needs_redraw: bool,
-    /// QA server shared state and event loop proxy
-    shared_state: Arc<Mutex<SharedAppState>>,
-    event_loop_proxy: EventLoopProxy<AppCommand>,
-    /// Handle to the QA server thread (kept alive for the app's lifetime)
-    _qa_handle: Option<std::thread::JoinHandle<()>>,
-    /// Recent navigation records for performance diagnostics (newest last, cap 10).
-    navigation_history: VecDeque<NavigationRecord>,
-    /// Current image dimensions (stored so resize can update the view without needing the cache).
-    current_image_size: Option<(u32, u32)>,
-    /// Whether the window auto-resizes to fit each loaded image.
-    auto_fit_window: bool,
-    /// Whether small images are enlarged to fill the window.
-    enlarge_small_images: bool,
-    /// Whether ICC color management is enabled (Level 1: source -> sRGB).
-    icc_color_management: bool,
-    /// Whether to use the display's ICC profile (Level 2) or sRGB (Level 1).
-    color_match_display: bool,
-    /// Whether to use relative colorimetric rendering intent instead of perceptual.
-    use_relative_colorimetric: bool,
-    /// Whether scroll wheel/touchpad zooms (true) or navigates images (false).
-    scroll_to_zoom: bool,
-    /// Whether to reserve space at the top for the title bar.
-    title_bar: bool,
-    /// Current display scale factor (Retina = 2.0). Updated on window creation and
-    /// `ScaleFactorChanged` events. Defaults to 2.0 before the window exists.
-    scale_factor: f64,
+    // ── Launch ──────────────────────────────────────────────────────
+    pub(crate) file_path: PathBuf,
+    /// If multiple files were passed on the CLI, use them as the navigation set instead
+    /// of scanning the directory.
+    pub(crate) explicit_files: Option<Vec<PathBuf>>,
     /// True when launched with no CLI files (Finder double-click or Dock launch).
-    /// The app waits for an Apple Event before creating the main window.
-    waiting_for_file: bool,
-    /// When waiting_for_file: the time we started waiting. After 500ms with no file,
+    pub(crate) waiting_for_file: bool,
+    /// When `waiting_for_file`: the time we started waiting. After 500ms with no file,
     /// show the onboarding window.
-    wait_start: Option<Instant>,
-    /// ICC profile bytes for the current display (target color space for image decoding).
-    /// Defaults to system sRGB; updated when the display is detected or the window moves.
-    display_icc: Vec<u8>,
+    pub(crate) wait_start: Option<Instant>,
+
+    // ── Handles ─────────────────────────────────────────────────────
+    pub(crate) window: Option<Arc<Window>>,
+    pub(crate) renderer: Option<renderer::Renderer>,
+    pub(crate) app_menu: Option<menu::AppMenu>,
+
+    // ── Per-feature state ───────────────────────────────────────────
+    pub(crate) zoom: zoom::State,
+    pub(crate) color: color::State,
+    pub(crate) navigation: navigation::State,
+
+    // ── Cross-cutting toggles (owned by App because they don't fit one feature) ──
+    /// Whether to reserve space at the top for the title bar.
+    pub(crate) title_bar: bool,
+
+    // ── Runtime input / rendering ───────────────────────────────────
+    pub(crate) modifiers: ModifiersState,
+    pub(crate) drag_start: Option<(Logical<f64>, Logical<f64>)>,
+    pub(crate) last_mouse_pos: (Logical<f64>, Logical<f64>),
+    pub(crate) last_click_time: Option<Instant>,
+    pub(crate) needs_redraw: bool,
+    /// Current display scale factor (Retina = 2.0).
+    pub(crate) scale_factor: f64,
+
+    // ── Cross-thread ────────────────────────────────────────────────
+    pub(crate) shared_state: Arc<Mutex<SharedAppState>>,
+    pub(crate) event_loop_proxy: EventLoopProxy<AppCommand>,
+    _qa_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl App {
@@ -108,34 +88,24 @@ impl App {
         Self {
             file_path,
             explicit_files,
+            waiting_for_file,
+            wait_start: None,
             window: None,
             renderer: None,
-            view_state: view::ViewState::new(),
             app_menu: None,
-            dir_list: None,
-            preloader: None,
-            image_cache: preloader::ImageCache::new(),
+            zoom: zoom::State::from_settings(&initial_settings),
+            color: color::State::from_settings(&initial_settings),
+            navigation: navigation::State::new(),
+            title_bar: initial_settings.title_bar,
             modifiers: ModifiersState::empty(),
             drag_start: None,
             last_mouse_pos: (Logical(0.0), Logical(0.0)),
             last_click_time: None,
             needs_redraw: false,
+            scale_factor: 2.0,
             shared_state,
             event_loop_proxy,
             _qa_handle: None,
-            navigation_history: VecDeque::with_capacity(10),
-            current_image_size: None,
-            auto_fit_window: initial_settings.auto_fit_window,
-            enlarge_small_images: initial_settings.enlarge_small_images,
-            icc_color_management: initial_settings.icc_color_management,
-            color_match_display: initial_settings.color_match_display,
-            use_relative_colorimetric: initial_settings.use_relative_colorimetric,
-            scroll_to_zoom: initial_settings.scroll_to_zoom,
-            title_bar: initial_settings.title_bar,
-            scale_factor: 2.0,
-            waiting_for_file,
-            wait_start: None,
-            display_icc: color::srgb_icc_bytes().to_vec(),
         }
     }
 
@@ -156,21 +126,21 @@ impl App {
     /// is on, and recalculate zoom.
     fn apply_content_offset(&mut self) {
         let offset = self.content_offset_y();
-        self.view_state.set_content_offset_y(offset);
+        self.zoom.view.set_content_offset_y(offset);
         #[cfg(target_os = "macos")]
         if let Some(win) = &self.window {
             window::set_titlebar_vibrancy_visible(win, offset.0 > 0.0);
         }
 
         // Resize window to add/remove the title bar area height
-        if self.auto_fit_window
-            && let (Some(win), Some((iw, ih))) = (&self.window, self.current_image_size)
+        if self.zoom.auto_fit
+            && let (Some(win), Some((iw, ih))) = (&self.window, self.navigation.current_image_size)
             && let Some(size) = window::resize_to_fit_image(win, iw, ih, offset)
         {
             let (pw, ph) = from_physical_size(size);
             if let Some(renderer) = &mut self.renderer {
                 renderer.resize(pw, ph);
-                self.view_state.update_dimensions(
+                self.zoom.view.update_dimensions(
                     iw,
                     ih,
                     renderer.logical_width(),
@@ -187,23 +157,24 @@ impl App {
     /// Called on image load, window resize, and setting changes. Does NOT change the
     /// current zoom level (only reclamps if it's below the new floor).
     fn update_min_zoom(&mut self) {
-        if self.auto_fit_window {
+        if self.zoom.auto_fit {
             // With auto-fit, the window tracks zoom. The floor is the zoom that would
             // make the window hit the minimum size (200px logical per axis).
-            if let Some((iw, ih)) = self.current_image_size {
+            if let Some((iw, ih)) = self.navigation.current_image_size {
                 let max_dim = iw.max(ih) as f64;
-                self.view_state
+                self.zoom
+                    .view
                     .set_min_zoom((window::MIN_WINDOW_DIM / max_dim) as f32);
             }
             return;
         }
 
-        let fit = self.view_state.fit_zoom();
+        let fit = self.zoom.view.fit_zoom();
         let is_small = fit > 1.0;
-        if is_small && !self.enlarge_small_images {
-            self.view_state.set_min_zoom(1.0);
+        if is_small && !self.zoom.enlarge {
+            self.zoom.view.set_min_zoom(1.0);
         } else {
-            self.view_state.set_min_zoom(fit);
+            self.zoom.view.set_min_zoom(fit);
         }
     }
 
@@ -212,11 +183,11 @@ impl App {
     /// - ICC on, color match off: sRGB (Level 1)
     /// - ICC on, color match on: display profile (Level 2)
     fn effective_display_icc(&self, window: &Window) -> Vec<u8> {
-        if !self.icc_color_management {
+        if !self.color.icc_enabled {
             return Vec::new(); // No ICC transforms
         }
         #[cfg(target_os = "macos")]
-        if self.color_match_display
+        if self.color.match_display
             && let Some(icc) = display_profile::get_display_icc(window)
         {
             return icc;
@@ -247,7 +218,7 @@ impl App {
         pivot_win_x: Logical<f64>,
         pivot_win_y: Logical<f64>,
     ) {
-        let Some((iw, ih)) = self.current_image_size else {
+        let Some((iw, ih)) = self.navigation.current_image_size else {
             return;
         };
         let Some(win) = &self.window else {
@@ -257,7 +228,7 @@ impl App {
             return;
         }
 
-        let new_zoom = self.view_state.zoom;
+        let new_zoom = self.zoom.view.zoom;
         let scale = win.scale_factor();
         let offset = self.content_offset_y().0 as f64;
 
@@ -284,8 +255,8 @@ impl App {
 
         if fully_fits {
             // Pan is unnecessary — image fills the window exactly
-            self.view_state.pan_x = 0.0;
-            self.view_state.pan_y = 0.0;
+            self.zoom.view.pan_x = 0.0;
+            self.zoom.view.pan_y = 0.0;
         }
 
         let (win_pos_x, win_pos_y) = from_logical_pos(
@@ -356,15 +327,15 @@ impl App {
         // Update renderer with the new size immediately (request_inner_size is async)
         if let Some(renderer) = &mut self.renderer {
             renderer.resize(pw, ph);
-            if let Some((iw, ih)) = self.current_image_size {
-                self.view_state.update_dimensions(
+            if let Some((iw, ih)) = self.navigation.current_image_size {
+                self.zoom.view.update_dimensions(
                     iw,
                     ih,
                     renderer.logical_width(),
                     renderer.logical_height(),
                 );
             }
-            renderer.update_transform(&self.view_state.transform());
+            renderer.update_transform(&self.zoom.view.transform());
         }
     }
 
@@ -372,13 +343,13 @@ impl App {
     /// Sets both the zoom floor and the starting zoom level.
     fn apply_initial_zoom(&mut self) {
         self.update_min_zoom();
-        let fit = self.view_state.fit_zoom();
+        let fit = self.zoom.view.fit_zoom();
         let is_small = fit > 1.0;
 
-        if is_small && !self.enlarge_small_images && !self.auto_fit_window {
-            self.view_state.actual_size(); // show at native pixel size
+        if is_small && !self.zoom.enlarge && !self.zoom.auto_fit {
+            self.zoom.view.actual_size(); // show at native pixel size
         } else {
-            self.view_state.fit_to_window(); // fill the window
+            self.zoom.view.fit_to_window(); // fill the window
         }
     }
 
@@ -400,15 +371,14 @@ impl App {
         self.renderer = Some(renderer::Renderer::new(win.clone()));
 
         // Set up title bar area before any image display
-        self.view_state
-            .set_content_offset_y(self.content_offset_y());
+        self.zoom.view.set_content_offset_y(self.content_offset_y());
 
         // Configure ICC color management based on settings
-        self.display_icc = self.effective_display_icc(&win);
+        self.color.display_icc = self.effective_display_icc(&win);
         #[cfg(target_os = "macos")]
         {
-            if !self.display_icc.is_empty() {
-                display_profile::set_layer_colorspace(&win, &self.display_icc);
+            if !self.color.display_icc.is_empty() {
+                display_profile::set_layer_colorspace(&win, &self.color.display_icc);
             }
             display_profile::register_screen_change_observer(&win);
             // Allow the title bar area to show vibrancy through the transparent clear.
@@ -424,7 +394,7 @@ impl App {
         self.app_menu = Some(menu::create_menu_bar());
 
         // Build the navigation list
-        self.dir_list = if let Some(files) = self.explicit_files.take() {
+        self.navigation.dir_list = if let Some(files) = self.explicit_files.take() {
             Some(directory::DirectoryList::from_explicit(files))
         } else {
             directory::DirectoryList::from_file(&self.file_path)
@@ -432,13 +402,13 @@ impl App {
 
         // Start preloader thread pool
         let mut preloader =
-            preloader::Preloader::start(self.display_icc.clone(), self.use_relative_colorimetric);
+            preloader::Preloader::start(self.color.display_icc.clone(), self.color.relative_col);
 
         // Load and display the initial image
         let initial_path = self.file_path.clone();
         self.display_image(&initial_path);
 
-        if let Some(dir) = &self.dir_list {
+        if let Some(dir) = &self.navigation.dir_list {
             let current_index = dir.current_index();
             let total = dir.len();
 
@@ -461,7 +431,7 @@ impl App {
             }
         }
 
-        self.preloader = Some(preloader);
+        self.navigation.preloader = Some(preloader);
         self.update_shared_state();
 
         // Start QA server if not already running (it starts early when waiting_for_file)
@@ -488,9 +458,9 @@ impl App {
 
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
-        match loader::load_image(path, &self.display_icc, self.use_relative_colorimetric) {
+        match decoding::load_image(path, &self.color.display_icc, self.color.relative_col) {
             Ok(image) => {
-                self.current_image_size = Some((image.width, image.height));
+                self.navigation.current_image_size = Some((image.width, image.height));
                 let offset = self.content_offset_y();
 
                 let renderer = self.renderer.as_mut().unwrap();
@@ -498,7 +468,7 @@ impl App {
                 // Resize window to match image (if enabled and not fullscreen).
                 // Use the returned physical size directly — request_inner_size is async,
                 // so window.inner_size() would still return the OLD size.
-                if self.auto_fit_window
+                if self.zoom.auto_fit
                     && let Some(win) = &self.window
                     && let Some(size) =
                         window::resize_to_fit_image(win, image.width, image.height, offset)
@@ -507,7 +477,7 @@ impl App {
                     renderer.resize(pw, ph);
                 }
 
-                self.view_state.update_dimensions(
+                self.zoom.view.update_dimensions(
                     image.width,
                     image.height,
                     renderer.logical_width(),
@@ -519,10 +489,10 @@ impl App {
                 self.renderer
                     .as_ref()
                     .unwrap()
-                    .update_transform(&self.view_state.transform());
+                    .update_transform(&self.zoom.view.transform());
                 self.request_redraw();
 
-                if let Some(dir) = &self.dir_list {
+                if let Some(dir) = &self.navigation.dir_list {
                     log::info!(
                         "Displayed {filename} ({}/{})",
                         dir.current_index() + 1,
@@ -554,12 +524,12 @@ impl App {
         }
 
         let offset = self.content_offset_y();
-        if let Some(image) = self.image_cache.get(index) {
-            self.current_image_size = Some((image.width, image.height));
+        if let Some(image) = self.navigation.image_cache.get(index) {
+            self.navigation.current_image_size = Some((image.width, image.height));
 
             let renderer = self.renderer.as_mut().unwrap();
 
-            if self.auto_fit_window
+            if self.zoom.auto_fit
                 && let Some(win) = &self.window
                 && let Some(size) =
                     window::resize_to_fit_image(win, image.width, image.height, offset)
@@ -568,7 +538,7 @@ impl App {
                 renderer.resize(pw, ph);
             }
 
-            self.view_state.update_dimensions(
+            self.zoom.view.update_dimensions(
                 image.width,
                 image.height,
                 renderer.logical_width(),
@@ -579,7 +549,7 @@ impl App {
             self.renderer
                 .as_ref()
                 .unwrap()
-                .update_transform(&self.view_state.transform());
+                .update_transform(&self.zoom.view.transform());
             self.request_redraw();
         } else {
             if let Some(win) = &self.window {
@@ -591,12 +561,13 @@ impl App {
 
     fn navigate(&mut self, forward: bool) {
         let from_index = self
+            .navigation
             .dir_list
             .as_ref()
             .map(|d| d.current_index())
             .unwrap_or(0);
 
-        let moved = if let Some(dir) = &mut self.dir_list {
+        let moved = if let Some(dir) = &mut self.navigation.dir_list {
             if forward {
                 dir.go_next()
             } else {
@@ -615,7 +586,7 @@ impl App {
 
         // Extract what we need from dir_list before mutable borrow
         let (current_path, current_index, total, preload_indices) = {
-            let dir = self.dir_list.as_ref().unwrap();
+            let dir = self.navigation.dir_list.as_ref().unwrap();
             let indices = dir.preload_range(preloader::preload_count());
             (
                 dir.current().to_path_buf(),
@@ -625,7 +596,7 @@ impl App {
             )
         };
 
-        let was_cached = self.image_cache.contains(current_index);
+        let was_cached = self.navigation.image_cache.contains(current_index);
         let cached_str = if was_cached { "yes" } else { "no" };
         log::debug!("Navigate {direction}: {from_index} -> {current_index} (cached: {cached_str})");
 
@@ -643,10 +614,10 @@ impl App {
 
         // Record navigation timing
         let total_time = nav_start.elapsed();
-        if self.navigation_history.len() >= 10 {
-            self.navigation_history.pop_front();
+        if self.navigation.history.len() >= 10 {
+            self.navigation.history.pop_front();
         }
-        self.navigation_history.push_back(NavigationRecord {
+        self.navigation.history.push_back(NavigationRecord {
             from_index,
             to_index: current_index,
             was_cached,
@@ -655,14 +626,14 @@ impl App {
         });
 
         // Cancel stale preload tasks and submit fresh ones for adjacent images
-        if let Some(dir) = &self.dir_list {
+        if let Some(dir) = &self.navigation.dir_list {
             let to_preload: Vec<(usize, PathBuf)> = preload_indices
                 .iter()
-                .filter(|&&i| !self.image_cache.contains(i))
+                .filter(|&&i| !self.navigation.image_cache.contains(i))
                 .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
                 .collect();
 
-            if let Some(preloader) = &mut self.preloader {
+            if let Some(preloader) = &mut self.navigation.preloader {
                 preloader.request_preload(to_preload);
             }
         }
@@ -673,12 +644,12 @@ impl App {
     fn update_transform_and_redraw(&mut self) {
         log::debug!(
             "View: zoom={:.2}, pan=({:.2}, {:.2})",
-            self.view_state.zoom,
-            self.view_state.pan_x,
-            self.view_state.pan_y
+            self.zoom.view.zoom,
+            self.zoom.view.pan_x,
+            self.zoom.view.pan_y
         );
         if let Some(renderer) = &self.renderer {
-            renderer.update_transform(&self.view_state.transform());
+            renderer.update_transform(&self.zoom.view.transform());
         }
         self.request_redraw();
         self.update_shared_state();
@@ -697,7 +668,7 @@ impl App {
         let Some(rend) = &self.renderer else {
             return Vec::new();
         };
-        let Some(dir) = &self.dir_list else {
+        let Some(dir) = &self.navigation.dir_list else {
             return Vec::new();
         };
 
@@ -719,7 +690,7 @@ impl App {
             filename.to_string()
         };
 
-        let zoom_pct = (self.view_state.zoom * 100.0).round() as i32;
+        let zoom_pct = (self.zoom.view.zoom * 100.0).round() as i32;
         let zoom_text = format!("{zoom_pct}%");
 
         let pill_color: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
@@ -753,7 +724,7 @@ impl App {
 
     /// Drain preloader responses and cache the results.
     fn poll_preloader(&mut self) {
-        let Some(preloader) = &mut self.preloader else {
+        let Some(preloader) = &mut self.navigation.preloader else {
             return;
         };
         while let Ok(response) = preloader.response_rx.try_recv() {
@@ -765,7 +736,8 @@ impl App {
                     file_name,
                 } => {
                     preloader.mark_complete(index);
-                    self.image_cache
+                    self.navigation
+                        .image_cache
                         .insert(index, image, decode_duration, file_name);
                 }
                 preloader::PreloadResponse::Failed {
@@ -795,24 +767,24 @@ impl App {
             return;
         };
 
-        if color::profiles_match(&self.display_icc, &new_icc) {
+        if color::profiles_match(&self.color.display_icc, &new_icc) {
             return; // No change
         }
 
-        self.display_icc = new_icc;
+        self.color.display_icc = new_icc;
 
         #[cfg(target_os = "macos")]
         if let Some(win) = &self.window
-            && !self.display_icc.is_empty()
+            && !self.color.display_icc.is_empty()
         {
-            display_profile::set_layer_colorspace(win, &self.display_icc);
+            display_profile::set_layer_colorspace(win, &self.color.display_icc);
         }
 
-        self.image_cache.clear();
-        if let Some(preloader) = &mut self.preloader {
-            preloader.set_display_icc(self.display_icc.clone());
+        self.navigation.image_cache.clear();
+        if let Some(preloader) = &mut self.navigation.preloader {
+            preloader.set_display_icc(self.color.display_icc.clone());
         }
-        if let Some(dir) = &self.dir_list {
+        if let Some(dir) = &self.navigation.dir_list {
             let path = dir.current().to_path_buf();
             self.display_image(&path);
         }
@@ -821,11 +793,11 @@ impl App {
     /// Flush the image cache, update the preloader, and re-decode the current image.
     /// Used when color settings change that don't affect the ICC profile bytes (e.g., rendering intent).
     fn flush_and_redisplay(&mut self) {
-        self.image_cache.clear();
-        if let Some(preloader) = &mut self.preloader {
-            preloader.set_use_relative_colorimetric(self.use_relative_colorimetric);
+        self.navigation.image_cache.clear();
+        if let Some(preloader) = &mut self.navigation.preloader {
+            preloader.set_use_relative_colorimetric(self.color.relative_col);
         }
-        if let Some(dir) = &self.dir_list {
+        if let Some(dir) = &self.navigation.dir_list {
             let path = dir.current().to_path_buf();
             self.display_image(&path);
         }
@@ -856,7 +828,7 @@ impl App {
                 }
             }
 
-            native_ui::show_settings_window(parent_ptr);
+            crate::settings::show_settings_window(parent_ptr);
         }
     }
 
@@ -878,7 +850,7 @@ impl App {
                 }
             }
 
-            native_ui::show_about_window(parent_ptr);
+            crate::about::show_window(parent_ptr);
         }
     }
 
@@ -939,131 +911,6 @@ impl App {
             log::debug!("Menu: unhandled event {:?}", event.id());
         }
     }
-
-    /// Push current app state into the shared mutex for the QA server to read.
-    fn update_shared_state(&self) {
-        let Ok(mut state) = self.shared_state.lock() else {
-            return;
-        };
-
-        state.zoom = self.view_state.zoom;
-        state.pan_x = self.view_state.pan_x;
-        state.pan_y = self.view_state.pan_y;
-        state.auto_fit_window = self.auto_fit_window;
-        state.enlarge_small_images = self.enlarge_small_images;
-        state.scroll_to_zoom = self.scroll_to_zoom;
-        state.title_bar = self.title_bar;
-
-        if let Some(win) = &self.window {
-            let sf = win.scale_factor();
-            let (lw, lh) = from_logical_size(win.inner_size().to_logical::<f64>(sf));
-            let (lx, ly) = from_logical_pos(
-                win.outer_position()
-                    .unwrap_or_default()
-                    .to_logical::<f64>(sf),
-            );
-            state.window_x = lx.0;
-            state.window_y = ly.0;
-            state.window_width = lw.0 as u32;
-            state.window_height = lh.0 as u32;
-            state.fullscreen = window::is_fullscreen(win);
-            state.window_title = win.title();
-        }
-
-        if let Some(dir) = &self.dir_list {
-            state.current_file = Some(dir.current().to_path_buf());
-            state.current_index = dir.current_index();
-            state.total_files = dir.len();
-        }
-
-        if let Some((iw, ih)) = self.current_image_size {
-            state.image_width = iw;
-            state.image_height = ih;
-        }
-        state.min_zoom = self.view_state.min_zoom_value();
-        let (rx, ry, rw, rh) = self.view_state.rendered_rect();
-        state.image_render_x = rx.0;
-        state.image_render_y = ry.0;
-        state.image_render_width = rw.0;
-        state.image_render_height = rh.0;
-
-        state.diagnostics_text = self.build_diagnostics_text(state.current_index);
-    }
-
-    /// Build human/agent-readable diagnostics text covering cache, navigation timing, and memory.
-    fn build_diagnostics_text(&self, current_index: usize) -> String {
-        let mut out = String::new();
-
-        // Cache diagnostics
-        let cache_diag = self.image_cache.diagnostics();
-        out.push_str("cache:\n");
-        out.push_str(&format!(
-            "  total_memory: {}\n",
-            format_bytes(cache_diag.total_memory)
-        ));
-        out.push_str(&format!(
-            "  entries: {} of {} budget\n",
-            cache_diag.entries.len(),
-            format_bytes(cache_diag.memory_budget)
-        ));
-        if !cache_diag.entries.is_empty() {
-            out.push_str("  images:\n");
-            for entry in &cache_diag.entries {
-                let current_marker = if entry.index == current_index {
-                    "  ← current"
-                } else {
-                    ""
-                };
-                out.push_str(&format!(
-                    "    [{}] {}  {}x{}  {}  decoded in {}ms{}\n",
-                    entry.index,
-                    entry.file_name,
-                    entry.width,
-                    entry.height,
-                    format_bytes(entry.memory_bytes),
-                    entry.decode_duration.as_millis(),
-                    current_marker,
-                ));
-            }
-        }
-
-        // Preloader status
-        out.push_str("\npreloader:\n");
-        out.push_str(&format!(
-            "  window: current ± {}\n",
-            preloader::preload_count()
-        ));
-
-        // Navigation history
-        out.push_str("\nrecent_navigations (newest first):\n");
-        if self.navigation_history.is_empty() {
-            out.push_str("  (none)\n");
-        } else {
-            let now = Instant::now();
-            for record in self.navigation_history.iter().rev() {
-                let ago = now.duration_since(record.timestamp);
-                let cached_str = if record.was_cached { "yes" } else { "no " };
-                out.push_str(&format!(
-                    "  {}→{}  cached: {}  display: {}ms  {:.1}s ago\n",
-                    record.from_index,
-                    record.to_index,
-                    cached_str,
-                    record.total_time.as_millis(),
-                    ago.as_secs_f64(),
-                ));
-            }
-        }
-
-        // Process memory via ps
-        let process_memory = get_process_rss_mb();
-        out.push_str(&format!(
-            "\nprocess_memory: {:.1} MB (cache: {})\n",
-            process_memory,
-            format_bytes(cache_diag.total_memory)
-        ));
-
-        out
-    }
 }
 
 impl ApplicationHandler<AppCommand> for App {
@@ -1106,7 +953,7 @@ impl ApplicationHandler<AppCommand> for App {
                 self.wait_start = None; // Don't fire again
                 event_loop.set_control_flow(ControlFlow::Wait);
                 #[cfg(target_os = "macos")]
-                native_ui::show_onboarding_window_non_modal();
+                crate::onboarding::show_window();
             }
             return;
         }
@@ -1124,7 +971,7 @@ impl ApplicationHandler<AppCommand> for App {
         match event {
             WindowEvent::CloseRequested => {
                 log::info!("Exiting (window closed)");
-                if let Some(preloader) = self.preloader.take() {
+                if let Some(preloader) = self.navigation.preloader.take() {
                     preloader.shutdown();
                 }
                 event_loop.exit();
@@ -1134,7 +981,7 @@ impl ApplicationHandler<AppCommand> for App {
                 log::debug!("Window resized to {}x{}", size.width, size.height);
                 // Re-apply content offset (may change on fullscreen transitions)
                 let offset = self.content_offset_y();
-                self.view_state.set_content_offset_y(offset);
+                self.zoom.view.set_content_offset_y(offset);
                 #[cfg(target_os = "macos")]
                 if let Some(win) = &self.window {
                     window::set_titlebar_vibrancy_visible(win, offset.0 > 0.0);
@@ -1143,8 +990,8 @@ impl ApplicationHandler<AppCommand> for App {
                 if let Some(renderer) = &mut self.renderer {
                     let (pw, ph) = from_physical_size(size);
                     renderer.resize(pw, ph);
-                    if let Some((iw, ih)) = self.current_image_size {
-                        self.view_state.update_dimensions(
+                    if let Some((iw, ih)) = self.navigation.current_image_size {
+                        self.zoom.view.update_dimensions(
                             iw,
                             ih,
                             renderer.logical_width(),
@@ -1155,7 +1002,7 @@ impl ApplicationHandler<AppCommand> for App {
                 // Recalculate zoom floor — image-to-window ratio changed
                 self.update_min_zoom();
                 if let Some(renderer) = &self.renderer {
-                    renderer.update_transform(&self.view_state.transform());
+                    renderer.update_transform(&self.zoom.view.transform());
                 }
                 self.request_redraw();
                 self.update_shared_state();
@@ -1200,14 +1047,15 @@ impl ApplicationHandler<AppCommand> for App {
                 };
                 if scroll_y.abs() > f32::EPSILON {
                     let cmd_held = self.modifiers.super_key();
-                    if self.scroll_to_zoom || cmd_held {
+                    if self.zoom.scroll_to_zoom || cmd_held {
                         // Zoom centered on cursor (Y offset into image area)
-                        let old_zoom = self.view_state.zoom;
+                        let old_zoom = self.zoom.view.zoom;
                         let (cx, cy) = self.last_mouse_pos;
                         let offset = Logical(self.content_offset_y().0 as f64);
-                        self.view_state
+                        self.zoom
+                            .view
                             .scroll_zoom(scroll_y, cx.as_f32(), (cy - offset).as_f32());
-                        if self.auto_fit_window {
+                        if self.zoom.auto_fit {
                             self.auto_fit_after_zoom(old_zoom, cx, cy);
                         }
                         self.update_transform_and_redraw();
@@ -1223,12 +1071,13 @@ impl ApplicationHandler<AppCommand> for App {
             WindowEvent::PinchGesture { delta, .. } => {
                 let delta = delta as f32;
                 if delta.abs() > f32::EPSILON {
-                    let old_zoom = self.view_state.zoom;
+                    let old_zoom = self.zoom.view.zoom;
                     let (cx, cy) = self.last_mouse_pos;
                     let offset = Logical(self.content_offset_y().0 as f64);
-                    self.view_state
+                    self.zoom
+                        .view
                         .pinch_zoom(delta, cx.as_f32(), (cy - offset).as_f32());
-                    if self.auto_fit_window {
+                    if self.zoom.auto_fit {
                         self.auto_fit_after_zoom(old_zoom, cx, cy);
                     }
                     self.update_transform_and_redraw();
@@ -1245,7 +1094,7 @@ impl ApplicationHandler<AppCommand> for App {
                 if self.drag_start.is_some() {
                     let dx = logical.0 - prev.0;
                     let dy = logical.1 - prev.1;
-                    self.view_state.pan(dx.as_f32(), dy.as_f32());
+                    self.zoom.view.pan(dx.as_f32(), dy.as_f32());
                     self.update_transform_and_redraw();
                 }
             }
@@ -1285,36 +1134,4 @@ impl ApplicationHandler<AppCommand> for App {
             _ => {}
         }
     }
-}
-
-/// Format a byte count as a human-readable string (for example, "47.2 MB").
-fn format_bytes(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = 1024.0 * 1024.0;
-    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.1} KB", b / KB)
-    } else {
-        format!("{bytes} B")
-    }
-}
-
-/// Get the current process RSS in MB via `ps`. Returns 0.0 on failure.
-fn get_process_rss_mb() -> f64 {
-    let pid = std::process::id();
-    std::process::Command::new("ps")
-        .args(["-o", "rss=", "-p", &pid.to_string()])
-        .output()
-        .ok()
-        .and_then(|output| {
-            let text = String::from_utf8_lossy(&output.stdout);
-            text.trim().parse::<f64>().ok()
-        })
-        .map(|kb| kb / 1024.0)
-        .unwrap_or(0.0)
 }

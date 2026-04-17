@@ -3,22 +3,37 @@
 //! Parses the CLI, sets up logging, creates the winit event loop, and hands off to
 //! `app::App` which owns all runtime state.
 
+// Infrastructure
 mod app;
 mod commands;
-mod imaging;
 mod input;
 mod menu;
 mod pixels;
 mod platform;
-mod qa;
 mod render;
+
+// Features
+#[cfg(target_os = "macos")]
+mod about;
+mod color;
+mod decoding;
+mod diagnostics;
+#[cfg(target_os = "macos")]
+mod file_associations;
+mod navigation;
+#[cfg(target_os = "macos")]
+mod onboarding;
+mod qa;
 mod settings;
+#[cfg(target_os = "macos")]
+mod updater;
 mod window;
+mod zoom;
 
 use app::App;
+use app::SharedAppState;
 use clap::Parser;
 use commands::AppCommand;
-use qa::SharedAppState;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use winit::event_loop::{ControlFlow, EventLoop};

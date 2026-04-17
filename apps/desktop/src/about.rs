@@ -1,6 +1,16 @@
-//! About window — shown via the app menu or keyboard shortcut.
+//! # About window
+//!
+//! App icon, version, author credit, website + product links, Close button. Non-modal
+//! NSWindow. Opened via the app menu or Cmd+Shift+A.
+//!
+//! Dedup guard (`is_window_already_open` from `platform::macos::ui_common`) prevents
+//! duplicate windows if the user clicks the menu item twice.
+//!
+//! FIXME: views leak on close/reopen — same pattern as `onboarding` and
+//! `settings::window`. Acceptable because these windows close rarely and live for the
+//! app's lifetime in most usage.
 
-use super::{
+use crate::platform::macos::ui_common::{
     add_vibrancy_background, as_view, center_window, is_window_already_open, load_app_icon,
     make_bold_label, make_close_button, make_escape_button, make_label, make_link,
     make_vertical_stack,
@@ -21,7 +31,7 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 ///
 /// # Safety
 /// `parent_ns_window` must be a valid NSWindow pointer or null.
-pub fn show_about_window(parent_ns_window: *const NSWindow) {
+pub fn show_window(parent_ns_window: *const NSWindow) {
     if is_window_already_open("About Prvw") {
         return;
     }

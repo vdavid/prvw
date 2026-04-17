@@ -5,8 +5,5 @@
 //! `crate::platform::macos` import site. Callers outside this module should reference
 //! these via `crate::platform::macos::{display_profile, native_ui, ...}`.
 
-pub mod display_profile;
-pub mod file_associations;
-pub mod native_ui;
 pub mod open_handler;
-pub mod updater;
+pub mod ui_common;

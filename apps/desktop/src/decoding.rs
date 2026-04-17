@@ -1,3 +1,30 @@
+//! # Decoding
+//!
+//! Image format decoders. JPEG via `zune-jpeg` (SIMD); PNG, GIF, WebP, BMP, TIFF via the
+//! `image` crate. Also extracts the embedded ICC profile (transform lives in
+//! `crate::color`).
+//!
+//! ## Key choices
+//!
+//! - **`zune-jpeg` for JPEG** — significantly faster than the `image` crate's JPEG path on
+//!   Apple Silicon. Used unconditionally for JPEGs.
+//! - **`image` crate for everything else** — mature, covers the rest.
+//! - **Cancellation.** `load_image_cancellable` takes an `AtomicBool` — checked at format
+//!   entry and between decode stages. The preloader uses this so navigating away aborts
+//!   in-flight work before it finishes a wasted decode.
+//!
+//! ## ICC extraction ordering (subtle)
+//!
+//! For non-JPEG: `ImageReader::into_decoder()` returns `impl ImageDecoder`.
+//! `icc_profile()` takes `&mut self`; `DynamicImage::from_decoder()` consumes the decoder.
+//! So you must call `icc_profile()` first, then `from_decoder()`. Reversing won't compile.
+//!
+//! ## Gotchas
+//!
+//! - **`zune-jpeg` in debug builds is unusably slow.** `apps/desktop/Cargo.toml` sets
+//!   `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this. Without it, cold
+//!   startup on a 20MP photo takes seconds.
+
 use std::io::Cursor;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,7 +33,7 @@ use std::time::Instant;
 use image::ImageDecoder;
 use nom_exif::{EntryValue, ExifTag, MediaParser, MediaSource};
 
-use super::color;
+use crate::color;
 
 /// Decoded image data ready for GPU upload.
 pub struct DecodedImage {

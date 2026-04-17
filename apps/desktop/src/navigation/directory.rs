@@ -1,4 +1,4 @@
-use super::loader;
+use crate::decoding;
 use std::path::{Path, PathBuf};
 
 /// Tracks the list of image files in a directory and the current position.
@@ -21,7 +21,7 @@ impl DirectoryList {
             .filter(|path| {
                 path.extension()
                     .and_then(|ext| ext.to_str())
-                    .is_some_and(loader::is_supported_extension)
+                    .is_some_and(decoding::is_supported_extension)
             })
             .collect();
 

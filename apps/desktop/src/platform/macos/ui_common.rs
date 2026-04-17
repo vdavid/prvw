@@ -1,16 +1,8 @@
-//! AppKit-based secondary windows (About, Onboarding, Settings).
+//! Shared AppKit helpers for About / Onboarding / Settings windows.
 //!
-//! Uses objc2 bindings to build native NSWindow UIs with system controls. Each window
-//! lives in its own submodule; shared view-construction helpers (FlippedView, labels,
-//! vibrancy, centering) live here.
-
-mod about;
-mod onboarding;
-mod settings;
-
-pub use about::show_about_window;
-pub use onboarding::{close_onboarding_window, show_onboarding_window_non_modal};
-pub use settings::{close_settings_window, show_settings_window, switch_settings_section};
+//! `FlippedView`, label/button/link factories, vibrancy background, window centering,
+//! app-icon loader. Siblings inside `native_ui::{about, onboarding, settings}` import
+//! these via `use crate::platform::macos::ui_common::*`.
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -53,7 +45,7 @@ impl FlippedView {
     }
 
     /// Create a FlippedView and return it as an NSView (for APIs that expect NSView).
-    pub(super) fn new_as_nsview(mtm: MainThreadMarker) -> Retained<NSView> {
+    pub(crate) fn new_as_nsview(mtm: MainThreadMarker) -> Retained<NSView> {
         let view = Self::new(mtm);
         // SAFETY: FlippedView inherits from NSView, this cast is sound.
         unsafe { Retained::cast_unchecked(view) }
@@ -65,13 +57,13 @@ impl FlippedView {
 /// Upcast any AppKit control to NSView for use with NSStackView.
 /// SAFETY: All AppKit controls (NSTextField, NSButton, etc.) inherit from NSView
 /// and have #[repr(C)] layout, making this pointer cast sound.
-pub(super) unsafe fn as_view<T>(obj: &T) -> &NSView {
+pub(crate) unsafe fn as_view<T>(obj: &T) -> &NSView {
     unsafe { &*(obj as *const T as *const NSView) }
 }
 
 /// Check if a window with the given title is already visible. Prevents opening duplicate
 /// About/Settings windows when the user clicks the menu multiple times.
-pub(super) fn is_window_already_open(title: &str) -> bool {
+pub(crate) fn is_window_already_open(title: &str) -> bool {
     unsafe {
         // NSApplication::sharedApplication() is safe here because we're on the main thread
         // (called from winit event handlers which run on the main thread).
@@ -97,7 +89,7 @@ pub(super) fn is_window_already_open(title: &str) -> bool {
 }
 
 /// Create a non-editable, non-selectable NSTextField configured as a label.
-pub(super) fn make_label(
+pub(crate) fn make_label(
     text: &str,
     font_size: f64,
     mtm: MainThreadMarker,
@@ -113,7 +105,7 @@ pub(super) fn make_label(
 }
 
 /// Create a bold label using the bold system font.
-pub(super) fn make_bold_label(
+pub(crate) fn make_bold_label(
     text: &str,
     font_size: f64,
     mtm: MainThreadMarker,
@@ -132,7 +124,7 @@ pub(super) fn make_bold_label(
 ///
 /// Uses NSTextField with an attributed string containing an NSLink attribute.
 /// A tracking area is added so the pointing hand cursor appears on hover.
-pub(super) fn make_link(
+pub(crate) fn make_link(
     title: &str,
     url: &str,
     mtm: MainThreadMarker,
@@ -203,7 +195,7 @@ pub(super) fn make_link(
 }
 
 /// Create an NSButton with the given title that closes its window on click.
-pub(super) fn make_close_button(
+pub(crate) fn make_close_button(
     title: &str,
     window: &NSWindow,
     mtm: MainThreadMarker,
@@ -222,7 +214,7 @@ pub(super) fn make_close_button(
 
 /// Create a hidden button with Escape as key equivalent that closes the window.
 /// Standard macOS pattern for "ESC to close".
-pub(super) fn make_escape_button(window: &NSWindow, mtm: MainThreadMarker) -> Retained<NSButton> {
+pub(crate) fn make_escape_button(window: &NSWindow, mtm: MainThreadMarker) -> Retained<NSButton> {
     unsafe {
         let button = NSButton::new(mtm);
         let _: () = msg_send![&*button, setKeyEquivalent: &*NSString::from_str("\x1b")];
@@ -234,7 +226,7 @@ pub(super) fn make_escape_button(window: &NSWindow, mtm: MainThreadMarker) -> Re
 }
 
 /// Create a vertical NSStackView with centered alignment and the given spacing.
-pub(super) fn make_vertical_stack(
+pub(crate) fn make_vertical_stack(
     views: &[&NSView],
     spacing: f64,
     mtm: MainThreadMarker,
@@ -253,7 +245,7 @@ pub(super) fn make_vertical_stack(
 
 /// Add an NSVisualEffectView as background for frosted glass appearance.
 /// Must be called after window creation but before adding other content.
-pub(super) fn add_vibrancy_background(
+pub(crate) fn add_vibrancy_background(
     window: &NSWindow,
     mtm: MainThreadMarker,
     retained_views: &mut Vec<Retained<AnyObject>>,
@@ -290,7 +282,7 @@ pub(super) fn add_vibrancy_background(
 }
 
 /// Center a window on a parent window, or center on screen if no parent is given.
-pub(super) fn center_window(window: &NSWindow, parent: Option<&NSWindow>) {
+pub(crate) fn center_window(window: &NSWindow, parent: Option<&NSWindow>) {
     match parent {
         Some(parent) => unsafe {
             let parent_frame: NSRect = msg_send![parent, frame];
@@ -325,7 +317,7 @@ pub(super) fn center_window(window: &NSWindow, parent: Option<&NSWindow>) {
 }
 
 /// Load the app icon from the bundle or fall back to the resources dir.
-pub(super) fn load_app_icon() -> Retained<NSImage> {
+pub(crate) fn load_app_icon() -> Retained<NSImage> {
     unsafe {
         // Try loading from bundle first (works in .app builds)
         let bundle = NSBundle::mainBundle();

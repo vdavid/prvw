@@ -1,9 +1,21 @@
-//! Onboarding window — shown on first launch when no file is passed via CLI.
+//! # Onboarding window
 //!
-//! Non-modal NSWindow built via objc2. A 1-second NSTimer polls file-association state
-//! and re-renders the UI. Closes itself when a file arrives via Apple Event.
+//! Shown on first launch when no file is passed via CLI (Finder double-click or Dock
+//! launch with no image).
+//!
+//! **Non-modal** because Finder's Apple Event delivering the file must still reach the
+//! event loop while the onboarding is visible. An `NSTimer` polls file-association state
+//! every second and re-renders via `OnboardingUI::render()`.
+//!
+//! `OnboardingState` is pure data — it's a snapshot of what Prvw sees right now
+//! (`is_default`, `is_dev_build`, `handler_status`). `OnboardingUI` holds raw pointers
+//! to the widgets and knows how to write state into them. This split keeps the render
+//! path trivial to reason about.
+//!
+//! Timing: `main()` delays 500ms after `EventLoop::new()` before showing the window. If
+//! an Apple Event arrives in that window, onboarding is skipped entirely.
 
-use super::{
+use crate::platform::macos::ui_common::{
     add_vibrancy_background, as_view, center_window, is_window_already_open, load_app_icon,
     make_bold_label, make_close_button, make_escape_button, make_label, make_vertical_stack,
 };
@@ -28,7 +40,7 @@ struct OnboardingState {
 impl OnboardingState {
     /// Query current file association state.
     fn current(is_dev_build: bool) -> Self {
-        let handler_status = crate::platform::macos::file_associations::query_handler_status();
+        let handler_status = crate::file_associations::query_handler_status();
         let is_default = is_prvw_default_for_all();
         Self {
             is_default,
@@ -127,7 +139,7 @@ define_class!(
         #[unsafe(method(setAsDefault:))]
         fn set_as_default(&self, _sender: &AnyObject) {
             log::info!("Setting Prvw as default viewer");
-            crate::platform::macos::file_associations::set_as_default_viewer();
+            crate::file_associations::set_as_default_viewer();
             let state = OnboardingState::current(self.ivars().is_dev_build);
             self.ivars().ui.render(&state);
         }
@@ -152,9 +164,9 @@ impl OnboardingDelegate {
 
 /// Check if Prvw is the default handler for all queried types (JPEG and PNG).
 fn is_prvw_default_for_all() -> bool {
-    crate::platform::macos::file_associations::SUPPORTED_UTIS
+    crate::file_associations::SUPPORTED_UTIS
         .iter()
-        .all(|e| crate::platform::macos::file_associations::is_prvw_default(e.uti))
+        .all(|e| crate::file_associations::is_prvw_default(e.uti))
 }
 const ONBOARDING_TITLE: &str = "Welcome to Prvw";
 
@@ -162,7 +174,7 @@ const ONBOARDING_TITLE: &str = "Welcome to Prvw";
 /// via Finder double-click (Apple Event) or Dock, where we need the event loop running
 /// to receive the file-open event. The window closes when a file arrives or the user
 /// clicks Close.
-pub fn show_onboarding_window_non_modal() {
+pub fn show_window() {
     if is_window_already_open(ONBOARDING_TITLE) {
         return;
     }
@@ -238,7 +250,7 @@ pub fn show_onboarding_window_non_modal() {
     let secondary_color = NSColor::secondaryLabelColor();
     subtitle_label.setTextColor(Some(&secondary_color));
 
-    let is_dev_build = !crate::platform::macos::file_associations::is_app_bundle();
+    let is_dev_build = !crate::file_associations::is_app_bundle();
     let state = OnboardingState::current(is_dev_build);
 
     let instruction_label = make_label(state.instruction_text(), 13.0, mtm);
@@ -255,7 +267,7 @@ pub fn show_onboarding_window_non_modal() {
     let tertiary_color = NSColor::tertiaryLabelColor();
     status_label.setTextColor(Some(&tertiary_color));
 
-    let tip_label = if !crate::platform::macos::file_associations::is_in_applications() {
+    let tip_label = if !crate::file_associations::is_in_applications() {
         let label = make_label(
             "Tip: move Prvw.app to /Applications for the best experience.",
             12.0,
@@ -411,7 +423,7 @@ pub fn show_onboarding_window_non_modal() {
 }
 
 /// Close the onboarding window if it's open.
-pub fn close_onboarding_window() {
+pub fn close_window() {
     unsafe {
         let mtm = MainThreadMarker::new_unchecked();
         let app = NSApplication::sharedApplication(mtm);

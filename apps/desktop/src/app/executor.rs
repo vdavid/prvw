@@ -6,11 +6,12 @@
 
 use super::App;
 use crate::commands::AppCommand;
-use crate::imaging::directory;
+use crate::input;
+use crate::navigation::directory;
 use crate::pixels::{Logical, from_physical_size, to_logical_pos, to_logical_size};
 #[cfg(target_os = "macos")]
-use crate::platform::macos::native_ui;
-use crate::{input, settings, window};
+use crate::settings;
+use crate::window;
 use winit::event_loop::ActiveEventLoop;
 
 impl App {
@@ -25,52 +26,52 @@ impl App {
             }
             AppCommand::Navigate(forward) => self.navigate(forward),
             AppCommand::ZoomIn => {
-                let old_zoom = self.view_state.zoom;
-                self.view_state.keyboard_zoom(true);
-                if self.auto_fit_window {
+                let old_zoom = self.zoom.view.zoom;
+                self.zoom.view.keyboard_zoom(true);
+                if self.zoom.auto_fit {
                     let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
             }
             AppCommand::ZoomOut => {
-                let old_zoom = self.view_state.zoom;
-                self.view_state.keyboard_zoom(false);
-                if self.auto_fit_window {
+                let old_zoom = self.zoom.view.zoom;
+                self.zoom.view.keyboard_zoom(false);
+                if self.zoom.auto_fit {
                     let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
             }
             AppCommand::SetZoom(level) => {
-                let old_zoom = self.view_state.zoom;
-                self.view_state.set_zoom(level);
-                if self.auto_fit_window {
+                let old_zoom = self.zoom.view.zoom;
+                self.zoom.view.set_zoom(level);
+                if self.zoom.auto_fit {
                     let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
             }
             AppCommand::FitToWindow => {
-                let old_zoom = self.view_state.zoom;
-                self.view_state.fit_to_window();
-                if self.auto_fit_window {
+                let old_zoom = self.zoom.view.zoom;
+                self.zoom.view.fit_to_window();
+                if self.zoom.auto_fit {
                     let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
             }
             AppCommand::ActualSize => {
-                let old_zoom = self.view_state.zoom;
-                self.view_state.actual_size();
-                if self.auto_fit_window {
+                let old_zoom = self.zoom.view.zoom;
+                self.zoom.view.actual_size();
+                if self.zoom.auto_fit {
                     let (cx, cy) = self.window_center_logical();
                     self.auto_fit_after_zoom(old_zoom, cx, cy);
                 }
                 self.update_transform_and_redraw();
             }
             AppCommand::ToggleFit => {
-                self.view_state.toggle_fit();
+                self.zoom.view.toggle_fit();
                 self.update_transform_and_redraw();
             }
             AppCommand::ToggleFullscreen => {
@@ -86,7 +87,7 @@ impl App {
                 }
             }
             AppCommand::SetAutoFitWindow(enabled) => {
-                self.auto_fit_window = enabled;
+                self.zoom.auto_fit = enabled;
                 log::debug!("Auto-fit window set to: {enabled}");
                 let mut s = settings::Settings::load();
                 s.auto_fit_window = enabled;
@@ -97,7 +98,8 @@ impl App {
                     menu.enlarge_small_item.set_enabled(!enabled);
                 }
                 if enabled
-                    && let (Some(win), Some((iw, ih))) = (&self.window, self.current_image_size)
+                    && let (Some(win), Some((iw, ih))) =
+                        (&self.window, self.navigation.current_image_size)
                 {
                     window::resize_to_fit_image(win, iw, ih, self.content_offset_y());
                 }
@@ -106,7 +108,7 @@ impl App {
                 self.update_transform_and_redraw();
             }
             AppCommand::SetEnlargeSmallImages(enabled) => {
-                self.enlarge_small_images = enabled;
+                self.zoom.enlarge = enabled;
                 log::debug!("Enlarge small images set to: {enabled}");
                 let mut s = settings::Settings::load();
                 s.enlarge_small_images = enabled;
@@ -119,7 +121,7 @@ impl App {
                 self.update_transform_and_redraw();
             }
             AppCommand::SetIccColorManagement(enabled) => {
-                self.icc_color_management = enabled;
+                self.color.icc_enabled = enabled;
                 log::info!("ICC color management set to: {enabled}");
                 let mut s = settings::Settings::load();
                 s.icc_color_management = enabled;
@@ -133,7 +135,7 @@ impl App {
                 self.apply_icc_settings();
             }
             AppCommand::SetColorMatchDisplay(enabled) => {
-                self.color_match_display = enabled;
+                self.color.match_display = enabled;
                 log::info!("Color match display set to: {enabled}");
                 let mut s = settings::Settings::load();
                 s.color_match_display = enabled;
@@ -144,7 +146,7 @@ impl App {
                 self.apply_icc_settings();
             }
             AppCommand::SetRelativeColorimetric(enabled) => {
-                self.use_relative_colorimetric = enabled;
+                self.color.relative_col = enabled;
                 log::info!(
                     "Rendering intent set to: {}",
                     if enabled {
@@ -162,7 +164,7 @@ impl App {
                 self.flush_and_redisplay();
             }
             AppCommand::SetScrollToZoom(enabled) => {
-                self.scroll_to_zoom = enabled;
+                self.zoom.scroll_to_zoom = enabled;
                 log::debug!("Scroll to zoom set to: {enabled}");
                 let mut s = settings::Settings::load();
                 s.scroll_to_zoom = enabled;
@@ -186,11 +188,11 @@ impl App {
             AppCommand::ShowSettings => self.show_settings_dialog(),
             AppCommand::ShowSettingsSection(ref section) => {
                 #[cfg(target_os = "macos")]
-                native_ui::switch_settings_section(section);
+                crate::settings::switch_settings_section(section);
             }
             AppCommand::CloseSettings => {
                 #[cfg(target_os = "macos")]
-                native_ui::close_settings_window();
+                crate::settings::close_settings_window();
             }
             AppCommand::Exit => {
                 // Escape exits fullscreen first, then exits the app
@@ -203,7 +205,7 @@ impl App {
                     return;
                 }
                 log::info!("Exiting");
-                if let Some(preloader) = self.preloader.take() {
+                if let Some(preloader) = self.navigation.preloader.take() {
                     preloader.shutdown();
                 }
                 event_loop.exit();
@@ -224,7 +226,7 @@ impl App {
 
                     // Close the onboarding window if it's showing
                     #[cfg(target_os = "macos")]
-                    native_ui::close_onboarding_window();
+                    crate::onboarding::close_window();
 
                     // Initialize the full viewer (window, renderer, etc.) via resumed()
                     // by switching control flow — resumed() will be called next
@@ -233,10 +235,10 @@ impl App {
                 }
 
                 self.file_path = resolved.clone();
-                self.dir_list = directory::DirectoryList::from_file(&resolved);
+                self.navigation.dir_list = directory::DirectoryList::from_file(&resolved);
                 self.display_image(&resolved);
 
-                if let Some(dir) = &self.dir_list
+                if let Some(dir) = &self.navigation.dir_list
                     && let Some(win) = &self.window
                 {
                     win.set_title(&window::window_title_with_position(
@@ -275,8 +277,8 @@ impl App {
                     if let Some(renderer) = &mut self.renderer {
                         let (pw, ph) = from_physical_size(win.inner_size());
                         renderer.resize(pw, ph);
-                        if let Some((iw, ih)) = self.current_image_size {
-                            self.view_state.update_dimensions(
+                        if let Some((iw, ih)) = self.navigation.current_image_size {
+                            self.zoom.view.update_dimensions(
                                 iw,
                                 ih,
                                 renderer.logical_width(),
@@ -286,7 +288,7 @@ impl App {
                     }
                     self.update_min_zoom();
                     if let Some(renderer) = &self.renderer {
-                        renderer.update_transform(&self.view_state.transform());
+                        renderer.update_transform(&self.zoom.view.transform());
                     }
                     self.request_redraw();
                     self.update_shared_state();
@@ -297,11 +299,12 @@ impl App {
                 cursor_x,
                 cursor_y,
             } => {
-                let old_zoom = self.view_state.zoom;
+                let old_zoom = self.zoom.view.zoom;
                 let image_cy = cursor_y - self.content_offset_y().0;
-                self.view_state
+                self.zoom
+                    .view
                     .scroll_zoom(delta, Logical(cursor_x), Logical(image_cy));
-                if self.auto_fit_window {
+                if self.zoom.auto_fit {
                     self.auto_fit_after_zoom(
                         old_zoom,
                         Logical(cursor_x as f64),
@@ -311,7 +314,12 @@ impl App {
                 self.update_transform_and_redraw();
             }
             AppCommand::Refresh => {
-                if let Some(path) = self.dir_list.as_ref().map(|d| d.current().to_path_buf()) {
+                if let Some(path) = self
+                    .navigation
+                    .dir_list
+                    .as_ref()
+                    .map(|d| d.current().to_path_buf())
+                {
                     self.display_image(&path);
                     self.update_shared_state();
                 }

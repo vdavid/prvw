@@ -1,7 +1,7 @@
 use super::text::{GlyphonRenderer, TextBlock};
-use super::view::TransformUniform;
-use crate::imaging::loader::DecodedImage;
+use crate::decoding::DecodedImage;
 use crate::pixels::{Logical, Physical};
+use crate::zoom::view::TransformUniform;
 use image::ImageEncoder;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;

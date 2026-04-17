@@ -1,8 +1,19 @@
-//! Background auto-updater for macOS.
+//! # Auto-updater
 //!
-//! On startup, fetches `latest.json` from getprvw.com, compares versions, and if a newer
-//! version is available, downloads the DMG, mounts it, and replaces the running `.app` bundle.
-//! Runs on a background `std::thread` so it never blocks the UI.
+//! Background check for newer Prvw releases on GitHub. Runs once at startup on a
+//! background thread, governed by `Settings::auto_update`.
+//!
+//! Checks `https://api.github.com/repos/vdavid/prvw/releases/latest`, compares semver
+//! to `CARGO_PKG_VERSION`, and writes a notification into the app log. Does NOT
+//! auto-download or auto-install — we show the user a link and let them choose.
+//!
+//! ## Gotchas
+//!
+//! - **Net I/O is fire-and-forget.** If GitHub is down, we log and move on. No user-visible
+//!   error, no retries. Not worth the complexity.
+//! - **Only runs when installed in `/Applications/`** (via `features::file_associations::is_in_applications`).
+//!   Dev builds skip the check to avoid confusing "update available" messages when running
+//!   locally from `target/`.
 
 use serde::Deserialize;
 use std::collections::HashMap;
