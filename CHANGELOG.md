@@ -8,6 +8,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- RAW pipeline gained **opt-in Adobe DCP (Digital Camera Profile) support**. If the user has a `.dcp` matching the
+  camera's `UniqueCameraModel` in `$PRVW_DCP_DIR` or Adobe Camera Raw's default directory
+  (`~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/`), Prvw applies its `ProfileHueSatMap` as a
+  trilinearly-interpolated 3D LUT in linear-light HSV, right after highlight recovery and before the default tone
+  curve. Catches the per-camera color character a generic 3×3 matrix can't — skin tones, saturated reds / greens,
+  and so on. Cyclic hue axis handles the 360°/0° wraparound cleanly; neutrals short-circuit so grays never drift
+  chroma. Deferred for a later phase: `LookTable` (second LUT), per-camera tone curve, dual-illuminant
+  interpolation, `ForwardMatrix` swap. Most users will have no matching DCP available, which is a silent no-op —
+  output stays bit-for-bit identical to the pre-3.2 pipeline. Parse time is ~16 µs once per decode; apply time is
+  ~35 ms on a 20 MP buffer (rayon-parallel). See `docs/notes/raw-support-phase3.md`
 - RAW pipeline now applies highlight recovery between the baseline-exposure lift and the tone curve. Pixels whose
   brightest channel exceeds 0.95 in linear Rec.2020 blend toward their own luminance via a smoothstep that finishes at
   1.20, and pass through untouched below that. Keeps bright skies and specular highlights from drifting magenta / cyan

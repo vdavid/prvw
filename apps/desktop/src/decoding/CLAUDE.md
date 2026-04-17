@@ -96,6 +96,15 @@ can keep the intermediate wide-gamut:
     keep rising. Runs post-exposure so it catches exposure-induced
     overflow too, and pre-tone-curve so the curve sees a hue-consistent
     input.
+4b. **Phase 3.2: DCP (opt-in)** (`color::dcp::apply_if_available`).
+    Looks up a DCP matching the camera's `UniqueCameraModel` under
+    `$PRVW_DCP_DIR` and Adobe Camera Raw's default directory, then
+    applies its `ProfileHueSatMap` as a trilinearly-interpolated 3D LUT
+    in linear-light HSV. Per-camera color refinement (skin tones,
+    saturated reds / greens). Silent no-op for users without a matching
+    DCP, so the pipeline stays identical to Phase 3.1. Deferred:
+    `LookTable`, `ProfileToneCurve`, dual-illuminant interpolation,
+    `ForwardMatrix` swap. See `docs/notes/raw-support-phase3.md`.
 5. `color::tone_curve::apply_default_tone_curve` shapes **luminance only** on
    the linear buffer with a mild filmic S-curve: shadow Hermite → midtone
    line (slope 1.08, anchored at 0.25) → highlight shoulder. Each pixel's

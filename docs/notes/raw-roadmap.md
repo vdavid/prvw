@@ -4,7 +4,7 @@ Quick checklist across phases. Detailed design notes live in
 `raw-support-phase1.md` and `raw-support-phase2.md`. This file is the single
 source for "what's done, what's next."
 
-Last updated: 2026-04-17 (Phase 3.1 shipped).
+Last updated: 2026-04-17 (Phase 3.2 shipped).
 
 ## Phase 1 — shipped in v0.9.0 🎉
 
@@ -103,6 +103,33 @@ diagram, and iPhone ProRAW specifics.
       other two kept rising. See `docs/notes/raw-support-phase3.md` for
       algorithm, parameter rationale, and smoke-test observations.
 
+### Phase 3.2 — DCP profile support (done, 2026-04-17)
+
+- [x] Parse Adobe `.dcp` files (TIFF-like `IIRC` container): extract
+      `UniqueCameraModel`, `ProfileName`, `ProfileCopyright`,
+      `ProfileCalibrationSignature`, `CalibrationIlluminant1/2`,
+      `ProfileHueSatMapDims`, `ProfileHueSatMapData1/2`, and
+      `ProfileHueSatMapEncoding`.
+- [x] Apply `ProfileHueSatMap` as a trilinearly-interpolated 3D LUT in
+      linear-light HSV (cyclic hue, clamped sat / val axes). Runs post-
+      highlight-recovery, pre-tone-curve. ~35 ms on a 20 MP buffer,
+      rayon-parallel.
+- [x] DCP discovery: `$PRVW_DCP_DIR` + Adobe Camera Raw's default
+      `~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/`.
+      Matches by `UniqueCameraModel` (case- and whitespace-insensitive)
+      or `ProfileCalibrationSignature`. Silent no-op when no DCP
+      matches, so users without ACR installed see zero change.
+- [x] End-to-end smoke test covers: (1) env unset = Phase 3.1 output,
+      (2) env set but no match = Phase 3.1 output, (3) env set with
+      match = visible color shift (57.8 % of bytes changed on our
+      Sony ARW fixture, mean Δ = 3.16 per channel).
+
+**Deferred** to Phase 3.x: `LookTable` (second LUT), `ProfileToneCurve`
+(our default is already close to Adobe neutral), dual-illuminant
+interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
+(our matrix already targets Rec.2020). See
+`docs/notes/raw-support-phase3.md` for rationale and format details.
+
 ### Phase 3.x — still ahead
 
 - [ ] Retune defaults against a wider reference set. The 2.5b rerun grid-
@@ -110,10 +137,13 @@ diagram, and iPhone ProRAW specifics.
       scene with a subject). Likely scene-class gaps: portraits / skin
       tones, low-light / high-ISO, near-neutral scenes. Collect three to
       five more Preview.app screenshot references and rerun the grid.
-- [ ] DCP profile support: parse Adobe `.dcp` files, apply `HueSatMap` 3D LUT,
-      per-camera tone curve. Biggest single quality lift for portraits.
-- [ ] DCP discovery: bundle common profiles or read from the user's
-      `~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/`.
+- [ ] DCP `LookTable` application (second LUT after `HueSatMap`).
+- [ ] DCP dual-illuminant interpolation (illuminants 1 and 2 blended by
+      scene color temperature).
+- [ ] DCP tone curve: optional swap of our default tone curve with the
+      per-camera one when the DCP carries one.
+- [ ] Settings UI: a "Custom DCP directory" picker + "per-camera profile"
+      toggle in the Color panel.
 
 ## Phase 4 — HDR / EDR output
 

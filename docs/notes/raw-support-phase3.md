@@ -1,4 +1,4 @@
-# Camera RAW support: Phase 3.0 + 3.1
+# Camera RAW support: Phase 3.0 + 3.1 + 3.2
 
 Phase 2 closed the viewer-polish gap against Preview.app: wide-gamut
 intermediate, baseline exposure, tone curve, saturation, and capture
@@ -9,7 +9,10 @@ those tags and apply them ourselves, per Adobe's DNG spec 1.6 chapter 6.
 Phase 3.1 adds **highlight recovery**: a desaturate-to-luminance step that
 keeps near-clip pixels from drifting magenta / cyan.
 
-Last updated: 2026-04-17 (Phase 3.1 shipped).
+Phase 3.2 adds **DCP (Adobe Digital Camera Profile) support**: opt-in per-
+camera color refinement that picks up where a generic 3×3 matrix leaves off.
+
+Last updated: 2026-04-17 (Phase 3.2 shipped).
 
 ## Scope
 
@@ -317,3 +320,227 @@ build):
   regenerated
 - docs: `raw-roadmap.md`, `raw-support-phase3.md`, `CLAUDE.md`s,
   `CHANGELOG.md`
+
+## Phase 3.2 — DCP (Adobe Digital Camera Profile) support
+
+A `.dcp` file captures per-camera color refinement that a generic 3×3
+matrix can't express: the distinctive way a Sony A7 III renders skin
+tones, how saturated reds roll off on a Canon R5, etc. Applying a matching
+DCP is Lightroom's single biggest quality lift over a naïve matrix-only
+develop.
+
+Phase 3.2 is **opt-in**: users bring their own DCPs (Adobe's license on
+the bundled-with-Lightroom profiles is ambiguous for redistribution).
+Without a DCP, Prvw behaves exactly like Phase 3.1.
+
+### What's implemented
+
+- **Parser** (`color::dcp::parser`) for the DCP binary format: a TIFF-like
+  container with `IIRC` magic and a standard TIFF IFD. Pulls
+  `UniqueCameraModel`, `ProfileName`, `ProfileCopyright`,
+  `ProfileCalibrationSignature`, `CalibrationIlluminant1/2`,
+  `ProfileHueSatMapDims`, `ProfileHueSatMapData1/2`, and
+  `ProfileHueSatMapEncoding`. Refuses malformed input (bad magic,
+  out-of-bounds offsets, implausible entry counts) rather than panicking.
+- **Apply** (`color::dcp::apply`) converts RGB → HSV, trilinearly
+  interpolates the 3D LUT at `(H, S, V)`, applies `hue_shift_degrees`,
+  `sat_scale`, and `val_scale` to the pixel's HSV, then converts back.
+  Hue axis is cyclic (wraps `360° == 0°`); sat and val axes clamp. Early-
+  exit on neutral pixels (`S == 0`) so grays never drift chroma.
+- **Discovery** (`color::dcp::discovery`) scans `$PRVW_DCP_DIR` (override)
+  then `~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/` and
+  its `Adobe Standard/` sibling. Matches by `UniqueCameraModel` (case-
+  insensitive, whitespace-insensitive), falling back to
+  `ProfileCalibrationSignature`. Returns `None` on no match, which is the
+  common case for users without ACR installed.
+- **Pipeline integration**: runs post-highlight-recovery,
+  pre-tone-curve, in linear Rec.2020. Same slot as Lightroom's "Camera
+  Calibration" pane.
+
+### What's deferred
+
+- **LookTable** (`ProfileLookTableData`). Same shape and math as
+  HueSatMap, applied as a second pass with its own encoding. Nice-to-have
+  for extra quality, but HueSatMap alone captures the bulk of the
+  refinement.
+- **ProfileToneCurve**. Our default luminance-only tone curve is tuned
+  against Preview.app screenshots (Phase 2.5b) and is close to the Adobe-
+  neutral curve already. Per-camera swap would change contrast for
+  unpredictable reasons.
+- **Forward matrix swap** (`ForwardMatrix1/2`). Our pipeline targets
+  linear Rec.2020; DCP forward matrices target ProPhoto D50. A proper
+  swap would need a full chromatic adaptation re-pipe. Deferred.
+- **Dual-illuminant interpolation**. The DNG spec defines a blend between
+  `HueSatMap1` and `HueSatMap2` based on the scene's color temperature
+  (as estimated from the raw white balance). We always pick the D65
+  slot (illuminant 21) straight through, which matches our D65 camera-
+  matrix assumption. This leaves accuracy on the table for mixed- or
+  tungsten-lit scenes but keeps the code simple and correct at the
+  common case.
+
+### HSV conventions used
+
+The DNG spec's normalized HSV is:
+
+- `H ∈ [0, 6)` (six hue sectors; shift values in degrees are divided by
+  60 before being added to H).
+- `S ∈ [0, 1]` where `S = (max − min) / max`.
+- `V = max(R, G, B)`, unbounded above (exposure can push it past 1.0;
+  that's fine).
+
+Computed directly on the linear-light RGB values we pass in — no gamma
+bake-in. Identity LUT (all hue shifts 0, all sat/val scales 1.0) passes
+every pixel through unchanged.
+
+### Matching logic
+
+We compose `"<make> <model>"` from rawler's `Camera` fields and match
+it against each DCP's `UniqueCameraModel`. Normalization lowercases and
+collapses runs of whitespace, matching the DNG spec's "loose match"
+rule. Falls back to `ProfileCalibrationSignature` if `UniqueCameraModel`
+doesn't match — rare in practice but occasionally used for "universal"
+DCPs.
+
+### Fallback behavior
+
+- **No `PRVW_DCP_DIR`, no ACR install**: `find_dcp_for_camera` scans the
+  default paths, finds them missing, returns `None`. The pipeline keeps
+  running, output is byte-for-byte identical to Phase 3.1.
+- **`PRVW_DCP_DIR` set but directory missing or empty**: same — `None`
+  return, no-op.
+- **DCP parse error**: logged at debug level, treated as "skip this
+  file", continue scanning the rest of the directory.
+- **DCP mismatched to camera**: continue scanning.
+
+### Performance
+
+On an M3 Max in release builds:
+
+- DCP parse: ~16 µs warm, once per decode (cached file-system reads).
+- DCP apply on a 20 MP buffer (90×30×1 HueSatMap, rayon-parallel):
+  ~35 ms. Cheap enough to be imperceptible on modern hardware; the rest
+  of the pipeline still dominates.
+
+### Unit-test coverage
+
+`color::dcp::parser::tests`:
+
+- `rejects_too_short`, `rejects_bad_magic`, `rejects_bad_ifd_offset`,
+  `rejects_implausible_entry_count` — malformed inputs.
+- `parses_minimal_dcp` — round-trip through a synthesized identity DCP.
+- `pick_hue_sat_map_prefers_d65` — illuminant-2-is-D65 picks slot 2.
+- `pick_hue_sat_map_falls_back_to_single` — no slot 2 → slot 1.
+- `huesat_map_sample_at_corners` — index layout matches DNG spec.
+- `real_world_dcp_parses` (ignored, requires
+  `/tmp/prvw-dcp-test/SONY_ILCE-7M3.dcp`) — round-trips a real Adobe-
+  format DCP (from RawTherapee's bundle).
+- `parse_bench` (ignored) — perf of parsing a real DCP.
+
+`color::dcp::apply::tests`:
+
+- `rgb_hsv_roundtrip` — RGB → HSV → RGB is identity for well-behaved
+  inputs.
+- `identity_map_is_pass_through` — LUT of (0°, 1.0, 1.0) is a no-op.
+- `neutral_pixels_unchanged_under_identity` — pure grays stay gray.
+- `known_hue_shift_rotates_red_toward_yellow` — +60° shift on pure red
+  gives pure yellow.
+- `known_val_scale_doubles_brightness` — val_scale = 2 doubles RGB.
+- `sat_scale_zero_desaturates_to_gray` — sat_scale = 0 collapses color
+  to its luminance.
+- `hue_wraparound_between_last_and_first_index` — +90° and -90° shifts
+  at the LUT's cyclic boundary cancel correctly.
+- `nan_pixel_passes_through_untouched` — NaN doesn't crash or smear.
+- `val_axis_single_slab_is_stable` — val_divs = 1 (the Adobe 2D case)
+  interpolates cleanly.
+- `apply_hsm_bench` (ignored) — perf of applying a 90×30×1 LUT to 20 MP.
+
+`color::dcp::discovery::tests`:
+
+- `normalize_collapses_whitespace_and_cases` — normalization rule.
+- `dcp_matches_by_unique_camera_model` — match by `UniqueCameraModel`.
+- `dcp_matches_by_calibration_signature` — fallback to signature.
+- `find_dcp_uses_env_var_path` — `$PRVW_DCP_DIR` discovery round-trip.
+
+### End-to-end smoke test
+
+`decoding::raw::tests::dcp_smoke` (ignored, needs `/tmp/raw/sample1.arw`
+and a matching DCP at `/tmp/prvw-dcp-test/`) runs three decodes:
+
+1. `PRVW_DCP_DIR` unset → baseline (Phase 3.1).
+2. `PRVW_DCP_DIR` pointing at an empty path → asserts bit-for-bit
+   equal to baseline.
+3. `PRVW_DCP_DIR` pointing at a dir with a matching DCP → asserts a
+   visible shift (> 1 % of bytes changed).
+
+Prints the delta stats so runs document themselves:
+
+```
+DCP smoke: 45801361/79264768 bytes changed (57.8%), mean |Δ| = 3.16
+```
+
+Set `PRVW_DCP_SMOKE_DUMP=/some/dir` to also emit `baseline.png` and
+`with-dcp.png` for visual inspection. Running the smoke with a
+relabeled-as-Sony-ILCE-5000 copy of `SONY ILCE-7M3.dcp` on our ARW
+fixture:
+
+- Mean per-channel Δ across the whole frame: `R = −0.92, G = +0.49,
+  B = −1.66`. Net shift is slightly warmer and slightly less blue —
+  consistent with an A7 III-style color profile.
+- 92 % of pixels see at least one channel change; max per-pixel Δ is
+  102 (on R).
+- Spot-check pixel samples show blues shifting bluer and greens
+  shifting greener, which is the "per-camera vibrancy" DCP effect.
+
+### Setting up the test DCP
+
+For local testing, we use a RawTherapee-bundled DCP (BSD-licensed) and
+rewrite its `UniqueCameraModel` to match our Sony ARW fixture:
+
+```sh
+mkdir -p /tmp/prvw-dcp-test
+curl -sL -o /tmp/prvw-dcp-test/SONY_ILCE-7M3.dcp \
+    'https://raw.githubusercontent.com/Beep6581/RawTherapee/dev/rtdata/dcpprofiles/SONY%20ILCE-7M3.dcp'
+
+# Relabel UniqueCameraModel from "Sony ILCE-7M3\0" (14 bytes) to
+# "Sony ILCE-5000" (14 bytes, no null). In-place byte swap at offset
+# 0xf2.
+python3 -c "
+import struct
+with open('/tmp/prvw-dcp-test/SONY_ILCE-7M3.dcp', 'rb') as f:
+    d = bytearray(f.read())
+# UCM entry lives at 0xf2, fixed 14-byte slot. See 'dcp-inspect' output
+# for exact offsets.
+d[0xf2:0xf2+14] = b'Sony ILCE-5000'
+with open('/tmp/prvw-dcp-test/Sony_ILCE-5000-test.dcp', 'wb') as f:
+    f.write(d)
+"
+```
+
+**Don't commit the DCPs.** Adobe's bundled DCPs have ambiguous
+redistribution terms; RawTherapee's bundle is BSD but we prefer to keep
+the repo clean of camera profiles regardless.
+
+### Inspection tool
+
+`examples/dcp-inspect.rs` dumps a DCP's parsed fields without running the
+full decode pipeline. Useful for verifying that a downloaded profile has
+the expected tags / dimensions before wiring it up.
+
+```sh
+cargo run --example dcp-inspect -- /tmp/prvw-dcp-test/SONY_ILCE-7M3.dcp
+```
+
+### Files touched
+
+- `apps/desktop/src/color/dcp/mod.rs` (new): public API + shared test
+  helper.
+- `apps/desktop/src/color/dcp/parser.rs` (new): binary parser.
+- `apps/desktop/src/color/dcp/apply.rs` (new): HSV + trilinear
+  interpolation + apply.
+- `apps/desktop/src/color/dcp/discovery.rs` (new): filesystem search +
+  match.
+- `apps/desktop/src/color/mod.rs` — register `dcp` module.
+- `apps/desktop/src/decoding/raw.rs` — pipeline insert + smoke test.
+- `apps/desktop/examples/dcp-inspect.rs` (new): standalone DCP dumper.
+- Docs: `raw-roadmap.md`, this file, `color/CLAUDE.md`,
+  `decoding/CLAUDE.md`, `CHANGELOG.md`.

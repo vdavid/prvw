@@ -34,18 +34,26 @@
 //!    bright skies and specular highlights from drifting magenta / cyan
 //!    when one channel clips while the others keep rising. In-gamut
 //!    pixels pass through untouched. See `color::highlight_recovery`.
-//! 5. **Default tone curve.** A mild filmic S-curve shaped on **luminance
+//! 5. **DCP (Adobe Digital Camera Profile) — opt-in.** If the user has a
+//!    `.dcp` matching the camera's `UniqueCameraModel` in
+//!    `$PRVW_DCP_DIR` or `~/Library/Application Support/Adobe/CameraRaw/
+//!    CameraProfiles/`, we apply its `ProfileHueSatMap` 3D LUT in HSV
+//!    space. No DCP means no-op — the pipeline stays identical to the
+//!    pre-3.2 output. See `color::dcp` for the format, matching rules,
+//!    and deferred features (LookTable, ProfileToneCurve, dual-
+//!    illuminant interpolation, forward-matrix swap).
+//! 6. **Default tone curve.** A mild filmic S-curve shaped on **luminance
 //!    only** in the same linear Rec.2020 working space. Every pixel's RGB
 //!    is scaled by the same `Y_out / Y_in`, so hue and chroma are
 //!    preserved; only brightness reshapes. Adds midtone contrast with a
 //!    soft shoulder at 1.0, closing the "flat look" gap against
 //!    Preview.app and Affinity. See `color::tone_curve` for the curve
 //!    shape.
-//! 6. **Saturation boost.** A mild (+8 %) global chroma scale around the
+//! 7. **Saturation boost.** A mild (+8 %) global chroma scale around the
 //!    luminance axis in linear Rec.2020, approximating the "vibrancy" of
 //!    Apple's and Affinity's per-camera tuning tables. Preserves hue and
 //!    luminance exactly. See `color::saturation`.
-//! 7. **Capture sharpening.** After moxcms lands the pixels in display
+//! 8. **Capture sharpening.** After moxcms lands the pixels in display
 //!    space and we quantise to RGBA8, a separable-Gaussian unsharp mask
 //!    on **luminance only** closes the "crispness gap" against
 //!    Preview.app. Y-plane blur in f32, then per-pixel RGB scale by
@@ -229,6 +237,26 @@ pub(super) fn decode(
     // In-gamut pixels pass through untouched. See
     // `color::highlight_recovery` for the math and safety invariants.
     color::highlight_recovery::apply_default_highlight_recovery(&mut rec2020);
+
+    check_cancelled(cancelled)?;
+
+    // DCP (Adobe Digital Camera Profile). Opt-in per-camera color
+    // refinement: we look up a DCP matching this camera's
+    // `UniqueCameraModel` under `$PRVW_DCP_DIR` and Adobe Camera Raw's
+    // default location, and apply its `ProfileHueSatMap` 3D LUT in HSV.
+    // Zero effect when no DCP is available, which is the common case.
+    // See `color::dcp` for the format, matching rules, and what we
+    // deliberately skip (LookTable, ProfileToneCurve, forward-matrix
+    // swap, dual-illuminant interpolation).
+    let camera_id = format!("{} {}", raw.camera.make, raw.camera.model);
+    if let Some(dcp) = color::dcp::apply_if_available(&camera_id, &mut rec2020) {
+        log::debug!(
+            "RAW applied DCP '{}' for camera '{}' on {}",
+            dcp.profile_name.as_deref().unwrap_or("<unnamed profile>"),
+            camera_id,
+            path.display()
+        );
+    }
 
     check_cancelled(cancelled)?;
 
@@ -1010,6 +1038,104 @@ mod tests {
                 decode(path, bytes, None, color::srgb_icc_bytes(), false).expect("decode failed");
             assert_eq!((img.width, img.height), (5456, 3632));
         }
+    }
+
+    /// Full-pipeline smoke test for Phase 3.2 DCP: decode sample1.arw with
+    /// `PRVW_DCP_DIR` pointing at `/tmp/prvw-dcp-test/`, compare the final
+    /// RGBA8 against a baseline decode (env var unset). Expect a visible
+    /// per-pixel delta when a matching DCP is available. Ignored because
+    /// the DCP fixture lives outside the repo (Adobe DCPs have ambiguous
+    /// redistribution rights).
+    ///
+    /// To prepare: download `SONY ILCE-7M3.dcp` from RawTherapee's
+    /// `rtdata/dcpprofiles` into `/tmp/prvw-dcp-test/` and rewrite its
+    /// `UniqueCameraModel` to `Sony ILCE-5000` so it matches sample1.arw.
+    /// See the setup steps in `docs/notes/raw-support-phase3.md`. Run with
+    /// `cargo test --release dcp_smoke -- --ignored --nocapture`.
+    ///
+    /// Both the no-match fallback and the DCP-applied path are exercised
+    /// here to keep the `PRVW_DCP_DIR` env-var changes serialized; running
+    /// them as separate `#[test]` fns races under the default parallel
+    /// runner.
+    #[test]
+    #[ignore]
+    fn dcp_smoke() {
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+        let path = Path::new("/tmp/raw/sample1.arw");
+        if !path.exists() {
+            log::warn!("skipping: fixture missing");
+            return;
+        }
+        let bytes = std::fs::read(path).expect("fixture missing");
+
+        // Baseline: no env var.
+        // SAFETY: Single-threaded test body; we're the only code touching
+        // `PRVW_DCP_DIR` here.
+        unsafe {
+            std::env::remove_var("PRVW_DCP_DIR");
+        }
+        let (baseline, _) =
+            decode(path, bytes.clone(), None, color::srgb_icc_bytes(), false).expect("baseline");
+
+        // No-match fallback: DCP env var set, but the dir has no matching
+        // `.dcp`. Output must be byte-for-byte identical to the baseline.
+        unsafe {
+            std::env::set_var("PRVW_DCP_DIR", "/nonexistent-prvw-dcp-dir-xyz");
+        }
+        let (with_empty, _) =
+            decode(path, bytes.clone(), None, color::srgb_icc_bytes(), false).expect("with-empty");
+        assert_eq!(
+            baseline.rgba_data, with_empty.rgba_data,
+            "no-DCP fallback changed output; must be bit-identical to Phase 3.1"
+        );
+
+        // DCP applied: different dir, matching file present. Expect a
+        // visible per-pixel delta.
+        unsafe {
+            std::env::set_var("PRVW_DCP_DIR", "/tmp/prvw-dcp-test");
+        }
+        let (with_dcp, _) =
+            decode(path, bytes, None, color::srgb_icc_bytes(), false).expect("with-dcp");
+        unsafe {
+            std::env::remove_var("PRVW_DCP_DIR");
+        }
+
+        let n = baseline.rgba_data.len().min(with_dcp.rgba_data.len());
+        let mut diff_count = 0u64;
+        let mut total_delta: u64 = 0;
+        for i in 0..n {
+            if baseline.rgba_data[i] != with_dcp.rgba_data[i] {
+                diff_count += 1;
+                total_delta += (baseline.rgba_data[i] as i32 - with_dcp.rgba_data[i] as i32)
+                    .unsigned_abs() as u64;
+            }
+        }
+        let pct = 100.0 * diff_count as f64 / n as f64;
+        let mean = total_delta as f64 / diff_count.max(1) as f64;
+        println!("DCP smoke: {diff_count}/{n} bytes changed ({pct:.1}%), mean |Δ| = {mean:.2}");
+        assert!(
+            diff_count > n as u64 / 100,
+            "expected visible color shift from DCP; got only {diff_count} of {n} bytes changed"
+        );
+
+        // Dump side-by-side PNGs when `PRVW_DCP_SMOKE_DUMP` is set, so a
+        // developer can eyeball the color character shift.
+        if let Some(dump_dir) = std::env::var_os("PRVW_DCP_SMOKE_DUMP") {
+            let dir = std::path::PathBuf::from(dump_dir);
+            std::fs::create_dir_all(&dir).expect("create dump dir");
+            let (w, h) = (baseline.width, baseline.height);
+            write_rgba_png(&dir.join("baseline.png"), w, h, &baseline.rgba_data);
+            write_rgba_png(&dir.join("with-dcp.png"), w, h, &with_dcp.rgba_data);
+            println!("Dumped baseline.png / with-dcp.png under {}", dir.display());
+        }
+    }
+
+    fn write_rgba_png(path: &Path, w: u32, h: u32, rgba: &[u8]) {
+        use image::{ImageBuffer, Rgba};
+        let img =
+            ImageBuffer::<Rgba<u8>, _>::from_raw(w, h, rgba.to_vec()).expect("image buffer size");
+        img.save(path).expect("save png");
     }
 
     #[test]
