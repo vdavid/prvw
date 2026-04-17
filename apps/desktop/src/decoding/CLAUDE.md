@@ -46,3 +46,28 @@ and hand a `DecodedImage` off to the renderer.
 - **Fujifilm X-Trans demosaic is bilinear only.** Rawler ships a simple X-Trans
   bilinear demosaic, not Markesteijn. Usable in a viewer but less detailed than
   what dedicated RAW tools produce.
+
+## Testing the RAW pipeline
+
+The RAW pipeline has two kinds of tests:
+
+- **Unit tests in `raw.rs`** — malformed bytes, cancellation. Cheap, always on.
+- **Golden regression test in `mod.rs` (`synthetic_dng_matches_golden`).** Runs
+  the full `load_image` path on `tests/fixtures/raw/synthetic-bayer-128.dng`
+  (a tiny synthetic DNG, ~33 KB) and compares the RGBA8 output against a
+  checked-in golden PNG via CIE76 Delta-E. Tolerances: mean < 0.5, max < 3.0.
+  macOS-gated because `load_image` reads the system sRGB ICC profile.
+
+Regenerating the golden after an intentional pipeline change:
+
+```sh
+cd apps/desktop
+PRVW_UPDATE_GOLDENS=1 cargo test synthetic_dng_matches_golden
+```
+
+Delta-E lives in `src/color/delta_e.rs`. The `raw-dev-dump` example
+(`cargo run --example raw-dev-dump -- <raw_path>`) dumps per-stage PNGs for
+visual inspection during pipeline development.
+
+See `tests/fixtures/raw/README.md` for fixture details and
+`docs/notes/raw-support-phase2.md` for the pipeline-evolution plan.

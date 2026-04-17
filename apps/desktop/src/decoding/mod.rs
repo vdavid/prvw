@@ -265,4 +265,91 @@ mod tests {
         let img = load_image(path, color::srgb_icc_bytes(), false).expect("decode failed");
         assert_eq!((img.width, img.height), (3000, 3990));
     }
+
+    /// Golden regression test: decode the synthetic Bayer DNG fixture via the
+    /// full `load_image` path and compare against a checked-in golden PNG. The
+    /// threshold is deliberately tight (mean < 0.5, max < 3.0 in CIE76 Delta-E)
+    /// so any pipeline drift caught by Phase 2+ changes will trip this test.
+    ///
+    /// To regenerate after an intentional output change:
+    ///   PRVW_UPDATE_GOLDENS=1 cargo test synthetic_dng_matches_golden
+    ///
+    /// The fixture is a 128x128 uncompressed Bayer RGGB DNG built from a
+    /// gradient, checked in under `tests/fixtures/raw/synthetic-bayer-128.dng`
+    /// (see `tests/fixtures/raw/licenses.md`).
+    #[test]
+    fn synthetic_dng_matches_golden() {
+        use crate::color::delta_e::delta_e_stats;
+
+        let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/raw");
+        let raw_path = fixture_dir.join("synthetic-bayer-128.dng");
+        let golden_path = fixture_dir.join("synthetic-bayer-128.golden.png");
+
+        let img = load_image(&raw_path, color::srgb_icc_bytes(), false)
+            .expect("synthetic DNG should decode");
+        assert_eq!(
+            (img.width, img.height),
+            (128, 128),
+            "synthetic DNG dimensions drifted"
+        );
+
+        if std::env::var("PRVW_UPDATE_GOLDENS").ok().as_deref() == Some("1") {
+            // RGBA8 -> RGB8 for PNG.
+            let mut rgb: Vec<u8> = Vec::with_capacity((img.width * img.height * 3) as usize);
+            for chunk in img.rgba_data.chunks_exact(4) {
+                rgb.extend_from_slice(&chunk[..3]);
+            }
+            let buf = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(img.width, img.height, rgb)
+                .expect("RGB buffer size mismatch");
+            buf.save(&golden_path).expect("couldn't write golden");
+            println!("Updated golden: {}", golden_path.display());
+            return;
+        }
+
+        let golden = image::open(&golden_path)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "couldn't read golden PNG at {}: {e}. \
+                     Run `PRVW_UPDATE_GOLDENS=1 cargo test synthetic_dng_matches_golden` to create it.",
+                    golden_path.display()
+                )
+            })
+            .to_rgb8();
+        assert_eq!(
+            (golden.width(), golden.height()),
+            (img.width, img.height),
+            "golden PNG dimensions don't match decoded output"
+        );
+
+        // Promote both to RGBA8 so `delta_e_stats` can diff them.
+        let actual_rgba = img.rgba_data;
+        let mut golden_rgba: Vec<u8> =
+            Vec::with_capacity((golden.width() * golden.height() * 4) as usize);
+        for chunk in golden.as_raw().chunks_exact(3) {
+            golden_rgba.extend_from_slice(chunk);
+            golden_rgba.push(255);
+        }
+
+        let stats = delta_e_stats(&golden_rgba, &actual_rgba);
+        // Tolerances: mean < 0.5 catches any gross pipeline drift; max < 3.0
+        // tolerates a handful of border pixels that may round differently
+        // across macOS versions. Tighten as needed if Phase 2+ introduces
+        // deterministic pipelines we want to lock down harder.
+        assert!(
+            stats.mean < 0.5,
+            "mean Delta-E {} exceeds 0.5 (max {}, p95 {}). \
+             Run `PRVW_UPDATE_GOLDENS=1 cargo test synthetic_dng_matches_golden` if this change was intentional.",
+            stats.mean,
+            stats.max,
+            stats.p95
+        );
+        assert!(
+            stats.max < 3.0,
+            "max Delta-E {} exceeds 3.0 (mean {}, p95 {}). \
+             Run `PRVW_UPDATE_GOLDENS=1 cargo test synthetic_dng_matches_golden` if this change was intentional.",
+            stats.max,
+            stats.mean,
+            stats.p95
+        );
+    }
 }

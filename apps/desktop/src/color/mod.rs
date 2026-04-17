@@ -1,6 +1,7 @@
 //! Color management: ICC profile extraction, transform, display profile detection,
 //! Settings panel.
 
+pub mod delta_e;
 mod transform;
 
 pub use transform::{profiles_match, srgb_icc_bytes, transform_icc};

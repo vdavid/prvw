@@ -4,6 +4,16 @@ All notable changes to Prvw are documented here.
 
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- RAW pipeline test infrastructure: a tiny synthetic Bayer DNG fixture (128×128, ~33 KB, 0BSD), a `color::delta_e`
+  CIE76 metric module, a `synthetic_dng_matches_golden` regression test that diffs `load_image` output against a
+  checked-in golden PNG, and a `raw-dev-dump` example that dumps per-stage PNGs for visual inspection. Goldens
+  regenerate via `PRVW_UPDATE_GOLDENS=1 cargo test`. Sets up Phase 2 of RAW work (wide-gamut + exposure + tone curve +
+  sharpening). See `docs/notes/raw-support-phase2.md`
+
 ## [0.9.0] - 2026-04-17
 
 ### Added
