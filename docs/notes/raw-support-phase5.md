@@ -162,15 +162,113 @@ split is needed. The surface format stays `Bgra8UnormSrgb` in this
 phase; values above 1.0 survive through the decode + cache but get
 clipped at the final blend. That's the part Phase 5.1 will fix.
 
-## Deferred to Phase 5.1 (follow-up)
+## What shipped in Phase 5.1 (2026-04-17)
 
-- **Surface format switch.** `CAMetalLayer.pixelFormat = .bgra16Float`
-  and `wantsExtendedDynamicRangeContent = YES` when the displayed image
-  is HDR, revert to `Bgra8UnormSrgb` otherwise. Reconfiguring the wgpu
-  surface mid-session in the 29 version we ship requires rebuilding
-  both the image-quad pipeline and the overlay pipeline (the text
-  renderer is already swappable via `glyphon::TextRenderer::new`). Not
-  hard, but worth its own phase to stage the pipeline-rebuild path.
+Phase 5.1 flips the final switch: when the current image is `Rgba16F`,
+HDR output is enabled, and the display reports EDR headroom above 1.0,
+the wgpu surface reconfigures to `Rgba16Float` and `CAMetalLayer` goes
+into its EDR mode. On SDR displays (or with the toggle off), nothing
+changes — the `synthetic_dng_matches_golden` regression test passes
+unchanged.
+
+### `App::want_edr_surface` — the single source of truth
+
+Three conditions, all AND-ed:
+
+1. `raw_flags.hdr_output == true` (user opt-in, default on).
+2. `edr_headroom > 1.0` (display advertises EDR).
+3. `current_image_is_hdr` (the last decode emitted `PixelBuffer::Rgba16F`).
+
+`App.current_image_is_hdr` is a new field set in `display_image` and
+`display_cached_or_load` from the freshly-loaded image's `PixelBuffer`
+variant. It flips back to `false` whenever a non-RAW (or an
+SDR-branch-taking RAW) loads, which naturally degrades the surface
+back to SDR when the user navigates to a JPEG.
+
+### `Renderer::reconfigure_surface_format`
+
+Flips the wgpu `SurfaceConfiguration.format` between `Rgba16Float` and
+the platform's preferred SDR format captured at init time (typically
+`Bgra8UnormSrgb` on macOS). Rebuilds three pipelines that reference
+the surface format:
+
+- Image-quad pipeline — via the extracted `build_image_pipeline`
+  helper.
+- Overlay pill pipeline — via `build_overlay_pipeline`.
+- `GlyphonRenderer` — rebuilt wholesale via `GlyphonRenderer::new`
+  because glyphon's `TextAtlas` pins the format at construction and
+  doesn't expose a swap API. Cheap: re-creating the atlas on a format
+  flip is a single allocation and a fresh swash cache.
+
+Shader modules and pipeline layouts are cached on `Renderer`, so the
+rebuild doesn't recompile WGSL or re-validate bind-group layouts. One
+INFO log line per transition spells out the old and new formats.
+
+### `color::display_profile::set_layer_edr_state`
+
+Three CAMetalLayer properties set in lockstep so the wgpu surface
+config and the Metal-layer config can't drift:
+
+- `setWantsExtendedDynamicRangeContent:YES|NO` (the key knob — the
+  compositor routes the window through the EDR path only when this is
+  `YES`).
+- `setPixelFormat:MTLPixelFormatRGBA16Float (115)` for EDR,
+  `MTLPixelFormatBGRA8Unorm_sRGB (81)` for SDR.
+- `setColorspace:` — `kCGColorSpaceExtendedLinearDisplayP3` for EDR
+  (linear-light, signed floats, Display P3 primaries — perfect pair
+  for our linear Rec.2020 pixels above 1.0), or the display ICC
+  profile bytes when returning to SDR (reuses the existing
+  `set_colorspace_on_layer` path from Phase 2).
+
+### Colorspace choice: `extendedDisplayP3`
+
+Picked over `extendedLinearDisplayP3` because our ICC pipeline
+encodes the f16 texture through the display profile's transfer
+function (sRGB or P3 gamma, not linear-light) — so the CAMetalLayer
+colorspace needs the matching non-linear transfer. Naming a linear
+colorspace here would make the compositor decode the same gamma
+curve twice, producing washed-out or crushed output.
+
+`extendedLinearSRGB` was also considered and rejected: the M3 Max
+XDR (and most modern Apple displays) natively covers P3, not sRGB,
+and the pipeline already targets Display-P3 primaries via the
+display ICC.
+
+The "Extended" variant is what keeps above-1.0 values alive — the
+non-extended `kCGColorSpaceDisplayP3` clamps at 1.0.
+
+### Trigger points
+
+`App::apply_edr_surface_state` runs whenever anything that feeds
+`want_edr_surface()` changes:
+
+- `display_image` — after each decode (image-HDR-ness changed).
+- `display_cached_or_load` — after each navigation (cached image may
+  be HDR or SDR).
+- `apply_raw_flag_change` — user flipped `hdr_output` in Settings.
+- `handle_display_changed` — screen change or brightness change, and
+  an `apply_icc_settings` re-decode was already queued.
+
+The reconfigure is idempotent: if the surface is already in the right
+state, `reconfigure_surface_format` returns `false` and no logs fire.
+
+### Screenshot path
+
+`capture_screenshot` always renders to an SDR offscreen target now —
+PNG readback and the BGRA→RGBA swizzle stay straightforward, and a
+PNG can't represent above-1.0 values anyway. When the live pipeline
+is already SDR, we reuse it; when it's HDR, we build a one-shot SDR
+image pipeline for the capture pass. Values above 1.0 clip to
+display-white, which is the correct behavior for a screenshot.
+
+### Scope
+
+Dynamic switching is in. Tested on M3 Max / XDR: SDR → HDR on RAW
+load, HDR → SDR on navigate to JPEG, HDR → SDR on Settings toggle
+off, all without recreating the window.
+
+## Deferred to Phase 5.x
+
 - **Unsharp-mask on f16.** The existing sharpener runs on RGBA8
   luminance with a 7-tap separable Gaussian. Porting to f16 means a
   second code path (different clamp, different rounding); the bigger

@@ -102,6 +102,12 @@ pub(crate) struct App {
     /// renderer. Refreshed on `AppCommand::DisplayChanged` and whenever a
     /// new display is queried.
     pub(crate) edr_headroom: f32,
+    /// True when the currently-displayed image's pixel buffer is `Rgba16F`
+    /// (Phase 5.1). Combined with `raw_flags.hdr_output` and a non-unity
+    /// `edr_headroom`, this determines whether the wgpu surface should be
+    /// configured for EDR output. Only RAW decodes produce HDR buffers, so
+    /// this flips back to `false` whenever a JPEG / PNG / WebP / etc. loads.
+    pub(crate) current_image_is_hdr: bool,
 
     // ── Runtime input / rendering ───────────────────────────────────
     pub(crate) modifiers: ModifiersState,
@@ -146,6 +152,7 @@ impl App {
             title_bar: initial_settings.title_bar,
             raw_flags: initial_settings.raw,
             edr_headroom: 1.0,
+            current_image_is_hdr: false,
             modifiers: ModifiersState::empty(),
             drag_start: None,
             last_mouse_pos: (Logical(0.0), Logical(0.0)),
@@ -532,7 +539,14 @@ impl App {
         ) {
             Ok(image) => {
                 self.navigation.current_image_size = Some((image.width, image.height));
+                self.current_image_is_hdr = image.pixels.is_hdr();
                 let offset = self.content_offset_y();
+
+                // Flip the wgpu surface + CAMetalLayer between SDR and EDR
+                // based on this image's pixel buffer variant. Must run
+                // before `renderer.set_image` so the image-quad pipeline is
+                // valid when we draw next.
+                self.apply_edr_surface_state();
 
                 let renderer = self.renderer.as_mut().unwrap();
 
@@ -595,23 +609,43 @@ impl App {
         }
 
         let offset = self.content_offset_y();
-        if let Some(image) = self.navigation.image_cache.get(index) {
-            self.navigation.current_image_size = Some((image.width, image.height));
+        // First pass: inspect the cached image enough to reconfigure the
+        // surface (can't hold an `image_cache` borrow while calling
+        // `apply_edr_surface_state`, which needs `&mut self`).
+        let cached_meta = self
+            .navigation
+            .image_cache
+            .get(index)
+            .map(|img| (img.width, img.height, img.pixels.is_hdr()));
+
+        if let Some((iw, ih, is_hdr)) = cached_meta {
+            self.navigation.current_image_size = Some((iw, ih));
+            self.current_image_is_hdr = is_hdr;
+
+            // Surface state may need to flip because we navigated to (or
+            // from) an HDR decode cached earlier. See `apply_edr_surface_state`.
+            self.apply_edr_surface_state();
+
+            // Second pass: grab the image reference for upload.
+            let image = self
+                .navigation
+                .image_cache
+                .get(index)
+                .expect("image was present a moment ago");
 
             let renderer = self.renderer.as_mut().unwrap();
 
             if self.zoom.auto_fit
                 && let Some(win) = &self.window
-                && let Some(size) =
-                    window::resize_to_fit_image(win, image.width, image.height, offset)
+                && let Some(size) = window::resize_to_fit_image(win, iw, ih, offset)
             {
                 let (pw, ph) = from_physical_size(size);
                 renderer.resize(pw, ph);
             }
 
             self.zoom.view.update_dimensions(
-                image.width,
-                image.height,
+                iw,
+                ih,
                 renderer.logical_width(),
                 renderer.logical_height(),
             );
@@ -888,8 +922,52 @@ impl App {
         }
         if let Some(dir) = &self.navigation.dir_list {
             let path = dir.current().to_path_buf();
+            // `display_image` updates `current_image_is_hdr` and calls
+            // `apply_edr_surface_state`, so the surface picks up the new
+            // `hdr_output` flag through the re-decode.
             self.display_image(&path);
+        } else {
+            // No image yet, but the user toggled hdr_output — make sure
+            // the surface matches in case we later load an image from an
+            // already-primed cache path.
+            self.apply_edr_surface_state();
         }
+    }
+
+    /// Single source of truth for "should the wgpu surface run in EDR mode
+    /// right now?" All three inputs must hold: the user hasn't opted out,
+    /// the display advertises EDR headroom, and the currently-displayed
+    /// image is actually an HDR decode. When any flips, call
+    /// `apply_edr_surface_state`.
+    pub(crate) fn want_edr_surface(&self) -> bool {
+        self.raw_flags.hdr_output && self.edr_headroom > 1.0 && self.current_image_is_hdr
+    }
+
+    /// Reconfigure the wgpu surface and the `CAMetalLayer` to match
+    /// `want_edr_surface()`. No-op when the surface is already in the
+    /// right state. Called from image-change, flag-change, and
+    /// display-change handlers.
+    pub(crate) fn apply_edr_surface_state(&mut self) {
+        let want_hdr = self.want_edr_surface();
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let changed = renderer.reconfigure_surface_format(want_hdr);
+        if !changed {
+            return;
+        }
+
+        #[cfg(target_os = "macos")]
+        if let Some(win) = &self.window {
+            display_profile::set_layer_edr_state(win, want_hdr, &self.color.display_icc);
+        }
+
+        // After reconfiguring, re-apply the transform so the next frame
+        // draws with the new pipelines.
+        if let Some(renderer) = &self.renderer {
+            renderer.update_transform(&self.zoom.view.transform());
+        }
+        self.request_redraw();
     }
 
     /// Sync the custom DCP directory env var and re-decode so the active
@@ -929,6 +1007,11 @@ impl App {
             }
         }
         self.apply_icc_settings();
+        // `apply_icc_settings` re-decodes, which goes through `display_image`
+        // and thus `apply_edr_surface_state`. If nothing changed (same
+        // display, same ICC), still confirm the surface state matches the
+        // latest headroom.
+        self.apply_edr_surface_state();
     }
 
     fn show_settings_dialog(&self) {

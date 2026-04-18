@@ -22,6 +22,21 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// SDR surface format that was chosen at init time (for example
+    /// `Bgra8UnormSrgb` on macOS). We store it so the HDR→SDR transition
+    /// can flip back to the exact same format the platform preferred.
+    sdr_format: wgpu::TextureFormat,
+    /// Whether the adapter / surface combination supports `Rgba16Float`
+    /// as a surface format. If `false`, `reconfigure_surface_format(true)`
+    /// is a no-op — we stay SDR no matter what. Captured once at init.
+    hdr_surface_supported: bool,
+    /// Cached shader modules. Pipeline rebuilds on format change reuse
+    /// these so we don't recompile WGSL on every EDR toggle.
+    image_shader: wgpu::ShaderModule,
+    overlay_shader: wgpu::ShaderModule,
+    /// Cached pipeline layouts — also format-agnostic.
+    image_pipeline_layout: wgpu::PipelineLayout,
+    overlay_pipeline_layout: wgpu::PipelineLayout,
     render_pipeline: wgpu::RenderPipeline,
     bind_group: Option<wgpu::BindGroup>,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -31,6 +46,87 @@ pub struct Renderer {
     overlay_pipeline: wgpu::RenderPipeline,
     overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
     scale_factor: f64,
+}
+
+/// Build the image-quad render pipeline against a specific surface format.
+/// Extracted so `reconfigure_surface_format` can rebuild on EDR transitions.
+fn build_image_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("image pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// Build the overlay pipeline (rounded-rect pills) against a specific
+/// surface format. The pills blend alpha over whatever's underneath, so
+/// the blend state is format-independent.
+fn build_overlay_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("overlay pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 impl Renderer {
@@ -83,6 +179,21 @@ impl Renderer {
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
+
+        // Phase 5.1: the EDR surface path wants `Rgba16Float`. Check the
+        // adapter actually supports it; log once at init so we know whether
+        // dynamic HDR switching is possible on this machine. When the
+        // format is missing (older Intel Mac, unusual GPUs), the surface
+        // stays SDR-only forever and `Renderer::reconfigure_surface_format`
+        // silently refuses the HDR switch.
+        let hdr_surface_supported = surface_caps
+            .formats
+            .contains(&wgpu::TextureFormat::Rgba16Float);
+        log::info!(
+            "GPU surface formats: {:?} (HDR-capable: {})",
+            surface_caps.formats,
+            hdr_surface_supported,
+        );
 
         // Prefer a non-opaque alpha mode so the title bar area can show vibrancy through
         // the transparent clear color. Falls back to the first available mode (typically
@@ -173,42 +284,15 @@ impl Renderer {
             ],
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("image pipeline layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
+        let image_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("image pipeline layout"),
+                bind_group_layouts: &[Some(&bind_group_layout)],
+                immediate_size: 0,
+            });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("image pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let render_pipeline =
+            build_image_pipeline(&device, &shader, &image_pipeline_layout, surface_format);
 
         // Overlay pipeline for drawing semi-transparent rounded-rectangle pills behind text
         let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -262,36 +346,12 @@ impl Renderer {
                 immediate_size: 0,
             });
 
-        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("overlay pipeline"),
-            layout: Some(&overlay_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &overlay_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &overlay_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let overlay_pipeline = build_overlay_pipeline(
+            &device,
+            &overlay_shader,
+            &overlay_pipeline_layout,
+            surface_format,
+        );
 
         let text_renderer = GlyphonRenderer::new(&device, &queue, surface_format);
 
@@ -300,6 +360,12 @@ impl Renderer {
             device,
             queue,
             config,
+            sdr_format: surface_format,
+            hdr_surface_supported,
+            image_shader: shader,
+            overlay_shader,
+            image_pipeline_layout,
+            overlay_pipeline_layout,
             render_pipeline,
             bind_group: None,
             bind_group_layout,
@@ -312,19 +378,80 @@ impl Renderer {
         }
     }
 
+    /// Flip the wgpu surface between the platform's SDR format (from init)
+    /// and `Rgba16Float` for EDR output. Rebuilds the three render pipelines
+    /// that reference the surface format (image-quad, overlay, glyphon text).
+    /// Returns `true` if the format actually changed.
+    ///
+    /// `want_hdr == true` switches to `Rgba16Float`. `false` returns to the
+    /// SDR format captured at init. Callers (the app's EDR-transition handler)
+    /// are responsible for pairing this with the matching
+    /// `CAMetalLayer.wantsExtendedDynamicRangeContent` / `pixelFormat` /
+    /// colorspace changes on macOS.
+    pub fn reconfigure_surface_format(&mut self, want_hdr: bool) -> bool {
+        // Refuse HDR on adapters that don't advertise `Rgba16Float` as a
+        // surface format. Configuring with an unsupported format would
+        // either panic or silently produce a blank surface.
+        let effective_hdr = want_hdr && self.hdr_surface_supported;
+        if want_hdr && !self.hdr_surface_supported {
+            log::debug!(
+                "render: HDR surface requested but adapter doesn't support Rgba16Float — staying SDR"
+            );
+        }
+
+        let target = if effective_hdr {
+            wgpu::TextureFormat::Rgba16Float
+        } else {
+            self.sdr_format
+        };
+        if target == self.config.format {
+            return false;
+        }
+
+        let from = self.config.format;
+        log::info!(
+            "render: surface format: {:?} -> {:?} ({} EDR)",
+            from,
+            target,
+            if want_hdr { "enabling" } else { "disabling" },
+        );
+
+        self.config.format = target;
+        self.surface.configure(&self.device, &self.config);
+
+        self.render_pipeline = build_image_pipeline(
+            &self.device,
+            &self.image_shader,
+            &self.image_pipeline_layout,
+            target,
+        );
+        self.overlay_pipeline = build_overlay_pipeline(
+            &self.device,
+            &self.overlay_shader,
+            &self.overlay_pipeline_layout,
+            target,
+        );
+        // Rebuild the glyphon renderer — its TextAtlas pins the format at
+        // construction time, so we recreate it rather than reach into its
+        // internals.
+        self.text_renderer = GlyphonRenderer::new(&self.device, &self.queue, target);
+
+        true
+    }
+
     /// Upload a decoded image as a GPU texture and create the bind group.
     ///
     /// `PixelBuffer::Rgba8` uploads to `Rgba8UnormSrgb`. `PixelBuffer::Rgba16F`
     /// uploads to `Rgba16Float` — the fragment shader samples it as
     /// `vec4<f32>` either way, so the same shader works for both paths.
     ///
-    /// The surface itself stays at `Bgra8UnormSrgb` in this phase (see
-    /// `docs/notes/raw-support-phase5.md` — the surface format switch plus
-    /// `CAMetalLayer.wantsExtendedDynamicRangeContent` is deferred to
-    /// Phase 5.1). Until that lands, HDR highlights quantise back into SDR
-    /// range at the final blend. The f16 cache entry still pays off because
-    /// every non-texture step in the pipeline (tone curve, ICC transform)
-    /// preserves the wide-gamut values.
+    /// Phase 5.1: on EDR-capable displays, the surface itself is
+    /// `Rgba16Float` (see `reconfigure_surface_format`) and
+    /// `CAMetalLayer.wantsExtendedDynamicRangeContent = YES`, so values
+    /// above 1.0 land on the compositor as true peak-white headroom. On
+    /// SDR displays the surface stays `Bgra8UnormSrgb` and highlights
+    /// quantise at the final blend — the wide-gamut cache still pays off
+    /// for the tone-curve and ICC-transform stages upstream.
     pub fn set_image(&mut self, image: &DecodedImage) {
         let texture_size = wgpu::Extent3d {
             width: image.width,
@@ -542,7 +669,12 @@ impl Renderer {
             return Vec::new();
         }
 
-        // Create an offscreen texture to render into
+        // Screenshots always go through an SDR target so PNG readback +
+        // BGRA→RGBA swizzle stay straightforward. When the live surface is
+        // `Rgba16Float` (EDR path), build a one-shot SDR pipeline for the
+        // capture pass — values above 1.0 clip to display-white, which is
+        // the right thing for a PNG screenshot anyway.
+        let screenshot_format = self.sdr_format;
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("screenshot texture"),
             size: wgpu::Extent3d {
@@ -553,7 +685,7 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: self.config.format,
+            format: screenshot_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -565,7 +697,23 @@ impl Renderer {
                 label: Some("screenshot encoder"),
             });
 
-        // Render the scene to the offscreen texture (same pipeline as normal render)
+        // If the live pipeline already targets the SDR format, reuse it.
+        // Otherwise, build a one-shot SDR pipeline.
+        let screenshot_pipeline_owned;
+        let screenshot_pipeline: &wgpu::RenderPipeline = if self.config.format == screenshot_format
+        {
+            &self.render_pipeline
+        } else {
+            screenshot_pipeline_owned = build_image_pipeline(
+                &self.device,
+                &self.image_shader,
+                &self.image_pipeline_layout,
+                screenshot_format,
+            );
+            &screenshot_pipeline_owned
+        };
+
+        // Render the scene to the offscreen SDR texture
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("screenshot render pass"),
@@ -583,7 +731,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.render_pipeline);
+            pass.set_pipeline(screenshot_pipeline);
             pass.set_bind_group(0, bind_group, &[]);
             pass.draw(0..6, 0..1);
         }

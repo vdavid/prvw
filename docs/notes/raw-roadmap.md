@@ -287,18 +287,19 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
       `TextureFormat::Rgba16Float` — the shader samples as `vec4<f32>`
       either way.
 
-### Phase 5.1 — surface format switch (deferred)
+### Phase 5.1 — surface format switch (done, 2026-04-17)
 
-- [ ] Switch the wgpu surface format to `Bgra16Float` / `Rgba16Float` when
-      an HDR RAW is displayed on an EDR-capable screen, and set
-      `CAMetalLayer.wantsExtendedDynamicRangeContent = YES`. Until this
-      lands, HDR highlights survive the decode + cache path but quantise
-      back into SDR at the final blend because the surface is still
-      `Bgra8UnormSrgb`. wgpu 29's surface reconfiguration mid-session is
-      fiddly; rebuild the render pipelines on format change. Tracked as
-      follow-up because Phase 5.0 is the high-value part of the work (the
-      f16 decode path + the filmic shoulder are reusable once 5.1 flips
-      the surface on).
+- [x] Switch the wgpu surface format to `Rgba16Float` when an HDR RAW is
+      displayed on an EDR-capable screen, and set the three CAMetalLayer
+      EDR properties in lockstep: `wantsExtendedDynamicRangeContent = YES`,
+      `pixelFormat = MTLPixelFormatRGBA16Float`, and
+      `colorspace = kCGColorSpaceExtendedDisplayP3`. Flips back to the
+      SDR surface format + ICC colorspace on navigate-away, display
+      change, or Settings toggle. Pipeline rebuild for the image-quad and
+      overlay paths is extracted into format-agnostic helpers; the
+      glyphon text renderer is rebuilt wholesale (its atlas pins format
+      at construction). Shader module + pipeline layout are cached so
+      rebuild is cheap. See `docs/notes/raw-support-phase5.md`.
 
 ## Phase 6 — nice-to-haves, probably never
 

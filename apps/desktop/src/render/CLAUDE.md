@@ -27,12 +27,18 @@ owns `ViewState`) plug transforms into the renderer's uniform buffer via
 - **Screenshot path differs from main render.** `capture_screenshot` strips the
   viewport offset, pills, and text. Pixel tests of the live window's appearance need
   a different approach.
-- **Surface format is `Bgra8UnormSrgb` on macOS.** Screenshot readback swizzles
-  BGRA → RGBA before PNG encoding. Phase 5.0 uploads `Rgba16Float` textures for HDR
-  RAWs but the surface itself stays `Bgra8UnormSrgb`; values above 1.0 survive the
-  texture sample but quantise back to SDR at the final blend. The surface-format
-  switch + `CAMetalLayer.wantsExtendedDynamicRangeContent` land in Phase 5.1 (see
-  `docs/notes/raw-support-phase5.md`).
+- **Surface format is `Bgra8UnormSrgb` on macOS in the SDR path.** Screenshot
+  readback swizzles BGRA → RGBA before PNG encoding. Phase 5.1: when the current
+  image is an HDR RAW and the display reports EDR headroom, the surface flips to
+  `Rgba16Float` and the CAMetalLayer EDR properties go on. Screenshots still render
+  through an SDR offscreen target (clamped to display-white) so PNG readback stays
+  format-agnostic.
+- **HDR surface transitions rebuild three pipelines.** `reconfigure_surface_format`
+  rebuilds the image-quad pipeline, the overlay pipeline, and the glyphon text
+  renderer against the new format. Shader modules and pipeline layouts are cached,
+  so only the `RenderPipeline` objects get recreated. The glyphon renderer is
+  rebuilt wholesale because `TextAtlas::new` pins the format — cheap, one
+  allocation plus a fresh swash cache. See `docs/notes/raw-support-phase5.md`.
 - **`CAMetalLayer` is a sublayer, not the NSView's direct layer.** Walk
   `[ns_view layer].sublayers`. See `crate::color::display_profile::set_layer_colorspace`.
 - **wgpu 29 API quirks.** `Instance::new()` takes a value. `get_current_texture()`

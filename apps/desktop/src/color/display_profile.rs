@@ -16,6 +16,9 @@ type CFDataRef = *const std::ffi::c_void;
 #[allow(non_camel_case_types)]
 type CGDirectDisplayID = u32;
 
+#[allow(non_camel_case_types)]
+type CFStringRef = *const std::ffi::c_void;
+
 unsafe extern "C" {
     /// Get the main display ID.
     fn CGMainDisplayID() -> CGDirectDisplayID;
@@ -28,6 +31,9 @@ unsafe extern "C" {
 
     /// Create a color space from ICC profile data.
     fn CGColorSpaceCreateWithICCData(data: CFDataRef) -> CGColorSpaceRef;
+
+    /// Create a named color space (for EDR: kCGColorSpaceExtendedDisplayP3).
+    fn CGColorSpaceCreateWithName(name: CFStringRef) -> CGColorSpaceRef;
 
     /// Release a CoreFoundation object.
     fn CFRelease(cf: *const std::ffi::c_void);
@@ -44,7 +50,22 @@ unsafe extern "C" {
         bytes: *const u8,
         length: isize,
     ) -> CFDataRef;
+
+    /// `kCGColorSpaceExtendedDisplayP3`: Display-P3 primaries with the
+    /// sRGB-style transfer function extended to signed values. Our ICC
+    /// pipeline outputs gamma-encoded values in the display profile's
+    /// space (sRGB or Display-P3 transfer curve) even in the f16 path,
+    /// so we match by naming the same non-linear transfer with extended
+    /// range. Using the linear variant here double-decodes and
+    /// looks wrong.
+    static kCGColorSpaceExtendedDisplayP3: CFStringRef;
 }
+
+/// `MTLPixelFormatRGBA16Float` from Metal's `MTLPixelFormat` enum.
+/// Reference: <https://developer.apple.com/documentation/metal/mtlpixelformat>.
+const MTL_PIXEL_FORMAT_RGBA16_FLOAT: u64 = 115;
+/// `MTLPixelFormatBGRA8Unorm_sRGB`: the SDR default wgpu/Metal pair.
+const MTL_PIXEL_FORMAT_BGRA8_UNORM_SRGB: u64 = 81;
 
 /// Query the EDR (extended dynamic range) headroom for the display the
 /// window is on. Returns the NSScreen property
@@ -179,6 +200,101 @@ pub fn set_layer_colorspace(window: &Window, icc_bytes: &[u8]) {
         }
 
         set_colorspace_on_layer(layer, icc_bytes);
+    }
+}
+
+/// Configure the wgpu `CAMetalLayer` for EDR output. Sets three properties
+/// in lockstep so they stay consistent with each other and with the wgpu
+/// surface configuration the caller has already applied:
+///
+/// - `wantsExtendedDynamicRangeContent` — tells the compositor to allocate
+///   a float-capable backing store and route the window through the EDR
+///   path on XDR / OLED displays.
+/// - `pixelFormat` — `MTLPixelFormatRGBA16Float` (115) when EDR is active,
+///   `MTLPixelFormatBGRA8Unorm_sRGB` (81) when not. Must match the wgpu
+///   `SurfaceConfiguration.format` the caller set.
+/// - `colorspace` — `kCGColorSpaceExtendedDisplayP3` for EDR so the
+///   compositor reads our non-linear, above-1.0 values as HDR headroom.
+///   On SDR, the caller's existing `set_layer_colorspace` (ICC-based) is
+///   the right source of truth; pass the display ICC through `icc_for_sdr`
+///   and this function restores it.
+///
+/// The `icc_for_sdr` argument is only consulted when `edr_active == false`.
+/// When the caller has no ICC bytes to restore (for example, ICC
+/// management is off), pass an empty slice — the colorspace is left
+/// whatever it was.
+pub fn set_layer_edr_state(window: &Window, edr_active: bool, icc_for_sdr: &[u8]) {
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let root_layer: *const AnyObject = msg_send![ns_view, layer];
+        if root_layer.is_null() {
+            log::warn!("NSView has no layer, can't set EDR state");
+            return;
+        }
+
+        let metal_layer = find_metal_layer(root_layer);
+        if metal_layer.is_null() {
+            log::warn!("No CAMetalLayer found, can't set EDR state");
+            return;
+        }
+
+        // wantsExtendedDynamicRangeContent: BOOL
+        let _: () = msg_send![metal_layer, setWantsExtendedDynamicRangeContent: edr_active];
+
+        // pixelFormat: MTLPixelFormat (NSUInteger -> u64)
+        let pixel_format: u64 = if edr_active {
+            MTL_PIXEL_FORMAT_RGBA16_FLOAT
+        } else {
+            MTL_PIXEL_FORMAT_BGRA8_UNORM_SRGB
+        };
+        let _: () = msg_send![metal_layer, setPixelFormat: pixel_format];
+
+        if edr_active {
+            // `kCGColorSpaceExtendedDisplayP3`: Display-P3 primaries with
+            // the sRGB-style transfer curve, signed values. Our ICC
+            // pipeline encodes the f16 texture using the display profile's
+            // (non-linear) transfer function, so naming a non-linear
+            // colorspace here avoids double-decoding. The "Extended"
+            // variant is what keeps above-1.0 values alive — plain
+            // `kCGColorSpaceDisplayP3` clamps at 1.0.
+            let name = kCGColorSpaceExtendedDisplayP3;
+            let color_space = CGColorSpaceCreateWithName(name);
+            if color_space.is_null() {
+                log::warn!(
+                    "CGColorSpaceCreateWithName(kCGColorSpaceExtendedDisplayP3) returned null"
+                );
+            } else {
+                let sel = objc2::sel!(setColorspace:);
+                let send: unsafe extern "C" fn(
+                    *const AnyObject,
+                    objc2::runtime::Sel,
+                    CGColorSpaceRef,
+                ) = std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
+                send(metal_layer, sel, color_space);
+                CFRelease(color_space);
+                log::info!(
+                    "render: CAMetalLayer EDR on (wantsExtendedDynamicRangeContent=YES, pixelFormat=RGBA16Float, colorspace=extendedDisplayP3)"
+                );
+            }
+        } else {
+            // Restore the display ICC colorspace when we have one. When
+            // `icc_for_sdr` is empty (ICC management disabled), leave
+            // whatever colorspace the layer had — the compositor still
+            // interprets RGB as sRGB by default.
+            if !icc_for_sdr.is_empty() {
+                set_colorspace_on_layer(metal_layer, icc_for_sdr);
+            }
+            log::info!(
+                "render: CAMetalLayer EDR off (wantsExtendedDynamicRangeContent=NO, pixelFormat=BGRA8Unorm_sRGB)"
+            );
+        }
     }
 }
 
