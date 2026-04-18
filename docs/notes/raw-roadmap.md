@@ -182,6 +182,13 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       Panasonic). When exact matching fails on all tiers, try each alias
       across filesystem then bundled tiers. Logs at INFO so users see the
       substitution. Conservative seed list — better to miss than mismatch.
+- [x] Fuzzy-alias matches skip the whole DCP color stage (HueSatMap +
+      LookTable). `apply_if_available` takes a new `allow_fuzzy: bool`
+      parameter; the RAW pipeline passes `false`, so cross-sensor
+      spectral-response mismatches no longer push skin tones and
+      magentas toward "unrealistic vibrancy". Users who want the fuzzy
+      profile applied anyway can drop an exact-match DCP under
+      `$PRVW_DCP_DIR`. See `docs/notes/raw-support-phase3.md`.
 
 ### Phase 3.6 — DNG GainMap + bad-pixel spec compliance (done, 2026-04-17)
 

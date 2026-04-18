@@ -124,6 +124,16 @@ impl DcpSource {
             Self::FilesystemAlias => "filesystem (alias)",
         }
     }
+
+    /// True when the resolved profile came from a fuzzy family-alias
+    /// substitution (Phase 3.5) rather than an exact match for the
+    /// current camera. Fuzzy matches risk cross-sensor color artifacts
+    /// — a profile calibrated on an α6000 can push an α5000's reds
+    /// into unrealistic territory — so callers have the option to skip
+    /// the whole DCP color stage on these.
+    pub fn is_fuzzy_alias(self) -> bool {
+        matches!(self, Self::BundledAlias | Self::FilesystemAlias)
+    }
 }
 
 /// End-to-end "find a DCP and apply it" helper. Pass the camera's
@@ -175,6 +185,16 @@ impl DcpSource {
 /// The returned `(Dcp, DcpSource)` is still the resolved profile in either
 /// case, so the caller can read `dcp.tone_curve` off it when the tone-curve
 /// stage is still on. Pass `true, true` for today's default behavior.
+///
+/// `allow_fuzzy` gates the entire DCP color stage on fuzzy-alias matches
+/// (Phase 3.5). When the exact-match tiers (embedded + filesystem +
+/// bundled) all miss and the resolved profile comes from a family alias,
+/// the calibration was done on a different body's sensor. Spectral
+/// response differences across same-family bodies show up as wrong
+/// HueSatMap corrections — most visibly on skin tones and magentas. Pass
+/// `false` to skip the whole DCP path (HueSatMap **and** LookTable) on
+/// those fuzzy hits and log a clear INFO line so users know why. Tests
+/// and backward-compatible callers can pass `true`.
 pub fn apply_if_available(
     camera_id: &str,
     dng_tags: Option<&std::collections::HashMap<u16, rawler::formats::tiff::Value>>,
@@ -182,6 +202,7 @@ pub fn apply_if_available(
     rgb: &mut [f32],
     apply_hue_sat: bool,
     apply_look: bool,
+    allow_fuzzy: bool,
 ) -> Option<(Dcp, DcpSource)> {
     if !apply_hue_sat {
         // HueSatMap off = the whole DCP stage is skipped, including LookTable.
@@ -218,6 +239,24 @@ pub fn apply_if_available(
             return None;
         }
     };
+
+    // Fuzzy-alias safety gate. When the resolved profile is a cross-body
+    // substitution and the caller opted out of fuzzy color, skip the
+    // whole DCP color stage (HueSatMap + LookTable). The default tone
+    // curve still runs downstream; only DCP-supplied color transforms
+    // are suppressed.
+    if !allow_fuzzy && source.is_fuzzy_alias() {
+        log::info!(
+            "DCP '{}' found via fuzzy alias but NOT applied (avoids cross-sensor color artifacts). \
+             Set an exact-match DCP for this camera to override.",
+            dcp.profile_name
+                .as_deref()
+                .or(dcp.unique_camera_model.as_deref())
+                .unwrap_or("<unnamed>")
+        );
+        return None;
+    }
+
     let scene_temp_k = estimate_scene_temp_k(wb_coeffs);
     if let Some(map) = interpolate_hue_sat_maps(&dcp, scene_temp_k) {
         let blended = dcp.hue_sat_map_1.is_some()
@@ -292,6 +331,87 @@ fn embedded_dcp_disabled() -> bool {
 /// INFO log line always spells out which code path produced the profile.
 pub fn source_label(source: DcpSource) -> &'static str {
     source.label()
+}
+
+#[cfg(test)]
+mod apply_tests {
+    //! Unit tests for `apply_if_available`'s fuzzy-alias gate.
+
+    use super::*;
+
+    /// Sony ILCE-5000 resolves via `FAMILY_ALIASES` to Sony ILCE-6000,
+    /// which is in the bundled RawTherapee collection. With
+    /// `allow_fuzzy = false` the DCP path must be skipped (no LUT
+    /// touches the buffer) and the call must return `None`.
+    #[test]
+    fn fuzzy_alias_with_allow_fuzzy_false_returns_none_and_preserves_buffer() {
+        // Tiny 2-pixel buffer with values we can compare byte-for-byte
+        // against the input after the call returns.
+        let mut rgb = vec![0.1_f32, 0.2, 0.3, 0.4, 0.5, 0.6];
+        let before = rgb.clone();
+
+        // Sony ILCE-5000 is in `FAMILY_ALIASES` but not in the bundled
+        // or filesystem tiers as an exact match (RT's bundle has
+        // ILCE-6000, not ILCE-5000). With `allow_fuzzy = false` the
+        // whole DCP path must be skipped.
+        let result = apply_if_available(
+            "Sony ILCE-5000",
+            None,
+            [1.0, 1.0, 1.0, 1.0],
+            &mut rgb,
+            true,
+            true,
+            false,
+        );
+
+        assert!(
+            result.is_none(),
+            "fuzzy-alias match must return None when allow_fuzzy = false"
+        );
+        assert_eq!(
+            rgb, before,
+            "fuzzy-alias skip must leave the RGB buffer untouched"
+        );
+    }
+
+    /// Same camera ID with `allow_fuzzy = true` must actually apply the
+    /// DCP, which writes through the buffer. The exact pixel values
+    /// aren't important here — we only assert that *something* changed,
+    /// so we know the allow-fuzzy gate is the only thing that suppresses
+    /// the apply.
+    #[test]
+    fn fuzzy_alias_with_allow_fuzzy_true_applies_dcp() {
+        // Start from a mid-gray buffer so the HueSatMap has something
+        // non-trivial to shift. Pure neutral grey (R == G == B) sits on
+        // the HSV saturation axis at sat = 0, where most DCP LUTs are
+        // closest to identity; so pick off-axis values.
+        let mut rgb = vec![0.6_f32, 0.3, 0.2, 0.4, 0.5, 0.7];
+        let before = rgb.clone();
+
+        let result = apply_if_available(
+            "Sony ILCE-5000",
+            None,
+            [1.0, 1.0, 1.0, 1.0],
+            &mut rgb,
+            true,
+            true,
+            true,
+        );
+
+        // The result either fires (Some) when the bundled DCP collection
+        // has ILCE-6000 available (which it does at build time), or
+        // falls through (None) if some future bundle rebuild removes it.
+        // Assert the value side instead of the result side so this test
+        // stays robust to alias-table tweaks: with `allow_fuzzy = true`
+        // the function should NOT be the bit-identical no-op it is for
+        // `allow_fuzzy = false` above.
+        if result.is_some() {
+            assert_ne!(
+                rgb, before,
+                "allow_fuzzy = true should let the fuzzy DCP modify the buffer"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

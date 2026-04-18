@@ -1189,6 +1189,34 @@ distinction all the way to the INFO log in `decoding::raw`.
 `dev` branch. Run it to update the bundle when RT ships new profiles. The
 script is idempotent (skips files already present) and prints a summary.
 
+### Fuzzy-alias matches skip the whole DCP color stage
+
+Follow-up (2026-04-17): a user reported that a bundled ILCE-6000 profile
+applied to an ILCE-5000 (via `FAMILY_ALIASES`) on sample3.arw produced
+"unrealistically vibrant colors" and a "comically purple" mouth. Same
+class of problem the tone-curve auto-skip caught earlier: same-family
+bodies can share a sensor family label but still have different CFA
+spectral responses, and a HueSatMap calibrated on one body pushes reds
+/ magentas / skin tones in the wrong direction on another.
+
+Fix: `apply_if_available` now takes an `allow_fuzzy: bool` parameter.
+The RAW pipeline passes `false`, which makes the function log an INFO
+line and return `None` when the only hit came from a `FAMILY_ALIASES`
+substitution. Both `HueSatMap` and `LookTable` are skipped; the default
+tone curve runs downstream because `dcp_info` is `None`. Exact matches
+(embedded, filesystem, bundled) are unaffected. Users who want the
+fuzzy profile applied anyway can drop an exact-match DCP under
+`$PRVW_DCP_DIR`.
+
+INFO log line: `DCP '<name>' found via fuzzy alias but NOT applied
+(avoids cross-sensor color artifacts). Set an exact-match DCP for this
+camera to override.`
+
+Unit test: `color::dcp::apply_tests::fuzzy_alias_with_allow_fuzzy_false
+_returns_none_and_preserves_buffer` — feeds the fuzzy camera ID
+`"Sony ILCE-5000"` through `apply_if_available(..., false)` and asserts
+the buffer is byte-identical afterward.
+
 ### Files touched
 
 - `apps/desktop/build.rs` (new) — concatenates + zstd-compresses DCPs at

@@ -51,6 +51,22 @@ Users who genuinely want to override can set
 filesystem path. That knob is aimed at QA comparisons and advanced users;
 normal operation never needs it.
 
+## Fuzzy-alias matches don't apply DCP color
+
+`apply_if_available` takes an `allow_fuzzy: bool` parameter. The RAW
+pipeline passes `false`: when the only hit is via `FAMILY_ALIASES`, the
+function logs an INFO line and returns `None` without running
+`HueSatMap` or `LookTable`. The reason is sensor spectral response.
+Same-family bodies (ILCE-5000 vs. ILCE-6000) have different CFA
+filters, so a HueSatMap calibrated on one body pushes reds / magentas
+/ skin tones into wrong places on another. The ProfileToneCurve is
+skipped too because fuzzy matches never reach the tone-curve stage —
+`dcp_info` is `None` for those.
+
+Users who want the fuzzy profile applied anyway can drop an exact-match
+DCP under `$PRVW_DCP_DIR` or set `allow_fuzzy = true` from a test
+harness.
+
 ## Log output
 
 INFO level, once per successful match:

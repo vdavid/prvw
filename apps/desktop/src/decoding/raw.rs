@@ -391,6 +391,13 @@ pub(super) fn decode(
     } else {
         raw.wb_coeffs
     };
+    // `allow_fuzzy = false`: a profile resolved via a family alias is
+    // calibrated on a different sensor body. Applying its HueSatMap /
+    // LookTable produces cross-sensor color artifacts (unrealistic skin
+    // tones, magenta-shifted reds). `apply_if_available` logs the skip
+    // and returns `None`, so downstream stages see "no DCP" and fall
+    // back to the default pipeline. Users who want the fuzzy profile
+    // anyway can drop an exact-match DCP under `PRVW_DCP_DIR`.
     let dcp_info = color::dcp::apply_if_available(
         &camera_id,
         dng_tags_for_dcp.as_ref(),
@@ -398,6 +405,7 @@ pub(super) fn decode(
         &mut rec2020,
         flags.dcp_hue_sat_map,
         flags.dcp_look_table,
+        false,
     );
     if let Some((dcp, source)) = &dcp_info {
         log::info!(
@@ -411,13 +419,7 @@ pub(super) fn decode(
             } else {
                 ""
             },
-            if dcp.tone_curve.is_some()
-                && flags.dcp_tone_curve
-                && !matches!(
-                    *source,
-                    color::dcp::DcpSource::BundledAlias | color::dcp::DcpSource::FilesystemAlias
-                )
-            {
+            if dcp.tone_curve.is_some() && flags.dcp_tone_curve {
                 " [with ToneCurve]"
             } else {
                 ""
@@ -427,16 +429,13 @@ pub(super) fn decode(
 
     check_cancelled(cancelled)?;
 
-    // Tone curve selection. Two independent flags and one auto-skip rule:
+    // Tone curve selection. Two independent flags:
     //
     //   1. `flags.dcp_tone_curve` must be ON for the DCP's `ProfileToneCurve`
-    //      to be eligible.
-    //   2. The DCP match must be an EXACT match (not a fuzzy family alias).
-    //      A `SONY ILCE-6000` curve applied to an α5000's output pushes
-    //      contrast past what the sensor was calibrated for — the curve
-    //      targets the body that shipped with the profile, not a cousin.
-    //      Logged clearly so users see the auto-skip.
-    //   3. `flags.default_tone_curve` gates our filmic Hermite shoulder.
+    //      to be eligible. Fuzzy-alias DCPs never reach here — the
+    //      `apply_if_available` call above already returned `None` for
+    //      those, so `dcp_info` only carries exact matches.
+    //   2. `flags.default_tone_curve` gates our filmic Hermite shoulder.
     //
     // Both flags default to ON. Users who want neither curve toggle both
     // off; users who want only our default toggle DCP off; users who want
@@ -444,12 +443,7 @@ pub(super) fn decode(
     let dcp_tone_curve_points = dcp_info
         .as_ref()
         .and_then(|(dcp, _)| dcp.tone_curve.as_deref());
-    let dcp_match_is_fuzzy = matches!(
-        dcp_info.as_ref().map(|(_, source)| *source),
-        Some(color::dcp::DcpSource::BundledAlias | color::dcp::DcpSource::FilesystemAlias)
-    );
-    let use_dcp_curve =
-        dcp_tone_curve_points.is_some() && flags.dcp_tone_curve && !dcp_match_is_fuzzy;
+    let use_dcp_curve = dcp_tone_curve_points.is_some() && flags.dcp_tone_curve;
 
     if use_dcp_curve {
         // Safe: we just proved it's `Some`.
@@ -463,14 +457,8 @@ pub(super) fn decode(
     } else if flags.default_tone_curve {
         // Filmic shoulder. `peak = 4.0` leaves HDR highlights alive,
         // `peak = 1.0` reproduces Phase 4's SDR clip bit-for-bit.
-        let reason = if dcp_tone_curve_points.is_some() {
-            if !flags.dcp_tone_curve {
-                " (DCP tone curve disabled in Settings)"
-            } else if dcp_match_is_fuzzy {
-                " (DCP tone curve auto-skipped: fuzzy-alias match)"
-            } else {
-                ""
-            }
+        let reason = if dcp_tone_curve_points.is_some() && !flags.dcp_tone_curve {
+            " (DCP tone curve disabled in Settings)"
         } else {
             ""
         };
