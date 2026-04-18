@@ -153,7 +153,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let raw = RawPipelineFlags {
-            tone_curve: false,
+            default_tone_curve: false,
             capture_sharpening: false,
             ..RawPipelineFlags::default()
         };
@@ -180,7 +180,7 @@ mod tests {
         assert!(!loaded.auto_update);
         assert!(!loaded.auto_fit_window);
         assert!(loaded.enlarge_small_images);
-        assert!(!loaded.raw.tone_curve);
+        assert!(!loaded.raw.default_tone_curve);
         assert!(!loaded.raw.capture_sharpening);
         assert!(loaded.raw.highlight_recovery); // untouched flag stays true
         assert_eq!(loaded.custom_dcp_dir.as_deref(), Some("/tmp/my-dcps"));

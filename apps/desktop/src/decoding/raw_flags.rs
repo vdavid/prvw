@@ -35,10 +35,20 @@ pub struct RawPipelineFlags {
     // ── Tone ───────────────────────────────────────────────────────────
     #[serde(default = "default_true")]
     pub highlight_recovery: bool,
-    /// Gates both the default Hermite S-curve and any DCP-supplied
-    /// `ProfileToneCurve`. Off = skip whichever curve is active.
+    /// Gates Prvw's default Hermite S-curve. `#[serde(alias = "tone_curve")]`
+    /// keeps older settings.json files (pre-Phase 3.7.1) still reading their
+    /// persisted value into this field after the rename.
+    #[serde(default = "default_true", alias = "tone_curve")]
+    pub default_tone_curve: bool,
+    /// Gates the DCP's own `ProfileToneCurve` when an active profile ships
+    /// one. Independent of `default_tone_curve`; both may be on, off, or
+    /// mixed. **Additionally**, DCP tone curves are auto-skipped when the
+    /// profile was matched via a fuzzy family alias (e.g., an α6000 curve
+    /// applied to an α5000) because the camera-maker's tonality target
+    /// doesn't transfer cleanly across bodies. Logs spell out which curve
+    /// ran and why.
     #[serde(default = "default_true")]
-    pub tone_curve: bool,
+    pub dcp_tone_curve: bool,
 
     // ── Detail ─────────────────────────────────────────────────────────
     #[serde(default = "default_true")]
@@ -81,7 +91,8 @@ impl Default for RawPipelineFlags {
             dcp_look_table: true,
             saturation_boost: true,
             highlight_recovery: true,
-            tone_curve: true,
+            default_tone_curve: true,
+            dcp_tone_curve: true,
             capture_sharpening: true,
             lens_correction: true,
             hdr_output: true,
@@ -123,8 +134,11 @@ impl RawPipelineFlags {
         if !self.dcp_look_table {
             out.push("DCP LookTable");
         }
-        if !self.tone_curve {
-            out.push("tone curve");
+        if !self.default_tone_curve {
+            out.push("default tone curve");
+        }
+        if !self.dcp_tone_curve {
+            out.push("DCP tone curve");
         }
         if !self.saturation_boost {
             out.push("saturation boost");
@@ -157,7 +171,8 @@ mod tests {
         assert!(flags.dcp_look_table);
         assert!(flags.saturation_boost);
         assert!(flags.highlight_recovery);
-        assert!(flags.tone_curve);
+        assert!(flags.default_tone_curve);
+        assert!(flags.dcp_tone_curve);
         assert!(flags.capture_sharpening);
         assert!(flags.lens_correction);
         assert!(flags.hdr_output);
@@ -188,13 +203,23 @@ mod tests {
     #[test]
     fn disabled_labels_ordered() {
         let flags = RawPipelineFlags {
-            tone_curve: false,
+            default_tone_curve: false,
             capture_sharpening: false,
             ..RawPipelineFlags::default()
         };
         assert_eq!(
             flags.disabled_step_labels(),
-            vec!["tone curve", "capture sharpening"]
+            vec!["default tone curve", "capture sharpening"]
         );
+    }
+
+    #[test]
+    fn serde_alias_migrates_old_tone_curve_field() {
+        // Old settings.json had `tone_curve: false`. Confirm it lands on the
+        // renamed `default_tone_curve` field so users don't lose their
+        // preference after the 3.7.1 rename.
+        let decoded: RawPipelineFlags = serde_json::from_str(r#"{"tone_curve": false}"#).unwrap();
+        assert!(!decoded.default_tone_curve);
+        assert!(decoded.dcp_tone_curve);
     }
 }

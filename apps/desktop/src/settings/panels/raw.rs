@@ -38,7 +38,8 @@ const TAG_DCP_HUE_SAT_MAP: isize = 111;
 const TAG_DCP_LOOK_TABLE: isize = 112;
 const TAG_SATURATION_BOOST: isize = 113;
 const TAG_HIGHLIGHT_RECOVERY: isize = 120;
-const TAG_TONE_CURVE: isize = 121;
+const TAG_DEFAULT_TONE_CURVE: isize = 121;
+const TAG_DCP_TONE_CURVE: isize = 122;
 const TAG_CAPTURE_SHARPENING: isize = 130;
 const TAG_LENS_CORRECTION: isize = 140;
 const TAG_HDR_OUTPUT: isize = 150;
@@ -56,7 +57,8 @@ struct RawDelegateIvars {
     dcp_look_table: *const NSSwitch,
     saturation_boost: *const NSSwitch,
     highlight_recovery: *const NSSwitch,
-    tone_curve: *const NSSwitch,
+    default_tone_curve: *const NSSwitch,
+    dcp_tone_curve: *const NSSwitch,
     capture_sharpening: *const NSSwitch,
     lens_correction: *const NSSwitch,
     hdr_output: *const NSSwitch,
@@ -164,7 +166,8 @@ impl RawDelegate {
             dcp_look_table: switch_is_on(ivars.dcp_look_table),
             saturation_boost: switch_is_on(ivars.saturation_boost),
             highlight_recovery: switch_is_on(ivars.highlight_recovery),
-            tone_curve: switch_is_on(ivars.tone_curve),
+            default_tone_curve: switch_is_on(ivars.default_tone_curve),
+            dcp_tone_curve: switch_is_on(ivars.dcp_tone_curve),
             capture_sharpening: switch_is_on(ivars.capture_sharpening),
             lens_correction: switch_is_on(ivars.lens_correction),
             hdr_output: switch_is_on(ivars.hdr_output),
@@ -181,7 +184,8 @@ impl RawDelegate {
         set_switch(ivars.dcp_look_table, flags.dcp_look_table);
         set_switch(ivars.saturation_boost, flags.saturation_boost);
         set_switch(ivars.highlight_recovery, flags.highlight_recovery);
-        set_switch(ivars.tone_curve, flags.tone_curve);
+        set_switch(ivars.default_tone_curve, flags.default_tone_curve);
+        set_switch(ivars.dcp_tone_curve, flags.dcp_tone_curve);
         set_switch(ivars.capture_sharpening, flags.capture_sharpening);
         set_switch(ivars.lens_correction, flags.lens_correction);
         set_switch(ivars.hdr_output, flags.hdr_output);
@@ -472,10 +476,17 @@ pub(crate) fn build(
             mtm,
         ),
         build_flag_row(
-            "Tone curve",
-            "S-shaped lift and shoulder (camera DCP curve when present).",
-            flags.tone_curve,
-            TAG_TONE_CURVE,
+            "Default tone curve",
+            "Prvw's filmic S-curve: shadow lift and highlight shoulder.",
+            flags.default_tone_curve,
+            TAG_DEFAULT_TONE_CURVE,
+            mtm,
+        ),
+        build_flag_row(
+            "DCP tone curve",
+            "Per-camera curve from a matched DCP profile. Auto-skipped for fuzzy-family matches.",
+            flags.dcp_tone_curve,
+            TAG_DCP_TONE_CURVE,
             mtm,
         ),
         build_flag_row(
@@ -559,24 +570,25 @@ pub(crate) fn build(
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[6].row) }); // saturation
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&tone_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[7].row) }); // highlight
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[8].row) }); // tone curve
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[8].row) }); // default tone curve
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[9].row) }); // DCP tone curve
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&detail_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[9].row) }); // sharpening
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[10].row) }); // sharpening
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&geometry_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[10].row) }); // lens correction
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[11].row) }); // lens correction
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&output_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[11].row) }); // HDR output
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[12].row) }); // HDR output
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&dcp_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&reset_row) });
 
     // Add section-header breathing room (so the grouping reads visually).
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[2].row) });
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[6].row) });
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[8].row) });
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[9].row) });
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[10].row) });
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[11].row) });
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[2].row) }); // after sensor group
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[6].row) }); // after color group
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[9].row) }); // after tone group
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[10].row) }); // after detail (sharpen)
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[11].row) }); // after geometry (lens)
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[12].row) }); // after output (HDR)
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
 
     // Pin every row to the panel width so the switches align flush right.
@@ -600,10 +612,11 @@ pub(crate) fn build(
         dcp_look_table: toggle_ptrs[5],
         saturation_boost: toggle_ptrs[6],
         highlight_recovery: toggle_ptrs[7],
-        tone_curve: toggle_ptrs[8],
-        capture_sharpening: toggle_ptrs[9],
-        lens_correction: toggle_ptrs[10],
-        hdr_output: toggle_ptrs[11],
+        default_tone_curve: toggle_ptrs[8],
+        dcp_tone_curve: toggle_ptrs[9],
+        capture_sharpening: toggle_ptrs[10],
+        lens_correction: toggle_ptrs[11],
+        hdr_output: toggle_ptrs[12],
         custom_dcp_field: &*custom_dcp_field as *const NSTextField,
     };
     let delegate = RawDelegate::new(mtm, ivars);

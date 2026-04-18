@@ -411,7 +411,13 @@ pub(super) fn decode(
             } else {
                 ""
             },
-            if dcp.tone_curve.is_some() && flags.tone_curve {
+            if dcp.tone_curve.is_some()
+                && flags.dcp_tone_curve
+                && !matches!(
+                    *source,
+                    color::dcp::DcpSource::BundledAlias | color::dcp::DcpSource::FilesystemAlias
+                )
+            {
                 " [with ToneCurve]"
             } else {
                 ""
@@ -421,42 +427,66 @@ pub(super) fn decode(
 
     check_cancelled(cancelled)?;
 
-    // Tone curve. If the active DCP carries a `ProfileToneCurve`, apply
-    // it in place of our default — the camera's intended tonality is more
-    // authoritative than our generic Preview-tuned curve. Otherwise fall
-    // back to the default Hermite S-curve. Either way the math runs on
-    // luminance only in linear Rec.2020. The Settings → RAW toggle gates
-    // both curves uniformly (Phase 3.7): off means "no tone shaping at
-    // all", regardless of source.
-    if flags.tone_curve {
-        let dcp_tone_curve = dcp_info
-            .as_ref()
-            .and_then(|(dcp, _)| dcp.tone_curve.as_deref());
-        if let Some(points) = dcp_tone_curve {
-            // DCP tone curves ship as piecewise-linear x→y tables topping
-            // out at (1.0, 1.0), so they're intrinsically SDR. Apply as-is
-            // even when the surface is HDR — the shoulder is already shaped
-            // by the camera manufacturer.
-            log::info!(
-                "RAW used DCP tone curve ({} points) for {}",
-                points.len(),
-                path.display()
-            );
-            color::tone_curve::apply_tone_curve_lut(&mut rec2020, points);
+    // Tone curve selection. Two independent flags and one auto-skip rule:
+    //
+    //   1. `flags.dcp_tone_curve` must be ON for the DCP's `ProfileToneCurve`
+    //      to be eligible.
+    //   2. The DCP match must be an EXACT match (not a fuzzy family alias).
+    //      A `SONY ILCE-6000` curve applied to an α5000's output pushes
+    //      contrast past what the sensor was calibrated for — the curve
+    //      targets the body that shipped with the profile, not a cousin.
+    //      Logged clearly so users see the auto-skip.
+    //   3. `flags.default_tone_curve` gates our filmic Hermite shoulder.
+    //
+    // Both flags default to ON. Users who want neither curve toggle both
+    // off; users who want only our default toggle DCP off; users who want
+    // only the DCP curve toggle default off.
+    let dcp_tone_curve_points = dcp_info
+        .as_ref()
+        .and_then(|(dcp, _)| dcp.tone_curve.as_deref());
+    let dcp_match_is_fuzzy = matches!(
+        dcp_info.as_ref().map(|(_, source)| *source),
+        Some(color::dcp::DcpSource::BundledAlias | color::dcp::DcpSource::FilesystemAlias)
+    );
+    let use_dcp_curve =
+        dcp_tone_curve_points.is_some() && flags.dcp_tone_curve && !dcp_match_is_fuzzy;
+
+    if use_dcp_curve {
+        // Safe: we just proved it's `Some`.
+        let points = dcp_tone_curve_points.unwrap();
+        log::info!(
+            "RAW used DCP tone curve ({} points) for {}",
+            points.len(),
+            path.display()
+        );
+        color::tone_curve::apply_tone_curve_lut(&mut rec2020, points);
+    } else if flags.default_tone_curve {
+        // Filmic shoulder. `peak = 4.0` leaves HDR highlights alive,
+        // `peak = 1.0` reproduces Phase 4's SDR clip bit-for-bit.
+        let reason = if dcp_tone_curve_points.is_some() {
+            if !flags.dcp_tone_curve {
+                " (DCP tone curve disabled in Settings)"
+            } else if dcp_match_is_fuzzy {
+                " (DCP tone curve auto-skipped: fuzzy-alias match)"
+            } else {
+                ""
+            }
         } else {
-            // Filmic shoulder. `peak = 4.0` leaves HDR highlights alive,
-            // `peak = 1.0` reproduces Phase 4's SDR clip bit-for-bit.
-            log::info!(
-                "RAW used default tone curve (peak {:.1}) for {}",
-                peak,
-                path.display()
-            );
-            color::tone_curve::apply_tone_curve(
-                &mut rec2020,
-                color::tone_curve::DEFAULT_MIDTONE_ANCHOR,
-                peak,
-            );
-        }
+            ""
+        };
+        log::info!(
+            "RAW used default tone curve (peak {:.1}){} for {}",
+            peak,
+            reason,
+            path.display()
+        );
+        color::tone_curve::apply_tone_curve(
+            &mut rec2020,
+            color::tone_curve::DEFAULT_MIDTONE_ANCHOR,
+            peak,
+        );
+    } else {
+        log::info!("RAW skipped tone curve entirely for {}", path.display());
     }
 
     check_cancelled(cancelled)?;
@@ -1893,7 +1923,7 @@ mod tests {
             ..RawPipelineFlags::default()
         };
         let tone_off = RawPipelineFlags {
-            tone_curve: false,
+            default_tone_curve: false,
             ..RawPipelineFlags::default()
         };
         let sharp_off = RawPipelineFlags {
@@ -1907,7 +1937,7 @@ mod tests {
 
         for (label, flags) in [
             ("highlight_recovery", highlight_off),
-            ("tone_curve", tone_off),
+            ("default_tone_curve", tone_off),
             ("capture_sharpening", sharp_off),
             ("baseline_exposure", exposure_off),
         ] {
