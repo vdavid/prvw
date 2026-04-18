@@ -26,7 +26,7 @@ Phase 3.5 bundles 161 RawTherapee community DCPs into the binary and adds
 **fuzzy camera family matching** so most cameras get per-camera color
 fidelity with zero user setup.
 
-Last updated: 2026-04-17 (Phase 3.5 shipped).
+Last updated: 2026-04-17 (Phase 3.6 shipped).
 
 ## Scope
 
@@ -150,19 +150,28 @@ are present — the opcode passes are silent no-ops.
   phase per GainMap entry
 - `gain_map_on_rgb_only_touches_target_plane` — plane=1 on RGB only
   modifies G channel
-- `gain_map_on_rgb_with_plane_0_leaves_g_and_b_untouched` — counterpart
-  to the CFA test: on a 3-plane RGB buffer, `Plane` IS the channel index
-  (spec § 6.2.2); the RGB applier currently only touches `map.plane`
-  regardless of `Planes` (see follow-ups below)
+- `gain_map_on_rgb_planes_3_map_planes_1_applies_to_all_channels` —
+  Phase 3.6: `Plane = 0, Planes = 3, MapPlanes = 1` fans the single gain
+  plane out to R, G, and B
+- `gain_map_rgb_map_planes_1_planes_3_applies_uniform_gain_to_all_channels` —
+  same as above via the multi-plane builder, uniform 2×
+- `gain_map_rgb_map_planes_3_planes_3_applies_per_channel_gain` —
+  `MapPlanes = Planes = 3`: distinct gains per channel (2.0 / 3.0 / 4.0)
+- `gain_map_rgb_plane_1_planes_1_touches_only_g` — single-plane-single-
+  channel path still works (regression guard)
 - `gain_map_bilinear_interpolates_between_corners` — 2×2 grid, four
   known-output pixels
 - `warp_rectilinear_identity_is_noop` — kr0=1 identity warp leaves input
   unchanged (within bilinear rounding)
-- `fix_bad_pixels_list_replaces_listed_coord` — center pixel of a flat
-  field is repaired from its 8 neighbors
+- `fix_bad_pixels_list_replaces_listed_coord` — center pixel of a 5×5
+  flat field is repaired from its same-phase (step-2) neighbors
 - `fix_bad_pixels_constant_averages_neighbors` — same repair, different
-  trigger
+  trigger, 5×5 buffer
 - `fix_bad_pixels_list_handles_empty_list` — no-op on empty list
+- `fix_bad_pixels_uses_same_phase_neighbors_not_adjacent` — Phase 3.6:
+  step-1 neighbors at 9.0, step-2 at 1.0; verifies result = 1.0
+- `same_phase_neighbor_offsets_returns_eight_step2_pairs` — helper returns
+  exactly 8 offsets, all at `{±2}` magnitude, no `(0, 0)`
 
 ## Ignored smoke tests
 
@@ -606,18 +615,15 @@ every pixel in a rect+pitch 1 rect gets scaled, and
 `gain_map_cfa_pitch_2_reaches_only_the_matching_bayer_positions` asserts
 the iPhone pattern (one Bayer phase per offset + pitch 2 GainMap).
 
-### Follow-ups (not fixed in this commit)
+### Follow-ups (fixed in Phase 3.6)
 
-- `apply_gain_map_rgb` ignores `Planes` — it always modifies only the
-  single `map.plane` channel. A `Plane = 0, Planes = 3, MapPlanes = 1`
-  GainMap on a post-demosaic buffer would touch R only, though spec
-  § 6.2.2 says it should touch all three channels with the same gain.
-  None of our fixtures ship this pattern; flagged for a future phase.
-- `FixBadPixelsConstant` / `FixBadPixelsList` ignore their `bayer_phase`
-  field. A red bad pixel is currently interpolated from all eight
-  neighbors regardless of CFA color; a Bayer-aware applier would restrict
-  to same-color neighbors. This is a quality nit, not a spec bug. No
-  fixture exercises either opcode today.
+Both items below were deferred in this commit. They're now closed:
+
+- `apply_gain_map_rgb` now honors `Planes`. When `MapPlanes < Planes`, the
+  last gain-map plane fans out to all remaining output planes.
+- `FixBadPixelsConstant` / `FixBadPixelsList` now honor `bayer_phase`.
+  Both appliers step by 2 in each direction to sample only same-phase
+  neighbors.
 
 ### Files touched
 
@@ -627,6 +633,85 @@ the iPhone pattern (one Bayer phase per offset + pitch 2 GainMap).
   closure; no more `cfa` clone.
 - `apps/desktop/examples/raw-dev-dump.rs` — mirror the fix.
 - Docs: this file, `CHANGELOG.md`.
+
+## Phase 3.6 — DNG GainMap + bad-pixel spec compliance
+
+Both items were flagged as deferred follow-ups in Phase 3.0 (commit
+`ecc9973`). No fixture exercises either path; both are spec-correctness
+fixes that improve quality on edge cases.
+
+Last updated: 2026-04-17 (Phase 3.6 shipped).
+
+### GainMap `Planes > MapPlanes` fallback
+
+**Problem**: `apply_gain_map_rgb` always modified only the single channel
+at `map.plane`, ignoring `map.planes`. A `GainMap` with `Plane = 0,
+Planes = 3, MapPlanes = 1` on a post-demosaic buffer was touching only R,
+leaving G and B unscaled. Spec § 6.2.2:
+
+> "If Planes > MapPlanes, the last gain map plane is used for any remaining
+>  planes being modified."
+
+**Fix**: `apply_gain_map_rgb` now iterates output channels from `first_out`
+(`map.plane`) through `last_out` (`map.plane + map.planes`, clamped to 3).
+For each output channel, the gain-map plane index is
+`min(out_ch_offset, map.map_planes - 1)`, matching the spec's "last plane
+fans out" rule. This unifies the RGB path's semantics with the CFA path's
+(which was correct after the Phase 3.0 hotfix).
+
+**Sample2.dng impact**: none. Sample2's four OpcodeList2 GainMaps all have
+`Planes = 1, MapPlanes = 1` and run through `apply_gain_map_cfa` (CFA
+path), not the RGB path. Output is byte-for-byte identical.
+
+**Unit tests added**:
+
+- `gain_map_rgb_map_planes_1_planes_3_applies_uniform_gain_to_all_channels`:
+  `MapPlanes = 1, Planes = 3` → same 2× gain on R, G, and B.
+- `gain_map_rgb_map_planes_3_planes_3_applies_per_channel_gain`:
+  `MapPlanes = 3, Planes = 3` → gains 2.0 / 3.0 / 4.0 applied to R / G / B
+  independently. Also verifies per-channel selection still works.
+- Updated `gain_map_on_rgb_planes_3_map_planes_1_applies_to_all_channels`
+  (was `gain_map_on_rgb_with_plane_0_leaves_g_and_b_untouched`): the old
+  test documented the incorrect behavior; the new name and assertion
+  document the correct one.
+
+### Bad-pixel `bayer_phase` neighbor selection
+
+**Problem**: `apply_fix_bad_pixels_constant` and `apply_fix_bad_pixels_list`
+sampled from all 8 immediate neighbors (step 1 in each direction) regardless
+of Bayer phase. For a red bad pixel, this included green and blue neighbors
+at step-1 offsets — mixing CFA colors. DNG spec § 6.2.2 implies that
+interpolation should stay within the same Bayer phase (only same-color pixels
+at step 2).
+
+**Fix**: A new helper `same_phase_neighbor_offsets(y, x, bayer_phase)`
+returns the eight `{-2, 0, +2}² \ {(0,0)}` offset pairs. Both appliers
+now call this helper instead of the unrestricted `{-1..=1}²` loop. Because
+every CFA color repeats every 2 rows and 2 columns, step-2 neighbors are
+guaranteed to share the bad pixel's Bayer phase.
+
+The `_y`, `_x`, and `_bayer_phase` parameters are accepted for API
+completeness; the step-2 rule is already phase-correct for all four Bayer
+positions, so no per-phase branching is needed today.
+
+**Unit tests added**:
+
+- `same_phase_neighbor_offsets_returns_eight_step2_pairs`: verifies the
+  helper returns exactly 8 pairs, all at `{±2}` magnitude, none at `(0,0)`.
+- `fix_bad_pixels_uses_same_phase_neighbors_not_adjacent`: in a 5×5 CFA
+  buffer, step-1 (adjacent) neighbors are set to 9.0 and step-2 (same-phase)
+  neighbors to 1.0. Verifies the repaired pixel averages to 1.0 (step-2),
+  not 9.0 (step-1).
+- Updated `fix_bad_pixels_list_replaces_listed_coord` and
+  `fix_bad_pixels_constant_averages_neighbors` to use a 5×5 buffer (center
+  pixel at position `(2, 2)`) so step-2 neighbors are in bounds.
+
+### Files touched
+
+- `apps/desktop/src/decoding/dng_opcodes.rs` — `apply_gain_map_rgb`,
+  `apply_fix_bad_pixels_constant`, `apply_fix_bad_pixels_list`, new
+  `same_phase_neighbor_offsets` helper, struct field docs, module doc,
+  six updated or new unit tests.
 
 ## Phase 3.3 — apply DCP data embedded in DNG files
 

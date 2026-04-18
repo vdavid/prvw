@@ -4,7 +4,7 @@ Quick checklist across phases. Detailed design notes live in
 `raw-support-phase1.md` and `raw-support-phase2.md`. This file is the single
 source for "what's done, what's next."
 
-Last updated: 2026-04-17 (Phase 3.5 shipped).
+Last updated: 2026-04-17 (Phase 3.6 shipped).
 
 ## Phase 1 — shipped in v0.9.0 🎉
 
@@ -183,19 +183,25 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       across filesystem then bundled tiers. Logs at INFO so users see the
       substitution. Conservative seed list — better to miss than mismatch.
 
+### Phase 3.6 — DNG GainMap + bad-pixel spec compliance (done, 2026-04-17)
+
+- [x] GainMap: honor `Planes > MapPlanes` fallback on the RGB path. When
+      `MapPlanes < Planes`, the last gain-map plane now fans out to all
+      remaining output planes, matching the CFA path's semantics and DNG
+      spec § 6.2.2. No current fixture hits this; deferred from Phase 3.0
+      commit `ecc9973`.
+- [x] Bad-pixel opcodes: honor `bayer_phase`. `FixBadPixelsConstant` and
+      `FixBadPixelsList` now sample neighbors at step 2 (same-phase only)
+      instead of the unrestricted 3×3 neighborhood (step 1). New helper
+      `same_phase_neighbor_offsets` returns the eight `{±2}` offset pairs.
+      Deferred from Phase 3.0 commit `ecc9973`.
+
 ### Phase 3.x — still ahead
 - [ ] DCP dual-illuminant, full fidelity: iterate ForwardMatrix1/2 +
       `AsShotNeutral` to converge a proper scene CCT instead of the
       one-shot WB-ratio approximation.
 - [ ] Settings UI: a "Custom DCP directory" picker + "per-camera profile"
       toggle in the Color panel.
-- [ ] GainMap: honor `Planes > MapPlanes` fallback ("last plane applies to
-      remaining planes"). Currently the RGB applier only touches
-      `map.plane`. No current fixture hits this; the bug in the CFA path
-      was fixed in 723d143.
-- [ ] Bad-pixel opcodes: honor `bayer_phase`. Current interpolation pulls
-      from all 8 neighbors regardless of CFA color. Quality nit, not a
-      spec violation; no current fixture exercises this.
 
 ## Phase 4 — Lens correction (via lensfun-rs)
 

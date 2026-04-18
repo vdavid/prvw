@@ -48,17 +48,18 @@
 //!   bounds source coords. Wired into `OpcodeList3` for post-color
 //!   application.
 //! - **Opcode 4 — `FixBadPixelsConstant`**. Replace any pixel equal to a
-//!   constant with the average of its 3×3 neighbors excluding other bad
-//!   pixels.
+//!   constant with the average of its same-Bayer-phase neighbors (step 2 in
+//!   each direction) excluding other bad pixels.
 //! - **Opcode 5 — `FixBadPixelsList`**. Explicit coordinate list of bad
-//!   pixels and rectangles; each gets replaced with the average of its good
-//!   neighbors.
+//!   pixels and rectangles; each gets replaced with the average of its
+//!   same-Bayer-phase good neighbors (step 2).
 //! - **Opcode 9 — `GainMap`**. Lens-shading / vignette correction. Bilinear
 //!   interpolation over the gain grid. On a CFA mosaic the gain scales
 //!   every pixel the rect/pitch selects, regardless of Bayer color — see
 //!   the note below on the `Plane`/`Planes` fields. On a 3-plane
-//!   post-demosaic RGB buffer the `Plane` field names the channel and the
-//!   gain only touches that channel.
+//!   post-demosaic RGB buffer, `Plane` names the first channel and `Planes`
+//!   names the count. When `MapPlanes < Planes`, the last gain-map plane
+//!   fans out to all remaining output planes (DNG spec § 6.2.2).
 //!
 //! ## DNG spec on `GainMap` `Plane` / `Planes` (§ 6.2.2 / Ch. 7)
 //!
@@ -346,10 +347,11 @@ pub struct GainMap {
     /// Index of the *first* plane this gain applies to (0-based) and the
     /// number of consecutive planes it covers.
     pub plane: u32,
-    /// Number of *consecutive* raw planes this opcode applies to, starting
-    /// at `plane`. Our applier only scales the single plane at index
-    /// `plane`; the field is preserved for spec completeness.
-    #[allow(dead_code)]
+    /// Number of *consecutive* image planes this opcode applies to, starting
+    /// at `plane`. On an RGB buffer with `Planes = 3`, the gain applies to
+    /// planes `plane`, `plane + 1`, …, `plane + Planes - 1`. When
+    /// `MapPlanes < Planes`, the last gain-map plane is reused for all
+    /// remaining output planes (DNG spec § 6.2.2).
     pub planes: u32,
     /// Dimensions of the gain grid in sample points (vertical × horizontal).
     pub map_points_v: u32,
@@ -514,8 +516,14 @@ pub fn apply_gain_map_cfa(data: &mut [f32], width: u32, height: u32, map: &GainM
 }
 
 /// Apply a `GainMap` on a packed RGB (3-plane) float buffer (post-demosaic).
-/// `plane_offset` adjusts the opcode's plane index (e.g. OpcodeList2 on a
-/// 3-channel image uses 0=R, 1=G, 2=B directly).
+///
+/// Honors `Planes`: every output channel from `map.plane` through
+/// `map.plane + map.planes - 1` (clamped to 0–2) receives the gain. When
+/// `map.map_planes < map.planes`, the last available gain-map plane is reused
+/// for the remaining output planes, per DNG spec § 6.2.2:
+///
+/// > "If Planes > MapPlanes, the last gain map plane is used for any
+/// >  remaining planes being modified."
 pub fn apply_gain_map_rgb(data: &mut [f32], width: u32, height: u32, map: &GainMap) {
     if map.plane >= 3 {
         log::debug!(
@@ -531,7 +539,11 @@ pub fn apply_gain_map_rgb(data: &mut [f32], width: u32, height: u32, map: &GainM
     }
     let rect_h = map.right.saturating_sub(map.left).max(1) as f64;
     let rect_v = map.bottom.saturating_sub(map.top).max(1) as f64;
-    let plane = map.plane as usize;
+
+    // Determine which RGB channels (0=R, 1=G, 2=B) this opcode covers.
+    let first_out = map.plane as usize;
+    let last_out = (first_out + map.planes as usize).min(3); // exclusive
+    let map_planes = map.map_planes as usize; // how many gain planes exist
 
     data.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
         let y_u = y as u32;
@@ -551,8 +563,14 @@ pub fn apply_gain_map_rgb(data: &mut [f32], width: u32, height: u32, map: &GainM
                 continue;
             }
             let h_norm = (x_u - map.left) as f64 / rect_h;
-            let gain = map.sample(v_norm, h_norm, 0);
-            chunk[plane] *= gain;
+            for (plane_offset, slot) in chunk[first_out..last_out].iter_mut().enumerate() {
+                // Map the output plane offset to a gain-map plane index, clamping
+                // the last available gain-map plane onto any remaining output
+                // planes (spec § 6.2.2 "last plane applies to remaining planes").
+                let map_plane_idx = plane_offset.min(map_planes - 1);
+                let gain = map.sample(v_norm, h_norm, map_plane_idx);
+                *slot *= gain;
+            }
         }
     });
 }
@@ -707,13 +725,40 @@ fn sample_bilinear_rgb(src: &[f32], w: usize, h: usize, sx: f64, sy: f64, plane:
 
 // ----- Bad-pixel fixes (opcodes 4, 5) --------------------------------------
 
+/// Return the (dy, dx) neighbor offsets that share the same Bayer phase as
+/// pixel `(y, x)` given `bayer_phase` (0=R, 1=G1, 2=B, 3=G2 per DNG spec).
+///
+/// Every CFA color repeats every 2 rows and 2 columns. The nearest same-color
+/// neighbors are therefore always 2 positions away (not 1). We walk all 8
+/// directions in steps of 2, giving neighbors at `(y ± 2, x ± 2)` etc.
+///
+/// This is equivalent to `(dy, dx)` pairs from `{-2, 0, +2}² \ {(0, 0)}`.
+/// Unlike the unrestricted 3×3 neighborhood (step 1), these neighbors are
+/// guaranteed to land on the same Bayer color.
+///
+/// `_bayer_phase` and `_y/_x` are accepted for future per-phase filtering if
+/// needed; the step-2 rule already ensures phase correctness for all four
+/// Bayer positions.
+pub(crate) fn same_phase_neighbor_offsets(_y: i32, _x: i32, _bayer_phase: u32) -> [(i32, i32); 8] {
+    [
+        (-2, -2),
+        (-2, 0),
+        (-2, 2),
+        (0, -2),
+        (0, 2),
+        (2, -2),
+        (2, 0),
+        (2, 2),
+    ]
+}
+
 #[derive(Debug, Clone)]
 pub struct FixBadPixelsConstant {
     pub constant: u32,
-    /// CFA phase the opcode was authored against. We don't branch on it;
-    /// the apply treats every "bad" pixel identically regardless of
-    /// position. Kept for spec completeness.
-    #[allow(dead_code)]
+    /// CFA phase the opcode was authored against (0=R, 1=G1, 2=B, 3=G2 per
+    /// DNG spec § 6.2.2). Used to restrict interpolation to same-phase
+    /// neighbors only, which avoids mixing CFA colors and produces a cleaner
+    /// replacement value.
     pub bayer_phase: u32,
 }
 
@@ -729,11 +774,13 @@ pub fn parse_fix_bad_pixels_constant(
     })
 }
 
-/// Replace any pixel whose value equals `constant` with the arithmetic mean
-/// of its eight nearest neighbors that aren't also `constant`. `constant`
-/// here is `raw_constant / 65535.0` since the caller hands us float-scaled
-/// raw data. For DNGs where `RawImageData` is `Integer`, rawler's `as_f32()`
-/// divides by `u16::MAX`.
+/// Replace any pixel whose value equals `constant` with the arithmetic mean of
+/// its same-Bayer-phase neighbors that aren't also `constant`.
+///
+/// Neighbors step by 2 in each direction (same CFA color), per DNG spec §
+/// 6.2.2: only pixels of the same Bayer phase contribute to the replacement
+/// value. `constant` here is `raw_constant / 65535.0` since the caller hands
+/// us float-scaled raw data.
 pub fn apply_fix_bad_pixels_constant(
     data: &mut [f32],
     width: u32,
@@ -757,23 +804,18 @@ pub fn apply_fix_bad_pixels_constant(
             }
             let mut sum = 0.0_f32;
             let mut count = 0_u32;
-            for dy in -1..=1_i32 {
-                for dx in -1..=1_i32 {
-                    if dy == 0 && dx == 0 {
-                        continue;
-                    }
-                    let ny = y as i32 + dy;
-                    let nx = x as i32 + dx;
-                    if ny < 0 || ny >= h as i32 || nx < 0 || nx >= w as i32 {
-                        continue;
-                    }
-                    let nv = src[ny as usize * w + nx as usize];
-                    if (nv - target).abs() <= eps {
-                        continue;
-                    }
-                    sum += nv;
-                    count += 1;
+            for (dy, dx) in same_phase_neighbor_offsets(y as i32, x as i32, op.bayer_phase) {
+                let ny = y as i32 + dy;
+                let nx = x as i32 + dx;
+                if ny < 0 || ny >= h as i32 || nx < 0 || nx >= w as i32 {
+                    continue;
                 }
+                let nv = src[ny as usize * w + nx as usize];
+                if (nv - target).abs() <= eps {
+                    continue;
+                }
+                sum += nv;
+                count += 1;
             }
             if count > 0 {
                 data[y * w + x] = sum / count as f32;
@@ -784,10 +826,9 @@ pub fn apply_fix_bad_pixels_constant(
 
 #[derive(Debug, Clone)]
 pub struct FixBadPixelsList {
-    /// CFA phase the opcode was authored against. Kept for spec
-    /// completeness; our apply interpolates from every immediate neighbor
-    /// regardless of phase.
-    #[allow(dead_code)]
+    /// CFA phase the opcode was authored against (0=R, 1=G1, 2=B, 3=G2 per
+    /// DNG spec § 6.2.2). Used to restrict interpolation to same-phase
+    /// neighbors only, which avoids mixing CFA colors.
     pub bayer_phase: u32,
     pub bad_points: Vec<(u32, u32)>,
     pub bad_rects: Vec<(u32, u32, u32, u32)>, // top, left, bottom, right
@@ -830,8 +871,12 @@ pub fn parse_fix_bad_pixels_list(params: &[u8]) -> Result<FixBadPixelsList, Opco
     })
 }
 
-/// Replace each listed bad pixel with the arithmetic mean of its 3×3
-/// neighbors (clamped to image borders). Skips the pixel itself.
+/// Replace each listed bad pixel with the arithmetic mean of its same-Bayer-
+/// phase neighbors (clamped to image borders).
+///
+/// Neighbors step by 2 in each direction (same CFA color), per DNG spec §
+/// 6.2.2: only pixels of the same Bayer phase contribute to the replacement
+/// value. This avoids mixing CFA colors during the repair.
 pub fn apply_fix_bad_pixels_list(data: &mut [f32], width: u32, height: u32, op: &FixBadPixelsList) {
     let w = width as usize;
     let h = height as usize;
@@ -839,25 +884,21 @@ pub fn apply_fix_bad_pixels_list(data: &mut [f32], width: u32, height: u32, op: 
         return;
     }
     let src = data.to_vec();
+    let bayer_phase = op.bayer_phase;
     let repair = |data: &mut [f32], py: u32, px: u32| {
         if py >= height || px >= width {
             return;
         }
         let mut sum = 0.0_f32;
         let mut count = 0_u32;
-        for dy in -1..=1_i32 {
-            for dx in -1..=1_i32 {
-                if dy == 0 && dx == 0 {
-                    continue;
-                }
-                let ny = py as i32 + dy;
-                let nx = px as i32 + dx;
-                if ny < 0 || ny >= h as i32 || nx < 0 || nx >= w as i32 {
-                    continue;
-                }
-                sum += src[ny as usize * w + nx as usize];
-                count += 1;
+        for (dy, dx) in same_phase_neighbor_offsets(py as i32, px as i32, bayer_phase) {
+            let ny = py as i32 + dy;
+            let nx = px as i32 + dx;
+            if ny < 0 || ny >= h as i32 || nx < 0 || nx >= w as i32 {
+                continue;
             }
+            sum += src[ny as usize * w + nx as usize];
+            count += 1;
         }
         if count > 0 {
             data[py as usize * w + px as usize] = sum / count as f32;
@@ -1185,12 +1226,11 @@ mod tests {
     }
 
     #[test]
-    fn gain_map_on_rgb_with_plane_0_leaves_g_and_b_untouched() {
-        // `Planes = 3, Plane = 0` on an RGB buffer should still target only
-        // the R channel — `Plane` indexes into planes, the count is in
-        // `Planes`. Today's RGB applier ignores `Planes` and touches only
-        // `map.plane`; this test pins the current per-channel behavior so
-        // we don't regress the Bayer-CFA fix onto the RGB path.
+    fn gain_map_on_rgb_planes_3_map_planes_1_applies_to_all_channels() {
+        // `Plane = 0, Planes = 3, MapPlanes = 1` on an RGB buffer: per DNG spec
+        // § 6.2.2, the single map plane fans out to all three output planes.
+        // This test was previously named `gain_map_on_rgb_with_plane_0_leaves_g_and_b_untouched`
+        // and asserted the old (incorrect) behavior. Updated after Phase 3.6 fix.
         let params = build_gain_map_params(
             0,
             0,
@@ -1199,7 +1239,7 @@ mod tests {
             1,
             1, //
             0,
-            3, // Plane = 0, Planes = 3 (R, G, and B nominally)
+            3, // Plane = 0, Planes = 3 (R, G, and B)
             2,
             2, //
             1.0,
@@ -1214,10 +1254,13 @@ mod tests {
         for chunk in data.chunks_exact(3) {
             assert!((chunk[0] - 2.0).abs() < 1e-6, "R should have scaled");
             assert!(
-                (chunk[1] - 1.0).abs() < 1e-6,
-                "G untouched (Planes > 1 not yet honored on RGB; see `apply_gain_map_rgb`)"
+                (chunk[1] - 2.0).abs() < 1e-6,
+                "G should have scaled (MapPlanes=1 fans out)"
             );
-            assert!((chunk[2] - 1.0).abs() < 1e-6, "B untouched");
+            assert!(
+                (chunk[2] - 2.0).abs() < 1e-6,
+                "B should have scaled (MapPlanes=1 fans out)"
+            );
         }
     }
 
@@ -1259,6 +1302,93 @@ mod tests {
         assert!((data[1] - 1.5).abs() < 1e-5, "got {}", data[1]);
         assert!((data[2] - 1.5).abs() < 1e-5, "got {}", data[2]);
         assert!((data[3] - 2.0).abs() < 1e-5, "got {}", data[3]);
+    }
+
+    // -------- GainMap RGB Planes > MapPlanes (Phase 3.6 spec fix) ----------
+
+    #[test]
+    fn gain_map_rgb_map_planes_1_planes_3_applies_uniform_gain_to_all_channels() {
+        // `Plane = 0, Planes = 3, MapPlanes = 1`: one gain map plane fans out to
+        // all three RGB output planes. DNG spec § 6.2.2: "if Planes > MapPlanes,
+        // the last gain map plane is used for any remaining planes being modified."
+        let params = build_gain_map_params_multiplane(
+            0,
+            0,
+            4,
+            4,
+            0, // first output plane = R
+            3, // Planes = 3: covers R, G, B
+            2,
+            2,
+            1,                     // MapPlanes = 1: single gain plane
+            &[2.0, 2.0, 2.0, 2.0], // uniform 2× gain
+        );
+        let map = parse_gain_map(&params).unwrap();
+        assert_eq!(map.planes, 3);
+        assert_eq!(map.map_planes, 1);
+        let mut data = vec![1.0_f32; 4 * 4 * 3];
+        apply_gain_map_rgb(&mut data, 4, 4, &map);
+        for chunk in data.chunks_exact(3) {
+            assert!(
+                (chunk[0] - 2.0).abs() < 1e-6,
+                "R: want 2.0, got {}",
+                chunk[0]
+            );
+            assert!(
+                (chunk[1] - 2.0).abs() < 1e-6,
+                "G: want 2.0, got {}",
+                chunk[1]
+            );
+            assert!(
+                (chunk[2] - 2.0).abs() < 1e-6,
+                "B: want 2.0, got {}",
+                chunk[2]
+            );
+        }
+    }
+
+    #[test]
+    fn gain_map_rgb_map_planes_3_planes_3_applies_per_channel_gain() {
+        // `Plane = 0, Planes = 3, MapPlanes = 3`: three distinct gains, one per
+        // output plane. R gets gain[0]=2.0, G gets gain[1]=3.0, B gets gain[2]=4.0.
+        // This verifies that when MapPlanes == Planes, each output channel gets
+        // its own map plane (no fallback to the last plane).
+        let params = build_gain_map_params_multiplane(
+            0,
+            0,
+            2,
+            2,
+            0, // first output plane = R
+            3, // Planes = 3
+            1,
+            1, // 1×1 grid (single sample, no interpolation)
+            3, // MapPlanes = 3: three gain planes
+            // gains: 1 sample × 1 sample × 3 planes = [gain_R, gain_G, gain_B]
+            &[2.0, 3.0, 4.0],
+        );
+        let map = parse_gain_map(&params).unwrap();
+        assert_eq!(map.planes, 3);
+        assert_eq!(map.map_planes, 3);
+        // Use a 2×2 image so the single grid point clamps to every pixel.
+        let mut data = vec![1.0_f32; 2 * 2 * 3];
+        apply_gain_map_rgb(&mut data, 2, 2, &map);
+        for chunk in data.chunks_exact(3) {
+            assert!(
+                (chunk[0] - 2.0).abs() < 1e-5,
+                "R: want 2.0, got {}",
+                chunk[0]
+            );
+            assert!(
+                (chunk[1] - 3.0).abs() < 1e-5,
+                "G: want 3.0, got {}",
+                chunk[1]
+            );
+            assert!(
+                (chunk[2] - 4.0).abs() < 1e-5,
+                "B: want 4.0, got {}",
+                chunk[2]
+            );
+        }
     }
 
     // ---------------------- WarpRectilinear tests -------------------------
@@ -1312,34 +1442,118 @@ mod tests {
         }
     }
 
+    // ---------------------- GainMap RGB Planes > MapPlanes tests -------------
+
+    /// Build a GainMap param blob with a configurable `map_planes` count and
+    /// multiple per-plane gain values (row-major: v × h × map_planes).
+    #[allow(clippy::too_many_arguments)]
+    fn build_gain_map_params_multiplane(
+        top: u32,
+        left: u32,
+        bottom: u32,
+        right: u32,
+        plane: u32,
+        planes: u32,
+        points_v: u32,
+        points_h: u32,
+        map_planes: u32,
+        gains: &[f32],
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&top.to_be_bytes());
+        out.extend_from_slice(&left.to_be_bytes());
+        out.extend_from_slice(&bottom.to_be_bytes());
+        out.extend_from_slice(&right.to_be_bytes());
+        out.extend_from_slice(&plane.to_be_bytes());
+        out.extend_from_slice(&planes.to_be_bytes());
+        out.extend_from_slice(&1_u32.to_be_bytes()); // row_pitch
+        out.extend_from_slice(&1_u32.to_be_bytes()); // col_pitch
+        out.extend_from_slice(&points_v.to_be_bytes());
+        out.extend_from_slice(&points_h.to_be_bytes());
+        out.extend_from_slice(&1.0_f64.to_be_bytes()); // spacing_v
+        out.extend_from_slice(&1.0_f64.to_be_bytes()); // spacing_h
+        out.extend_from_slice(&0.0_f64.to_be_bytes()); // origin_v
+        out.extend_from_slice(&0.0_f64.to_be_bytes()); // origin_h
+        out.extend_from_slice(&map_planes.to_be_bytes());
+        for g in gains {
+            out.extend_from_slice(&g.to_be_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn gain_map_rgb_plane_1_planes_1_touches_only_g() {
+        // `Plane = 1, Planes = 1`: only G (index 1) is modified. R and B stay
+        // at 1.0. This is the per-channel selection path, unchanged from before.
+        let params = build_gain_map_params(
+            0,
+            0,
+            4,
+            4,
+            1,
+            1,
+            1,
+            1, // Plane = 1, Planes = 1: only G
+            2,
+            2,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            &[3.0, 3.0, 3.0, 3.0],
+        );
+        let map = parse_gain_map(&params).unwrap();
+        let mut data = vec![1.0_f32; 4 * 4 * 3];
+        apply_gain_map_rgb(&mut data, 4, 4, &map);
+        for chunk in data.chunks_exact(3) {
+            assert!((chunk[0] - 1.0).abs() < 1e-6, "R should be untouched");
+            assert!((chunk[1] - 3.0).abs() < 1e-6, "G should be 3.0");
+            assert!((chunk[2] - 1.0).abs() < 1e-6, "B should be untouched");
+        }
+    }
+
     // ---------------------- Bad pixel tests -------------------------------
 
     #[test]
     fn fix_bad_pixels_list_replaces_listed_coord() {
+        // Use a 5×5 buffer so same-phase neighbors at step 2 are in bounds.
+        // Bad pixel at center (2, 2); all other pixels at 1.0.
+        // Same-phase neighbors at distance 2: (0,0),(0,2),(0,4),(2,0),(2,4),
+        // (4,0),(4,2),(4,4) — all 1.0. Expected result: 1.0.
         let op = FixBadPixelsList {
             bayer_phase: 0,
-            bad_points: vec![(1, 1)],
+            bad_points: vec![(2, 2)],
             bad_rects: vec![],
         };
-        // 3x3 image with center at 0.0, everything else at 1.0. After fix
-        // the center should average to 1.0 (all 8 neighbors are 1.0).
-        let mut data = vec![1.0_f32; 9];
-        data[4] = 0.0;
-        apply_fix_bad_pixels_list(&mut data, 3, 3, &op);
-        assert!((data[4] - 1.0).abs() < 1e-6);
+        let mut data = vec![1.0_f32; 25];
+        data[2 * 5 + 2] = 0.0; // center bad
+        apply_fix_bad_pixels_list(&mut data, 5, 5, &op);
+        assert!(
+            (data[2 * 5 + 2] - 1.0).abs() < 1e-6,
+            "expected 1.0, got {}",
+            data[2 * 5 + 2]
+        );
     }
 
     #[test]
     fn fix_bad_pixels_constant_averages_neighbors() {
+        // Use a 5×5 buffer so same-phase neighbors at step 2 are in bounds.
+        // Zero is the "bad" constant. Center pixel (2, 2) is 0.0; all others 0.5.
+        // Expected replacement: average of same-phase neighbors at step 2 = 0.5.
         let op = FixBadPixelsConstant {
-            constant: 0, // zero-valued pixels are "bad"
+            constant: 0,
             bayer_phase: 0,
         };
-        // 3x3 image, center at 0.0, neighbors all at 0.5 (non-zero).
-        let mut data = vec![0.5_f32; 9];
-        data[4] = 0.0;
-        apply_fix_bad_pixels_constant(&mut data, 3, 3, &op);
-        assert!((data[4] - 0.5).abs() < 1e-5, "got {}", data[4]);
+        let mut data = vec![0.5_f32; 25];
+        data[2 * 5 + 2] = 0.0; // center bad (constant 0 maps to 0.0 / 65535)
+        // The constant is 0 → target = 0.0/65535 ≈ 0.0; eps = 1/65535 ≈ 1.5e-5.
+        // Our data[center] = 0.0, which matches target within eps.
+        apply_fix_bad_pixels_constant(&mut data, 5, 5, &op);
+        assert!(
+            (data[2 * 5 + 2] - 0.5).abs() < 1e-5,
+            "expected 0.5, got {}",
+            data[2 * 5 + 2]
+        );
     }
 
     #[test]
@@ -1353,5 +1567,65 @@ mod tests {
         let mut data = original.clone();
         apply_fix_bad_pixels_list(&mut data, 2, 2, &op);
         assert_eq!(data, original);
+    }
+
+    #[test]
+    fn fix_bad_pixels_uses_same_phase_neighbors_not_adjacent() {
+        // Verify that same-phase neighbor sampling (step 2) is used and not
+        // adjacent (step 1). Set up a 5×5 CFA where the bad pixel at (2, 2)
+        // is surrounded by step-1 neighbors at 9.0 and step-2 (same-phase)
+        // neighbors at 1.0. With step-2 sampling the repair averages to 1.0;
+        // with step-1 it would average to 9.0. This confirms Bayer-phase
+        // correctness.
+        let op = FixBadPixelsList {
+            bayer_phase: 0,
+            bad_points: vec![(2, 2)],
+            bad_rects: vec![],
+        };
+        // Fill all with 1.0 (same-phase neighbors at even positions)
+        let mut data = vec![1.0_f32; 25];
+        // Overwrite step-1 (adjacent, cross-phase) neighbors with 9.0
+        for (dy, dx) in [
+            (-1i32, 0),
+            (1, 0),
+            (0, -1i32),
+            (0, 1),
+            (-1, -1),
+            (-1, 1),
+            (1, -1),
+            (1, 1),
+        ] {
+            let ny = (2 + dy) as usize;
+            let nx = (2 + dx) as usize;
+            data[ny * 5 + nx] = 9.0;
+        }
+        data[2 * 5 + 2] = 0.0; // the bad pixel itself
+        apply_fix_bad_pixels_list(&mut data, 5, 5, &op);
+        // With step-2 sampling, only the 1.0 same-phase pixels are averaged.
+        assert!(
+            (data[2 * 5 + 2] - 1.0).abs() < 1e-5,
+            "expected 1.0 (same-phase neighbors), got {}",
+            data[2 * 5 + 2]
+        );
+    }
+
+    #[test]
+    fn same_phase_neighbor_offsets_returns_eight_step2_pairs() {
+        let offsets = same_phase_neighbor_offsets(4, 4, 0);
+        assert_eq!(offsets.len(), 8);
+        // Every offset must be ±2 in at least one axis and 0 or ±2 in the other.
+        for (dy, dx) in offsets {
+            assert!(dy != 0 || dx != 0, "zero offset in neighbor list");
+            assert!(
+                dy.abs() == 2 || dx.abs() == 2,
+                "expected step 2, got dy={dy} dx={dx}"
+            );
+            assert!(
+                dy.abs() <= 2 && dx.abs() <= 2,
+                "offset too large: dy={dy} dx={dx}"
+            );
+        }
+        // Confirm (0, 0) is absent.
+        assert!(!offsets.contains(&(0, 0)));
     }
 }
