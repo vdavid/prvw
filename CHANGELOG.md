@@ -18,6 +18,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Chroma noise reduction for RAW** (Phase 6.1): high-ISO RAWs now render with a mild Gaussian blur on the Cb / Cr
+  planes in linear Rec.2020 while luminance stays sharp — the same quality polish Preview.app and Affinity Photo apply
+  silently by default. σ = 1.5 px (11-tap kernel), luma-preserving per-pixel. Runs post-demosaic and post-crop, pre-
+  baseline-exposure. Adds ~25 ms on a 12 MP decode and ~60 – 70 ms on 20 MP. New "Denoise" section under Settings →
+  RAW with a "Chroma noise reduction" toggle (on by default). Toggling it off reproduces pre-6.1 output bit-for-bit on
+  a per-image basis. See `docs/notes/raw-support-phase6.md`.
 - **RAW tuning sliders** (Phase 6.0): a new "Tuning" section under Settings → RAW exposes three continuous-valued
   sliders for the parametric RAW stages — sharpening amount (0.00 – 1.00, default 0.30), saturation boost
   (0.00 – 0.30, default 0.08), and tone midtone anchor (0.20 – 0.50, default 0.40). Sliders are non-continuous, so

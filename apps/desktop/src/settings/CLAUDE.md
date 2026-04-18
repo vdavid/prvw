@@ -10,7 +10,7 @@ and the "General" panel (which mixes toggles from several features).
 | `window.rs`       | Window creation, `SettingsDelegate`, sidebar, assembles panels from all features    |
 | `widgets.rs`      | `make_setting_row` and `make_wrapping_label` — shared AppKit widget factories       |
 | `panels/general.rs` | General panel: Auto-update + Scroll-to-zoom + Title bar (cross-feature toggles)   |
-| `panels/raw.rs`   | RAW panel (Phase 3.7 + 6.0): 13 per-stage `RawPipelineFlags` toggles + a "Tuning" section with 3 NSSliders (sharpening amount, saturation boost, midtone anchor) + custom DCP dir picker + Reset button |
+| `panels/raw.rs`   | RAW panel (Phase 3.7 + 6.0 + 6.1): 14 per-stage `RawPipelineFlags` toggles (including the Phase 6.1 "Chroma noise reduction" row under its own "Denoise" section header) + a "Tuning" section with 3 NSSliders (sharpening amount, saturation boost, midtone anchor) + custom DCP dir picker + Reset button |
 
 ## Key patterns
 

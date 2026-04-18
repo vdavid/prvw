@@ -78,6 +78,15 @@ pub struct RawPipelineFlags {
     #[serde(default = "default_true")]
     pub capture_sharpening: bool,
 
+    // ── Denoise (Phase 6.1) ───────────────────────────────────────────
+    /// Chroma noise reduction: a mild Gaussian blur on the Cb / Cr planes
+    /// in linear Rec.2020, leaving luminance sharp. Runs post-demosaic,
+    /// pre-`baseline_exposure`. Defaults to `true` — matches the silent
+    /// chroma-NR default in Preview.app and Affinity Photo. Per-image
+    /// behavior at `false` is bit-identical to pre-6.1 output.
+    #[serde(default = "default_true")]
+    pub chroma_denoise: bool,
+
     // ── Geometry ──────────────────────────────────────────────────────
     /// Lens distortion, TCA, and vignetting correction via `lensfun-rs`.
     /// Fires post-demosaic, pre-`camera_to_linear_rec2020`. Silent no-op
@@ -152,6 +161,7 @@ impl Default for RawPipelineFlags {
             default_tone_curve: true,
             dcp_tone_curve: true,
             capture_sharpening: true,
+            chroma_denoise: true,
             lens_correction: true,
             hdr_output: true,
             sharpen_amount: DEFAULT_AMOUNT,
@@ -223,6 +233,9 @@ impl RawPipelineFlags {
         if !self.capture_sharpening {
             out.push("capture sharpening");
         }
+        if !self.chroma_denoise {
+            out.push("chroma denoise");
+        }
         if !self.lens_correction {
             out.push("lens correction");
         }
@@ -251,6 +264,7 @@ mod tests {
         assert!(flags.default_tone_curve);
         assert!(flags.dcp_tone_curve);
         assert!(flags.capture_sharpening);
+        assert!(flags.chroma_denoise);
         assert!(flags.lens_correction);
         assert!(flags.hdr_output);
         assert_eq!(flags.sharpen_amount, DEFAULT_AMOUNT);

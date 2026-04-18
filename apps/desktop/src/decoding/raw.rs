@@ -24,6 +24,13 @@
 //!    the final ICC transform to the display profile. After the color
 //!    map we apply `OpcodeList3` (typically `WarpRectilinear` for lens
 //!    distortion correction).
+//!
+//! 2c. **Chroma noise reduction (Phase 6.1).** Still in linear Rec.2020,
+//!     post-demosaic and post-crop, a small separable Gaussian blur on the
+//!     Cb / Cr planes cleans the dominant noise source in high-ISO RAWs
+//!     without touching luminance. Matches the silent chroma-NR default in
+//!     Preview.app and Affinity. See `color::chroma_denoise`.
+//!
 //! 3. **Baseline exposure lift.** Still in linear Rec.2020 land, we apply a
 //!    single EV scale (`linear *= 2^ev`). Source is the DNG
 //!    `BaselineExposure` tag (50730) when present, otherwise a +0.5 EV
@@ -331,6 +338,23 @@ pub(super) fn decode(
     // step does the same thing after calibrate; we just moved it later so the
     // color transform happens on the full active-area buffer.
     let (width, height, mut rec2020) = apply_default_crop(&raw, width, height, rec2020);
+
+    check_cancelled(cancelled)?;
+
+    // Phase 6.1 — chroma noise reduction. Small separable Gaussian blur on
+    // Cb / Cr in linear Rec.2020, leaving luminance sharp. Runs here
+    // (post-crop, pre-exposure) because chroma noise is rawest closest to
+    // demosaic output — cleaning it before the tone / exposure chain is
+    // cheap and can't be re-introduced by later stages (they scale luma,
+    // not chroma). Matches the silent chroma-NR default of Preview.app and
+    // Affinity. See `color::chroma_denoise`.
+    if flags.chroma_denoise {
+        log::info!(
+            "RAW chroma denoise: on (σ={:.2})",
+            color::chroma_denoise::DEFAULT_SIGMA
+        );
+        color::chroma_denoise::apply_default_chroma_denoise(&mut rec2020, width, height);
+    }
 
     check_cancelled(cancelled)?;
 

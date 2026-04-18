@@ -91,3 +91,101 @@ override, per-lens LensFun override, custom curves) would be Phase 6.1+
 and isn't planned yet. A user requesting more control than the three
 current sliders can always edit `settings.json` directly — the clamp
 protects against out-of-range values either way.
+
+## Phase 6.1 — chroma noise reduction (shipped 2026-04-17)
+
+Preview.app and Affinity Photo silently apply mild chroma NR by default;
+we didn't, and it showed as the visible quality gap on high-ISO shots.
+Phase 6.1 closes that gap.
+
+### Algorithm
+
+Chroma-only spatial blur that keeps luminance sharp. For each pixel:
+
+1. Convert linear Rec.2020 RGB to Y + Cb + Cr using Rec.2020 weights
+   (`Y = 0.2627 R + 0.6780 G + 0.0593 B`, `Cb = B − Y`, `Cr = R − Y`).
+2. Run a separable Gaussian blur on the Cb plane, then on the Cr plane.
+3. Reconstruct: `R = Y + Cr`, `B = Y + Cb`,
+   `G = (Y − 0.2627 R − 0.0593 B) / 0.6780`.
+
+Because blurring only happens on Cb and Cr, luma is preserved per-pixel
+(within f32 rounding). A unit test pins this down on a synthetic image:
+reading `Y = LUMA_R · R + LUMA_G · G + LUMA_B · B` before and after the
+pass yields the same number.
+
+### Parameters
+
+- **Sigma = 1.5 px.** Mild, matching the consumer-viewer default. Smaller
+  σ (~1.0) cleans less; larger σ (~3.0) starts smearing colored edges.
+  Kernel is `2 · ceil(3σ) + 1 = 11` taps.
+- **Strength = 1.0.** v1 exposes the stage as an on/off toggle in
+  Settings → RAW → "Denoise". Partial-strength mixing is wired in the
+  module API (`apply_chroma_denoise`) but not exposed as a slider yet;
+  future Phase 6.x work can reach it without reshaping signatures.
+
+### Pipeline slot
+
+Linear Rec.2020, post-demosaic and post-`apply_default_crop`, immediately
+before the baseline exposure lift. Chroma noise is rawest closest to
+demosaic output, so cleaning it there is cheapest and least destructive.
+Later stages scale luminance (exposure) or shape it (tone curve /
+saturation boost), neither of which can re-introduce chroma noise.
+
+### Default-on behavior change
+
+`chroma_denoise` defaults to `true`. This intentionally changes output
+for new decodes vs. pre-6.1. Per-image behavior at `chroma_denoise =
+false` stays bit-identical to pre-6.1. Same pattern as the HDR output
+toggle from Phase 5.
+
+The `synthetic_dng_matches_golden` test regenerated its golden PNG with
+chroma denoise on. The synthetic Bayer fixture only has one color
+boundary, so the delta is visually imperceptible — which is the correct
+sanity check: a "broken" regeneration would look wildly different.
+
+### Performance
+
+Measured on an Apple M-series laptop, SDR RGBA8 path, release build,
+averaged over 3 iterations each (after a warm-up):
+
+| File          | Resolution | Pre-6.1 | With 6.1 | Delta   |
+| ------------- | ---------- | ------- | -------- | ------- |
+| sample1.arw   | 5456 × 3632 (~20 MP) | 275 ms | 334 ms | +58 ms |
+| sample2.dng   | 3000 × 3990 (~12 MP) | 252 ms | 277 ms | +25 ms |
+| sample3.arw   | 5456 × 3632 (~20 MP) | 269 ms | 342 ms | +72 ms |
+
+The isolated 20 MP chroma-denoise pass benchmarks at ~55 ms in
+`color::chroma_denoise::tests::chroma_denoise_20mp_bench`. Full-decode
+delta lands a bit higher because the Cb / Cr planes and their scratch
+buffers compete with the rest of the pipeline for cache.
+
+Inner blur rows (`blur_horizontal_row` and `blur_vertical_row`) are
+annotated with `#[multiversion(targets("aarch64+neon",
+"x86_64+avx+avx2+fma"))]` and use `f32::mul_add` for FMA hints, same
+pattern Phase 6.3 introduced for the lens-correction resampler.
+
+### Pixel-delta summary on real samples
+
+With and without the stage, comparing full `load_image` outputs:
+
+| File          | Mean ¦Δ¦ | Max | Bytes changed |
+| ------------- | -------- | --- | ------------- |
+| sample1.arw   | 1.06 | 164 | 47 % |
+| sample2.dng   | 1.65 | 176 | 60 % |
+| sample3.arw   | 2.23 | 183 | 61 % |
+
+High max deltas come from scattered bright-colored noise pixels the blur
+absorbs into their neighbors — exactly the intended effect. Visually the
+before / after pairs read as "same scene, slightly cleaner flats". Sharp
+edges (text, hair, fabric stripes, wall corners) survive intact because
+luminance is untouched.
+
+### Settings panel
+
+A new "Denoise" section header sits between "Detail" and "Geometry" with
+one toggle row "Chroma noise reduction" / "Mild Gaussian blur on color
+channels; keeps luminance sharp." Tag constant `TAG_CHROMA_DENOISE =
+160` (the 1xx decade per section pattern the other rows follow). Row
+indices in the panel layout + `setCustomSpacing_afterView` calls bumped
+from `[11] lens_correction` / `[12] HDR output` to `[12] lens_correction`
+/ `[13] HDR output`.

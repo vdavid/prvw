@@ -338,6 +338,59 @@ mod tests {
     use super::*;
     use crate::color;
 
+    /// Phase 6.1 smoke perf: time the full `load_image` path with and
+    /// without chroma denoise. Run manually:
+    /// `RUST_LOG=info cargo test --release arw_chroma_denoise_perf -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn arw_chroma_denoise_perf() {
+        use std::time::Instant;
+
+        let target = color::srgb_icc_bytes().to_vec();
+
+        for sample in &[
+            "/tmp/raw/sample1.arw",
+            "/tmp/raw/sample2.dng",
+            "/tmp/raw/sample3.arw",
+        ] {
+            let path = Path::new(sample);
+            if !path.exists() {
+                println!("skipping {sample} (not present)");
+                continue;
+            }
+
+            let flags_off = RawPipelineFlags {
+                chroma_denoise: false,
+                ..RawPipelineFlags::default()
+            };
+            let flags_on = RawPipelineFlags::default();
+
+            // One warm-up pass each.
+            let _ = load_image(path, &target, false, flags_off, 1.0);
+            let _ = load_image(path, &target, false, flags_on, 1.0);
+
+            let iters = 3;
+            let mut off_ms: u128 = 0;
+            for _ in 0..iters {
+                let t = Instant::now();
+                let _ = load_image(path, &target, false, flags_off, 1.0).unwrap();
+                off_ms += t.elapsed().as_millis();
+            }
+            let mut on_ms: u128 = 0;
+            for _ in 0..iters {
+                let t = Instant::now();
+                let _ = load_image(path, &target, false, flags_on, 1.0).unwrap();
+                on_ms += t.elapsed().as_millis();
+            }
+            println!(
+                "{sample} decode avg: off {} ms, on {} ms, delta {} ms",
+                off_ms / iters,
+                on_ms / iters,
+                (on_ms as i128 - off_ms as i128) / iters as i128
+            );
+        }
+    }
+
     /// End-to-end: `load_image` on the ARW fixture. Verifies dimensions after
     /// orientation, which for sample1 is no-op (orientation 1). `#[ignore]` because
     /// the fixture lives outside the repo. Run with

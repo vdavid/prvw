@@ -1,6 +1,7 @@
 //! Color management: ICC profile extraction, transform, display profile detection,
 //! Settings panel.
 
+pub mod chroma_denoise;
 pub mod dcp;
 pub mod delta_e;
 pub mod highlight_recovery;

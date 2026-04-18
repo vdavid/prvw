@@ -4,7 +4,7 @@ Quick checklist across phases. Detailed design notes live in
 `raw-support-phase1.md` and `raw-support-phase2.md`. This file is the single
 source for "what's done, what's next."
 
-Last updated: 2026-04-17 (Phase 3.6 shipped).
+Last updated: 2026-04-17 (Phase 6.1 shipped).
 
 ## Phase 1 — shipped in v0.9.0 🎉
 
@@ -356,6 +356,30 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
 
 See `docs/notes/raw-support-phase6.md`.
 
+### Phase 6.1 — chroma noise reduction (done, 2026-04-17)
+
+- [x] `color::chroma_denoise` module: Rec.2020 Y / Cb / Cr split,
+      separable Gaussian blur (`σ = 1.5 px`, 11 taps) on Cb and Cr,
+      RGB reconstruction. Luminance-preserving per pixel within f32
+      rounding. Rayon-parallel, inner blur rows annotated with
+      `#[multiversion(targets("aarch64+neon", "x86_64+avx+avx2+fma"))]`
+      and `f32::mul_add` for FMA hints.
+- [x] `RawPipelineFlags::chroma_denoise` defaults to `true` — matches
+      the silent chroma-NR default in Preview.app and Affinity Photo.
+      Runs in linear Rec.2020 post-crop, pre-baseline-exposure. At
+      `false`, per-image output is bit-identical to pre-6.1.
+- [x] Settings → RAW → new "Denoise" section with one toggle. Tag
+      constant `TAG_CHROMA_DENOISE = 160`. Row indices in the panel
+      layout assembly bumped (`rows[11]` = chroma denoise, shifted
+      `lens_correction` and `HDR output` down by one).
+- [x] Golden regenerated (`synthetic_dng_matches_golden`). Synthetic
+      fixture looks visually identical (one color boundary, tiny
+      chroma drift). Real-sample smoke test on sample1 / 2 / 3 shows
+      "same scene, slightly cleaner flats" with sharp edges intact.
+- [x] Perf impact on the three samples: +25 ms on 12 MP sample2.dng,
+      +58 ms on 20 MP sample1.arw, +72 ms on 20 MP sample3.arw. See
+      `docs/notes/raw-support-phase6.md`.
+
 ### Phase 6.3 — SIMD-vectorize lens correction resampler (done, 2026-04-17)
 
 - [x] `resample_distortion_row` and `resample_tca_row` extracted from the
@@ -385,8 +409,8 @@ See `docs/notes/raw-support-phase6.md`.
       ~1500 LoC.
 - [ ] Foveon (Sigma X3F) proper development pipeline. rawler decodes but
       its develop path hits `todo!()` for Foveon photometrics.
-- [ ] Noise reduction: mild chroma NR by default, optional luma NR.
-      Editor territory.
+- [ ] Optional luma NR (chroma NR shipped in Phase 6.1). Editor
+      territory.
 - [ ] Embedded JPEG preview fast-path: extract the JPEG baked into every
       RAW for instant first paint, upgrade to full decode in the
       preloader's background pass.

@@ -5,8 +5,10 @@
 //! Each flag row mirrors the pattern in the other panels: title label on the
 //! left, NSSwitch on the right, secondary description directly underneath.
 //! Section headers group the toggles into "Sensor corrections (DNG only)",
-//! "Color", "Tone", "Detail", "Geometry" (Phase 4.0 — lens correction via
-//! `lensfun-rs`), and "Output". The Phase 6.0 "Tuning" section adds three
+//! "Color", "Tone", "Detail", "Denoise" (Phase 6.1 — chroma noise reduction
+//! via a mild Gaussian blur on Cb / Cr), "Geometry" (Phase 4.0 — lens
+//! correction via `lensfun-rs`), and "Output". The Phase 6.0 "Tuning"
+//! section adds three
 //! NSSlider rows (sharpening amount, saturation boost, tone midtone anchor);
 //! sliders are non-continuous, so moving the knob fires exactly one
 //! `SetRawPipelineFlags` per mouse release, avoiding decode-spam during
@@ -51,6 +53,11 @@ const TAG_DCP_TONE_CURVE: isize = 122;
 const TAG_CAPTURE_SHARPENING: isize = 130;
 const TAG_LENS_CORRECTION: isize = 140;
 const TAG_HDR_OUTPUT: isize = 150;
+/// "Denoise" section toggle. The spec nominally pinned this at 123 inside
+/// the tone-row range, but keeping each section in its own 1xx decade makes
+/// accidental collisions impossible as sections grow — so we park it at
+/// 160, matching the pattern the other sections follow.
+const TAG_CHROMA_DENOISE: isize = 160;
 // Phase 6.0 Tuning sliders. Kept in a separate 200-range so a stray tag
 // collision with the toggles above is impossible.
 const TAG_SHARPEN_AMOUNT: isize = 200;
@@ -73,6 +80,7 @@ struct RawDelegateIvars {
     default_tone_curve: *const NSSwitch,
     dcp_tone_curve: *const NSSwitch,
     capture_sharpening: *const NSSwitch,
+    chroma_denoise: *const NSSwitch,
     lens_correction: *const NSSwitch,
     hdr_output: *const NSSwitch,
     // Phase 6.0 Tuning sliders + their right-hand value labels.
@@ -210,6 +218,7 @@ impl RawDelegate {
             default_tone_curve: switch_is_on(ivars.default_tone_curve),
             dcp_tone_curve: switch_is_on(ivars.dcp_tone_curve),
             capture_sharpening: switch_is_on(ivars.capture_sharpening),
+            chroma_denoise: switch_is_on(ivars.chroma_denoise),
             lens_correction: switch_is_on(ivars.lens_correction),
             hdr_output: switch_is_on(ivars.hdr_output),
             sharpen_amount: slider_value(ivars.sharpen_amount_slider),
@@ -218,7 +227,7 @@ impl RawDelegate {
         }
     }
 
-    /// Push `flags` into every widget we own: the thirteen switches, the
+    /// Push `flags` into every widget we own: the fourteen switches, the
     /// three Tuning sliders, and their value labels. Used by the "Reset to
     /// defaults" path so a click snaps the UI back to the production
     /// baseline in one atomic step.
@@ -235,6 +244,7 @@ impl RawDelegate {
         set_switch(ivars.default_tone_curve, flags.default_tone_curve);
         set_switch(ivars.dcp_tone_curve, flags.dcp_tone_curve);
         set_switch(ivars.capture_sharpening, flags.capture_sharpening);
+        set_switch(ivars.chroma_denoise, flags.chroma_denoise);
         set_switch(ivars.lens_correction, flags.lens_correction);
         set_switch(ivars.hdr_output, flags.hdr_output);
         set_slider(ivars.sharpen_amount_slider, flags.sharpen_amount);
@@ -694,6 +704,13 @@ pub(crate) fn build(
             mtm,
         ),
         build_flag_row(
+            "Chroma noise reduction",
+            "Mild Gaussian blur on color channels; keeps luminance sharp.",
+            flags.chroma_denoise,
+            TAG_CHROMA_DENOISE,
+            mtm,
+        ),
+        build_flag_row(
             "Lens correction",
             "Distortion, TCA, and vignetting from the LensFun database.",
             flags.lens_correction,
@@ -719,6 +736,7 @@ pub(crate) fn build(
     let color_header = make_section_header("Color", mtm);
     let tone_header = make_section_header("Tone", mtm);
     let detail_header = make_section_header("Detail", mtm);
+    let denoise_header = make_section_header("Denoise", mtm);
     let geometry_header = make_section_header("Geometry", mtm);
     let output_header = make_section_header("Output", mtm);
     let tuning_header = make_section_header("Tuning", mtm);
@@ -816,10 +834,12 @@ pub(crate) fn build(
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[9].row) }); // DCP tone curve
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&detail_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[10].row) }); // sharpening
+    panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&denoise_header) });
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[11].row) }); // chroma denoise
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&geometry_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[11].row) }); // lens correction
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[12].row) }); // lens correction
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&output_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[12].row) }); // HDR output
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[13].row) }); // HDR output
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&tuning_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&sharpen_row.row) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&saturation_row.row) });
@@ -833,8 +853,9 @@ pub(crate) fn build(
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[6].row) }); // after color group
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[9].row) }); // after tone group
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[10].row) }); // after detail (sharpen)
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[11].row) }); // after geometry (lens)
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[12].row) }); // after output (HDR)
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[11].row) }); // after denoise (chroma)
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[12].row) }); // after geometry (lens)
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[13].row) }); // after output (HDR)
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&midtone_row.row) }); // after tuning group
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
 
@@ -867,8 +888,9 @@ pub(crate) fn build(
         default_tone_curve: toggle_ptrs[8],
         dcp_tone_curve: toggle_ptrs[9],
         capture_sharpening: toggle_ptrs[10],
-        lens_correction: toggle_ptrs[11],
-        hdr_output: toggle_ptrs[12],
+        chroma_denoise: toggle_ptrs[11],
+        lens_correction: toggle_ptrs[12],
+        hdr_output: toggle_ptrs[13],
         sharpen_amount_slider: slider_ptrs[0],
         sharpen_amount_label: slider_label_ptrs[0],
         saturation_amount_slider: slider_ptrs[1],
@@ -901,6 +923,7 @@ pub(crate) fn build(
     retained_views.push(unsafe { Retained::cast_unchecked(color_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(tone_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(detail_header) });
+    retained_views.push(unsafe { Retained::cast_unchecked(denoise_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(geometry_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(output_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(tuning_header) });

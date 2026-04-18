@@ -93,6 +93,14 @@ can keep the intermediate wide-gamut:
     `warp_rectilinear_applied` from step 2a and skips to avoid double
     correction). Order within: vignetting → distortion → TCA.
 3. Default crop.
+3a. **Phase 6.1: chroma noise reduction**
+    (`color::chroma_denoise::apply_default_chroma_denoise`). Splits
+    linear Rec.2020 RGB into Y + Cb + Cr (Rec.2020 weights), blurs
+    Cb and Cr with a small separable Gaussian (`σ = 1.5 px`, 11 taps),
+    reconstructs RGB. Luma stays sharp; chroma smooths. Matches the
+    silent chroma-NR default in Preview.app and Affinity. Toggleable
+    via `flags.chroma_denoise` (default `true`); per-image output at
+    `false` is bit-identical to pre-6.1.
 4. `raw.rs::apply_exposure` lifts the linear buffer by the baseline EV picked
    by `baseline_exposure_ev` (DNG `BaselineExposure` tag first, fallback
    +0.5 EV, clamped to [-2, +2]). Linear-space multiply so relative luminance
