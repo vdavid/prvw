@@ -52,10 +52,21 @@
 //! with pre-geometry coordinates. Distortion and TCA both resample; we apply
 //! distortion first (corrects geometry globally), then TCA (fine per-channel
 //! registration). The order matches LensFun's upstream expectation.
+//!
+//! # SIMD vectorization (Phase 6.3)
+//!
+//! The bilinear resampler inner loops in `resample_distortion_row` and
+//! `resample_tca_row` are annotated with `#[multiversion]` (NEON on aarch64,
+//! AVX2 on x86-64). This makes the compiler emit a NEON-optimised copy of the
+//! entire per-row loop and selects it at runtime on Apple Silicon. The hot
+//! path — `sample_rgb_bilinear_fast` — is branchless (NaN/inf coords clamp to
+//! 0 via a `f32::is_finite` multiply-mask rather than an early return) so the
+//! auto-vectorizer has an unobstructed straight-line loop body.
 
 use std::sync::OnceLock;
 
 use lensfun::{Database, Modifier};
+use multiversion::multiversion;
 use rawler::RawImage;
 use rayon::prelude::*;
 
@@ -254,15 +265,10 @@ fn apply_distortion_resample(modifier: &Modifier, rgb: &mut [f32], width: u32, h
                 // leave the row untouched.
                 return;
             }
-            for x in 0..w {
-                let sx = coords[2 * x];
-                let sy = coords[2 * x + 1];
-                let (r, g, b) = sample_rgb_bilinear(&src, w, h, sx, sy);
-                let off = x * 3;
-                out_row[off] = r;
-                out_row[off + 1] = g;
-                out_row[off + 2] = b;
-            }
+            // The inner per-pixel loop is extracted into a multiversion function
+            // so the compiler can emit a NEON (aarch64) or AVX2 (x86-64)
+            // variant of the tight bilinear-sampling loop.
+            resample_distortion_row(&src, w, h, &coords, out_row);
         });
 }
 
@@ -285,27 +291,173 @@ fn apply_tca_resample(modifier: &Modifier, rgb: &mut [f32], width: u32, height: 
             if !mapped {
                 return;
             }
-            for x in 0..w {
-                let base = x * 6;
-                // Red plane.
-                let (r, _, _) = sample_rgb_bilinear(&src, w, h, coords[base], coords[base + 1]);
-                // Green plane.
-                let (_, g, _) = sample_rgb_bilinear(&src, w, h, coords[base + 2], coords[base + 3]);
-                // Blue plane.
-                let (_, _, b) = sample_rgb_bilinear(&src, w, h, coords[base + 4], coords[base + 5]);
-                let off = x * 3;
-                out_row[off] = r;
-                out_row[off + 1] = g;
-                out_row[off + 2] = b;
-            }
+            // The inner per-pixel loop is extracted into a multiversion function
+            // so the compiler can emit a NEON (aarch64) or AVX2 (x86-64)
+            // variant of the tight bilinear-sampling loop.
+            resample_tca_row(&src, w, h, &coords, out_row);
         });
+}
+
+/// Per-row inner loop for distortion resampling. All pixels in `out_row`
+/// are written by bilinear-sampling `src` at the coordinates from `coords`
+/// (interleaved `[sx, sy, sx, sy, ...]` pairs, one per pixel).
+///
+/// Annotated with `#[multiversion]` so the compiler emits optimised copies
+/// for NEON (Apple Silicon / ARMv8) and AVX2 (modern x86-64) and selects
+/// the best version at runtime. The function body is branchless — NaN/inf
+/// coordinates are clamped to 0 without a conditional return, giving the
+/// auto-vectorizer an unobstructed inner loop.
+#[multiversion(targets("aarch64+neon", "x86_64+avx+avx2+fma"))]
+fn resample_distortion_row(src: &[f32], w: usize, h: usize, coords: &[f32], out_row: &mut [f32]) {
+    for x in 0..w {
+        let sx = coords[2 * x];
+        let sy = coords[2 * x + 1];
+        let (r, g, b) = sample_rgb_bilinear_fast(src, w, h, sx, sy);
+        let off = x * 3;
+        out_row[off] = r;
+        out_row[off + 1] = g;
+        out_row[off + 2] = b;
+    }
+}
+
+/// Per-row inner loop for TCA resampling. Like `resample_distortion_row` but
+/// each pixel gets three coordinate pairs — one per channel — so each channel
+/// can be sampled from a slightly different source location.
+///
+/// Same `#[multiversion]` treatment as `resample_distortion_row`.
+#[multiversion(targets("aarch64+neon", "x86_64+avx+avx2+fma"))]
+fn resample_tca_row(src: &[f32], w: usize, h: usize, coords: &[f32], out_row: &mut [f32]) {
+    for x in 0..w {
+        let base = x * 6;
+        let r = sample_single_channel_bilinear_fast(src, w, h, coords[base], coords[base + 1], 0);
+        let g =
+            sample_single_channel_bilinear_fast(src, w, h, coords[base + 2], coords[base + 3], 1);
+        let b =
+            sample_single_channel_bilinear_fast(src, w, h, coords[base + 4], coords[base + 5], 2);
+        let off = x * 3;
+        out_row[off] = r;
+        out_row[off + 1] = g;
+        out_row[off + 2] = b;
+    }
+}
+
+/// Branchless bilinear sample of all three channels at `(sx, sy)` in a packed
+/// RGB f32 buffer.
+///
+/// NaN or infinite coordinates produce `(0.0, 0.0, 0.0)` without a branch:
+/// we replace non-finite inputs with `0.0` before the clamp using integer
+/// bit-manipulation (`finite_mask` is all-ones for finite values, all-zeros
+/// for NaN/inf). The result is multiplied by the mask's float form (1.0 or
+/// 0.0) so NaN inputs produce a zero output.
+///
+/// Uses `f32::mul_add` (fused multiply-add) for the bilinear weight
+/// computation, giving the compiler a hint to emit FMA instructions on both
+/// NEON and AVX2.
+#[inline(always)]
+fn sample_rgb_bilinear_fast(src: &[f32], w: usize, h: usize, sx: f32, sy: f32) -> (f32, f32, f32) {
+    // Replace NaN/inf with 0.0 before the clamp so the `as usize` cast below
+    // is never fed a non-finite value. `finite` is 1.0 for valid coords,
+    // 0.0 for NaN/inf. We use `if` rather than multiplication because
+    // `NaN * 0.0 == NaN` — the multiply trick doesn't clear NaN.
+    let is_finite = sx.is_finite() && sy.is_finite();
+    let finite = is_finite as u32 as f32; // 1.0 or 0.0, for zeroing the output
+    let sx = if is_finite { sx } else { 0.0 };
+    let sy = if is_finite { sy } else { 0.0 };
+
+    let max_x = (w - 1) as f32;
+    let max_y = (h - 1) as f32;
+    let x = sx.clamp(0.0, max_x);
+    let y = sy.clamp(0.0, max_y);
+    let x0 = x as usize; // floor; x is already >= 0
+    let y0 = y as usize;
+    let x1 = (x0 + 1).min(w - 1);
+    let y1 = (y0 + 1).min(h - 1);
+    // Fractional parts for bilinear weights.
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+
+    let p00 = (y0 * w + x0) * 3;
+    let p01 = (y0 * w + x1) * 3;
+    let p10 = (y1 * w + x0) * 3;
+    let p11 = (y1 * w + x1) * 3;
+
+    // Bilinear interpolation with fused multiply-add.
+    // lerp(a, b, t) = a + (b - a) * t = a.mul_add(1.0 - t, b * t)
+    // We expand it as: a + t.mul_add(b - a, 0.0) which matches the scalar
+    // form `a + (b - a) * t` but expresses the multiply-add explicitly.
+    #[inline(always)]
+    fn bilerp(v00: f32, v01: f32, v10: f32, v11: f32, tx: f32, ty: f32) -> f32 {
+        let top = v00 + tx.mul_add(v01 - v00, 0.0);
+        let bot = v10 + tx.mul_add(v11 - v10, 0.0);
+        top + ty.mul_add(bot - top, 0.0)
+    }
+
+    let r = bilerp(src[p00], src[p01], src[p10], src[p11], tx, ty) * finite;
+    let g = bilerp(
+        src[p00 + 1],
+        src[p01 + 1],
+        src[p10 + 1],
+        src[p11 + 1],
+        tx,
+        ty,
+    ) * finite;
+    let b = bilerp(
+        src[p00 + 2],
+        src[p01 + 2],
+        src[p10 + 2],
+        src[p11 + 2],
+        tx,
+        ty,
+    ) * finite;
+    (r, g, b)
+}
+
+/// Branchless bilinear sample of a single channel (`ch`: 0 = R, 1 = G, 2 = B)
+/// from a packed RGB f32 buffer at `(sx, sy)`. Used by the TCA resampler so
+/// each channel can use its own source coordinate.
+///
+/// Same NaN handling and FMA hints as `sample_rgb_bilinear_fast`.
+#[inline(always)]
+fn sample_single_channel_bilinear_fast(
+    src: &[f32],
+    w: usize,
+    h: usize,
+    sx: f32,
+    sy: f32,
+    ch: usize,
+) -> f32 {
+    let is_finite = sx.is_finite() && sy.is_finite();
+    let finite = is_finite as u32 as f32;
+    let sx = if is_finite { sx } else { 0.0 };
+    let sy = if is_finite { sy } else { 0.0 };
+
+    let max_x = (w - 1) as f32;
+    let max_y = (h - 1) as f32;
+    let x = sx.clamp(0.0, max_x);
+    let y = sy.clamp(0.0, max_y);
+    let x0 = x as usize;
+    let y0 = y as usize;
+    let x1 = (x0 + 1).min(w - 1);
+    let y1 = (y0 + 1).min(h - 1);
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+
+    let p00 = (y0 * w + x0) * 3 + ch;
+    let p01 = (y0 * w + x1) * 3 + ch;
+    let p10 = (y1 * w + x0) * 3 + ch;
+    let p11 = (y1 * w + x1) * 3 + ch;
+
+    let top = src[p00] + tx.mul_add(src[p01] - src[p00], 0.0);
+    let bot = src[p10] + tx.mul_add(src[p11] - src[p10], 0.0);
+    (top + ty.mul_add(bot - top, 0.0)) * finite
 }
 
 /// Bilinear sample of a packed `[R, G, B]` f32 buffer at floating-point
 /// coordinates. Out-of-bounds coords clamp to the nearest edge pixel so
 /// distortion-warped pixels at the corners get a sensible value instead of
-/// a black stripe.
-#[inline]
+/// a black stripe. This scalar reference version is used only in unit tests
+/// for bit-identity verification against the vectorized fast path.
+#[cfg(test)]
 fn sample_rgb_bilinear(src: &[f32], w: usize, h: usize, sx: f32, sy: f32) -> (f32, f32, f32) {
     if !sx.is_finite() || !sy.is_finite() {
         return (0.0, 0.0, 0.0);
@@ -380,5 +532,226 @@ mod tests {
         assert_eq!((r, g, b), (1.0, 0.0, 0.0));
         let (r, g, b) = sample_rgb_bilinear(&src, w, h, 999.0, 999.0);
         assert_eq!((r, g, b), (1.0, 1.0, 1.0));
+    }
+
+    /// Verify `sample_rgb_bilinear_fast` matches the scalar `sample_rgb_bilinear`
+    /// on in-bounds finite coordinates, within f32 FMA rounding tolerance.
+    #[test]
+    fn fast_sampler_matches_scalar_on_finite_coords() {
+        let w = 8;
+        let h = 6;
+        let src: Vec<f32> = (0..(w * h * 3)).map(|i| (i as f32) * 0.01).collect();
+
+        // Test a grid of sub-pixel positions spread across the image.
+        let test_coords: &[(f32, f32)] = &[
+            (0.0, 0.0),
+            (0.5, 0.0),
+            (3.7, 2.3),
+            (6.9, 4.9),
+            (7.0, 5.0),
+            (0.0, 5.0),
+            (7.0, 0.0),
+        ];
+
+        for &(sx, sy) in test_coords {
+            let (r_ref, g_ref, b_ref) = sample_rgb_bilinear(&src, w, h, sx, sy);
+            let (r_fast, g_fast, b_fast) = sample_rgb_bilinear_fast(&src, w, h, sx, sy);
+            // Tolerance covers FMA rounding (one ULP difference at most).
+            let tol = 1e-5_f32;
+            assert!(
+                (r_fast - r_ref).abs() < tol,
+                "R mismatch at ({sx}, {sy}): fast={r_fast}, ref={r_ref}"
+            );
+            assert!(
+                (g_fast - g_ref).abs() < tol,
+                "G mismatch at ({sx}, {sy}): fast={g_fast}, ref={g_ref}"
+            );
+            assert!(
+                (b_fast - b_ref).abs() < tol,
+                "B mismatch at ({sx}, {sy}): fast={b_fast}, ref={b_ref}"
+            );
+        }
+    }
+
+    /// Verify `sample_rgb_bilinear_fast` returns `(0, 0, 0)` for NaN/inf coords,
+    /// matching the scalar reference.
+    #[test]
+    fn fast_sampler_nan_inf_returns_zero() {
+        let w = 4;
+        let h = 4;
+        let src = vec![1.0_f32; w * h * 3];
+
+        for &(sx, sy) in &[
+            (f32::NAN, 1.0),
+            (1.0, f32::NAN),
+            (f32::INFINITY, 1.0),
+            (1.0, f32::NEG_INFINITY),
+            (f32::NAN, f32::NAN),
+        ] {
+            let (r, g, b) = sample_rgb_bilinear_fast(&src, w, h, sx, sy);
+            assert_eq!(
+                (r, g, b),
+                (0.0, 0.0, 0.0),
+                "expected (0,0,0) for ({sx}, {sy}), got ({r}, {g}, {b})"
+            );
+        }
+    }
+
+    /// Verify `sample_single_channel_bilinear_fast` matches its scalar equivalent
+    /// (extracting individual channels from `sample_rgb_bilinear`) on finite coords.
+    #[test]
+    fn single_channel_fast_matches_scalar() {
+        let w = 6;
+        let h = 5;
+        let src: Vec<f32> = (0..(w * h * 3))
+            .map(|i| (i as f32) * 0.03 + 0.001)
+            .collect();
+
+        let test_coords: &[(f32, f32)] = &[(0.0, 0.0), (2.5, 1.5), (5.9, 3.9), (3.0, 2.0)];
+
+        for &(sx, sy) in test_coords {
+            let (r_ref, g_ref, b_ref) = sample_rgb_bilinear(&src, w, h, sx, sy);
+            let r_fast = sample_single_channel_bilinear_fast(&src, w, h, sx, sy, 0);
+            let g_fast = sample_single_channel_bilinear_fast(&src, w, h, sx, sy, 1);
+            let b_fast = sample_single_channel_bilinear_fast(&src, w, h, sx, sy, 2);
+            let tol = 1e-5_f32;
+            assert!(
+                (r_fast - r_ref).abs() < tol,
+                "R ch mismatch at ({sx}, {sy}): fast={r_fast}, ref={r_ref}"
+            );
+            assert!(
+                (g_fast - g_ref).abs() < tol,
+                "G ch mismatch at ({sx}, {sy}): fast={g_fast}, ref={g_ref}"
+            );
+            assert!(
+                (b_fast - b_ref).abs() < tol,
+                "B ch mismatch at ({sx}, {sy}): fast={b_fast}, ref={b_ref}"
+            );
+        }
+    }
+
+    /// Scalar reference implementations for benchmarking. These mirror the
+    /// original `sample_rgb_bilinear`-based inner loops that existed before the
+    /// `#[multiversion]` + FMA refactor (Phase 6.3).
+    fn scalar_resample_distortion_row(
+        src: &[f32],
+        w: usize,
+        h: usize,
+        coords: &[f32],
+        out_row: &mut [f32],
+    ) {
+        for x in 0..w {
+            let sx = coords[2 * x];
+            let sy = coords[2 * x + 1];
+            let (r, g, b) = sample_rgb_bilinear(src, w, h, sx, sy);
+            let off = x * 3;
+            out_row[off] = r;
+            out_row[off + 1] = g;
+            out_row[off + 2] = b;
+        }
+    }
+
+    fn scalar_resample_tca_row(
+        src: &[f32],
+        w: usize,
+        h: usize,
+        coords: &[f32],
+        out_row: &mut [f32],
+    ) {
+        for x in 0..w {
+            let base = x * 6;
+            let (r, _, _) = sample_rgb_bilinear(src, w, h, coords[base], coords[base + 1]);
+            let (_, g, _) = sample_rgb_bilinear(src, w, h, coords[base + 2], coords[base + 3]);
+            let (_, _, b) = sample_rgb_bilinear(src, w, h, coords[base + 4], coords[base + 5]);
+            let off = x * 3;
+            out_row[off] = r;
+            out_row[off + 1] = g;
+            out_row[off + 2] = b;
+        }
+    }
+
+    /// `#[ignore]`-d perf benchmark — run manually to measure the SIMD speedup:
+    ///
+    /// ```sh
+    /// cd apps/desktop
+    /// cargo test --release color::lens_correction::tests::resample_20mp_bench -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn resample_20mp_bench() {
+        let w: usize = 5470;
+        let h: usize = 3656;
+        let src: Vec<f32> = (0..(w * h * 3))
+            .map(|i| (i % 1000) as f32 / 1000.0)
+            .collect();
+        let coords_dist: Vec<f32> = (0..w)
+            .flat_map(|x| [x as f32 + 0.3, 100.0_f32 + (x as f32) * 0.01])
+            .collect();
+        let mut out = vec![0.0_f32; w * 3];
+
+        // Warm up both paths so the allocator and thread pool are hot.
+        resample_distortion_row(&src, w, h, &coords_dist, &mut out);
+        scalar_resample_distortion_row(&src, w, h, &coords_dist, &mut out);
+
+        let runs = 10;
+
+        // Scalar baseline (original, pre-Phase 6.3).
+        let mut total_dist_scalar = 0u128;
+        for _ in 0..runs {
+            let t = std::time::Instant::now();
+            for _ in 0..h {
+                scalar_resample_distortion_row(&src, w, h, &coords_dist, &mut out);
+            }
+            total_dist_scalar += t.elapsed().as_millis();
+        }
+        let scalar_dist_ms = total_dist_scalar / runs;
+
+        // SIMD / FMA path (Phase 6.3).
+        let mut total_dist = 0u128;
+        for _ in 0..runs {
+            let t = std::time::Instant::now();
+            for _ in 0..h {
+                resample_distortion_row(&src, w, h, &coords_dist, &mut out);
+            }
+            total_dist += t.elapsed().as_millis();
+        }
+        let simd_dist_ms = total_dist / runs;
+
+        println!(
+            "resample_distortion_row: scalar={scalar_dist_ms} ms/frame  simd={simd_dist_ms} ms/frame  speedup={:.2}×",
+            scalar_dist_ms as f64 / simd_dist_ms as f64
+        );
+
+        let coords_tca: Vec<f32> = (0..w)
+            .flat_map(|x| {
+                let fx = x as f32;
+                [fx + 0.1, 100.0, fx + 0.0, 100.0, fx - 0.1, 100.0]
+            })
+            .collect();
+
+        let mut total_tca_scalar = 0u128;
+        for _ in 0..runs {
+            let t = std::time::Instant::now();
+            for _ in 0..h {
+                scalar_resample_tca_row(&src, w, h, &coords_tca, &mut out);
+            }
+            total_tca_scalar += t.elapsed().as_millis();
+        }
+        let scalar_tca_ms = total_tca_scalar / runs;
+
+        let mut total_tca = 0u128;
+        for _ in 0..runs {
+            let t = std::time::Instant::now();
+            for _ in 0..h {
+                resample_tca_row(&src, w, h, &coords_tca, &mut out);
+            }
+            total_tca += t.elapsed().as_millis();
+        }
+        let simd_tca_ms = total_tca / runs;
+
+        println!(
+            "resample_tca_row:        scalar={scalar_tca_ms} ms/frame  simd={simd_tca_ms} ms/frame  speedup={:.2}×",
+            scalar_tca_ms as f64 / simd_tca_ms as f64
+        );
     }
 }

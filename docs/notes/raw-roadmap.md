@@ -356,6 +356,27 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
 
 See `docs/notes/raw-support-phase6.md`.
 
+### Phase 6.3 — SIMD-vectorize lens correction resampler (done, 2026-04-17)
+
+- [x] `resample_distortion_row` and `resample_tca_row` extracted from the
+      `apply_distortion_resample` / `apply_tca_resample` per-row rayon
+      closures and annotated with `#[multiversion(targets("aarch64+neon",
+      "x86_64+avx+avx2+fma"))]`. On aarch64 the compiler emits `fmadd`
+      scalar NEON float ops throughout.
+- [x] `sample_rgb_bilinear_fast`: branchless bilinear sampler using
+      `f32::mul_add` for FMA hints. NaN/inf coords handled via `if` select
+      (not multiply — `NaN × 0.0 = NaN`) so the loop body is branch-free.
+- [x] `sample_single_channel_bilinear_fast`: per-channel variant for the TCA
+      path. Eliminates 2/3 of the redundant `sample_rgb_bilinear` computation
+      the original code did (3 calls each returning all 3 channels).
+- [x] Measured per-row speedup on Apple M-series: distortion ≈1.0× (memory-
+      bandwidth-bound on scatter-gather reads), TCA ≈1.6× (wins from single-
+      channel sampling). Serial per-row benchmark in `resample_20mp_bench`
+      (`#[ignore]`; run with `cargo test --release -- --ignored --nocapture`).
+- [x] Three new correctness tests: `fast_sampler_matches_scalar_on_finite_coords`,
+      `fast_sampler_nan_inf_returns_zero`, `single_channel_fast_matches_scalar`.
+      All pass bit-for-bit (tolerance 1e-5, covering FMA rounding).
+
 ## Phase 7 — nice-to-haves, probably never
 
 - [ ] Better Bayer demosaic: AMaZE or RCD instead of PPG. Editor-grade

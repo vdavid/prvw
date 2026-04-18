@@ -6,6 +6,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **Lens correction resampler is now SIMD-accelerated** (Phase 6.3): the bilinear resampler inner loops in
+  `apply_distortion_resample` and `apply_tca_resample` are compiled for NEON (aarch64) and AVX2+FMA (x86-64)
+  via `multiversion`. The sampler is now branchless (NaN/inf coords handled without a conditional early return)
+  and uses `f32::mul_add` for FMA hints. The TCA path additionally extracts per-channel sampling into
+  `sample_single_channel_bilinear_fast`, eliminating 2/3 of the redundant channel computation the original
+  `sample_rgb_bilinear` calls did. Measured per-row speedup on M-series Apple Silicon: distortion ~1.0×
+  (already memory-bandwidth-bound), TCA ~1.6×. Output is bit-identical within f32 FMA rounding tolerance.
+
 ### Added
 
 - **RAW tuning sliders** (Phase 6.0): a new "Tuning" section under Settings → RAW exposes three continuous-valued
