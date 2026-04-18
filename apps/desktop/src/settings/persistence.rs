@@ -187,6 +187,37 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_preserves_raw_tuning_knobs() {
+        // Phase 6.0: the Tuning sliders (sharpening amount, saturation
+        // boost, midtone anchor) persist alongside the flag toggles. The
+        // round-trip test in `raw_flags.rs` covers the struct; this one
+        // pins down the full `Settings` path through `serde_json::to_string`
+        // and back, matching how `Settings::load`/`save` actually runs on
+        // disk.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let raw = RawPipelineFlags {
+            sharpen_amount: 0.55,
+            saturation_boost_amount: 0.17,
+            midtone_anchor: 0.28,
+            ..RawPipelineFlags::default()
+        };
+        let settings = Settings {
+            raw,
+            ..Settings::default()
+        };
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+
+        let loaded: Settings = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.raw.sharpen_amount, 0.55);
+        assert_eq!(loaded.raw.saturation_boost_amount, 0.17);
+        assert_eq!(loaded.raw.midtone_anchor, 0.28);
+        // Untouched flags stay at their defaults.
+        assert!(loaded.raw.highlight_recovery);
+        assert!(loaded.raw.default_tone_curve);
+    }
+
+    #[test]
     fn missing_field_gets_default() {
         let json = r#"{"auto_update": false}"#;
         let loaded: Settings = serde_json::from_str(json).unwrap();

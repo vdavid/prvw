@@ -8,6 +8,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **RAW tuning sliders** (Phase 6.0): a new "Tuning" section under Settings → RAW exposes three continuous-valued
+  sliders for the parametric RAW stages — sharpening amount (0.00 – 1.00, default 0.30), saturation boost
+  (0.00 – 0.30, default 0.08), and tone midtone anchor (0.20 – 0.50, default 0.40). Sliders are non-continuous, so
+  a drag triggers exactly one re-decode on mouse release (no decode-spam). Values persist in `settings.json`
+  alongside the existing flags and survive reset-to-defaults. Defaults land on the same constants used before
+  Phase 6.0, so output at rest is bit-identical. See `docs/notes/raw-support-phase6.md`.
 - **HDR / EDR output for RAW, visible on XDR** (Phase 5.0 + 5.1): on mini-LED XDR and OLED displays, RAW highlights
   now stay alive above display-white instead of clipping at 1.0. A filmic Reinhard shoulder asymptotes at 4× on
   EDR-capable displays and at 1.0 on SDR — SDR output stays bit-identical to Phase 4. Phase 5.1 flips the final

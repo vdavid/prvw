@@ -315,7 +315,48 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
       changes the HDR preview on an EDR display; before, the HDR branch
       skipped the step unconditionally.
 
-## Phase 6 — nice-to-haves, probably never
+## Phase 6 — tuning knobs and performance polish
+
+### Phase 6.0 — user-facing tuning sliders (done, 2026-04-17)
+
+- [x] `RawPipelineFlags` gains three float knobs alongside the bools:
+      `sharpen_amount` (0.0 – 1.0), `saturation_boost_amount` (0.0 – 0.30),
+      and `midtone_anchor` (0.20 – 0.50). Defaults land on the existing
+      `DEFAULT_AMOUNT` / `DEFAULT_SATURATION_BOOST` / `DEFAULT_MIDTONE_ANCHOR`
+      constants, so at-default decoding is bit-identical to Phase 5.
+- [x] Persisted via `serde` with `#[serde(default = …)]` so old
+      settings.json files (missing the new fields) silently default. The
+      decoder clamps knobs into their valid ranges once per decode via
+      `RawPipelineFlags::clamp_knobs`, guarding against hand-edited values.
+- [x] Threaded through `raw.rs` into `color::tone_curve::apply_tone_curve`,
+      `color::saturation::apply_saturation_boost`, and
+      `color::sharpen::sharpen_rgba{8,16f}_inplace_with` (both SDR and HDR
+      branches).
+- [x] New "Tuning" section in Settings → RAW, sitting between the "Output"
+      toggle and the "DCP profile" row. Three NSSlider rows with a title,
+      a description, the slider, and a 2-decimal numeric label.
+      `setContinuous(false)` — the action fires once on mouse release, not
+      on every pixel during drag, so a single gesture triggers a single
+      re-decode. Reset-to-defaults snaps the sliders back in one atomic
+      step.
+- [x] Settings persistence round-trip tests cover the three floats at the
+      `RawPipelineFlags` level and at the `Settings` level (JSON path).
+- [x] Rationale for the three-knob shortlist:
+      - **Sharpening amount** — Phase 2.4's Laplacian tuning concluded
+        that amount is the most visually load-bearing sharpen parameter,
+        not σ. σ (the blur radius) stays internal to keep the kernel
+        cheap and predictable.
+      - **Saturation boost** — the one knob that users with "Fuji-pop"
+        or "muted" preferences reach for most. Post-tone-curve global
+        chroma lift in linear Rec.2020, hue- and luminance-preserving.
+      - **Midtone anchor** — lifts or crushes midtones without touching
+        the shoulder. The filmic `DEFAULT_PEAK_SDR` / `DEFAULT_PEAK_HDR`
+        values stay internal; peak is a display decision, not a taste
+        decision.
+
+See `docs/notes/raw-support-phase6.md`.
+
+## Phase 7 — nice-to-haves, probably never
 
 - [ ] Better Bayer demosaic: AMaZE or RCD instead of PPG. Editor-grade
       sharpness on edges. ~2000 LoC per algorithm.

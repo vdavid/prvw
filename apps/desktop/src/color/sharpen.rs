@@ -119,6 +119,12 @@ const DARK_EPSILON: f32 = 1.0e-4;
 /// is a no-op (same defensive posture as the rest of the color pipeline).
 /// Empty buffers and 1×1 images are safe — the blur degenerates to the
 /// identity and the unsharp mask becomes a no-op.
+///
+/// Since Phase 6.0 the production RAW pipeline calls
+/// [`sharpen_rgba8_inplace_with`] directly so the user's Settings → RAW →
+/// Tuning slider for "Sharpening amount" can reach it, but this wrapper
+/// stays as the single-arg reference implementation the tests exercise.
+#[allow(dead_code)]
 pub fn sharpen_rgba8_inplace(rgba: &mut [u8], width: u32, height: u32) {
     sharpen_rgba8_inplace_with(rgba, width, height, DEFAULT_SIGMA, DEFAULT_AMOUNT);
 }
@@ -192,6 +198,12 @@ pub fn sharpen_rgba8_inplace_with(
 /// patterns (the `half::f16::to_bits()` / `from_bits()` format, matching
 /// what the RAW decoder's HDR branch emits). On length mismatch the
 /// function is a no-op.
+///
+/// Since Phase 6.0 the production RAW pipeline calls
+/// [`sharpen_rgba16f_inplace_with`] directly so the user's Settings → RAW →
+/// Tuning slider for "Sharpening amount" can reach it, but this wrapper
+/// stays as the single-arg reference implementation the tests exercise.
+#[allow(dead_code)]
 pub fn sharpen_rgba16f_inplace(rgba: &mut [u16], width: u32, height: u32) {
     sharpen_rgba16f_inplace_with(rgba, width, height, DEFAULT_SIGMA, DEFAULT_AMOUNT);
 }

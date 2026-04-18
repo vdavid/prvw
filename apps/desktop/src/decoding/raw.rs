@@ -147,9 +147,13 @@ pub(super) fn decode(
     cancelled: Option<&AtomicBool>,
     target_icc: &[u8],
     use_relative_colorimetric: bool,
-    flags: RawPipelineFlags,
+    mut flags: RawPipelineFlags,
     edr_headroom: f32,
 ) -> Result<(DecodedImage, u16), String> {
+    // Defend against hand-edited settings.json with out-of-range knob
+    // values. Production-path calls from the Settings panel are already
+    // in range, so this is a no-op in the common case.
+    flags.clamp_knobs();
     // Decide upfront whether this decode lands in HDR territory. "HDR" here
     // means: the user opted in (`flags.hdr_output`), **and** the active
     // display actually has headroom above display-white. SDR displays
@@ -468,11 +472,7 @@ pub(super) fn decode(
             reason,
             path.display()
         );
-        color::tone_curve::apply_tone_curve(
-            &mut rec2020,
-            color::tone_curve::DEFAULT_MIDTONE_ANCHOR,
-            peak,
-        );
+        color::tone_curve::apply_tone_curve(&mut rec2020, flags.midtone_anchor, peak);
     } else {
         log::info!("RAW skipped tone curve entirely for {}", path.display());
     }
@@ -510,10 +510,7 @@ pub(super) fn decode(
     // luminance are both preserved; see `color::saturation` for the
     // formula.
     if flags.saturation_boost {
-        color::saturation::apply_saturation_boost(
-            &mut rec2020,
-            color::saturation::DEFAULT_SATURATION_BOOST,
-        );
+        color::saturation::apply_saturation_boost(&mut rec2020, flags.saturation_boost_amount);
     }
 
     check_cancelled(cancelled)?;
@@ -548,7 +545,13 @@ pub(super) fn decode(
         let mut half_rgba = rec2020_to_rgba16f(&rec2020);
         drop(rec2020);
         if flags.capture_sharpening {
-            color::sharpen::sharpen_rgba16f_inplace(&mut half_rgba, width, height);
+            color::sharpen::sharpen_rgba16f_inplace_with(
+                &mut half_rgba,
+                width,
+                height,
+                color::sharpen::DEFAULT_SIGMA,
+                flags.sharpen_amount,
+            );
         }
         log::debug!(
             "RAW HDR output: {width}x{height} RGBA16F, peak {peak:.1}, headroom {edr_headroom:.2}"
@@ -568,7 +571,13 @@ pub(super) fn decode(
     // after the ICC transform and before orientation, so we sharpen in
     // the same perceptual space the user will see the image in.
     if flags.capture_sharpening {
-        color::sharpen::sharpen_rgba8_inplace(&mut rgba, width, height);
+        color::sharpen::sharpen_rgba8_inplace_with(
+            &mut rgba,
+            width,
+            height,
+            color::sharpen::DEFAULT_SIGMA,
+            flags.sharpen_amount,
+        );
     }
 
     check_cancelled(cancelled)?;

@@ -1,14 +1,20 @@
 //! "RAW" panel: per-stage toggles for the RAW decode pipeline + a custom
-//! DCP directory picker (Phase 3.7 + 4.0).
+//! DCP directory picker (Phase 3.7 + 4.0) + a "Tuning" section with three
+//! continuous-valued sliders (Phase 6.0).
 //!
-//! Each row mirrors the pattern in the other panels: title label on the left,
-//! NSSwitch on the right, secondary description directly underneath. Section
-//! headers group the toggles into "Sensor corrections (DNG only)", "Color",
-//! "Tone", "Detail", and "Geometry" (Phase 4.0 — lens correction via
-//! `lensfun-rs`). A final "Custom DCP directory" row + "Reset to defaults"
-//! button live at the bottom.
+//! Each flag row mirrors the pattern in the other panels: title label on the
+//! left, NSSwitch on the right, secondary description directly underneath.
+//! Section headers group the toggles into "Sensor corrections (DNG only)",
+//! "Color", "Tone", "Detail", "Geometry" (Phase 4.0 — lens correction via
+//! `lensfun-rs`), and "Output". The Phase 6.0 "Tuning" section adds three
+//! NSSlider rows (sharpening amount, saturation boost, tone midtone anchor);
+//! sliders are non-continuous, so moving the knob fires exactly one
+//! `SetRawPipelineFlags` per mouse release, avoiding decode-spam during
+//! drag. The numeric label next to each slider updates on the same release.
+//! A final "Custom DCP directory" row + "Reset to defaults" button live at
+//! the bottom.
 //!
-//! All toggles write back through a single `AppCommand::SetRawPipelineFlags`
+//! All widgets write back through a single `AppCommand::SetRawPipelineFlags`
 //! so the executor flushes the image cache and re-decodes once per change.
 //! The custom DCP directory goes through `AppCommand::SetCustomDcpDir` and
 //! hits the same flush path via `App::apply_custom_dcp_dir_change`.
@@ -18,13 +24,15 @@ use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSBezelStyle, NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont,
-    NSLayoutAttribute, NSLayoutConstraint, NSLayoutRelation, NSOpenPanel, NSStackView, NSSwitch,
-    NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
+    NSLayoutAttribute, NSLayoutConstraint, NSLayoutRelation, NSOpenPanel, NSSlider, NSStackView,
+    NSSwitch, NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation, NSView,
 };
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, NSURL};
 
 use crate::commands::{self, AppCommand};
-use crate::decoding::RawPipelineFlags;
+use crate::decoding::{
+    MIDTONE_ANCHOR_RANGE, RawPipelineFlags, SATURATION_BOOST_RANGE, SHARPEN_AMOUNT_RANGE,
+};
 use crate::platform::macos::ui_common::{FlippedView, as_view, make_bold_label, make_label};
 use crate::settings::Settings;
 
@@ -43,6 +51,11 @@ const TAG_DCP_TONE_CURVE: isize = 122;
 const TAG_CAPTURE_SHARPENING: isize = 130;
 const TAG_LENS_CORRECTION: isize = 140;
 const TAG_HDR_OUTPUT: isize = 150;
+// Phase 6.0 Tuning sliders. Kept in a separate 200-range so a stray tag
+// collision with the toggles above is impossible.
+const TAG_SHARPEN_AMOUNT: isize = 200;
+const TAG_SATURATION_AMOUNT: isize = 201;
+const TAG_MIDTONE_ANCHOR: isize = 202;
 
 /// Ivars are raw pointers so the delegate can read current toggle states
 /// without holding Rust borrows through AppKit message dispatch. They all
@@ -62,6 +75,13 @@ struct RawDelegateIvars {
     capture_sharpening: *const NSSwitch,
     lens_correction: *const NSSwitch,
     hdr_output: *const NSSwitch,
+    // Phase 6.0 Tuning sliders + their right-hand value labels.
+    sharpen_amount_slider: *const NSSlider,
+    sharpen_amount_label: *const NSTextField,
+    saturation_amount_slider: *const NSSlider,
+    saturation_amount_label: *const NSTextField,
+    midtone_anchor_slider: *const NSSlider,
+    midtone_anchor_label: *const NSTextField,
     // Custom DCP dir row.
     custom_dcp_field: *const NSTextField,
 }
@@ -94,12 +114,30 @@ define_class!(
             commands::send_command(AppCommand::SetRawPipelineFlags(flags));
         }
 
-        /// "Reset to defaults" button click. Sends an all-true flags command
-        /// and refreshes each switch to match.
+        /// Any Tuning-section slider release (continuous = false, so this
+        /// fires exactly once per drag). Reads all current widget values,
+        /// refreshes the value labels, and emits a single
+        /// `SetRawPipelineFlags` — same funnel the toggles use.
+        #[unsafe(method(tuningSliderChanged:))]
+        fn tuning_slider_changed(&self, _sender: &NSSlider) {
+            let flags = self.read_current_flags();
+            self.refresh_slider_labels(flags);
+            log::debug!(
+                "RAW panel: tuning slider -> sharpen={:.2}, sat={:.2}, midtone={:.2}",
+                flags.sharpen_amount,
+                flags.saturation_boost_amount,
+                flags.midtone_anchor,
+            );
+            commands::send_command(AppCommand::SetRawPipelineFlags(flags));
+        }
+
+        /// "Reset to defaults" button click. Sends a default flags command
+        /// and refreshes each widget (switches, sliders, value labels) to
+        /// match.
         #[unsafe(method(resetToDefaults:))]
         fn reset_to_defaults(&self, _sender: &AnyObject) {
             let defaults = RawPipelineFlags::default();
-            self.write_flags_to_switches(defaults);
+            self.write_flags_to_all_widgets(defaults);
             self.clear_custom_dcp_field();
             commands::send_command(AppCommand::SetRawPipelineFlags(defaults));
             commands::send_command(AppCommand::SetCustomDcpDir(None));
@@ -154,7 +192,10 @@ impl RawDelegate {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// Snapshot every switch into a fresh `RawPipelineFlags`.
+    /// Snapshot every widget (switches + sliders) into a fresh
+    /// `RawPipelineFlags`. Slider values are already clamped to their
+    /// `min..=max` by AppKit, so no extra clamp is needed here — the
+    /// authoritative `clamp_knobs()` still runs inside the decoder.
     fn read_current_flags(&self) -> RawPipelineFlags {
         let ivars = self.ivars();
         RawPipelineFlags {
@@ -171,10 +212,17 @@ impl RawDelegate {
             capture_sharpening: switch_is_on(ivars.capture_sharpening),
             lens_correction: switch_is_on(ivars.lens_correction),
             hdr_output: switch_is_on(ivars.hdr_output),
+            sharpen_amount: slider_value(ivars.sharpen_amount_slider),
+            saturation_boost_amount: slider_value(ivars.saturation_amount_slider),
+            midtone_anchor: slider_value(ivars.midtone_anchor_slider),
         }
     }
 
-    fn write_flags_to_switches(&self, flags: RawPipelineFlags) {
+    /// Push `flags` into every widget we own: the thirteen switches, the
+    /// three Tuning sliders, and their value labels. Used by the "Reset to
+    /// defaults" path so a click snaps the UI back to the production
+    /// baseline in one atomic step.
+    fn write_flags_to_all_widgets(&self, flags: RawPipelineFlags) {
         let ivars = self.ivars();
         set_switch(ivars.dng_opcode_1, flags.dng_opcode_list_1);
         set_switch(ivars.dng_opcode_2, flags.dng_opcode_list_2);
@@ -189,6 +237,22 @@ impl RawDelegate {
         set_switch(ivars.capture_sharpening, flags.capture_sharpening);
         set_switch(ivars.lens_correction, flags.lens_correction);
         set_switch(ivars.hdr_output, flags.hdr_output);
+        set_slider(ivars.sharpen_amount_slider, flags.sharpen_amount);
+        set_slider(
+            ivars.saturation_amount_slider,
+            flags.saturation_boost_amount,
+        );
+        set_slider(ivars.midtone_anchor_slider, flags.midtone_anchor);
+        self.refresh_slider_labels(flags);
+    }
+
+    /// Rewrite the three numeric labels to match the current knob values.
+    /// Called on slider release and on reset.
+    fn refresh_slider_labels(&self, flags: RawPipelineFlags) {
+        let ivars = self.ivars();
+        set_label_value(ivars.sharpen_amount_label, flags.sharpen_amount);
+        set_label_value(ivars.saturation_amount_label, flags.saturation_boost_amount);
+        set_label_value(ivars.midtone_anchor_label, flags.midtone_anchor);
     }
 
     fn clear_custom_dcp_field(&self) {
@@ -223,6 +287,37 @@ fn set_switch(ptr: *const NSSwitch, on: bool) {
     };
     unsafe {
         let _: () = msg_send![ptr, setState: state];
+    }
+}
+
+fn slider_value(ptr: *const NSSlider) -> f32 {
+    if ptr.is_null() {
+        return 0.0;
+    }
+    // NSSlider exposes `doubleValue` — we narrow to f32 because that's
+    // what `RawPipelineFlags` stores.
+    unsafe { (*ptr).doubleValue() as f32 }
+}
+
+fn set_slider(ptr: *const NSSlider, value: f32) {
+    if ptr.is_null() {
+        return;
+    }
+    unsafe {
+        (*ptr).setDoubleValue(value as f64);
+    }
+}
+
+fn set_label_value(ptr: *const NSTextField, value: f32) {
+    if ptr.is_null() {
+        return;
+    }
+    // Two-decimal formatting is fine for the three ranges we expose:
+    // 0.00 – 1.00, 0.00 – 0.30, and 0.20 – 0.50. Wider resolution would
+    // just add noise without conveying more signal to the user.
+    let text = format!("{value:.2}");
+    unsafe {
+        (*ptr).setStringValue(&NSString::from_str(&text));
     }
 }
 
@@ -299,6 +394,108 @@ fn build_flag_row(
     FlagRow {
         row,
         toggle,
+        extras,
+    }
+}
+
+/// One Tuning-section slider row: bold title + caption on the left, an
+/// `NSSlider` in the middle, and a 2-decimal value label on the right.
+/// The slider is non-continuous (`setContinuous(false)`), so AppKit fires
+/// the action exactly once, on mouse release. That trades live-during-drag
+/// feedback for zero decode-spam, which matters because each decode on a
+/// 20 MP RAW costs tens of milliseconds.
+struct SliderRow {
+    row: Retained<NSStackView>,
+    slider: Retained<NSSlider>,
+    value_label: Retained<NSTextField>,
+    extras: Vec<Retained<AnyObject>>,
+}
+
+fn build_slider_row(
+    title: &str,
+    description: &str,
+    value: f32,
+    min: f32,
+    max: f32,
+    tag: isize,
+    mtm: MainThreadMarker,
+) -> SliderRow {
+    let title_label = make_label(title, 13.0, mtm);
+    title_label.setAlignment(NSTextAlignment(0));
+
+    let desc_label = make_label(description, 11.0, mtm);
+    desc_label.setAlignment(NSTextAlignment(0));
+    desc_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+
+    let label_stack = NSStackView::new(mtm);
+    label_stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    label_stack.setAlignment(NSLayoutAttribute::Leading);
+    label_stack.setSpacing(2.0);
+    label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&title_label) });
+    label_stack.addArrangedSubview(unsafe { as_view::<NSTextField>(&desc_label) });
+
+    let slider = NSSlider::new(mtm);
+    slider.setMinValue(min as f64);
+    slider.setMaxValue(max as f64);
+    slider.setDoubleValue(value.clamp(min, max) as f64);
+    // Non-continuous: fire action on mouse release only.
+    slider.setContinuous(false);
+    unsafe {
+        let _: () = msg_send![&*slider, setTag: tag];
+        let _: () = msg_send![&*slider, setControlSize: 1i64];
+        // Pin a reasonable minimum width so very long titles don't shrink
+        // the slider track into uselessness.
+        let _: () = msg_send![&*slider, setTranslatesAutoresizingMaskIntoConstraints: false];
+    }
+    let slider_min_width = unsafe {
+        NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &slider, NSLayoutAttribute::Width,
+            NSLayoutRelation::GreaterThanOrEqual,
+            None, NSLayoutAttribute::NotAnAttribute,
+            1.0, 160.0,
+        )
+    };
+    slider_min_width.setActive(true);
+
+    let value_label = make_label(&format!("{value:.2}"), 12.0, mtm);
+    value_label.setAlignment(NSTextAlignment(1)); // NSTextAlignmentRight
+    value_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    unsafe {
+        let _: () = msg_send![&*value_label, setTranslatesAutoresizingMaskIntoConstraints: false];
+    }
+    // Fixed width keeps the column tidy as the digits change.
+    let label_width = unsafe {
+        NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &value_label, NSLayoutAttribute::Width,
+            NSLayoutRelation::Equal,
+            None, NSLayoutAttribute::NotAnAttribute,
+            1.0, 42.0,
+        )
+    };
+    label_width.setActive(true);
+
+    let row = NSStackView::new(mtm);
+    row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    row.setSpacing(10.0);
+    row.setAlignment(NSLayoutAttribute::CenterY);
+    row.addArrangedSubview(unsafe { as_view::<NSStackView>(&label_stack) });
+    row.addArrangedSubview(unsafe { as_view::<NSSlider>(&slider) });
+    row.addArrangedSubview(unsafe { as_view::<NSTextField>(&value_label) });
+
+    let extras: Vec<Retained<AnyObject>> = unsafe {
+        vec![
+            Retained::cast_unchecked(title_label),
+            Retained::cast_unchecked(desc_label),
+            Retained::cast_unchecked(label_stack),
+            Retained::cast_unchecked(slider_min_width),
+            Retained::cast_unchecked(label_width),
+        ]
+    };
+
+    SliderRow {
+        row,
+        slider,
+        value_label,
         extras,
     }
 }
@@ -524,6 +721,51 @@ pub(crate) fn build(
     let detail_header = make_section_header("Detail", mtm);
     let geometry_header = make_section_header("Geometry", mtm);
     let output_header = make_section_header("Output", mtm);
+    let tuning_header = make_section_header("Tuning", mtm);
+
+    // ── Phase 6.0 Tuning sliders ──────────────────────────────────────
+    let sharpen_row = build_slider_row(
+        "Sharpening amount",
+        "Unsharp-mask strength on the luminance-only capture sharpen pass.",
+        flags.sharpen_amount,
+        SHARPEN_AMOUNT_RANGE.0,
+        SHARPEN_AMOUNT_RANGE.1,
+        TAG_SHARPEN_AMOUNT,
+        mtm,
+    );
+    let saturation_row = build_slider_row(
+        "Saturation boost",
+        "Global chroma lift applied in linear Rec.2020 (post-tone, pre-ICC).",
+        flags.saturation_boost_amount,
+        SATURATION_BOOST_RANGE.0,
+        SATURATION_BOOST_RANGE.1,
+        TAG_SATURATION_AMOUNT,
+        mtm,
+    );
+    let midtone_row = build_slider_row(
+        "Tone midtone anchor",
+        "Where the filmic S-curve's midtone line passes through (x, x).",
+        flags.midtone_anchor,
+        MIDTONE_ANCHOR_RANGE.0,
+        MIDTONE_ANCHOR_RANGE.1,
+        TAG_MIDTONE_ANCHOR,
+        mtm,
+    );
+    let slider_ptrs = [
+        &*sharpen_row.slider as *const NSSlider,
+        &*saturation_row.slider as *const NSSlider,
+        &*midtone_row.slider as *const NSSlider,
+    ];
+    let slider_label_ptrs = [
+        &*sharpen_row.value_label as *const NSTextField,
+        &*saturation_row.value_label as *const NSTextField,
+        &*midtone_row.value_label as *const NSTextField,
+    ];
+    let sliders: Vec<Retained<NSSlider>> = vec![
+        sharpen_row.slider.clone(),
+        saturation_row.slider.clone(),
+        midtone_row.slider.clone(),
+    ];
 
     // ── Custom DCP dir row + Reset button ─────────────────────────────
     let dcp_header = make_section_header("DCP profile", mtm);
@@ -578,6 +820,10 @@ pub(crate) fn build(
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[11].row) }); // lens correction
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&output_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[12].row) }); // HDR output
+    panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&tuning_header) });
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&sharpen_row.row) });
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&saturation_row.row) });
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&midtone_row.row) });
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&dcp_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&reset_row) });
@@ -589,12 +835,18 @@ pub(crate) fn build(
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[10].row) }); // after detail (sharpen)
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[11].row) }); // after geometry (lens)
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[12].row) }); // after output (HDR)
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&midtone_row.row) }); // after tuning group
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
 
     // Pin every row to the panel width so the switches align flush right.
     for row in &rows {
         pin_width(&row.row, &panel, retained_views);
     }
+    // Same for the Tuning slider rows — without this, the slider track
+    // collapses to its intrinsic size.
+    pin_width(&sharpen_row.row, &panel, retained_views);
+    pin_width(&saturation_row.row, &panel, retained_views);
+    pin_width(&midtone_row.row, &panel, retained_views);
     pin_width_any(&custom_dcp_outer, &panel, retained_views);
     pin_width_any(&reset_row, &panel, retained_views);
 
@@ -617,6 +869,12 @@ pub(crate) fn build(
         capture_sharpening: toggle_ptrs[10],
         lens_correction: toggle_ptrs[11],
         hdr_output: toggle_ptrs[12],
+        sharpen_amount_slider: slider_ptrs[0],
+        sharpen_amount_label: slider_label_ptrs[0],
+        saturation_amount_slider: slider_ptrs[1],
+        saturation_amount_label: slider_label_ptrs[1],
+        midtone_anchor_slider: slider_ptrs[2],
+        midtone_anchor_label: slider_label_ptrs[2],
         custom_dcp_field: &*custom_dcp_field as *const NSTextField,
     };
     let delegate = RawDelegate::new(mtm, ivars);
@@ -625,6 +883,10 @@ pub(crate) fn build(
         for toggle in &toggles {
             toggle.setTarget(Some(&delegate as &AnyObject));
             toggle.setAction(Some(sel!(togglePipelineFlag:)));
+        }
+        for slider in &sliders {
+            slider.setTarget(Some(&delegate as &AnyObject));
+            slider.setAction(Some(sel!(tuningSliderChanged:)));
         }
         reset_btn.setTarget(Some(&delegate as &AnyObject));
         reset_btn.setAction(Some(sel!(resetToDefaults:)));
@@ -641,6 +903,7 @@ pub(crate) fn build(
     retained_views.push(unsafe { Retained::cast_unchecked(detail_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(geometry_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(output_header) });
+    retained_views.push(unsafe { Retained::cast_unchecked(tuning_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(dcp_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(reset_spacer) });
     retained_views.push(unsafe { Retained::cast_unchecked(reset_btn) });
@@ -658,6 +921,19 @@ pub(crate) fn build(
             retained_views.push(extra);
         }
         retained_views.push(unsafe { Retained::cast_unchecked(row.row) });
+    }
+    // Phase 6.0: retain the Tuning section widgets for the window's
+    // lifetime. Sliders are kept alive via `sliders`, and each row's
+    // `extras` + `value_label` need retaining too.
+    for slider in sliders {
+        retained_views.push(unsafe { Retained::cast_unchecked(slider) });
+    }
+    for slider_row in [sharpen_row, saturation_row, midtone_row] {
+        for extra in slider_row.extras {
+            retained_views.push(extra);
+        }
+        retained_views.push(unsafe { Retained::cast_unchecked(slider_row.value_label) });
+        retained_views.push(unsafe { Retained::cast_unchecked(slider_row.row) });
     }
     retained_views.push(unsafe { Retained::cast_unchecked(delegate) });
 

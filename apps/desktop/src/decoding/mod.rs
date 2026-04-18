@@ -39,7 +39,9 @@ use std::time::Instant;
 use dispatch::Backend;
 use orientation::{apply_orientation_bytes, parse_exif_orientation};
 
-pub use raw_flags::RawPipelineFlags;
+pub use raw_flags::{
+    MIDTONE_ANCHOR_RANGE, RawPipelineFlags, SATURATION_BOOST_RANGE, SHARPEN_AMOUNT_RANGE,
+};
 
 /// Pixel-buffer variants. `Rgba8` is `[r, g, b, a, r, g, b, a, …]` in sRGB
 /// gamma-encoded bytes — the common case. `Rgba16F` is `[r, g, b, a, r, …]`
