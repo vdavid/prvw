@@ -245,8 +245,29 @@ pub fn set_layer_edr_state(window: &Window, edr_active: bool, icc_for_sdr: &[u8]
             return;
         }
 
+        // Diagnostic: capture the current NSScreen headroom at the moment
+        // we configure the layer. On XDR displays this swings live with
+        // brightness and the ambient-light sensor, so correlating the
+        // configure-time value with visible EDR effect in the image is
+        // useful when debugging "no visible HDR" reports.
+        let headroom_now = current_edr_headroom(window);
+
         // wantsExtendedDynamicRangeContent: BOOL
         let _: () = msg_send![metal_layer, setWantsExtendedDynamicRangeContent: edr_active];
+
+        // Read the property back. On rare occasions the OS refuses the
+        // request (older macOS on non-Metal displays, remote desktop,
+        // specific driver bugs); a YES-requested / NO-granted mismatch is
+        // the clearest signal we're on such a path.
+        let granted: bool = msg_send![metal_layer, wantsExtendedDynamicRangeContent];
+        log::info!(
+            "render: CAMetalLayer EDR state confirmed: wantsExtendedDynamicRangeContent={} \
+             (was requested: {}, OS granted: {}, NSScreen headroom: {:.2})",
+            if granted { "YES" } else { "NO" },
+            if edr_active { "YES" } else { "NO" },
+            if granted == edr_active { "YES" } else { "NO" },
+            headroom_now
+        );
 
         // pixelFormat: MTLPixelFormat (NSUInteger -> u64)
         let pixel_format: u64 = if edr_active {

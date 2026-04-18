@@ -477,6 +477,30 @@ pub(super) fn decode(
         log::info!("RAW skipped tone curve entirely for {}", path.display());
     }
 
+    // HDR diagnostic: peak post-tone-curve linear value. Only computed
+    // when `flags.hdr_output` is on — the SDR path never stays above 1.0
+    // (Phase 4's shoulder clipped there by design), so the measurement
+    // would be a constant `1.0` and cost a buffer scan we don't want in
+    // the default path. When HDR is on, this tells the user whether the
+    // image actually carries above-white information or whether the
+    // filmic shoulder is shaping everything below display-white (which
+    // means the EDR path has nothing extra to show, regardless of what
+    // the display itself can do). Runs in parallel via rayon so the cost
+    // is a single pass over the f32 buffer.
+    if flags.hdr_output {
+        let peak_linear = rec2020.par_iter().copied().reduce(|| 0.0_f32, f32::max);
+        log::info!(
+            "RAW pipeline peak linear value: {:.2} (EDR-capable content: {}) for {}",
+            peak_linear,
+            if peak_linear > 1.0 {
+                "YES"
+            } else {
+                "NO — all pixels fit within SDR"
+            },
+            path.display()
+        );
+    }
+
     check_cancelled(cancelled)?;
 
     // Saturation boost. Linear Rec.2020 space, after the tone curve and

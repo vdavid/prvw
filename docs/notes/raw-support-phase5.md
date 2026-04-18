@@ -267,6 +267,45 @@ Dynamic switching is in. Tested on M3 Max / XDR: SDR → HDR on RAW
 load, HDR → SDR on navigate to JPEG, HDR → SDR on Settings toggle
 off, all without recreating the window.
 
+## HDR diagnostic logging (follow-up, 2026-04-17)
+
+User reported "no visible EDR effect" on an M3 MacBook Pro XDR even
+though Preview.app clearly drove EDR on the same screen. Added two
+diagnostic INFO lines so future reports carry ground-truth data:
+
+1. **Post-tone-curve peak linear value** (in `decoding::raw`). When
+   `flags.hdr_output` is on, after the tone-curve stage we reduce the
+   f32 Rec.2020 buffer to its max value via a rayon-parallel pass and
+   log:
+
+   ```
+   RAW pipeline peak linear value: 1.45 (EDR-capable content: YES) for …
+   RAW pipeline peak linear value: 0.98 (EDR-capable content: NO — all pixels fit within SDR) for …
+   ```
+
+   Skipped entirely when `flags.hdr_output` is off so the SDR path's
+   perf stays unchanged.
+
+2. **EDR grant read-back** (in `color::display_profile::set_layer_edr_
+   state`). Immediately after `setWantsExtendedDynamicRangeContent:`
+   we read the property back and log:
+
+   ```
+   render: CAMetalLayer EDR state confirmed:
+       wantsExtendedDynamicRangeContent=YES (was requested: YES,
+       OS granted: YES, NSScreen headroom: 16.00)
+   ```
+
+   A YES-requested / NO-granted mismatch would flag an OS path that
+   silently refuses EDR. The NSScreen headroom on the same line lets us
+   correlate "layer says YES" with "display has headroom right now" —
+   they're both live values on XDR.
+
+The existing "EDR on / EDR off" log line stays — it carries the pixel
+format and colorspace, which the new line doesn't. Together they give
+"what we set" (the old line) plus "what the OS reported back" (the new
+line).
+
 ## Deferred to Phase 5.x
 
 - **Unsharp-mask on f16.** The existing sharpener runs on RGBA8
