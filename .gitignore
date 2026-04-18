@@ -41,3 +41,6 @@ dist/
 
 # Ignored files
 _ignored/
+
+# Claude Code runtime state
+.claude/scheduled_tasks.lock
