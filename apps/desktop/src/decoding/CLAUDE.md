@@ -137,8 +137,11 @@ can keep the intermediate wide-gamut:
     `flags.hdr_output == true`, skip the `[0, 1]` clamp and quantise the
     f32 buffer into `PixelBuffer::Rgba16F` (half-floats via the `half`
     crate), preserving values above 1.0 for the EDR-capable compositor.
-    Sharpening is skipped in this branch (see `raw-support-phase5.md`).
-    Otherwise the SDR path below fires.
+    Sharpening still fires on this branch via
+    `color::sharpen::sharpen_rgba16f_inplace` (same luminance-only
+    unsharp mask as the 8-bit path, computed in f32 with no `[0, 1]`
+    clamp so above-white highlights survive). Otherwise the SDR path
+    below fires.
 8. `color::sharpen::sharpen_rgba8_inplace` runs a mild unsharp mask on
    **luminance only** (Rec.709 weights) of the display-space RGBA8 buffer:
    separable Gaussian blur (σ = 0.8 px, 7 taps) on Y in f32, unsharp-mask

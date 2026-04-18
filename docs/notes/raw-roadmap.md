@@ -307,6 +307,13 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
       glyphon text renderer is rebuilt wholesale (its atlas pins format
       at construction). Shader module + pipeline layout are cached so
       rebuild is cheap. See `docs/notes/raw-support-phase5.md`.
+- [x] Capture sharpening on the HDR path via
+      `color::sharpen::sharpen_rgba16f_inplace`. Same luminance-only
+      unsharp-mask algorithm as the 8-bit path, run in f32 without a
+      `[0, 1]` clamp so above-white HDR highlights aren't pinned at 1.0.
+      Toggling capture sharpening in Settings → RAW now actually
+      changes the HDR preview on an EDR display; before, the HDR branch
+      skipped the step unconditionally.
 
 ## Phase 6 — nice-to-haves, probably never
 

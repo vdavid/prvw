@@ -308,14 +308,16 @@ line).
 
 ## Deferred to Phase 5.x
 
-- **Unsharp-mask on f16.** The existing sharpener runs on RGBA8
-  luminance with a 7-tap separable Gaussian. Porting to f16 means a
-  second code path (different clamp, different rounding); the bigger
-  concern is that sharpening in linear light above 1.0 wants a
-  different amount than in gamma-encoded 8-bit. Tuning is Phase 5.1
-  work, and HDR output without capture sharpening still looks
-  noticeably better than SDR-clipped output, so shipping the f16 path
-  without the sharpener is a net win.
+- *(Done 2026-04-17)* ~~**Unsharp-mask on f16.**~~ Shipped as
+  `color::sharpen::sharpen_rgba16f_inplace`. Same luminance-only
+  algorithm as the 8-bit path: compute Y from the f16 RGB, blur Y via
+  the same separable Gaussian, apply the unsharp-mask formula, then
+  multiply the original f16 RGB by `Y_out / Y_in` and re-encode. No
+  `[0, 1]` clamp anywhere, so above-white HDR highlights pass through
+  the sharpener without being pinned at 1.0. The user-facing effect is
+  that toggling capture sharpening in Settings → RAW now actually
+  changes the HDR preview on an EDR display — previously the HDR path
+  skipped the step unconditionally.
 
 ## Testing + validation notes
 

@@ -541,14 +541,15 @@ pub(super) fn decode(
 
     // Branch on the HDR flag decided upfront. SDR path: clamp to [0, 1],
     // quantise to RGBA8, run the unsharp-mask on luminance. HDR path:
-    // preserve values above 1.0, quantise to half-floats, skip the
-    // unsharp-mask (sharpening wants an 8-bit perceptual buffer to match
-    // human gamma response; doing it on f16 would shift the halos and the
-    // 20 MP f16 sharpener isn't on the critical path for this phase —
-    // tracked in `raw-support-phase5.md`).
+    // preserve values above 1.0, quantise to half-floats, then run the
+    // f16 unsharp-mask (same luminance-only algorithm, in f32 with no
+    // `[0, 1]` clamp so above-white HDR highlights survive the pass).
     if hdr_active {
-        let half_rgba = rec2020_to_rgba16f(&rec2020);
+        let mut half_rgba = rec2020_to_rgba16f(&rec2020);
         drop(rec2020);
+        if flags.capture_sharpening {
+            color::sharpen::sharpen_rgba16f_inplace(&mut half_rgba, width, height);
+        }
         log::debug!(
             "RAW HDR output: {width}x{height} RGBA16F, peak {peak:.1}, headroom {edr_headroom:.2}"
         );

@@ -1,11 +1,20 @@
 //! Capture sharpening for RAW output.
 //!
-//! Applied as the final pre-orientation step on the RGBA8 buffer. A mild
-//! unsharp mask compensates for the softness every RAW decode carries: the
-//! sensor's optical low-pass filter softens fine detail, and demosaic blurs
-//! it a second time. Without this step, the output reads "slightly soft"
-//! next to Preview.app and Lightroom, both of which apply capture sharpening
-//! silently.
+//! Applied as the final pre-orientation step on the RGBA8 (SDR) or RGBA16F
+//! (HDR, Phase 5) buffer. A mild unsharp mask compensates for the softness
+//! every RAW decode carries: the sensor's optical low-pass filter softens
+//! fine detail, and demosaic blurs it a second time. Without this step, the
+//! output reads "slightly soft" next to Preview.app and Lightroom, both of
+//! which apply capture sharpening silently.
+//!
+//! ## HDR (f16) path
+//!
+//! `sharpen_rgba16f_inplace` runs the same luminance-only unsharp-mask
+//! algorithm, but in f32 with no [0, 1] clamp. The Y plane is computed
+//! from the f16 components (decoded through the `half` crate), blurred
+//! in f32 via the same separable Gaussian, and the `Y_out / Y_in` scale
+//! is applied back to the f16 R / G / B. Above-1.0 HDR highlights stay
+//! above 1.0. Alpha passes through untouched.
 //!
 //! ## Luminance-only (Phase 2.5a)
 //!
@@ -171,6 +180,95 @@ pub fn sharpen_rgba8_inplace_with(
             px[0] = f32_to_u8(r);
             px[1] = f32_to_u8(g);
             px[2] = f32_to_u8(b);
+            // px[3] (alpha) intentionally untouched
+        });
+}
+
+/// Sharpen an RGBA16F (half-float) buffer in place with the default
+/// capture-sharpening parameters ([`DEFAULT_SIGMA`], [`DEFAULT_AMOUNT`]).
+/// Alpha is left untouched.
+///
+/// `rgba` is `width * height * 4` half-floats laid out as raw `u16` bit
+/// patterns (the `half::f16::to_bits()` / `from_bits()` format, matching
+/// what the RAW decoder's HDR branch emits). On length mismatch the
+/// function is a no-op.
+pub fn sharpen_rgba16f_inplace(rgba: &mut [u16], width: u32, height: u32) {
+    sharpen_rgba16f_inplace_with(rgba, width, height, DEFAULT_SIGMA, DEFAULT_AMOUNT);
+}
+
+/// Parametric variant of [`sharpen_rgba16f_inplace`]. Same luminance-only
+/// unsharp-mask algorithm as [`sharpen_rgba8_inplace_with`], but in f32
+/// throughout and without the `[0, 1]` clamp so above-1.0 HDR highlights
+/// stay above 1.0. Alpha is passed through untouched.
+///
+/// Approach: decode each f16 RGB triplet to f32, compute Y (Rec.709
+/// weights), run the same separable Gaussian blur on Y in f32, apply the
+/// unsharp-mask formula, then multiply the original f32 RGB by
+/// `Y_out / Y_in` and re-encode to f16. Dark pixels (Y < `DARK_EPSILON`)
+/// pass through unchanged — same guard as the 8-bit path.
+pub fn sharpen_rgba16f_inplace_with(
+    rgba: &mut [u16],
+    width: u32,
+    height: u32,
+    sigma: f32,
+    amount: f32,
+) {
+    use half::f16;
+
+    if width == 0 || height == 0 {
+        return;
+    }
+    let pixels = (width as usize) * (height as usize);
+    if rgba.len() != pixels * 4 {
+        return;
+    }
+    if pixels < 2 {
+        return;
+    }
+    if amount == 0.0 {
+        return;
+    }
+
+    let kernel = gaussian_kernel_1d(sigma);
+    let radius = kernel.len() / 2;
+
+    // Decode Y from the f16 R, G, B components into an f32 plane. No
+    // clamp — HDR highlights (Y > 1.0) must blur into each other so the
+    // shoulder-shaped regions in the image keep their micro-contrast.
+    let mut luma_in = vec![0.0_f32; pixels];
+    luma_in
+        .par_iter_mut()
+        .zip(rgba.par_chunks_exact(4))
+        .for_each(|(slot, px)| {
+            let r = f16::from_bits(px[0]).to_f32();
+            let g = f16::from_bits(px[1]).to_f32();
+            let b = f16::from_bits(px[2]).to_f32();
+            *slot = LUMA_R * r + LUMA_G * g + LUMA_B * b;
+        });
+
+    let mut scratch = vec![0.0_f32; pixels];
+    let mut blurred = vec![0.0_f32; pixels];
+    blur_horizontal(&luma_in, &mut scratch, width, height, &kernel, radius);
+    blur_vertical(&scratch, &mut blurred, width, height, &kernel, radius);
+
+    rgba.par_chunks_exact_mut(4)
+        .zip(luma_in.par_iter())
+        .zip(blurred.par_iter())
+        .for_each(|((px, &y_in), &y_blurred)| {
+            if y_in < DARK_EPSILON {
+                return;
+            }
+            let y_out = y_in + (y_in - y_blurred) * amount;
+            // Guard against sign flip at the darkest edges — an unsharp
+            // mask on a black region can push `y_out` slightly below 0.
+            // Multiplying RGB by a negative scale would produce nonsense.
+            let scale = if y_out <= 0.0 { 0.0 } else { y_out / y_in };
+            let r = f16::from_bits(px[0]).to_f32() * scale;
+            let g = f16::from_bits(px[1]).to_f32() * scale;
+            let b = f16::from_bits(px[2]).to_f32() * scale;
+            px[0] = f16::from_f32(r).to_bits();
+            px[1] = f16::from_f32(g).to_bits();
+            px[2] = f16::from_f32(b).to_bits();
             // px[3] (alpha) intentionally untouched
         });
 }
@@ -523,6 +621,151 @@ mod tests {
                 "far-right G drifted at y={y}"
             );
         }
+    }
+
+    #[test]
+    fn rgba16f_flat_image_is_unchanged() {
+        use half::f16;
+        // Flat half-float buffer: no edges, so the blur returns the input,
+        // the unsharp delta is zero, and the scale is exactly 1.
+        let width = 8;
+        let height = 6;
+        let pixels = (width * height) as usize;
+        let r = f16::from_f32(0.4).to_bits();
+        let g = f16::from_f32(0.6).to_bits();
+        let b = f16::from_f32(0.2).to_bits();
+        let a = f16::from_f32(1.0).to_bits();
+        let mut buf: Vec<u16> = Vec::with_capacity(pixels * 4);
+        for _ in 0..pixels {
+            buf.extend_from_slice(&[r, g, b, a]);
+        }
+        let expected = buf.clone();
+        sharpen_rgba16f_inplace(&mut buf, width, height);
+        assert_eq!(
+            buf, expected,
+            "flat RGBA16F buffer must pass through sharpening unchanged"
+        );
+    }
+
+    #[test]
+    fn rgba16f_matches_rgba8_within_one_step() {
+        use half::f16;
+        // Sanity-check the HDR sharpener against the 8-bit one on a
+        // simple image that stays in [0, 1]. Build matching RGBA8 and
+        // RGBA16F buffers from the same source, sharpen both, then
+        // compare. The two paths round trip through different
+        // quantisations (u8 vs. f16), so the tolerance is 1 / 255 per
+        // component — enough to absorb both rounding tails.
+        let width = 16_u32;
+        let height = 4_u32;
+        let mut rgba8 = Vec::with_capacity((width * height * 4) as usize);
+        let mut rgba16f = Vec::with_capacity((width * height * 4) as usize);
+        for _y in 0..height {
+            for x in 0..width {
+                let (r, g, b) = if x >= width / 2 {
+                    (0.78_f32, 0.20, 0.20)
+                } else {
+                    (0.20_f32, 0.78, 0.30)
+                };
+                let r_u8 = (r * 255.0 + 0.5) as u8;
+                let g_u8 = (g * 255.0 + 0.5) as u8;
+                let b_u8 = (b * 255.0 + 0.5) as u8;
+                rgba8.extend_from_slice(&[r_u8, g_u8, b_u8, 255]);
+                rgba16f.extend_from_slice(&[
+                    f16::from_f32(r).to_bits(),
+                    f16::from_f32(g).to_bits(),
+                    f16::from_f32(b).to_bits(),
+                    f16::from_f32(1.0).to_bits(),
+                ]);
+            }
+        }
+
+        sharpen_rgba8_inplace(&mut rgba8, width, height);
+        sharpen_rgba16f_inplace(&mut rgba16f, width, height);
+
+        // Compare pixel-by-pixel, skipping alpha.
+        for i in 0..(width * height) as usize {
+            let off = i * 4;
+            let r16 = f16::from_bits(rgba16f[off]).to_f32();
+            let g16 = f16::from_bits(rgba16f[off + 1]).to_f32();
+            let b16 = f16::from_bits(rgba16f[off + 2]).to_f32();
+            let r8 = rgba8[off] as f32 / 255.0;
+            let g8 = rgba8[off + 1] as f32 / 255.0;
+            let b8 = rgba8[off + 2] as f32 / 255.0;
+            let tol = 1.0 / 255.0 + 1e-3;
+            assert!(
+                (r16 - r8).abs() < tol,
+                "pixel {i}: R drifted between 8-bit and 16f sharpen: {r16} vs {r8}"
+            );
+            assert!(
+                (g16 - g8).abs() < tol,
+                "pixel {i}: G drifted between 8-bit and 16f sharpen: {g16} vs {g8}"
+            );
+            assert!(
+                (b16 - b8).abs() < tol,
+                "pixel {i}: B drifted between 8-bit and 16f sharpen: {b16} vs {b8}"
+            );
+        }
+    }
+
+    #[test]
+    fn rgba16f_preserves_hdr_highlights_above_one() {
+        use half::f16;
+        // HDR edge: black on the left, a 1.8-linear HDR highlight on the
+        // right. After sharpening, the bright-side interior pixels must
+        // still be above 1.0 — the SDR path would have clipped them to
+        // 1.0 and lost the HDR information.
+        let width = 16_u32;
+        let height = 4_u32;
+        let mut buf = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..height {
+            for x in 0..width {
+                let v = if x >= width / 2 { 1.8_f32 } else { 0.0_f32 };
+                buf.extend_from_slice(&[
+                    f16::from_f32(v).to_bits(),
+                    f16::from_f32(v).to_bits(),
+                    f16::from_f32(v).to_bits(),
+                    f16::from_f32(1.0).to_bits(),
+                ]);
+            }
+        }
+        sharpen_rgba16f_inplace(&mut buf, width, height);
+
+        for y in 0..height {
+            let far_right = (y as usize * width as usize + (width as usize - 1)) * 4;
+            let r = f16::from_bits(buf[far_right]).to_f32();
+            assert!(
+                r > 1.5,
+                "HDR highlight collapsed: row {y}, R = {r} (expected ~1.8)"
+            );
+        }
+    }
+
+    #[test]
+    fn rgba16f_alpha_preserved() {
+        use half::f16;
+        let width = 8;
+        let height = 8;
+        let mut buf = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let v = (x + y) as f32 / 16.0;
+                let a = 0.5 + (x as f32) / 32.0;
+                buf.extend_from_slice(&[
+                    f16::from_f32(v).to_bits(),
+                    f16::from_f32(v).to_bits(),
+                    f16::from_f32(v).to_bits(),
+                    f16::from_f32(a).to_bits(),
+                ]);
+            }
+        }
+        let alphas_before: Vec<u16> = buf.iter().skip(3).step_by(4).copied().collect();
+        sharpen_rgba16f_inplace(&mut buf, width, height);
+        let alphas_after: Vec<u16> = buf.iter().skip(3).step_by(4).copied().collect();
+        assert_eq!(
+            alphas_before, alphas_after,
+            "alpha channel must not change on the HDR sharpening path"
+        );
     }
 
     /// Rough standalone perf sanity check. `#[ignore]` so it doesn't run
