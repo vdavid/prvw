@@ -172,7 +172,12 @@ fn run(
         return false;
     };
 
-    let mut modifier = Modifier::new(lens, focal, camera.crop_factor, width, height, true);
+    // `reverse = false` means "correct the lens's distortion" (undo it).
+    // `reverse = true` would simulate the distortion — the opposite of what a
+    // viewer wants. The earlier Phase 4 agent flipped this the wrong way and
+    // the resulting double-correction darkened corners and exaggerated barrel
+    // distortion. See user-reported issue during Phase 5.1 smoke testing.
+    let mut modifier = Modifier::new(lens, focal, camera.crop_factor, width, height, false);
     let distortion_enabled = modifier.enable_distortion_correction(lens);
     let tca_enabled = modifier.enable_tca_correction(lens);
     let vignetting_enabled = modifier.enable_vignetting_correction(lens, aperture, distance);
