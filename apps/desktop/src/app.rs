@@ -148,7 +148,7 @@ impl App {
             app_menu: None,
             zoom: zoom::State::from_settings(&initial_settings),
             color: color::State::from_settings(&initial_settings),
-            navigation: navigation::State::new(),
+            navigation: navigation::State::from_settings(&initial_settings),
             title_bar: initial_settings.title_bar,
             raw_flags: initial_settings.raw,
             edr_headroom: 1.0,
@@ -492,14 +492,18 @@ impl App {
                 ));
             }
 
-            let to_preload: Vec<(usize, PathBuf)> = dir
-                .preload_range(preloader::preload_count())
-                .iter()
-                .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
-                .collect();
+            if self.navigation.preload_neighbors {
+                let to_preload: Vec<(usize, PathBuf)> = dir
+                    .preload_range(preloader::preload_count())
+                    .iter()
+                    .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
+                    .collect();
 
-            if !to_preload.is_empty() {
-                preloader.request_preload(to_preload);
+                if !to_preload.is_empty() {
+                    preloader.request_preload(to_preload);
+                }
+            } else {
+                log::info!("Preload neighbors disabled — skipping startup preload");
             }
         }
 
@@ -730,8 +734,12 @@ impl App {
             timestamp: Instant::now(),
         });
 
-        // Cancel stale preload tasks and submit fresh ones for adjacent images
-        if let Some(dir) = &self.navigation.dir_list {
+        // Cancel stale preload tasks and submit fresh ones for adjacent images.
+        // When `preload_neighbors` is off, skip the submission entirely so only
+        // the currently displayed image consumes decode work.
+        if self.navigation.preload_neighbors
+            && let Some(dir) = &self.navigation.dir_list
+        {
             let to_preload: Vec<(usize, PathBuf)> = preload_indices
                 .iter()
                 .filter(|&&i| !self.navigation.image_cache.contains(i))

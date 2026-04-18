@@ -99,6 +99,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use rawler::RawImage;
 use rawler::decoders::{Decoder, RawDecodeParams, WellKnownIFD};
@@ -132,6 +133,56 @@ const DEFAULT_BASELINE_EV: f32 = 0.5;
 /// would blow out the whole image.
 const BASELINE_EV_CLAMP: f32 = 2.0;
 
+/// Per-stage wall-clock timings for the RAW pipeline. Emits one DEBUG log
+/// per stage as it completes plus a single comma-separated summary line at
+/// the end, which is the one to grep when diagnosing "why is this RAW slow
+/// to load?". Skipped (flag-gated) stages still get marked — their elapsed
+/// is near-zero, which is itself useful information (confirms the gate
+/// fired). Zero overhead at non-debug log levels beyond one `Instant::now`
+/// per mark.
+struct StageTimings {
+    start: Instant,
+    last: Instant,
+    entries: Vec<(&'static str, Duration)>,
+}
+
+impl StageTimings {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            start: now,
+            last: now,
+            entries: Vec::with_capacity(24),
+        }
+    }
+
+    fn mark(&mut self, name: &'static str) {
+        let now = Instant::now();
+        let delta = now.duration_since(self.last);
+        self.entries.push((name, delta));
+        self.last = now;
+        log::debug!("RAW stage '{name}': {:.1} ms", delta.as_secs_f64() * 1000.0);
+    }
+
+    fn summary(&self, path: &Path) {
+        let total = self.last.duration_since(self.start);
+        if !log::log_enabled!(log::Level::Debug) {
+            return;
+        }
+        let body: Vec<String> = self
+            .entries
+            .iter()
+            .map(|(n, d)| format!("{n}={:.1}", d.as_secs_f64() * 1000.0))
+            .collect();
+        log::debug!(
+            "RAW pipeline stages [{:.1} ms total]: {} for {}",
+            total.as_secs_f64() * 1000.0,
+            body.join(", "),
+            path.display()
+        );
+    }
+}
+
 /// Decode a RAW file through our wide-gamut pipeline and color-manage to
 /// `target_icc`. Returns the developed buffer plus the EXIF orientation
 /// read from rawler's metadata.
@@ -157,6 +208,7 @@ pub(super) fn decode(
     mut flags: RawPipelineFlags,
     edr_headroom: f32,
 ) -> Result<(DecodedImage, u16), String> {
+    let mut timings = StageTimings::new();
     // Defend against hand-edited settings.json with out-of-range knob
     // values. Production-path calls from the Settings panel are already
     // in range, so this is a no-op in the common case.
@@ -206,6 +258,7 @@ pub(super) fn decode(
     let mut raw = decoder
         .raw_image(&src, &params, false)
         .map_err(|e| format!("Couldn't decode RAW {}: {e}", path.display()))?;
+    timings.mark("raw_image");
 
     check_cancelled(cancelled)?;
 
@@ -217,6 +270,7 @@ pub(super) fn decode(
     if flags.dng_opcode_list_1 {
         apply_opcode_list1(decoder.as_ref(), &mut raw, path);
     }
+    timings.mark("opcode1");
 
     check_cancelled(cancelled)?;
 
@@ -226,6 +280,7 @@ pub(super) fn decode(
     // (§ 6). After this call, `raw.data` is `RawImageData::Float` in [0, 1].
     raw.apply_scaling()
         .map_err(|e| format!("Couldn't rescale RAW {}: {e}", path.display()))?;
+    timings.mark("rescale");
 
     check_cancelled(cancelled)?;
 
@@ -237,6 +292,7 @@ pub(super) fn decode(
     if flags.dng_opcode_list_2 {
         apply_opcode_list2(decoder.as_ref(), &mut raw, path);
     }
+    timings.mark("opcode2");
 
     check_cancelled(cancelled)?;
 
@@ -249,6 +305,7 @@ pub(super) fn decode(
     let intermediate = develop
         .develop_intermediate(&raw)
         .map_err(|e| format!("Couldn't develop RAW {}: {e}", path.display()))?;
+    timings.mark("demosaic");
 
     check_cancelled(cancelled)?;
 
@@ -256,6 +313,7 @@ pub(super) fn decode(
     // in the same pass to save a buffer traversal on big sensor files.
     let (width, height, mut rec2020) = camera_to_linear_rec2020(&raw, intermediate)
         .ok_or_else(|| format!("Couldn't map camera to Rec.2020 for {}", path.display()))?;
+    timings.mark("cam_matrix");
 
     check_cancelled(cancelled)?;
 
@@ -276,6 +334,7 @@ pub(super) fn decode(
         warp_rectilinear_applied =
             apply_opcode_list3(decoder.as_ref(), width, height, &mut rec2020, path);
     }
+    timings.mark("opcode3");
 
     check_cancelled(cancelled)?;
 
@@ -331,6 +390,7 @@ pub(super) fn decode(
             path.display()
         );
     }
+    timings.mark("lens");
 
     check_cancelled(cancelled)?;
 
@@ -338,6 +398,7 @@ pub(super) fn decode(
     // step does the same thing after calibrate; we just moved it later so the
     // color transform happens on the full active-area buffer.
     let (width, height, mut rec2020) = apply_default_crop(&raw, width, height, rec2020);
+    timings.mark("crop");
 
     check_cancelled(cancelled)?;
 
@@ -355,6 +416,7 @@ pub(super) fn decode(
         );
         color::chroma_denoise::apply_default_chroma_denoise(&mut rec2020, width, height);
     }
+    timings.mark("chroma_nr");
 
     check_cancelled(cancelled)?;
 
@@ -386,6 +448,7 @@ pub(super) fn decode(
         }
         apply_exposure(&mut rec2020, ev);
     }
+    timings.mark("exposure");
 
     check_cancelled(cancelled)?;
 
@@ -399,6 +462,7 @@ pub(super) fn decode(
     if flags.highlight_recovery {
         color::highlight_recovery::apply_default_highlight_recovery(&mut rec2020);
     }
+    timings.mark("hl_recovery");
 
     check_cancelled(cancelled)?;
 
@@ -468,6 +532,7 @@ pub(super) fn decode(
             },
         );
     }
+    timings.mark("dcp");
 
     check_cancelled(cancelled)?;
 
@@ -514,6 +579,7 @@ pub(super) fn decode(
     } else {
         log::info!("RAW skipped tone curve entirely for {}", path.display());
     }
+    timings.mark("tone");
 
     // HDR diagnostic: peak post-tone-curve linear value. Only computed
     // when `flags.hdr_output` is on — the SDR path never stays above 1.0
@@ -538,6 +604,7 @@ pub(super) fn decode(
             path.display()
         );
     }
+    timings.mark("hdr_diag_pre");
 
     check_cancelled(cancelled)?;
 
@@ -550,6 +617,7 @@ pub(super) fn decode(
     if flags.saturation_boost {
         color::saturation::apply_saturation_boost(&mut rec2020, flags.saturation_boost_amount);
     }
+    timings.mark("saturation");
 
     check_cancelled(cancelled)?;
 
@@ -598,6 +666,7 @@ pub(super) fn decode(
             use_relative_colorimetric,
         );
     }
+    timings.mark("color_conv");
 
     // HDR diagnostic #2: peak of the display-space f32 buffer right after
     // the color conversion. With the direct-matrix path above, this
@@ -611,6 +680,7 @@ pub(super) fn decode(
             path.display()
         );
     }
+    timings.mark("hdr_diag_post");
 
     let orientation = decoder
         .raw_metadata(&src, &params)
@@ -628,6 +698,7 @@ pub(super) fn decode(
     if hdr_active {
         let mut half_rgba = rec2020_to_rgba16f(&rec2020);
         drop(rec2020);
+        timings.mark("to_rgba16f");
         if flags.clarity {
             color::clarity::apply_clarity_rgba16f_inplace_with(
                 &mut half_rgba,
@@ -637,6 +708,7 @@ pub(super) fn decode(
                 flags.clarity_amount,
             );
         }
+        timings.mark("clarity");
         if flags.capture_sharpening {
             color::sharpen::sharpen_rgba16f_inplace_with(
                 &mut half_rgba,
@@ -646,19 +718,30 @@ pub(super) fn decode(
                 flags.sharpen_amount,
             );
         }
+        timings.mark("sharpen");
         // HDR diagnostic #3: peak of the half-float output just before we
         // hand it to the renderer. Decodes the f16 bit pattern per RGB
         // channel (skipping alpha) so we see what the Metal compositor will
         // actually get. If this is ≤ 1.0, the EDR surface has nothing above
-        // display-white to show regardless of headroom.
-        let peak_half = half_rgba
-            .chunks_exact(4)
-            .flat_map(|p| [p[0], p[1], p[2]])
-            .map(|bits| half::f16::from_bits(bits).to_f32())
-            .fold(0.0_f32, f32::max);
-        log::info!(
-            "RAW HDR output: {width}x{height} RGBA16F, peak f16 {peak_half:.2}, shoulder peak {peak:.1}, headroom {edr_headroom:.2}"
-        );
+        // display-white to show regardless of headroom. Gated on info-level
+        // logging so release builds without info logging pay nothing, and
+        // parallelised via rayon to match the other peak-value scans above.
+        if log::log_enabled!(log::Level::Info) {
+            let peak_half = half_rgba
+                .par_chunks_exact(4)
+                .map(|p| {
+                    let r = half::f16::from_bits(p[0]).to_f32();
+                    let g = half::f16::from_bits(p[1]).to_f32();
+                    let b = half::f16::from_bits(p[2]).to_f32();
+                    r.max(g).max(b)
+                })
+                .reduce(|| 0.0_f32, f32::max);
+            log::info!(
+                "RAW HDR output: {width}x{height} RGBA16F, peak f16 {peak_half:.2}, shoulder peak {peak:.1}, headroom {edr_headroom:.2}"
+            );
+        }
+        timings.mark("hdr_diag_f16");
+        timings.summary(path);
         return Ok((
             DecodedImage::from_rgba16f(width, height, half_rgba),
             orientation,
@@ -669,6 +752,7 @@ pub(super) fn decode(
     // transform has already placed every in-gamut color in the target space.
     let mut rgba = rec2020_to_rgba8(&rec2020);
     drop(rec2020); // free the big float buffer (~12 bytes/pixel) before returning
+    timings.mark("to_rgba8");
 
     // Clarity (local contrast). Larger-radius unsharp mask on the same
     // display-space RGBA8 buffer, run before capture sharpening so the
@@ -683,6 +767,7 @@ pub(super) fn decode(
             flags.clarity_amount,
         );
     }
+    timings.mark("clarity");
 
     // Capture sharpening. Runs on the display-space RGBA8 buffer, right
     // after the ICC transform and before orientation, so we sharpen in
@@ -696,9 +781,11 @@ pub(super) fn decode(
             flags.sharpen_amount,
         );
     }
+    timings.mark("sharpen");
 
     check_cancelled(cancelled)?;
 
+    timings.summary(path);
     Ok((DecodedImage::from_rgba8(width, height, rgba), orientation))
 }
 

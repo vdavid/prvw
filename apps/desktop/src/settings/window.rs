@@ -148,6 +148,15 @@ define_class!(
             crate::commands::send_command(crate::commands::AppCommand::SetTitleBar(on));
         }
 
+        #[unsafe(method(togglePreloadNeighbors:))]
+        fn toggle_preload_neighbors(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            log::debug!("Preload neighbors toggled via settings: {on}");
+            crate::commands::send_command(
+                crate::commands::AppCommand::SetPreloadNeighbors(on),
+            );
+        }
+
         #[unsafe(method(selectGeneral:))]
         fn select_general(&self, _sender: &AnyObject) {
             self.select_panel(0);
@@ -370,6 +379,13 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         general
             .scroll_to_zoom_toggle
             .setAction(Some(sel!(toggleScrollToZoom:)));
+
+        general
+            .preload_neighbors_toggle
+            .setTarget(Some(&delegate as &AnyObject));
+        general
+            .preload_neighbors_toggle
+            .setAction(Some(sel!(togglePreloadNeighbors:)));
 
         general
             .title_bar_toggle
@@ -720,6 +736,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(general.auto_update_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(general.scroll_to_zoom_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(general.scroll_to_zoom_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(general.preload_neighbors_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(general.title_bar_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(zoom.panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(zoom.auto_fit_toggle) });

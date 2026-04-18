@@ -4,6 +4,7 @@ pub mod directory;
 pub mod preloader;
 
 use crate::diagnostics::NavigationRecord;
+use crate::settings::Settings;
 use std::collections::VecDeque;
 
 /// Per-feature runtime state owned by `App`.
@@ -16,6 +17,11 @@ pub struct State {
     /// Current image dimensions — stored so resize can update the view without
     /// needing to hit the cache.
     pub current_image_size: Option<(u32, u32)>,
+    /// When false, skip eager preloading of adjacent images so only the
+    /// currently displayed image consumes decode work. Useful for
+    /// benchmarking single-image cold-start times. Driven by
+    /// Settings → General → "Preload next/prev images".
+    pub preload_neighbors: bool,
 }
 
 impl State {
@@ -26,6 +32,14 @@ impl State {
             image_cache: preloader::ImageCache::new(),
             history: VecDeque::with_capacity(10),
             current_image_size: None,
+            preload_neighbors: true,
+        }
+    }
+
+    pub fn from_settings(settings: &Settings) -> Self {
+        Self {
+            preload_neighbors: settings.preload_neighbors,
+            ..Self::new()
         }
     }
 }

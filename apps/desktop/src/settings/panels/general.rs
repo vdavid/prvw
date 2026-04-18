@@ -17,6 +17,7 @@ pub(crate) struct GeneralPanel {
     pub panel: Retained<NSStackView>,
     pub auto_update_toggle: Retained<NSSwitch>,
     pub scroll_to_zoom_toggle: Retained<NSSwitch>,
+    pub preload_neighbors_toggle: Retained<NSSwitch>,
     pub title_bar_toggle: Retained<NSSwitch>,
     pub scroll_to_zoom_desc: Retained<NSTextField>,
 }
@@ -50,6 +51,16 @@ pub(crate) fn build(
         mtm,
     );
 
+    let (preload_neighbors_row, preload_neighbors_toggle, preload_neighbors_desc) =
+        make_setting_row(
+            "Preload next/prev images",
+            "Decode adjacent images in the background so navigation is instant. Turn off to benchmark a single cold-start decode.",
+            settings.preload_neighbors,
+            false,
+            content_max_width,
+            mtm,
+        );
+
     let (title_bar_row, title_bar_toggle, title_bar_desc) = make_setting_row(
         "Title bar",
         "Reserve space at the top so the title bar doesn\u{2019}t cover the image.",
@@ -61,6 +72,7 @@ pub(crate) fn build(
 
     let auto_update_desc_ref = unsafe { as_view::<NSTextField>(&auto_update_desc) };
     let scroll_to_zoom_desc_ref = unsafe { as_view::<NSTextField>(&scroll_to_zoom_desc) };
+    let preload_neighbors_desc_ref = unsafe { as_view::<NSTextField>(&preload_neighbors_desc) };
     let title_bar_desc_ref = unsafe { as_view::<NSTextField>(&title_bar_desc) };
 
     let panel = crate::platform::macos::ui_common::make_vertical_stack(
@@ -69,6 +81,8 @@ pub(crate) fn build(
             auto_update_desc_ref,
             unsafe { as_view::<NSStackView>(&scroll_to_zoom_row) },
             scroll_to_zoom_desc_ref,
+            unsafe { as_view::<NSStackView>(&preload_neighbors_row) },
+            preload_neighbors_desc_ref,
             unsafe { as_view::<NSStackView>(&title_bar_row) },
             title_bar_desc_ref,
         ],
@@ -78,8 +92,14 @@ pub(crate) fn build(
     panel.setAlignment(NSLayoutAttribute::Leading);
     panel.setCustomSpacing_afterView(16.0, auto_update_desc_ref);
     panel.setCustomSpacing_afterView(16.0, scroll_to_zoom_desc_ref);
+    panel.setCustomSpacing_afterView(16.0, preload_neighbors_desc_ref);
 
-    for row in [&auto_update_row, &scroll_to_zoom_row, &title_bar_row] {
+    for row in [
+        &auto_update_row,
+        &scroll_to_zoom_row,
+        &preload_neighbors_row,
+        &title_bar_row,
+    ] {
         let c = unsafe {
             NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
                 row, NSLayoutAttribute::Width,
@@ -97,6 +117,8 @@ pub(crate) fn build(
     retained_views.push(unsafe { Retained::cast_unchecked(auto_update_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(auto_update_desc) });
     retained_views.push(unsafe { Retained::cast_unchecked(scroll_to_zoom_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(preload_neighbors_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(preload_neighbors_desc) });
     retained_views.push(unsafe { Retained::cast_unchecked(title_bar_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(title_bar_desc) });
 
@@ -104,6 +126,7 @@ pub(crate) fn build(
         panel,
         auto_update_toggle,
         scroll_to_zoom_toggle,
+        preload_neighbors_toggle,
         title_bar_toggle,
         scroll_to_zoom_desc,
     }

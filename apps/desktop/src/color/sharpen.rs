@@ -99,17 +99,17 @@ pub const DEFAULT_AMOUNT: f32 = 0.3;
 /// Rec.709 / sRGB luma coefficient for red. Close enough to Display P3's
 /// own (~0.228) that the ~2 % mismatch is negligible for a small unsharp
 /// amplitude.
-const LUMA_R: f32 = 0.2126;
+pub(super) const LUMA_R: f32 = 0.2126;
 /// Rec.709 luma coefficient for green.
-const LUMA_G: f32 = 0.7152;
+pub(super) const LUMA_G: f32 = 0.7152;
 /// Rec.709 luma coefficient for blue.
-const LUMA_B: f32 = 0.0722;
+pub(super) const LUMA_B: f32 = 0.0722;
 
 /// Below this input luminance the `Y_out / Y_in` scale blows up. Below it
 /// we leave the pixel unchanged (the unsharp mask on a black pixel would
 /// push it negative anyway, which we'd clamp to 0 — same net result with
 /// fewer floating-point hazards).
-const DARK_EPSILON: f32 = 1.0e-4;
+pub(super) const DARK_EPSILON: f32 = 1.0e-4;
 
 /// Sharpen an RGBA8 buffer in place with the default capture-sharpening
 /// parameters ([`DEFAULT_SIGMA`], [`DEFAULT_AMOUNT`]). Alpha is left
@@ -288,7 +288,7 @@ pub fn sharpen_rgba16f_inplace_with(
 /// Build a normalised 1D Gaussian kernel sized to cover ±3σ — past that
 /// the tail contributes well below one gray level at 8 bits. Always odd
 /// length so there's a single central tap.
-fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
+pub(super) fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
     // Floor σ to a sensible minimum so `sigma → 0` doesn't produce a
     // one-tap kernel that makes the unsharp mask do nothing.
     let sigma = sigma.max(1e-3);
@@ -311,7 +311,7 @@ fn gaussian_kernel_1d(sigma: f32) -> Vec<f32> {
 
 /// Compute the Rec.709 luminance for every pixel of an RGBA8 buffer,
 /// returning a flat `width × height` f32 plane. Alpha is ignored.
-fn compute_luma(rgba: &[u8]) -> Vec<f32> {
+pub(super) fn compute_luma(rgba: &[u8]) -> Vec<f32> {
     let pixels = rgba.len() / 4;
     let mut luma = vec![0.0_f32; pixels];
     luma.par_iter_mut()
@@ -326,7 +326,7 @@ fn compute_luma(rgba: &[u8]) -> Vec<f32> {
 }
 
 #[inline]
-fn f32_to_u8(v: f32) -> u8 {
+pub(super) fn f32_to_u8(v: f32) -> u8 {
     let clamped = v.clamp(0.0, 255.0);
     (clamped + 0.5) as u8
 }
@@ -334,7 +334,7 @@ fn f32_to_u8(v: f32) -> u8 {
 /// Horizontal 1D Gaussian blur with edge replication. Rows are processed
 /// in parallel. Input and output are `width × height` single-channel f32
 /// planes; they must not alias.
-fn blur_horizontal(
+pub(super) fn blur_horizontal(
     input: &[f32],
     output: &mut [f32],
     width: u32,
@@ -362,7 +362,7 @@ fn blur_horizontal(
 
 /// Vertical 1D Gaussian blur with edge replication. Rows are processed
 /// in parallel; each row samples a column window of the input.
-fn blur_vertical(
+pub(super) fn blur_vertical(
     input: &[f32],
     output: &mut [f32],
     width: u32,

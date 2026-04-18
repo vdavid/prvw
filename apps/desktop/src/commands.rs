@@ -72,6 +72,10 @@ pub enum AppCommand {
     SetRelativeColorimetric(bool),
     /// Set scroll-to-zoom mode (true = scroll zooms, false = scroll navigates).
     SetScrollToZoom(bool),
+    /// Set preload-neighbors mode. When false, the preloader skips adjacent
+    /// images so only the currently displayed image consumes decode work.
+    /// Useful for benchmarking single-image cold-start decode times.
+    SetPreloadNeighbors(bool),
     /// Set title bar mode (true = reserve a strip at the top, false = image fills window).
     SetTitleBar(bool),
 

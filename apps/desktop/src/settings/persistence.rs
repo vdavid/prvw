@@ -37,6 +37,14 @@ pub struct Settings {
     #[serde(default)]
     pub scroll_to_zoom: bool,
 
+    /// When true, the preloader eagerly decodes neighbouring images into the
+    /// cache so navigation is instant. When false, only the currently
+    /// displayed image is loaded — useful for benchmarking a cold-start
+    /// single-image load without concurrent work interfering with the
+    /// pipeline stage timings.
+    #[serde(default = "default_true")]
+    pub preload_neighbors: bool,
+
     /// When true, reserve 59px at the top so the title bar doesn't cover the image.
     #[serde(default = "default_true")]
     pub title_bar: bool,
@@ -77,6 +85,7 @@ impl Default for Settings {
             color_match_display: true,
             use_relative_colorimetric: false,
             scroll_to_zoom: false,
+            preload_neighbors: true,
             title_bar: true,
             previous_handlers: HashMap::new(),
             raw: RawPipelineFlags::default(),
@@ -166,6 +175,7 @@ mod tests {
             color_match_display: false,
             use_relative_colorimetric: true,
             scroll_to_zoom: true,
+            preload_neighbors: false,
             title_bar: false,
             previous_handlers: HashMap::from([(
                 "public.jpeg".to_string(),

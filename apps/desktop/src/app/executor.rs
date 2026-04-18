@@ -170,6 +170,14 @@ impl App {
                 s.save();
                 self.update_shared_state();
             }
+            AppCommand::SetPreloadNeighbors(enabled) => {
+                self.navigation.preload_neighbors = enabled;
+                log::info!("Preload neighbors set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.preload_neighbors = enabled;
+                s.save();
+                self.update_shared_state();
+            }
             AppCommand::SetTitleBar(enabled) => {
                 self.title_bar = enabled;
                 log::debug!("Title bar set to: {enabled}");
