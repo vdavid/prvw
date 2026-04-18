@@ -189,3 +189,62 @@ channels; keeps luminance sharp." Tag constant `TAG_CHROMA_DENOISE =
 indices in the panel layout + `setCustomSpacing_afterView` calls bumped
 from `[11] lens_correction` / `[12] HDR output` to `[12] lens_correction`
 / `[13] HDR output`.
+
+## Phase 6.2 — Clarity (local contrast)
+
+Local-contrast enhancement pass that lifts midtone features — shape
+silhouettes, textures — so the image reads crisper at every zoom level,
+not just at 100 %. The algorithm is the same separable-Gaussian unsharp
+mask `color::sharpen` already uses, applied at a much larger radius
+(`σ ≈ 10 px` vs. `0.8 px`). The new module `color::clarity` is a thin
+delegator over `color::sharpen::sharpen_*_inplace_with` — if the two
+passes ever need to diverge (different kernel, different space), we
+extract the shared core; for now the math is genuinely the same, only
+the defaults differ.
+
+### Why this closes the "crispness gap" against Affinity
+
+Capture sharpening (σ = 0.8 px) operates on fine pixel-edge detail, so
+its contribution is only visible at 100 % zoom; at fit-to-window the
+display downsample averages it out. Clarity (σ ≈ 10 px) operates on
+midtone features, which survive display downscaling. Lightroom's
+"Clarity" slider and Affinity's "Detail Refinement" slider both sit in
+this frequency band. Before 6.2, Prvw's output looked slightly "soft" at
+fit-to-window vs. Affinity on the same RAW; after 6.2, the two match
+visibly on sample1 / sample3 for the default slider positions.
+
+### Defaults
+
+- `DEFAULT_RADIUS = 10.0 px`. Affinity's "Detail Refinement" default
+  reads around σ = 20–25 px; we stay more conservative so halos don't
+  appear on high-contrast edges.
+- `DEFAULT_AMOUNT = 0.40`. Moderate — Affinity's default reads around
+  0.5–0.6 by visual inspection; 0.4 gives a pleasant lift without the
+  "processed" look.
+
+### Pipeline position
+
+Runs in display-space RGBA8 / RGBA16F **before** capture sharpening, so
+the order is clarity (mid-frequency lift) → capture sharpening (fine
+edges). Both operate on luminance only; their effects compose cleanly.
+
+### Perf
+
+At σ = 10 the kernel is 61 taps. A 20 MP RGBA8 buffer: 2 separable
+passes × 61 × 20 M ≈ 2.4 B FMAs. On Apple Silicon with NEON and rayon
+that's typically 200–400 ms — not free, but acceptable for "always on"
+default behavior. Users on slow machines can flip the toggle off.
+
+### Settings panel
+
+A new toggle row "Clarity (local contrast)" sits at the top of the
+"Detail" section, directly above "Capture sharpening", mirroring the
+pipeline order. Two sliders follow: "Clarity radius" (2–50 px, label
+format integer-px) and "Clarity amount" (0.00–1.00, two-decimal). Tag
+constants `TAG_CLARITY = 130` / `TAG_CLARITY_RADIUS = 204` /
+`TAG_CLARITY_AMOUNT = 205`. Row indices in the panel layout bumped by
+one from the previous detail/denoise/geometry/output block.
+
+The slider row builder grew a small `LabelFormat` enum
+(`TwoDecimal` | `IntegerPx`) so one factory can emit both "0.40" and
+"10 px" labels without parallel constructors.

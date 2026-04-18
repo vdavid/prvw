@@ -1212,21 +1212,19 @@ impl ApplicationHandler<AppCommand> for App {
                 self.update_shared_state();
             }
 
-            WindowEvent::RedrawRequested => {
-                if self.needs_redraw {
-                    log::trace!("Rendering frame");
-                    let text_blocks = self.build_text_overlay();
-                    let offset = self.content_offset_y();
-                    let rendered = self
-                        .renderer
-                        .as_mut()
-                        .is_some_and(|renderer| renderer.render(&text_blocks, offset));
-                    if rendered {
-                        self.needs_redraw = false;
-                    } else {
-                        if let Some(win) = &self.window {
-                            win.request_redraw();
-                        }
+            WindowEvent::RedrawRequested if self.needs_redraw => {
+                log::trace!("Rendering frame");
+                let text_blocks = self.build_text_overlay();
+                let offset = self.content_offset_y();
+                let rendered = self
+                    .renderer
+                    .as_mut()
+                    .is_some_and(|renderer| renderer.render(&text_blocks, offset));
+                if rendered {
+                    self.needs_redraw = false;
+                } else {
+                    if let Some(win) = &self.window {
+                        win.request_redraw();
                     }
                 }
             }

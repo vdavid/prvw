@@ -95,7 +95,7 @@ const MIDTONE_SLOPE: f32 = 1.08;
 /// Default `MIDTONE_ANCHOR` used by [`apply_default_tone_curve`]. Tuned
 /// empirically against a Preview.app screenshot reference in the Phase 2.5b
 /// rerun; see `docs/notes/raw-support-phase2.md`.
-pub const DEFAULT_MIDTONE_ANCHOR: f32 = 0.40;
+pub const DEFAULT_MIDTONE_ANCHOR: f32 = 0.45;
 
 /// Default filmic asymptote for SDR rendering. 1.0 means the shoulder clips
 /// at display-white, reproducing Phase 4's output bit-for-bit on SDR

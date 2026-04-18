@@ -138,9 +138,18 @@ can keep the intermediate wide-gamut:
    around its luminance axis by `(1 + 0.08)` in linear Rec.2020 space.
    Preserves hue and luminance; adds the "vibrancy" Apple/Affinity bake in
    via per-camera tuning tables.
-7. `color::transform_f32_with_profile` hands the buffer to moxcms for the
-   linear-Rec.2020 → display-ICC conversion in f32. Clamp to [0, 1] on the
-   way out to RGBA8.
+7. **Color conversion, branching on HDR.** SDR path (`hdr_active == false`):
+   `color::transform_f32_with_profile` hands the buffer to moxcms for the
+   linear-Rec.2020 → user's display-ICC conversion in f32. Clamp to [0, 1]
+   on the way out to RGBA8. HDR path (`hdr_active == true`):
+   `color::profiles::rec2020_to_linear_display_p3_inplace` applies a direct
+   3×3 matrix Rec.2020 → linear Display P3 with **no clipping** (Phase 5.2
+   — moxcms clips at 1.0 which eats HDR headroom, and the `CAMetalLayer`
+   is pinned to `extendedLinearDisplayP3` on EDR anyway so a direct matrix
+   to that target is the natural fit). HDR brightness gain
+   (`flags.hdr_gain`, default 2.0) multiplies the buffer before the matrix
+   to push scene-white content into the EDR headroom — without it, HDR
+   output reads timidly SDR-bright rather than "HDR-bright" against Preview.
 7b. **Phase 5: HDR branch.** If the caller's `edr_headroom > 1.0` and
     `flags.hdr_output == true`, skip the `[0, 1]` clamp and quantise the
     f32 buffer into `PixelBuffer::Rgba16F` (half-floats via the `half`
@@ -150,6 +159,16 @@ can keep the intermediate wide-gamut:
     unsharp mask as the 8-bit path, computed in f32 with no `[0, 1]`
     clamp so above-white highlights survive). Otherwise the SDR path
     below fires.
+7c. **Phase 6.2: clarity (local contrast).**
+    `color::clarity::apply_clarity_rgba8_inplace_with` runs a larger-
+    radius (`σ ≈ 10 px`) separable-Gaussian unsharp mask on **luminance
+    only**, lifting midtone features — shape silhouettes, textures — that
+    survive display downscaling so the image reads crisper at every zoom
+    level. Same math as capture sharpening, different defaults. Runs
+    before step 8 so the order is midtone lift → fine-edge sharpening.
+    The HDR branch at 7b calls `apply_clarity_rgba16f_inplace_with` on the
+    half-float buffer with the same semantics. Toggleable via
+    `flags.clarity` (default `true`).
 8. `color::sharpen::sharpen_rgba8_inplace` runs a mild unsharp mask on
    **luminance only** (Rec.709 weights) of the display-space RGBA8 buffer:
    separable Gaussian blur (σ = 0.8 px, 7 taps) on Y in f32, unsharp-mask
@@ -160,6 +179,47 @@ can keep the intermediate wide-gamut:
 
 The linear Rec.2020 `ColorProfile` is built programmatically in
 `color::profiles::linear_rec2020_profile`. No bundled ICC file.
+
+## HDR / EDR flow (Phase 5 + 5.2)
+
+Whether a given decode lands in HDR or SDR is decided once, up front, in
+`raw::decode`:
+
+```
+hdr_active = flags.hdr_output && edr_headroom > 1.0
+```
+
+`edr_headroom` is threaded in from `app.rs` (queried via
+`color::display_profile::current_edr_headroom` on `NSScreen`). `App` also
+tracks `current_image_is_hdr` so the window's `CAMetalLayer` can be flipped
+between SDR and EDR modes per-decode — `edr_should_be_active` fuses all three
+inputs (flag, headroom, image-is-HDR).
+
+Once inside `raw::decode`, `hdr_active` gates four different behaviors:
+
+1. **Tone-curve peak.** `DEFAULT_PEAK_HDR` (4.0) vs `DEFAULT_PEAK_SDR` (1.0)
+   picks the filmic shoulder's asymptote. HDR lets above-1.0 content live;
+   SDR clips at display-white.
+2. **Color conversion** (see step 7 in the pipeline list above). Direct
+   Rec.2020 → linear Display P3 matrix for HDR; moxcms → user's display
+   ICC for SDR.
+3. **HDR brightness gain.** `flags.hdr_gain` (default 2.0) multiplies the
+   post-tone-curve buffer before the matrix, pushing scene-white into EDR
+   headroom. SDR path ignores the knob. See
+   `docs/notes/raw-support-phase5.md` Phase 5.2 for rationale.
+4. **Output format.** `rec2020_to_rgba16f` (preserving above-1.0) vs
+   `rec2020_to_rgba8` (clamp + quantize). Sharpening / clarity pick the
+   f16 or 8-bit variant to match.
+
+The renderer side observes the same decision via `App::edr_should_be_active`
+and calls `color::display_profile::apply_edr_state` to flip the
+`CAMetalLayer` between `kCGColorSpaceExtendedLinearDisplayP3 + RGBA16Float`
+(HDR) and the user's display ICC + `BGRA8Unorm_sRGB` (SDR). Two diagnostic
+peak-value log lines (`peak linear value` pre-conversion,
+`peak post-ICC` post-conversion, plus `peak f16` on the HDR-output summary
+line) make the decision audit-able without a debugger — if HDR looks wrong,
+the logs tell you whether the pipeline clipped, quantized, or rendered the
+above-1.0 range away.
 
 ## Testing the RAW pipeline
 

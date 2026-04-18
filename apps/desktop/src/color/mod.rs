@@ -2,6 +2,7 @@
 //! Settings panel.
 
 pub mod chroma_denoise;
+pub mod clarity;
 pub mod dcp;
 pub mod delta_e;
 pub mod highlight_recovery;

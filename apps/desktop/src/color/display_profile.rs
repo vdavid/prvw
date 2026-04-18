@@ -32,7 +32,7 @@ unsafe extern "C" {
     /// Create a color space from ICC profile data.
     fn CGColorSpaceCreateWithICCData(data: CFDataRef) -> CGColorSpaceRef;
 
-    /// Create a named color space (for EDR: kCGColorSpaceExtendedDisplayP3).
+    /// Create a named color space (for EDR: kCGColorSpaceExtendedLinearDisplayP3).
     fn CGColorSpaceCreateWithName(name: CFStringRef) -> CGColorSpaceRef;
 
     /// Release a CoreFoundation object.
@@ -51,14 +51,19 @@ unsafe extern "C" {
         length: isize,
     ) -> CFDataRef;
 
-    /// `kCGColorSpaceExtendedDisplayP3`: Display-P3 primaries with the
-    /// sRGB-style transfer function extended to signed values. Our ICC
-    /// pipeline outputs gamma-encoded values in the display profile's
-    /// space (sRGB or Display-P3 transfer curve) even in the f16 path,
-    /// so we match by naming the same non-linear transfer with extended
-    /// range. Using the linear variant here double-decodes and
-    /// looks wrong.
-    static kCGColorSpaceExtendedDisplayP3: CFStringRef;
+    /// `kCGColorSpaceExtendedLinearDisplayP3`: Display-P3 primaries with a
+    /// linear (gamma 1.0) transfer function and signed / above-1.0 values.
+    /// The HDR RAW path in `decoding::raw` bypasses `moxcms` and applies a
+    /// direct `linear Rec.2020 → linear Display P3` matrix
+    /// (`color::profiles::REC2020_TO_LINEAR_DISPLAY_P3_D65`), so the f16
+    /// texture we hand to Metal is already linear — naming the linear
+    /// colorspace here matches that contract and keeps above-1.0
+    /// highlights addressable by the EDR compositor. An earlier version
+    /// of this path fed gamma-encoded moxcms output through
+    /// `kCGColorSpaceExtendedDisplayP3`; we abandoned that when we
+    /// discovered moxcms was clipping at 1.0 regardless, which defeated
+    /// the whole HDR pipeline.
+    static kCGColorSpaceExtendedLinearDisplayP3: CFStringRef;
 }
 
 /// `MTLPixelFormatRGBA16Float` from Metal's `MTLPixelFormat` enum.
@@ -213,8 +218,8 @@ pub fn set_layer_colorspace(window: &Window, icc_bytes: &[u8]) {
 /// - `pixelFormat` — `MTLPixelFormatRGBA16Float` (115) when EDR is active,
 ///   `MTLPixelFormatBGRA8Unorm_sRGB` (81) when not. Must match the wgpu
 ///   `SurfaceConfiguration.format` the caller set.
-/// - `colorspace` — `kCGColorSpaceExtendedDisplayP3` for EDR so the
-///   compositor reads our non-linear, above-1.0 values as HDR headroom.
+/// - `colorspace` — `kCGColorSpaceExtendedLinearDisplayP3` for EDR so the
+///   compositor reads our linear, above-1.0 values as HDR headroom.
 ///   On SDR, the caller's existing `set_layer_colorspace` (ICC-based) is
 ///   the right source of truth; pass the display ICC through `icc_for_sdr`
 ///   and this function restores it.
@@ -278,18 +283,17 @@ pub fn set_layer_edr_state(window: &Window, edr_active: bool, icc_for_sdr: &[u8]
         let _: () = msg_send![metal_layer, setPixelFormat: pixel_format];
 
         if edr_active {
-            // `kCGColorSpaceExtendedDisplayP3`: Display-P3 primaries with
-            // the sRGB-style transfer curve, signed values. Our ICC
-            // pipeline encodes the f16 texture using the display profile's
-            // (non-linear) transfer function, so naming a non-linear
-            // colorspace here avoids double-decoding. The "Extended"
-            // variant is what keeps above-1.0 values alive — plain
-            // `kCGColorSpaceDisplayP3` clamps at 1.0.
-            let name = kCGColorSpaceExtendedDisplayP3;
+            // Linear Display P3, signed / above-1.0 values. Matches the
+            // linear f16 output from the HDR path's direct-matrix color
+            // conversion (see `decoding::raw` and
+            // `color::profiles::rec2020_to_linear_display_p3_inplace`).
+            // The "Extended" variant is what keeps above-1.0 values
+            // alive — plain `kCGColorSpaceDisplayP3` clamps at 1.0.
+            let name = kCGColorSpaceExtendedLinearDisplayP3;
             let color_space = CGColorSpaceCreateWithName(name);
             if color_space.is_null() {
                 log::warn!(
-                    "CGColorSpaceCreateWithName(kCGColorSpaceExtendedDisplayP3) returned null"
+                    "CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3) returned null"
                 );
             } else {
                 let sel = objc2::sel!(setColorspace:);
@@ -301,7 +305,7 @@ pub fn set_layer_edr_state(window: &Window, edr_active: bool, icc_for_sdr: &[u8]
                 send(metal_layer, sel, color_space);
                 CFRelease(color_space);
                 log::info!(
-                    "render: CAMetalLayer EDR on (wantsExtendedDynamicRangeContent=YES, pixelFormat=RGBA16Float, colorspace=extendedDisplayP3)"
+                    "render: CAMetalLayer EDR on (wantsExtendedDynamicRangeContent=YES, pixelFormat=RGBA16Float, colorspace=extendedLinearDisplayP3)"
                 );
             }
         } else {

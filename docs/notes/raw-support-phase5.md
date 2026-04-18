@@ -353,3 +353,99 @@ supported RAW format**. That's enforced by:
 
 The Phase 4 contract — "flipping any pipeline stage off flushes and
 re-decodes" — still holds for the new `hdr_output` flag.
+
+## Phase 5.2 — HDR rendering fix: direct matrix + brightness gain
+
+The Phase 5.1 HDR pipeline wired a half-float buffer, an EDR-capable
+`MTLPixelFormat`, and `wantsExtendedDynamicRangeContent = YES` on the
+`CAMetalLayer`. Logs showed everything was going into EDR mode correctly
+(EDR headroom 8.92 on the MBP XDR, OS granted EDR, f16 texture bound).
+But visually the result was barely distinguishable from SDR — and on the
+same XDR, Preview.app rendered the same RAW noticeably brighter.
+
+### Root cause
+
+Two stacked issues, both fatal to the HDR pipeline:
+
+1. **moxcms clipped at 1.0.** The linear Rec.2020 → display-ICC transform
+   runs through moxcms regardless of HDR mode. For typical display ICCs
+   (sRGB-ish), moxcms gamut-maps outputs to `[0, 1]` at quantize time.
+   Logged pre-ICC peak on `sample3.arw` was `1.34`; post-ICC peak was
+   `1.00` — the whole above-white range the tone curve preserved got
+   eaten before the half-float quantizer saw it. Only content that
+   clawed back above 1.0 later (clarity + capture-sharpening overshoot)
+   ever reached the EDR compositor.
+
+2. **Gamma-encoded colorspace on the Metal layer.** The layer was set to
+   `kCGColorSpaceExtendedDisplayP3` (gamma-encoded with sRGB-style TRC,
+   extended-range signed values). Matched the gamma-encoded output
+   moxcms produced, so the values rendered approximately correctly
+   visually — but combined with #1 above, there was nothing above white
+   to render anyway.
+
+### Fix
+
+Two-part change in `color/` + `decoding/raw.rs`:
+
+- **Direct matrix for color conversion on the HDR branch.** Added
+  `color::profiles::REC2020_TO_LINEAR_DISPLAY_P3_D65` — the 3×3 matrix
+  composed offline from `XYZ_TO_DISPLAY_P3_D65 · REC2020_TO_XYZ_D65`,
+  verified in the unit tests.
+  `color::profiles::rec2020_to_linear_display_p3_inplace` applies it
+  rayon-parallel, in place, without clipping. `decoding::raw::decode`
+  branches: SDR keeps `transform_f32_with_profile` (moxcms → user's
+  display ICC); HDR calls the direct matrix. Values above 1.0 survive
+  end to end.
+- **Linear-variant Metal layer colorspace.** Swapped
+  `kCGColorSpaceExtendedDisplayP3` → `kCGColorSpaceExtendedLinearDisplayP3`
+  in `color::display_profile::apply_edr_state`. The `Extended` prefix
+  is what keeps above-1.0 values alive; the `Linear` prefix matches the
+  direct-matrix output (no gamma round-trip).
+
+Trade-off to name: HDR output uses a fixed Display P3 target, not the
+user's calibrated display ICC. On EDR, the OS's compositor takes over
+colorspace conversion regardless of what we'd put in the layer — we're
+constrained to a well-known CG-named colorspace the compositor
+understands. SDR output still honors the user's ICC. For well-behaved
+display profiles close to P3 the mismatch is invisible; for oddball
+calibrations users might see a subtle SDR ↔ HDR color shift on the same
+image. That's inherent to going into EDR mode.
+
+### Verification
+
+Post-fix on `sample3.arw` (MBP XDR, headroom 8.92):
+
+```
+pre-ICC peak:  1.34 (above-white content from tone-curve shoulder)
+post-ICC peak: 1.34 (preserved — was 1.00 before)
+peak f16:      2.00 (matrix + clarity / sharpen overshoot on top)
+```
+
+SDR toggle still works end to end (layer flips back to the user's
+display ICC, moxcms path runs, `Bgra8UnormSrgb` format). Toggling
+Settings → RAW → Output → HDR / EDR output now produces a clearly
+visible change.
+
+### Second fix: HDR brightness gain
+
+Even after the matrix/colorspace fix, the HDR output was visibly dimmer
+than Preview.app's on the same RAW and same XDR. The tone-curve output
+peaks at `1.34` linear; the filmic Reinhard shoulder (asymptote at 4.0)
+barely uses the 0–4 headroom for typical scene content — a pixel at
+`x = 1.3` maps to `y = 1.32`, only 32 % above SDR reference white.
+Preview appears to apply a scene-white-to-HDR-reference gain (BT.2408-style,
+~1.5× – 2×) so the whole image reads "HDR-bright," not just "detail
+preserved in highlights."
+
+Added `RawPipelineFlags.hdr_gain` (default `2.0`, range `0.5 – 4.0`),
+applied as a scalar multiply on the tone-curve output of `rec2020` **on
+the HDR branch only**, before the direct matrix. Exposed as a slider
+under Settings → RAW → Output → HDR / EDR output. `hdr_gain = 1.0` is a
+no-op and reproduces pre-5.2 HDR behavior; SDR path is unaffected.
+
+Ships at default `2.0` because first-run on an XDR should *look* like
+HDR, not like SDR with slightly more headroom. Users who want more
+restrained output can drop it to `1.0`; users on brighter displays or
+who want Apple-HDR-style punch can push to `3.0+`. Log line
+`RAW pipeline peak post-ICC` tracks the effective peak after the gain
+so users can see the numeric effect without guessing.

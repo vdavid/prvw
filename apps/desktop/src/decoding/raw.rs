@@ -363,13 +363,27 @@ pub(super) fn decode(
     // keeps relative luminance correct; doing it after gamma encoding would
     // distort midtones.
     if flags.baseline_exposure {
-        let ev = baseline_exposure_ev(decoder.as_ref(), &raw);
-        log::debug!(
-            "RAW baseline exposure: {:+.2} EV ({:.3}x linear gain) for {}",
-            ev,
-            2.0_f32.powf(ev),
-            path.display()
-        );
+        let resolved = baseline_exposure_ev(decoder.as_ref(), &raw);
+        // User offset on top of the camera / default baseline. Final EV is
+        // re-clamped to ±2 EV so a malformed settings.json can't runaway.
+        let ev = clamp_ev(resolved + flags.baseline_exposure_offset);
+        if flags.baseline_exposure_offset.abs() > f32::EPSILON {
+            log::debug!(
+                "RAW baseline exposure: {:+.2} EV (resolved {:+.2}, user offset {:+.2}, {:.3}x linear gain) for {}",
+                ev,
+                resolved,
+                flags.baseline_exposure_offset,
+                2.0_f32.powf(ev),
+                path.display()
+            );
+        } else {
+            log::debug!(
+                "RAW baseline exposure: {:+.2} EV ({:.3}x linear gain) for {}",
+                ev,
+                2.0_f32.powf(ev),
+                path.display()
+            );
+        }
         apply_exposure(&mut rec2020, ev);
     }
 
@@ -539,18 +553,64 @@ pub(super) fn decode(
 
     check_cancelled(cancelled)?;
 
-    // Final color conversion: linear Rec.2020 → display ICC, in-place on
-    // floats. Staying in f32 through this hop preserves any values that
-    // landed outside [0, 1] during the camera-matrix multiply (which can
-    // happen for saturated colors outside the display's gamut — the ICC
-    // transform gamut-maps them instead of us pre-clipping).
-    let source_profile = color::linear_rec2020_profile();
-    color::transform_f32_with_profile(
-        &mut rec2020,
-        &source_profile,
-        target_icc,
-        use_relative_colorimetric,
-    );
+    // Final color conversion. Two paths:
+    //
+    // - **SDR:** linear Rec.2020 → user's display ICC via moxcms. Honors
+    //   whatever calibration profile the display reports (including
+    //   custom-calibrated profiles). moxcms gamut-maps out-of-gamut
+    //   colors and clamps to [0, 1] on the way out, which is exactly what
+    //   the 8-bit quantizer needs.
+    //
+    // - **HDR:** bypass moxcms entirely; apply a direct linear Rec.2020 →
+    //   linear Display P3 matrix. Required for two reasons: (1) moxcms
+    //   clips anything above 1.0, which would erase the above-white
+    //   highlights this whole path exists to preserve; (2) when the
+    //   `CAMetalLayer` is in `extendedLinearDisplayP3`, the compositor
+    //   contractually expects linear Display P3 input — feeding it
+    //   user-ICC values would be interpreted as P3 and render wrong
+    //   colors. The trade-off: HDR output won't honor the user's
+    //   display-ICC calibration (the OS's P3 → panel pipeline does),
+    //   while SDR output still does. For well-behaved display profiles
+    //   close to P3 that's invisible; for oddball calibrations users
+    //   may see a subtle shift between SDR and HDR rendering of the
+    //   same image. That's inherent to going into EDR mode, not a
+    //   choice we're making.
+    if hdr_active {
+        // HDR brightness gain: multiply the tone-curve output by
+        // `flags.hdr_gain` before the Rec.2020 → Display P3 matrix. Pushes
+        // scene-white content into the EDR headroom so the image reads
+        // genuinely "HDR-bright" on an XDR / OLED panel, matching what
+        // Preview.app / Photos do on the same display. Applied pre-matrix
+        // (not post) because the matrix is linear, so gain and matrix
+        // commute, and doing the scalar multiply on the smaller
+        // RGB-only buffer is the natural spot. `hdr_gain == 1.0` is a
+        // no-op; SDR path always behaves as if gain = 1.0.
+        if (flags.hdr_gain - 1.0).abs() > f32::EPSILON {
+            rec2020.par_iter_mut().for_each(|v| *v *= flags.hdr_gain);
+        }
+        color::profiles::rec2020_to_linear_display_p3_inplace(&mut rec2020);
+    } else {
+        let source_profile = color::linear_rec2020_profile();
+        color::transform_f32_with_profile(
+            &mut rec2020,
+            &source_profile,
+            target_icc,
+            use_relative_colorimetric,
+        );
+    }
+
+    // HDR diagnostic #2: peak of the display-space f32 buffer right after
+    // the color conversion. With the direct-matrix path above, this
+    // should track the pre-ICC peak (modulo gamut projection) and preserve
+    // above-white content — unlike the moxcms path, which clipped at 1.0.
+    if flags.hdr_output {
+        let peak_post_icc = rec2020.par_iter().copied().reduce(|| 0.0_f32, f32::max);
+        log::info!(
+            "RAW pipeline peak post-ICC: {:.2} for {}",
+            peak_post_icc,
+            path.display()
+        );
+    }
 
     let orientation = decoder
         .raw_metadata(&src, &params)
@@ -568,6 +628,15 @@ pub(super) fn decode(
     if hdr_active {
         let mut half_rgba = rec2020_to_rgba16f(&rec2020);
         drop(rec2020);
+        if flags.clarity {
+            color::clarity::apply_clarity_rgba16f_inplace_with(
+                &mut half_rgba,
+                width,
+                height,
+                flags.clarity_radius,
+                flags.clarity_amount,
+            );
+        }
         if flags.capture_sharpening {
             color::sharpen::sharpen_rgba16f_inplace_with(
                 &mut half_rgba,
@@ -577,8 +646,18 @@ pub(super) fn decode(
                 flags.sharpen_amount,
             );
         }
-        log::debug!(
-            "RAW HDR output: {width}x{height} RGBA16F, peak {peak:.1}, headroom {edr_headroom:.2}"
+        // HDR diagnostic #3: peak of the half-float output just before we
+        // hand it to the renderer. Decodes the f16 bit pattern per RGB
+        // channel (skipping alpha) so we see what the Metal compositor will
+        // actually get. If this is ≤ 1.0, the EDR surface has nothing above
+        // display-white to show regardless of headroom.
+        let peak_half = half_rgba
+            .chunks_exact(4)
+            .flat_map(|p| [p[0], p[1], p[2]])
+            .map(|bits| half::f16::from_bits(bits).to_f32())
+            .fold(0.0_f32, f32::max);
+        log::info!(
+            "RAW HDR output: {width}x{height} RGBA16F, peak f16 {peak_half:.2}, shoulder peak {peak:.1}, headroom {edr_headroom:.2}"
         );
         return Ok((
             DecodedImage::from_rgba16f(width, height, half_rgba),
@@ -590,6 +669,20 @@ pub(super) fn decode(
     // transform has already placed every in-gamut color in the target space.
     let mut rgba = rec2020_to_rgba8(&rec2020);
     drop(rec2020); // free the big float buffer (~12 bytes/pixel) before returning
+
+    // Clarity (local contrast). Larger-radius unsharp mask on the same
+    // display-space RGBA8 buffer, run before capture sharpening so the
+    // order is midtone lift → fine-edge sharpening. Luminance-only, same
+    // invariants as capture sharpening.
+    if flags.clarity {
+        color::clarity::apply_clarity_rgba8_inplace_with(
+            &mut rgba,
+            width,
+            height,
+            flags.clarity_radius,
+            flags.clarity_amount,
+        );
+    }
 
     // Capture sharpening. Runs on the display-space RGBA8 buffer, right
     // after the ICC transform and before orientation, so we sharpen in

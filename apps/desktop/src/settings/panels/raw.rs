@@ -1,20 +1,23 @@
 //! "RAW" panel: per-stage toggles for the RAW decode pipeline + a custom
-//! DCP directory picker (Phase 3.7 + 4.0) + a "Tuning" section with three
-//! continuous-valued sliders (Phase 6.0).
+//! DCP directory picker (Phase 3.7 + 4.0) + continuous-valued sliders
+//! co-located with each parametric toggle (Phase 6.0 + 6.1.1 + 6.2).
 //!
 //! Each flag row mirrors the pattern in the other panels: title label on the
 //! left, NSSwitch on the right, secondary description directly underneath.
 //! Section headers group the toggles into "Sensor corrections (DNG only)",
 //! "Color", "Tone", "Detail", "Denoise" (Phase 6.1 — chroma noise reduction
 //! via a mild Gaussian blur on Cb / Cr), "Geometry" (Phase 4.0 — lens
-//! correction via `lensfun-rs`), and "Output". The Phase 6.0 "Tuning"
-//! section adds three
-//! NSSlider rows (sharpening amount, saturation boost, tone midtone anchor);
-//! sliders are non-continuous, so moving the knob fires exactly one
-//! `SetRawPipelineFlags` per mouse release, avoiding decode-spam during
-//! drag. The numeric label next to each slider updates on the same release.
-//! A final "Custom DCP directory" row + "Reset to defaults" button live at
-//! the bottom.
+//! correction via `lensfun-rs`), and "Output". Sliders sit directly under
+//! their matching toggles (baseline exposure offset under baseline exposure,
+//! saturation amount under saturation boost, midtone anchor under default
+//! tone curve, sharpening amount under capture sharpening, Phase 6.2's
+//! clarity radius + amount under the new clarity toggle). Sliders are
+//! non-continuous, so moving a knob fires exactly one `SetRawPipelineFlags`
+//! per mouse release, avoiding decode-spam during drag. Two label formats
+//! are supported via a small `LabelFormat` enum: `TwoDecimal` for the
+//! 0.0 – 1.0-ish knobs and `IntegerPx` for the clarity-radius slider's
+//! 2 – 50 px range. A final "Custom DCP directory" row + "Reset to
+//! defaults" button live at the bottom.
 //!
 //! All widgets write back through a single `AppCommand::SetRawPipelineFlags`
 //! so the executor flushes the image cache and re-decodes once per change.
@@ -33,6 +36,7 @@ use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString, NSURL};
 
 use crate::commands::{self, AppCommand};
 use crate::decoding::{
+    BASELINE_EXPOSURE_OFFSET_RANGE, CLARITY_AMOUNT_RANGE, CLARITY_RADIUS_RANGE, HDR_GAIN_RANGE,
     MIDTONE_ANCHOR_RANGE, RawPipelineFlags, SATURATION_BOOST_RANGE, SHARPEN_AMOUNT_RANGE,
 };
 use crate::platform::macos::ui_common::{FlippedView, as_view, make_bold_label, make_label};
@@ -50,7 +54,8 @@ const TAG_SATURATION_BOOST: isize = 113;
 const TAG_HIGHLIGHT_RECOVERY: isize = 120;
 const TAG_DEFAULT_TONE_CURVE: isize = 121;
 const TAG_DCP_TONE_CURVE: isize = 122;
-const TAG_CAPTURE_SHARPENING: isize = 130;
+const TAG_CLARITY: isize = 130;
+const TAG_CAPTURE_SHARPENING: isize = 131;
 const TAG_LENS_CORRECTION: isize = 140;
 const TAG_HDR_OUTPUT: isize = 150;
 /// "Denoise" section toggle. The spec nominally pinned this at 123 inside
@@ -58,11 +63,18 @@ const TAG_HDR_OUTPUT: isize = 150;
 /// accidental collisions impossible as sections grow — so we park it at
 /// 160, matching the pattern the other sections follow.
 const TAG_CHROMA_DENOISE: isize = 160;
-// Phase 6.0 Tuning sliders. Kept in a separate 200-range so a stray tag
-// collision with the toggles above is impossible.
-const TAG_SHARPEN_AMOUNT: isize = 200;
-const TAG_SATURATION_AMOUNT: isize = 201;
-const TAG_MIDTONE_ANCHOR: isize = 202;
+// Sliders. Kept in a separate 200-range so a stray tag collision with
+// the toggles above is impossible. Since 6.1.1, sliders are co-located
+// with their toggles (e.g., saturation boost slider sits under the
+// saturation boost switch) — the tag range is still separate, but the
+// layout order no longer implies a standalone "Tuning" section.
+const TAG_BASELINE_EXPOSURE_OFFSET: isize = 200;
+const TAG_SHARPEN_AMOUNT: isize = 201;
+const TAG_SATURATION_AMOUNT: isize = 202;
+const TAG_MIDTONE_ANCHOR: isize = 203;
+const TAG_CLARITY_RADIUS: isize = 204;
+const TAG_CLARITY_AMOUNT: isize = 205;
+const TAG_HDR_GAIN: isize = 206;
 
 /// Ivars are raw pointers so the delegate can read current toggle states
 /// without holding Rust borrows through AppKit message dispatch. They all
@@ -79,17 +91,26 @@ struct RawDelegateIvars {
     highlight_recovery: *const NSSwitch,
     default_tone_curve: *const NSSwitch,
     dcp_tone_curve: *const NSSwitch,
+    clarity: *const NSSwitch,
     capture_sharpening: *const NSSwitch,
     chroma_denoise: *const NSSwitch,
     lens_correction: *const NSSwitch,
     hdr_output: *const NSSwitch,
     // Phase 6.0 Tuning sliders + their right-hand value labels.
+    baseline_exposure_offset_slider: *const NSSlider,
+    baseline_exposure_offset_label: *const NSTextField,
     sharpen_amount_slider: *const NSSlider,
     sharpen_amount_label: *const NSTextField,
     saturation_amount_slider: *const NSSlider,
     saturation_amount_label: *const NSTextField,
     midtone_anchor_slider: *const NSSlider,
     midtone_anchor_label: *const NSTextField,
+    clarity_radius_slider: *const NSSlider,
+    clarity_radius_label: *const NSTextField,
+    clarity_amount_slider: *const NSSlider,
+    clarity_amount_label: *const NSTextField,
+    hdr_gain_slider: *const NSSlider,
+    hdr_gain_label: *const NSTextField,
     // Custom DCP dir row.
     custom_dcp_field: *const NSTextField,
 }
@@ -131,10 +152,12 @@ define_class!(
             let flags = self.read_current_flags();
             self.refresh_slider_labels(flags);
             log::debug!(
-                "RAW panel: tuning slider -> sharpen={:.2}, sat={:.2}, midtone={:.2}",
+                "RAW panel: tuning slider -> sharpen={:.2}, sat={:.2}, midtone={:.2}, clarity r={:.0}px a={:.2}",
                 flags.sharpen_amount,
                 flags.saturation_boost_amount,
                 flags.midtone_anchor,
+                flags.clarity_radius,
+                flags.clarity_amount,
             );
             commands::send_command(AppCommand::SetRawPipelineFlags(flags));
         }
@@ -217,13 +240,18 @@ impl RawDelegate {
             highlight_recovery: switch_is_on(ivars.highlight_recovery),
             default_tone_curve: switch_is_on(ivars.default_tone_curve),
             dcp_tone_curve: switch_is_on(ivars.dcp_tone_curve),
+            clarity: switch_is_on(ivars.clarity),
             capture_sharpening: switch_is_on(ivars.capture_sharpening),
             chroma_denoise: switch_is_on(ivars.chroma_denoise),
             lens_correction: switch_is_on(ivars.lens_correction),
             hdr_output: switch_is_on(ivars.hdr_output),
+            baseline_exposure_offset: slider_value(ivars.baseline_exposure_offset_slider),
             sharpen_amount: slider_value(ivars.sharpen_amount_slider),
             saturation_boost_amount: slider_value(ivars.saturation_amount_slider),
             midtone_anchor: slider_value(ivars.midtone_anchor_slider),
+            clarity_radius: slider_value(ivars.clarity_radius_slider),
+            clarity_amount: slider_value(ivars.clarity_amount_slider),
+            hdr_gain: slider_value(ivars.hdr_gain_slider),
         }
     }
 
@@ -243,16 +271,24 @@ impl RawDelegate {
         set_switch(ivars.highlight_recovery, flags.highlight_recovery);
         set_switch(ivars.default_tone_curve, flags.default_tone_curve);
         set_switch(ivars.dcp_tone_curve, flags.dcp_tone_curve);
+        set_switch(ivars.clarity, flags.clarity);
         set_switch(ivars.capture_sharpening, flags.capture_sharpening);
         set_switch(ivars.chroma_denoise, flags.chroma_denoise);
         set_switch(ivars.lens_correction, flags.lens_correction);
         set_switch(ivars.hdr_output, flags.hdr_output);
+        set_slider(
+            ivars.baseline_exposure_offset_slider,
+            flags.baseline_exposure_offset,
+        );
         set_slider(ivars.sharpen_amount_slider, flags.sharpen_amount);
         set_slider(
             ivars.saturation_amount_slider,
             flags.saturation_boost_amount,
         );
         set_slider(ivars.midtone_anchor_slider, flags.midtone_anchor);
+        set_slider(ivars.clarity_radius_slider, flags.clarity_radius);
+        set_slider(ivars.clarity_amount_slider, flags.clarity_amount);
+        set_slider(ivars.hdr_gain_slider, flags.hdr_gain);
         self.refresh_slider_labels(flags);
     }
 
@@ -260,9 +296,16 @@ impl RawDelegate {
     /// Called on slider release and on reset.
     fn refresh_slider_labels(&self, flags: RawPipelineFlags) {
         let ivars = self.ivars();
+        set_label_value(
+            ivars.baseline_exposure_offset_label,
+            flags.baseline_exposure_offset,
+        );
         set_label_value(ivars.sharpen_amount_label, flags.sharpen_amount);
         set_label_value(ivars.saturation_amount_label, flags.saturation_boost_amount);
         set_label_value(ivars.midtone_anchor_label, flags.midtone_anchor);
+        set_label_px(ivars.clarity_radius_label, flags.clarity_radius);
+        set_label_value(ivars.clarity_amount_label, flags.clarity_amount);
+        set_label_value(ivars.hdr_gain_label, flags.hdr_gain);
     }
 
     fn clear_custom_dcp_field(&self) {
@@ -326,6 +369,19 @@ fn set_label_value(ptr: *const NSTextField, value: f32) {
     // 0.00 – 1.00, 0.00 – 0.30, and 0.20 – 0.50. Wider resolution would
     // just add noise without conveying more signal to the user.
     let text = format!("{value:.2}");
+    unsafe {
+        (*ptr).setStringValue(&NSString::from_str(&text));
+    }
+}
+
+/// Like [`set_label_value`] but renders an integer pixel count, as in the
+/// Clarity radius slider where the 2–50 range is too coarse to benefit
+/// from sub-pixel resolution.
+fn set_label_px(ptr: *const NSTextField, value: f32) {
+    if ptr.is_null() {
+        return;
+    }
+    let text = format!("{:.0} px", value.round());
     unsafe {
         (*ptr).setStringValue(&NSString::from_str(&text));
     }
@@ -421,6 +477,25 @@ struct SliderRow {
     extras: Vec<Retained<AnyObject>>,
 }
 
+/// How to render the slider's value-label text. Most knobs are 0.0–1.0-ish
+/// floats (two decimals read right); the Clarity radius slider is 2–50 px
+/// and reads better as an integer with a unit suffix.
+#[derive(Clone, Copy)]
+enum LabelFormat {
+    TwoDecimal,
+    IntegerPx,
+}
+
+impl LabelFormat {
+    fn render(self, v: f32) -> String {
+        match self {
+            LabelFormat::TwoDecimal => format!("{v:.2}"),
+            LabelFormat::IntegerPx => format!("{:.0} px", v.round()),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // Straight-through factory; struct-ifying obscures the AppKit wiring.
 fn build_slider_row(
     title: &str,
     description: &str,
@@ -428,6 +503,7 @@ fn build_slider_row(
     min: f32,
     max: f32,
     tag: isize,
+    label_format: LabelFormat,
     mtm: MainThreadMarker,
 ) -> SliderRow {
     let title_label = make_label(title, 13.0, mtm);
@@ -467,7 +543,7 @@ fn build_slider_row(
     };
     slider_min_width.setActive(true);
 
-    let value_label = make_label(&format!("{value:.2}"), 12.0, mtm);
+    let value_label = make_label(&label_format.render(value), 12.0, mtm);
     value_label.setAlignment(NSTextAlignment(1)); // NSTextAlignmentRight
     value_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
     unsafe {
@@ -649,7 +725,7 @@ pub(crate) fn build(
         ),
         build_flag_row(
             "Baseline exposure",
-            "Lift exposure by +0.5 EV or the camera-specified value.",
+            "Apply the camera's intended baseline exposure (or a neutral default) plus the user offset below.",
             flags.baseline_exposure,
             TAG_BASELINE_EXPOSURE,
             mtm,
@@ -670,7 +746,7 @@ pub(crate) fn build(
         ),
         build_flag_row(
             "Saturation boost",
-            "Mild global chroma lift (+8 %) in linear Rec.2020.",
+            "Mild global chroma lift in linear Rec.2020.",
             flags.saturation_boost,
             TAG_SATURATION_BOOST,
             mtm,
@@ -694,6 +770,13 @@ pub(crate) fn build(
             "Per-camera curve from a matched DCP profile. Auto-skipped for fuzzy-family matches.",
             flags.dcp_tone_curve,
             TAG_DCP_TONE_CURVE,
+            mtm,
+        ),
+        build_flag_row(
+            "Clarity (local contrast)",
+            "Larger-radius unsharp mask on luminance. Lifts midtone features so the image reads crisper.",
+            flags.clarity,
+            TAG_CLARITY,
             mtm,
         ),
         build_flag_row(
@@ -739,9 +822,23 @@ pub(crate) fn build(
     let denoise_header = make_section_header("Denoise", mtm);
     let geometry_header = make_section_header("Geometry", mtm);
     let output_header = make_section_header("Output", mtm);
-    let tuning_header = make_section_header("Tuning", mtm);
-
-    // ── Phase 6.0 Tuning sliders ──────────────────────────────────────
+    // Sliders live directly under their matching toggle instead of in a
+    // standalone "Tuning" section (since 6.1.1). That makes the
+    // tune-by-eye UX obvious: the slider for each parametric stage sits
+    // inside the section header that names it, right below the on/off
+    // switch. The sliders still use their own TAG range (see above) and
+    // share a single `AppCommand::SetRawPipelineFlags` path with the
+    // toggles.
+    let baseline_exposure_offset_row = build_slider_row(
+        "Baseline exposure offset",
+        "User offset in EV stops on top of the camera / default baseline.",
+        flags.baseline_exposure_offset,
+        BASELINE_EXPOSURE_OFFSET_RANGE.0,
+        BASELINE_EXPOSURE_OFFSET_RANGE.1,
+        TAG_BASELINE_EXPOSURE_OFFSET,
+        LabelFormat::TwoDecimal,
+        mtm,
+    );
     let sharpen_row = build_slider_row(
         "Sharpening amount",
         "Unsharp-mask strength on the luminance-only capture sharpen pass.",
@@ -749,15 +846,17 @@ pub(crate) fn build(
         SHARPEN_AMOUNT_RANGE.0,
         SHARPEN_AMOUNT_RANGE.1,
         TAG_SHARPEN_AMOUNT,
+        LabelFormat::TwoDecimal,
         mtm,
     );
     let saturation_row = build_slider_row(
-        "Saturation boost",
-        "Global chroma lift applied in linear Rec.2020 (post-tone, pre-ICC).",
+        "Saturation amount",
+        "Chroma lift strength in linear Rec.2020 (post-tone, pre-ICC).",
         flags.saturation_boost_amount,
         SATURATION_BOOST_RANGE.0,
         SATURATION_BOOST_RANGE.1,
         TAG_SATURATION_AMOUNT,
+        LabelFormat::TwoDecimal,
         mtm,
     );
     let midtone_row = build_slider_row(
@@ -767,22 +866,65 @@ pub(crate) fn build(
         MIDTONE_ANCHOR_RANGE.0,
         MIDTONE_ANCHOR_RANGE.1,
         TAG_MIDTONE_ANCHOR,
+        LabelFormat::TwoDecimal,
+        mtm,
+    );
+    let clarity_radius_row = build_slider_row(
+        "Clarity radius",
+        "Gaussian σ in pixels for the local-contrast pass. Larger = bigger features.",
+        flags.clarity_radius,
+        CLARITY_RADIUS_RANGE.0,
+        CLARITY_RADIUS_RANGE.1,
+        TAG_CLARITY_RADIUS,
+        LabelFormat::IntegerPx,
+        mtm,
+    );
+    let clarity_amount_row = build_slider_row(
+        "Clarity amount",
+        "Strength of the local-contrast unsharp mask (0 = off, 1 = aggressive).",
+        flags.clarity_amount,
+        CLARITY_AMOUNT_RANGE.0,
+        CLARITY_AMOUNT_RANGE.1,
+        TAG_CLARITY_AMOUNT,
+        LabelFormat::TwoDecimal,
+        mtm,
+    );
+    let hdr_gain_row = build_slider_row(
+        "HDR brightness gain",
+        "Multiplier pushing scene white into EDR headroom. 1.0 = off, 2.0 = double brightness.",
+        flags.hdr_gain,
+        HDR_GAIN_RANGE.0,
+        HDR_GAIN_RANGE.1,
+        TAG_HDR_GAIN,
+        LabelFormat::TwoDecimal,
         mtm,
     );
     let slider_ptrs = [
+        &*baseline_exposure_offset_row.slider as *const NSSlider,
         &*sharpen_row.slider as *const NSSlider,
         &*saturation_row.slider as *const NSSlider,
         &*midtone_row.slider as *const NSSlider,
+        &*clarity_radius_row.slider as *const NSSlider,
+        &*clarity_amount_row.slider as *const NSSlider,
+        &*hdr_gain_row.slider as *const NSSlider,
     ];
     let slider_label_ptrs = [
+        &*baseline_exposure_offset_row.value_label as *const NSTextField,
         &*sharpen_row.value_label as *const NSTextField,
         &*saturation_row.value_label as *const NSTextField,
         &*midtone_row.value_label as *const NSTextField,
+        &*clarity_radius_row.value_label as *const NSTextField,
+        &*clarity_amount_row.value_label as *const NSTextField,
+        &*hdr_gain_row.value_label as *const NSTextField,
     ];
     let sliders: Vec<Retained<NSSlider>> = vec![
+        baseline_exposure_offset_row.slider.clone(),
         sharpen_row.slider.clone(),
         saturation_row.slider.clone(),
         midtone_row.slider.clone(),
+        clarity_radius_row.slider.clone(),
+        clarity_amount_row.slider.clone(),
+        hdr_gain_row.slider.clone(),
     ];
 
     // ── Custom DCP dir row + Reset button ─────────────────────────────
@@ -824,50 +966,59 @@ pub(crate) fn build(
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[1].row) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[2].row) });
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&color_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[3].row) }); // baseline exposure
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[3].row) }); // baseline exposure toggle
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&baseline_exposure_offset_row.row) }); // baseline exposure offset slider
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[4].row) }); // dcp hue sat
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[5].row) }); // dcp look
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[6].row) }); // saturation
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[6].row) }); // saturation toggle
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&saturation_row.row) }); // saturation amount slider
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&tone_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[7].row) }); // highlight
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[8].row) }); // default tone curve
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[8].row) }); // default tone curve toggle
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&midtone_row.row) }); // midtone anchor slider
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[9].row) }); // DCP tone curve
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&detail_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[10].row) }); // sharpening
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[10].row) }); // clarity toggle
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&clarity_radius_row.row) }); // clarity radius slider
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&clarity_amount_row.row) }); // clarity amount slider
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[11].row) }); // sharpening toggle
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&sharpen_row.row) }); // sharpening amount slider
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&denoise_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[11].row) }); // chroma denoise
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[12].row) }); // chroma denoise
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&geometry_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[12].row) }); // lens correction
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[13].row) }); // lens correction
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&output_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[13].row) }); // HDR output
-    panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&tuning_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&sharpen_row.row) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&saturation_row.row) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&midtone_row.row) });
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[14].row) }); // HDR output toggle
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&hdr_gain_row.row) }); // HDR brightness gain slider
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&dcp_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&reset_row) });
 
     // Add section-header breathing room (so the grouping reads visually).
+    // The "after X group" comments refer to the LAST element in each group
+    // — which is the slider when one exists, otherwise the last toggle.
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[2].row) }); // after sensor group
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[6].row) }); // after color group
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&saturation_row.row) }); // after color group
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[9].row) }); // after tone group
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[10].row) }); // after detail (sharpen)
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[11].row) }); // after denoise (chroma)
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[12].row) }); // after geometry (lens)
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[13].row) }); // after output (HDR)
-    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&midtone_row.row) }); // after tuning group
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&sharpen_row.row) }); // after detail group
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[12].row) }); // after denoise (chroma)
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[13].row) }); // after geometry (lens)
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&hdr_gain_row.row) }); // after output (HDR gain)
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
 
     // Pin every row to the panel width so the switches align flush right.
     for row in &rows {
         pin_width(&row.row, &panel, retained_views);
     }
-    // Same for the Tuning slider rows — without this, the slider track
+    // Same for the slider rows — without this, the slider track
     // collapses to its intrinsic size.
+    pin_width(&baseline_exposure_offset_row.row, &panel, retained_views);
     pin_width(&sharpen_row.row, &panel, retained_views);
     pin_width(&saturation_row.row, &panel, retained_views);
     pin_width(&midtone_row.row, &panel, retained_views);
+    pin_width(&clarity_radius_row.row, &panel, retained_views);
+    pin_width(&clarity_amount_row.row, &panel, retained_views);
+    pin_width(&hdr_gain_row.row, &panel, retained_views);
     pin_width_any(&custom_dcp_outer, &panel, retained_views);
     pin_width_any(&reset_row, &panel, retained_views);
 
@@ -887,16 +1038,25 @@ pub(crate) fn build(
         highlight_recovery: toggle_ptrs[7],
         default_tone_curve: toggle_ptrs[8],
         dcp_tone_curve: toggle_ptrs[9],
-        capture_sharpening: toggle_ptrs[10],
-        chroma_denoise: toggle_ptrs[11],
-        lens_correction: toggle_ptrs[12],
-        hdr_output: toggle_ptrs[13],
-        sharpen_amount_slider: slider_ptrs[0],
-        sharpen_amount_label: slider_label_ptrs[0],
-        saturation_amount_slider: slider_ptrs[1],
-        saturation_amount_label: slider_label_ptrs[1],
-        midtone_anchor_slider: slider_ptrs[2],
-        midtone_anchor_label: slider_label_ptrs[2],
+        clarity: toggle_ptrs[10],
+        capture_sharpening: toggle_ptrs[11],
+        chroma_denoise: toggle_ptrs[12],
+        lens_correction: toggle_ptrs[13],
+        hdr_output: toggle_ptrs[14],
+        baseline_exposure_offset_slider: slider_ptrs[0],
+        baseline_exposure_offset_label: slider_label_ptrs[0],
+        sharpen_amount_slider: slider_ptrs[1],
+        sharpen_amount_label: slider_label_ptrs[1],
+        saturation_amount_slider: slider_ptrs[2],
+        saturation_amount_label: slider_label_ptrs[2],
+        midtone_anchor_slider: slider_ptrs[3],
+        midtone_anchor_label: slider_label_ptrs[3],
+        clarity_radius_slider: slider_ptrs[4],
+        clarity_radius_label: slider_label_ptrs[4],
+        clarity_amount_slider: slider_ptrs[5],
+        clarity_amount_label: slider_label_ptrs[5],
+        hdr_gain_slider: slider_ptrs[6],
+        hdr_gain_label: slider_label_ptrs[6],
         custom_dcp_field: &*custom_dcp_field as *const NSTextField,
     };
     let delegate = RawDelegate::new(mtm, ivars);
@@ -926,7 +1086,6 @@ pub(crate) fn build(
     retained_views.push(unsafe { Retained::cast_unchecked(denoise_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(geometry_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(output_header) });
-    retained_views.push(unsafe { Retained::cast_unchecked(tuning_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(dcp_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(reset_spacer) });
     retained_views.push(unsafe { Retained::cast_unchecked(reset_btn) });
@@ -951,7 +1110,15 @@ pub(crate) fn build(
     for slider in sliders {
         retained_views.push(unsafe { Retained::cast_unchecked(slider) });
     }
-    for slider_row in [sharpen_row, saturation_row, midtone_row] {
+    for slider_row in [
+        baseline_exposure_offset_row,
+        sharpen_row,
+        saturation_row,
+        midtone_row,
+        clarity_radius_row,
+        clarity_amount_row,
+        hdr_gain_row,
+    ] {
         for extra in slider_row.extras {
             retained_views.push(extra);
         }

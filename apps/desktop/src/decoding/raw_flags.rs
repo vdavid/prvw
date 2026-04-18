@@ -16,10 +16,19 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::color::clarity::{
+    DEFAULT_AMOUNT as DEFAULT_CLARITY_AMOUNT, DEFAULT_RADIUS as DEFAULT_CLARITY_RADIUS,
+};
 use crate::color::saturation::DEFAULT_SATURATION_BOOST;
 use crate::color::sharpen::DEFAULT_AMOUNT;
 use crate::color::tone_curve::DEFAULT_MIDTONE_ANCHOR;
 
+/// Valid range for the user-controllable baseline-exposure offset, added on
+/// top of whatever the DNG `BaselineExposure` tag (or our +0.5 EV fallback)
+/// resolves to. 0.0 = accept the camera / default baseline as-is; negative
+/// darkens, positive brightens. Effective EV is still clamped to ±2 EV by
+/// the pipeline to prevent runaway values from malformed JSON.
+pub const BASELINE_EXPOSURE_OFFSET_RANGE: (f32, f32) = (-2.0, 2.0);
 /// Valid range for the unsharp-mask amount slider. 0.0 = no sharpening,
 /// 1.0 = hard edges / halos — users who want more can bump it but we cap
 /// here to keep the knob useful.
@@ -33,6 +42,23 @@ pub const SATURATION_BOOST_RANGE: (f32, f32) = (0.0, 0.30);
 /// (darker overall), 0.50 lifts them hard (brighter overall). The default
 /// (0.40) lands between Adobe Linear and Medium Contrast.
 pub const MIDTONE_ANCHOR_RANGE: (f32, f32) = (0.20, 0.50);
+/// Valid range for the clarity (local contrast) Gaussian radius, in pixels.
+/// 2 = very fine features (similar frequency to capture sharpening); 50 =
+/// shape-level contouring that starts reading as HDR look. The default
+/// (10 px) sits in the midtone-feature band Affinity's "Detail Refinement"
+/// slider targets.
+pub const CLARITY_RADIUS_RANGE: (f32, f32) = (2.0, 50.0);
+/// Valid range for the clarity unsharp-mask amount. 0.0 = no effect, 1.0 =
+/// aggressive (visible halos on high-contrast edges). The default (0.40)
+/// gives a pleasant lift without the "processed" look.
+pub const CLARITY_AMOUNT_RANGE: (f32, f32) = (0.0, 1.0);
+/// Valid range for the HDR brightness gain applied on the EDR path.
+/// 1.0 = no extra lift (raw tone-curve output goes to the compositor
+/// unchanged); 2.0 = double the scene-white output (pushes SDR-range
+/// content into EDR headroom so the image reads "HDR-bright" rather than
+/// just "preserved detail in highlights"). Only active when HDR / EDR
+/// output is on. SDR path always behaves as if gain = 1.0.
+pub const HDR_GAIN_RANGE: (f32, f32) = (0.5, 4.0);
 
 /// Per-stage flags + tuning knobs for the RAW pipeline. All `true` and
 /// defaults-at-constants = production behavior.
@@ -75,6 +101,14 @@ pub struct RawPipelineFlags {
     pub dcp_tone_curve: bool,
 
     // ── Detail ─────────────────────────────────────────────────────────
+    /// Local-contrast ("clarity") enhancement. Same separable-Gaussian
+    /// unsharp-mask algorithm as capture sharpening, just at a much larger
+    /// radius (σ ≈ 10 px instead of 0.8 px). Lifts midtone features —
+    /// texture, shape silhouettes — that survive display downscaling, so
+    /// the image reads crisper at every zoom level. Runs before capture
+    /// sharpening.
+    #[serde(default = "default_true")]
+    pub clarity: bool,
     #[serde(default = "default_true")]
     pub capture_sharpening: bool,
 
@@ -108,7 +142,14 @@ pub struct RawPipelineFlags {
     #[serde(default = "default_true")]
     pub hdr_output: bool,
 
-    // ── Tuning knobs (Phase 6.0) ──────────────────────────────────────
+    // ── Tuning knobs (Phase 6.0 + 6.1.1) ──────────────────────────────
+    /// User-controllable offset added to the resolved baseline exposure
+    /// (DNG `BaselineExposure` tag when present, else the +0.5 EV default).
+    /// 0.0 = accept the camera's intended baseline as-is. Final effective
+    /// EV is clamped to ±2 EV in the pipeline.
+    /// Range: [`BASELINE_EXPOSURE_OFFSET_RANGE`]. Default: 0.0.
+    #[serde(default = "default_baseline_exposure_offset")]
+    pub baseline_exposure_offset: f32,
     /// Unsharp-mask amount for capture sharpening. Threaded through
     /// `color::sharpen::sharpen_rgba8_inplace_with` /
     /// `sharpen_rgba16f_inplace_with`. Defaults to
@@ -129,10 +170,32 @@ pub struct RawPipelineFlags {
     /// [`MIDTONE_ANCHOR_RANGE`].
     #[serde(default = "default_midtone_anchor")]
     pub midtone_anchor: f32,
+    /// Gaussian radius σ for the clarity pass, in pixels. Threaded through
+    /// `color::clarity::apply_clarity_rgba8_inplace_with`. Defaults to
+    /// [`color::clarity::DEFAULT_RADIUS`]. Range: [`CLARITY_RADIUS_RANGE`].
+    #[serde(default = "default_clarity_radius")]
+    pub clarity_radius: f32,
+    /// Unsharp-mask amount for the clarity pass. Threaded through
+    /// `color::clarity::apply_clarity_rgba8_inplace_with`. Defaults to
+    /// [`color::clarity::DEFAULT_AMOUNT`]. Range: [`CLARITY_AMOUNT_RANGE`].
+    #[serde(default = "default_clarity_amount")]
+    pub clarity_amount: f32,
+    /// Brightness gain applied to the tone-curve output on the HDR path
+    /// before the Rec.2020 → Display P3 matrix. Pushes scene-white content
+    /// into the EDR headroom so the image reads "HDR-bright" on an XDR /
+    /// mini-LED / OLED panel instead of just "SDR-looking with a little
+    /// detail preserved in highlights". Ignored on the SDR path. Default
+    /// [`default_hdr_gain`]. Range: [`HDR_GAIN_RANGE`].
+    #[serde(default = "default_hdr_gain")]
+    pub hdr_gain: f32,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_baseline_exposure_offset() -> f32 {
+    0.73
 }
 
 fn default_sharpen_amount() -> f32 {
@@ -145,6 +208,21 @@ fn default_saturation_boost_amount() -> f32 {
 
 fn default_midtone_anchor() -> f32 {
     DEFAULT_MIDTONE_ANCHOR
+}
+
+fn default_clarity_radius() -> f32 {
+    DEFAULT_CLARITY_RADIUS
+}
+
+fn default_clarity_amount() -> f32 {
+    DEFAULT_CLARITY_AMOUNT
+}
+
+/// Default HDR gain: 2.0× doubles scene-white into EDR headroom. Chosen
+/// so the first-run experience on an XDR actually looks "HDR-bright"
+/// against Preview rather than timidly preserving SDR brightness.
+fn default_hdr_gain() -> f32 {
+    2.0
 }
 
 impl Default for RawPipelineFlags {
@@ -160,13 +238,18 @@ impl Default for RawPipelineFlags {
             highlight_recovery: true,
             default_tone_curve: true,
             dcp_tone_curve: true,
+            clarity: true,
             capture_sharpening: true,
             chroma_denoise: true,
             lens_correction: true,
             hdr_output: true,
+            baseline_exposure_offset: 0.73,
             sharpen_amount: DEFAULT_AMOUNT,
             saturation_boost_amount: DEFAULT_SATURATION_BOOST,
             midtone_anchor: DEFAULT_MIDTONE_ANCHOR,
+            clarity_radius: DEFAULT_CLARITY_RADIUS,
+            clarity_amount: DEFAULT_CLARITY_AMOUNT,
+            hdr_gain: default_hdr_gain(),
         }
     }
 }
@@ -184,6 +267,10 @@ impl RawPipelineFlags {
     /// file) without rejecting the whole file. Called once per decode by
     /// `decoding::raw`.
     pub fn clamp_knobs(&mut self) {
+        self.baseline_exposure_offset = self.baseline_exposure_offset.clamp(
+            BASELINE_EXPOSURE_OFFSET_RANGE.0,
+            BASELINE_EXPOSURE_OFFSET_RANGE.1,
+        );
         self.sharpen_amount = self
             .sharpen_amount
             .clamp(SHARPEN_AMOUNT_RANGE.0, SHARPEN_AMOUNT_RANGE.1);
@@ -193,6 +280,13 @@ impl RawPipelineFlags {
         self.midtone_anchor = self
             .midtone_anchor
             .clamp(MIDTONE_ANCHOR_RANGE.0, MIDTONE_ANCHOR_RANGE.1);
+        self.clarity_radius = self
+            .clarity_radius
+            .clamp(CLARITY_RADIUS_RANGE.0, CLARITY_RADIUS_RANGE.1);
+        self.clarity_amount = self
+            .clarity_amount
+            .clamp(CLARITY_AMOUNT_RANGE.0, CLARITY_AMOUNT_RANGE.1);
+        self.hdr_gain = self.hdr_gain.clamp(HDR_GAIN_RANGE.0, HDR_GAIN_RANGE.1);
     }
 
     /// Names of the disabled steps, in the order they appear in the
@@ -230,6 +324,9 @@ impl RawPipelineFlags {
         if !self.saturation_boost {
             out.push("saturation boost");
         }
+        if !self.clarity {
+            out.push("clarity");
+        }
         if !self.capture_sharpening {
             out.push("capture sharpening");
         }
@@ -263,6 +360,7 @@ mod tests {
         assert!(flags.highlight_recovery);
         assert!(flags.default_tone_curve);
         assert!(flags.dcp_tone_curve);
+        assert!(flags.clarity);
         assert!(flags.capture_sharpening);
         assert!(flags.chroma_denoise);
         assert!(flags.lens_correction);
@@ -270,6 +368,9 @@ mod tests {
         assert_eq!(flags.sharpen_amount, DEFAULT_AMOUNT);
         assert_eq!(flags.saturation_boost_amount, DEFAULT_SATURATION_BOOST);
         assert_eq!(flags.midtone_anchor, DEFAULT_MIDTONE_ANCHOR);
+        assert_eq!(flags.clarity_radius, DEFAULT_CLARITY_RADIUS);
+        assert_eq!(flags.clarity_amount, DEFAULT_CLARITY_AMOUNT);
+        assert_eq!(flags.hdr_gain, default_hdr_gain());
         assert!(flags.is_default());
         assert!(flags.disabled_step_labels().is_empty());
     }

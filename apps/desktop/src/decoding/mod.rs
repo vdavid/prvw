@@ -40,6 +40,7 @@ use dispatch::Backend;
 use orientation::{apply_orientation_bytes, parse_exif_orientation};
 
 pub use raw_flags::{
+    BASELINE_EXPOSURE_OFFSET_RANGE, CLARITY_AMOUNT_RANGE, CLARITY_RADIUS_RANGE, HDR_GAIN_RANGE,
     MIDTONE_ANCHOR_RANGE, RawPipelineFlags, SATURATION_BOOST_RANGE, SHARPEN_AMOUNT_RANGE,
 };
 

@@ -6,8 +6,44 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Fixed
+
+- **HDR / EDR output now actually renders HDR-bright on XDR displays** (Phase 5.2). The original Phase 5.1 path decoded
+  RAWs into a half-float buffer but routed them through `moxcms` with a gamma-encoded `kCGColorSpaceExtendedDisplayP3`
+  layer, which clipped above-1.0 linear values at ICC-transform time and left the EDR compositor with nothing above
+  display-white to brighten. Two fixes: (1) on the HDR path only, bypass `moxcms` and apply a direct linear Rec.2020 →
+  linear Display P3 3×3 matrix (`color::profiles::rec2020_to_linear_display_p3_inplace`) that preserves above-white
+  values. (2) Flip the `CAMetalLayer` colorspace to `kCGColorSpaceExtendedLinearDisplayP3` so the compositor
+  interprets the buffer's linear values correctly. SDR path still goes through `moxcms` → user's display ICC and is
+  bit-identical to Phase 6.1. Trade-off to name: HDR output uses Display P3 rather than the user's calibrated display
+  profile, since the OS's EDR compositor takes over colorspace conversion on that path — inherent to going into EDR
+  mode, not a choice. See `docs/notes/raw-support-phase5.md`.
+
+### Added
+
+- **HDR brightness gain** (Phase 5.2): a new 0.5 – 4.0 slider in Settings → RAW → Output (default 2.0) pushes
+  scene-white content into the EDR headroom so HDR output reads genuinely "HDR-bright" on an XDR / OLED panel instead
+  of timidly preserving SDR brightness and only using headroom for sparse specular highlights. Matches the visual
+  brightness of Preview.app / Photos on the same display. Ignored on the SDR path; `hdr_gain = 1.0` restores the
+  pre-5.2 HDR behavior (above-white content preserved but no overall brightness lift).
+- **Clarity (local contrast) for RAW** (Phase 6.2): RAWs now get a larger-radius unsharp-mask pass on luminance before
+  capture sharpening. Lifts midtone features — shape silhouettes, textures, the mid-frequency content — that survive
+  display downscaling, so the image reads crisper at fit-to-window zoom, not just at 100 %. Same math as capture
+  sharpening, σ ≈ 10 px instead of 0.8 px, luminance-only. New "Clarity (local contrast)" toggle at the top of
+  Settings → RAW → Detail, with "Clarity radius" (2 – 50 px, default 10 px) and "Clarity amount" (0.00 – 1.00,
+  default 0.40) sliders directly beneath. On by default; toggling off reproduces pre-6.2 output. Closes the visible
+  "crispness gap" against Affinity's "Detail Refinement" pass. Adds ~200 – 400 ms to a 20 MP decode on Apple Silicon.
+  See `docs/notes/raw-support-phase6.md`.
+
 ### Changed
 
+- **RAW defaults tuned against Affinity / Preview** (Phase 6.1.1): the parametric RAW stages now ship with values
+  closer to Affinity Photo's per-camera-tuned output on our sample set — `DEFAULT_SATURATION_BOOST` 0.08 → 0.18,
+  `DEFAULT_MIDTONE_ANCHOR` 0.40 → 0.45, and a new `baseline_exposure_offset` slider (default +0.73 EV) adds a
+  user-controllable offset on top of the camera's baseline EV. The Settings → RAW layout co-locates each slider
+  under its matching toggle instead of the standalone "Tuning" section (saturation slider under the saturation
+  toggle, midtone slider under the default-tone-curve toggle, etc.) so the tune-by-eye UX is obvious. Flipping a
+  toggle off continues to reproduce pre-6.1.1 output bit-for-bit on a per-image basis.
 - **Lens correction resampler is now SIMD-accelerated** (Phase 6.3): the bilinear resampler inner loops in
   `apply_distortion_resample` and `apply_tca_resample` are compiled for NEON (aarch64) and AVX2+FMA (x86-64)
   via `multiversion`. The sampler is now branchless (NaN/inf coords handled without a conditional early return)
