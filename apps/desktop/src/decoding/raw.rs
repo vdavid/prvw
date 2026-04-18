@@ -103,13 +103,14 @@ use rawler::rawsource::RawSource;
 use rawler::tags::DngTag;
 use rayon::prelude::*;
 
-use super::DecodedImage;
-use super::RawPipelineFlags;
+#[cfg(all(test, target_os = "macos"))]
+use super::PixelBuffer;
 use super::dng_opcodes::{
     Opcode, OpcodeId, apply_fix_bad_pixels_constant, apply_fix_bad_pixels_list, apply_gain_map_cfa,
     apply_gain_map_rgb, apply_warp_rectilinear_rgb, parse_fix_bad_pixels_constant,
     parse_fix_bad_pixels_list, parse_gain_map, parse_opcode_list, parse_warp_rectilinear,
 };
+use super::{DecodedImage, RawPipelineFlags};
 use crate::color;
 use crate::color::profiles::REC2020_TO_XYZ_D65;
 
@@ -125,9 +126,21 @@ const DEFAULT_BASELINE_EV: f32 = 0.5;
 const BASELINE_EV_CLAMP: f32 = 2.0;
 
 /// Decode a RAW file through our wide-gamut pipeline and color-manage to
-/// `target_icc`. Returns the developed RGBA8 buffer plus the EXIF orientation
-/// read from rawler's metadata (rawler's own `RawImage.orientation` is always
-/// `Normal`, so the caller can't trust that one).
+/// `target_icc`. Returns the developed buffer plus the EXIF orientation
+/// read from rawler's metadata.
+///
+/// The buffer comes out as:
+/// - `PixelBuffer::Rgba16F` when `flags.hdr_output == true` **and**
+///   `edr_headroom > 1.0` — the display can show highlights above white,
+///   so we shape the filmic shoulder toward the EDR peak and quantise to
+///   IEEE 754 half-floats.
+/// - `PixelBuffer::Rgba8` otherwise — identical output to Phase 4 for SDR
+///   displays or when the user has opted out via the Settings toggle.
+///
+/// `edr_headroom` is the `maximumExtendedDynamicRangeColorComponentValue`
+/// reported by the active `NSScreen` (see
+/// `crate::color::display_profile::current_edr_headroom`).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn decode(
     path: &Path,
     bytes: Vec<u8>,
@@ -135,7 +148,24 @@ pub(super) fn decode(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
     flags: RawPipelineFlags,
+    edr_headroom: f32,
 ) -> Result<(DecodedImage, u16), String> {
+    // Decide upfront whether this decode lands in HDR territory. "HDR" here
+    // means: the user opted in (`flags.hdr_output`), **and** the active
+    // display actually has headroom above display-white. SDR displays
+    // always fall through to the legacy RGBA8 path so we stay bit-identical
+    // to Phase 4 there.
+    let hdr_active = flags.hdr_output && edr_headroom > 1.0;
+    let peak = if hdr_active {
+        // Cap at the user-facing 4× asymptote. Letting the shoulder track
+        // the reported headroom would swing the image every time macOS
+        // changes the value (brightness, ambient-light sensor). A stable
+        // peak gives stable output; the display itself handles the final
+        // white-point mapping.
+        crate::color::tone_curve::DEFAULT_PEAK_HDR
+    } else {
+        crate::color::tone_curve::DEFAULT_PEAK_SDR
+    };
     check_cancelled(cancelled)?;
 
     // One breadcrumb per decode when any step is disabled. Silent on the
@@ -403,6 +433,10 @@ pub(super) fn decode(
             .as_ref()
             .and_then(|(dcp, _)| dcp.tone_curve.as_deref());
         if let Some(points) = dcp_tone_curve {
+            // DCP tone curves ship as piecewise-linear x→y tables topping
+            // out at (1.0, 1.0), so they're intrinsically SDR. Apply as-is
+            // even when the surface is HDR — the shoulder is already shaped
+            // by the camera manufacturer.
             log::info!(
                 "RAW used DCP tone curve ({} points) for {}",
                 points.len(),
@@ -410,8 +444,18 @@ pub(super) fn decode(
             );
             color::tone_curve::apply_tone_curve_lut(&mut rec2020, points);
         } else {
-            log::info!("RAW used default tone curve for {}", path.display());
-            color::tone_curve::apply_default_tone_curve(&mut rec2020);
+            // Filmic shoulder. `peak = 4.0` leaves HDR highlights alive,
+            // `peak = 1.0` reproduces Phase 4's SDR clip bit-for-bit.
+            log::info!(
+                "RAW used default tone curve (peak {:.1}) for {}",
+                peak,
+                path.display()
+            );
+            color::tone_curve::apply_tone_curve(
+                &mut rec2020,
+                color::tone_curve::DEFAULT_MIDTONE_ANCHOR,
+                peak,
+            );
         }
     }
 
@@ -445,40 +489,48 @@ pub(super) fn decode(
         use_relative_colorimetric,
     );
 
-    // Down to RGBA8 for the renderer. Clip to [0, 1] here — the display ICC
-    // transform has already placed every in-gamut color in the target space.
-    let mut rgba = rec2020_to_rgba8(&rec2020);
-    drop(rec2020); // free the big float buffer (~12 bytes/pixel) before returning
-
-    check_cancelled(cancelled)?;
-
-    // Capture sharpening. Runs on the display-space RGBA8 buffer, right
-    // after the ICC transform and before orientation, so we sharpen in
-    // the same perceptual space the user will see the image in. The
-    // kernel is small (σ = 0.8 px, 7 taps) and parallelised via rayon.
-    // Operates on luminance only: we blur Y, apply the unsharp-mask
-    // formula on Y, then scale the original RGB by `Y_out / Y_in` so
-    // hue is preserved and no color fringes land at colored edges.
-    if flags.capture_sharpening {
-        color::sharpen::sharpen_rgba8_inplace(&mut rgba, width, height);
-    }
-
-    check_cancelled(cancelled)?;
-
     let orientation = decoder
         .raw_metadata(&src, &params)
         .ok()
         .and_then(|meta| meta.exif.orientation)
         .unwrap_or(1);
 
-    Ok((
-        DecodedImage {
-            width,
-            height,
-            rgba_data: rgba,
-        },
-        orientation,
-    ))
+    check_cancelled(cancelled)?;
+
+    // Branch on the HDR flag decided upfront. SDR path: clamp to [0, 1],
+    // quantise to RGBA8, run the unsharp-mask on luminance. HDR path:
+    // preserve values above 1.0, quantise to half-floats, skip the
+    // unsharp-mask (sharpening wants an 8-bit perceptual buffer to match
+    // human gamma response; doing it on f16 would shift the halos and the
+    // 20 MP f16 sharpener isn't on the critical path for this phase —
+    // tracked in `raw-support-phase5.md`).
+    if hdr_active {
+        let half_rgba = rec2020_to_rgba16f(&rec2020);
+        drop(rec2020);
+        log::debug!(
+            "RAW HDR output: {width}x{height} RGBA16F, peak {peak:.1}, headroom {edr_headroom:.2}"
+        );
+        return Ok((
+            DecodedImage::from_rgba16f(width, height, half_rgba),
+            orientation,
+        ));
+    }
+
+    // Down to RGBA8 for the renderer. Clip to [0, 1] here — the display ICC
+    // transform has already placed every in-gamut color in the target space.
+    let mut rgba = rec2020_to_rgba8(&rec2020);
+    drop(rec2020); // free the big float buffer (~12 bytes/pixel) before returning
+
+    // Capture sharpening. Runs on the display-space RGBA8 buffer, right
+    // after the ICC transform and before orientation, so we sharpen in
+    // the same perceptual space the user will see the image in.
+    if flags.capture_sharpening {
+        color::sharpen::sharpen_rgba8_inplace(&mut rgba, width, height);
+    }
+
+    check_cancelled(cancelled)?;
+
+    Ok((DecodedImage::from_rgba8(width, height, rgba), orientation))
 }
 
 /// Map rawler's camera-RGB intermediate through white balance + the camera's
@@ -744,6 +796,36 @@ fn rec2020_to_rgba8(rec2020: &[f32]) -> Vec<u8> {
 fn f32_to_u8(v: f32) -> u8 {
     let clipped = v.clamp(0.0, 1.0);
     (clipped * 255.0 + 0.5) as u8
+}
+
+/// Pack the linear-Rec.2020-then-display-ICC buffer into RGBA16F with the
+/// alpha channel set to `1.0`. Preserves values above 1.0 (the HDR
+/// highlights the filmic shoulder now keeps alive), clamps values below 0
+/// to avoid nonsense on the display-side TRC, and folds NaN to 0. Half-
+/// floats store about 3.3 decimal digits of precision across ±65504, which
+/// is plenty for display output.
+fn rec2020_to_rgba16f(rec2020: &[f32]) -> Vec<u16> {
+    use half::f16;
+    let pixel_count = rec2020.len() / 3;
+    let mut out = vec![0u16; pixel_count * 4];
+    out.par_chunks_exact_mut(4)
+        .zip(rec2020.par_chunks_exact(3))
+        .for_each(|(dst, src)| {
+            dst[0] = f16::from_f32(guard_hdr_component(src[0])).to_bits();
+            dst[1] = f16::from_f32(guard_hdr_component(src[1])).to_bits();
+            dst[2] = f16::from_f32(guard_hdr_component(src[2])).to_bits();
+            dst[3] = f16::from_f32(1.0).to_bits();
+        });
+    out
+}
+
+/// Clamp NaN and negative values before the f16 conversion. The filmic
+/// shoulder never produces negatives, but the ICC transform can for out-
+/// of-gamut pixels, and f16 has no NaN propagation guarantees across the
+/// wider pipeline.
+#[inline]
+fn guard_hdr_component(v: f32) -> f32 {
+    if v.is_nan() || v < 0.0 { 0.0 } else { v }
 }
 
 /// Flatten a row-major 3x3 matrix from rawler's `FlatColorMatrix` (`Vec<f32>`,
@@ -1138,10 +1220,35 @@ fn skip_unknown_opcode(label: &str, opcode: &Opcode, path: &Path) {
 mod tests {
     use super::*;
 
+    /// Test-only wrapper around `decode` that hard-codes EDR headroom to 1.0.
+    /// Tests run in SDR mode so every output lands in `PixelBuffer::Rgba8`,
+    /// matching Phase 4's pipeline bit-for-bit. The HDR-specific path is
+    /// covered by `tone_curve.rs` unit tests + the Phase 5 smoke docs.
+    fn decode_sdr(
+        path: &Path,
+        bytes: Vec<u8>,
+        cancelled: Option<&AtomicBool>,
+        target_icc: &[u8],
+        use_rel: bool,
+        flags: RawPipelineFlags,
+    ) -> Result<(DecodedImage, u16), String> {
+        decode(path, bytes, cancelled, target_icc, use_rel, flags, 1.0)
+    }
+
+    /// Pull the RGBA8 byte slice out of a `DecodedImage`, panicking for HDR
+    /// outputs. SDR-only tests rely on this to keep their byte-comparison
+    /// assertions compiling as we rolled `PixelBuffer` in.
+    fn rgba8_bytes(img: &DecodedImage) -> &[u8] {
+        match &img.pixels {
+            PixelBuffer::Rgba8(v) => v.as_slice(),
+            PixelBuffer::Rgba16F(_) => panic!("test expected RGBA8 but decode produced RGBA16F"),
+        }
+    }
+
     #[test]
     fn malformed_bytes_return_error() {
         let bytes = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03];
-        let result = decode(
+        let result = decode_sdr(
             Path::new("bogus.arw"),
             bytes,
             None,
@@ -1155,7 +1262,7 @@ mod tests {
     #[test]
     fn cancellation_short_circuits() {
         let flag = AtomicBool::new(true);
-        let result = decode(
+        let result = decode_sdr(
             Path::new("anything.arw"),
             vec![0u8; 32],
             Some(&flag),
@@ -1175,7 +1282,7 @@ mod tests {
         let path = Path::new("/tmp/raw/sample1.arw");
         let bytes = std::fs::read(path).expect("fixture missing");
         // Warm up once
-        let _ = decode(
+        let _ = decode_sdr(
             path,
             bytes.clone(),
             None,
@@ -1186,7 +1293,7 @@ mod tests {
         let mut times = vec![];
         for _ in 0..5 {
             let t = std::time::Instant::now();
-            let _ = decode(
+            let _ = decode_sdr(
                 path,
                 bytes.clone(),
                 None,
@@ -1205,7 +1312,7 @@ mod tests {
     fn arw_fixture_decodes() {
         let path = Path::new("/tmp/raw/sample1.arw");
         let bytes = std::fs::read(path).expect("fixture missing");
-        let (img, orientation) = decode(
+        let (img, orientation) = decode_sdr(
             path,
             bytes,
             None,
@@ -1216,7 +1323,7 @@ mod tests {
         .expect("decode failed");
         assert_eq!(orientation, 1);
         assert_eq!((img.width, img.height), (5456, 3632));
-        assert_eq!(img.rgba_data.len(), 5456 * 3632 * 4);
+        assert_eq!(rgba8_bytes(&img).len(), 5456 * 3632 * 4);
     }
 
     #[test]
@@ -1224,7 +1331,7 @@ mod tests {
     fn dng_fixture_decodes() {
         let path = Path::new("/tmp/raw/sample2.dng");
         let bytes = std::fs::read(path).expect("fixture missing");
-        let (img, orientation) = decode(
+        let (img, orientation) = decode_sdr(
             path,
             bytes,
             None,
@@ -1236,7 +1343,7 @@ mod tests {
         // Pre-orientation dimensions match the POC: 3990x3000 sideways.
         assert_eq!((img.width, img.height), (3990, 3000));
         assert!(matches!(orientation, 6 | 8));
-        assert_eq!(img.rgba_data.len(), 3990 * 3000 * 4);
+        assert_eq!(rgba8_bytes(&img).len(), 3990 * 3000 * 4);
     }
 
     /// Smoke test: run the full RAW decode on sample2.dng with the logger
@@ -1250,7 +1357,7 @@ mod tests {
             .try_init();
         let path = Path::new("/tmp/raw/sample2.dng");
         let bytes = std::fs::read(path).expect("fixture missing");
-        let (img, _) = decode(
+        let (img, _) = decode_sdr(
             path,
             bytes,
             None,
@@ -1284,7 +1391,7 @@ mod tests {
                 continue;
             }
             let bytes = std::fs::read(path).unwrap();
-            let on = decode(
+            let on = decode_sdr(
                 path,
                 bytes.clone(),
                 None,
@@ -1298,17 +1405,16 @@ mod tests {
                 lens_correction: false,
                 ..RawPipelineFlags::default()
             };
-            let off = decode(path, bytes, None, color::srgb_icc_bytes(), false, off_flags)
+            let off = decode_sdr(path, bytes, None, color::srgb_icc_bytes(), false, off_flags)
                 .unwrap()
                 .0;
             assert_eq!((on.width, on.height), (off.width, off.height));
-            let diffs = on
-                .rgba_data
+            let diffs = rgba8_bytes(&on)
                 .iter()
-                .zip(off.rgba_data.iter())
+                .zip(rgba8_bytes(&off).iter())
                 .filter(|(a, b)| a != b)
                 .count();
-            let pct = 100.0 * diffs as f64 / on.rgba_data.len() as f64;
+            let pct = 100.0 * diffs as f64 / rgba8_bytes(&on).len() as f64;
             println!("{arw}: {diffs} bytes differ ({pct:.2} %) between lens_correction on/off");
             assert!(
                 diffs > 0,
@@ -1324,7 +1430,7 @@ mod tests {
             return;
         }
         let bytes = std::fs::read(dng).unwrap();
-        let on = decode(
+        let on = decode_sdr(
             dng,
             bytes.clone(),
             None,
@@ -1334,7 +1440,7 @@ mod tests {
         )
         .unwrap()
         .0;
-        let off = decode(
+        let off = decode_sdr(
             dng,
             bytes,
             None,
@@ -1348,7 +1454,8 @@ mod tests {
         .unwrap()
         .0;
         assert_eq!(
-            on.rgba_data, off.rgba_data,
+            rgba8_bytes(&on),
+            rgba8_bytes(&off),
             "sample2.dng must be bit-identical with/without lens_correction (WarpRectilinear already fired)"
         );
         println!("sample2.dng: bit-identical (OpcodeList3 WarpRectilinear handled distortion)");
@@ -1369,7 +1476,7 @@ mod tests {
                 continue;
             }
             let bytes = std::fs::read(path).expect("fixture missing");
-            let (img, _) = decode(
+            let (img, _) = decode_sdr(
                 path,
                 bytes,
                 None,
@@ -1417,7 +1524,7 @@ mod tests {
         unsafe {
             std::env::remove_var("PRVW_DCP_DIR");
         }
-        let (baseline, _) = decode(
+        let (baseline, _) = decode_sdr(
             path,
             bytes.clone(),
             None,
@@ -1432,7 +1539,7 @@ mod tests {
         unsafe {
             std::env::set_var("PRVW_DCP_DIR", "/nonexistent-prvw-dcp-dir-xyz");
         }
-        let (with_empty, _) = decode(
+        let (with_empty, _) = decode_sdr(
             path,
             bytes.clone(),
             None,
@@ -1442,7 +1549,8 @@ mod tests {
         )
         .expect("with-empty");
         assert_eq!(
-            baseline.rgba_data, with_empty.rgba_data,
+            rgba8_bytes(&baseline),
+            rgba8_bytes(&with_empty),
             "no-DCP fallback changed output; must be bit-identical to Phase 3.1"
         );
 
@@ -1451,7 +1559,7 @@ mod tests {
         unsafe {
             std::env::set_var("PRVW_DCP_DIR", "/tmp/prvw-dcp-test");
         }
-        let (with_dcp, _) = decode(
+        let (with_dcp, _) = decode_sdr(
             path,
             bytes,
             None,
@@ -1464,13 +1572,15 @@ mod tests {
             std::env::remove_var("PRVW_DCP_DIR");
         }
 
-        let n = baseline.rgba_data.len().min(with_dcp.rgba_data.len());
+        let n = rgba8_bytes(&baseline)
+            .len()
+            .min(rgba8_bytes(&with_dcp).len());
         let mut diff_count = 0u64;
         let mut total_delta: u64 = 0;
         for i in 0..n {
-            if baseline.rgba_data[i] != with_dcp.rgba_data[i] {
+            if rgba8_bytes(&baseline)[i] != rgba8_bytes(&with_dcp)[i] {
                 diff_count += 1;
-                total_delta += (baseline.rgba_data[i] as i32 - with_dcp.rgba_data[i] as i32)
+                total_delta += (rgba8_bytes(&baseline)[i] as i32 - rgba8_bytes(&with_dcp)[i] as i32)
                     .unsigned_abs() as u64;
             }
         }
@@ -1488,8 +1598,8 @@ mod tests {
             let dir = std::path::PathBuf::from(dump_dir);
             std::fs::create_dir_all(&dir).expect("create dump dir");
             let (w, h) = (baseline.width, baseline.height);
-            write_rgba_png(&dir.join("baseline.png"), w, h, &baseline.rgba_data);
-            write_rgba_png(&dir.join("with-dcp.png"), w, h, &with_dcp.rgba_data);
+            write_rgba_png(&dir.join("baseline.png"), w, h, rgba8_bytes(&baseline));
+            write_rgba_png(&dir.join("with-dcp.png"), w, h, rgba8_bytes(&with_dcp));
             println!("Dumped baseline.png / with-dcp.png under {}", dir.display());
         }
     }
@@ -1536,7 +1646,7 @@ mod tests {
         unsafe {
             std::env::set_var(EMBEDDED_DCP_DISABLE_ENV_VAR, "1");
         }
-        let (without, _) = decode(
+        let (without, _) = decode_sdr(
             path,
             bytes.clone(),
             None,
@@ -1550,7 +1660,7 @@ mod tests {
         unsafe {
             std::env::remove_var(EMBEDDED_DCP_DISABLE_ENV_VAR);
         }
-        let (with_embedded, _) = decode(
+        let (with_embedded, _) = decode_sdr(
             path,
             bytes,
             None,
@@ -1560,13 +1670,16 @@ mod tests {
         )
         .expect("decode with embedded DCP");
 
-        let n = without.rgba_data.len().min(with_embedded.rgba_data.len());
+        let n = rgba8_bytes(&without)
+            .len()
+            .min(rgba8_bytes(&with_embedded).len());
         let mut diff_count = 0u64;
         let mut total_delta: u64 = 0;
         for i in 0..n {
-            if without.rgba_data[i] != with_embedded.rgba_data[i] {
+            if rgba8_bytes(&without)[i] != rgba8_bytes(&with_embedded)[i] {
                 diff_count += 1;
-                total_delta += (without.rgba_data[i] as i32 - with_embedded.rgba_data[i] as i32)
+                total_delta += (rgba8_bytes(&without)[i] as i32
+                    - rgba8_bytes(&with_embedded)[i] as i32)
                     .unsigned_abs() as u64;
             }
         }
@@ -1584,12 +1697,17 @@ mod tests {
             let dir = std::path::PathBuf::from(dump_dir);
             std::fs::create_dir_all(&dir).expect("create dump dir");
             let (w, h) = (without.width, without.height);
-            write_rgba_png(&dir.join("without-embedded.png"), w, h, &without.rgba_data);
+            write_rgba_png(
+                &dir.join("without-embedded.png"),
+                w,
+                h,
+                rgba8_bytes(&without),
+            );
             write_rgba_png(
                 &dir.join("with-embedded.png"),
                 w,
                 h,
-                &with_embedded.rgba_data,
+                rgba8_bytes(&with_embedded),
             );
             println!(
                 "Dumped without-embedded.png / with-embedded.png under {}",
@@ -1757,7 +1875,7 @@ mod tests {
         let bytes = std::fs::read(&fixture).expect("fixture missing");
         let icc = color::srgb_icc_bytes();
 
-        let (baseline, _) = decode(
+        let (baseline, _) = decode_sdr(
             &fixture,
             bytes.clone(),
             None,
@@ -1793,10 +1911,11 @@ mod tests {
             ("capture_sharpening", sharp_off),
             ("baseline_exposure", exposure_off),
         ] {
-            let (actual, _) = decode(&fixture, bytes.clone(), None, icc, false, flags)
+            let (actual, _) = decode_sdr(&fixture, bytes.clone(), None, icc, false, flags)
                 .unwrap_or_else(|e| panic!("decode with {label} off failed: {e}"));
             assert_ne!(
-                actual.rgba_data, baseline.rgba_data,
+                rgba8_bytes(&actual),
+                rgba8_bytes(&baseline),
                 "flipping `{label}` off should change the output buffer"
             );
         }
@@ -1812,7 +1931,7 @@ mod tests {
         let bytes = std::fs::read(&fixture).expect("fixture missing");
         let icc = color::srgb_icc_bytes();
 
-        let (via_flags, _) = decode(
+        let (via_flags, _) = decode_sdr(
             &fixture,
             bytes.clone(),
             None,
@@ -1821,7 +1940,7 @@ mod tests {
             RawPipelineFlags::default(),
         )
         .expect("with explicit defaults");
-        let (via_flags_again, _) = decode(
+        let (via_flags_again, _) = decode_sdr(
             &fixture,
             bytes,
             None,
@@ -1830,7 +1949,7 @@ mod tests {
             RawPipelineFlags::default(),
         )
         .expect("second pass");
-        assert_eq!(via_flags.rgba_data, via_flags_again.rgba_data);
+        assert_eq!(rgba8_bytes(&via_flags), rgba8_bytes(&via_flags_again));
     }
 
     #[test]

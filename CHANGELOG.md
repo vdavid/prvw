@@ -8,6 +8,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **HDR / EDR output for RAW** (Phase 5.0): on mini-LED XDR and OLED displays, RAW highlights now stay alive above
+  display-white instead of clipping at 1.0. A filmic Reinhard shoulder asymptotes at 4× on EDR-capable displays and at
+  1.0 on SDR — SDR output stays bit-identical to Phase 4. The RAW decoder produces `RGBA16F` half-float buffers when
+  HDR is active, and the image cache budget scales to 1 GB so preload count stays constant. New "Output" group under
+  Settings → RAW with an "HDR / EDR output" toggle (on by default). The wgpu surface format switch + `CAMetalLayer.
+  wantsExtendedDynamicRangeContent` are deferred to a follow-up — the f16 decode path, filmic shoulder, and EDR
+  headroom query (`NSScreen.maximumExtendedDynamicRangeColorComponentValue`) all ship in this phase. See
+  `docs/notes/raw-support-phase5.md`.
 - **Lens correction for non-DNG RAWs** (Phase 4.0): Sony, Canon, Nikon, Fuji, and other non-DNG RAWs now get
   distortion, transverse chromatic aberration, and vignetting correction from the LensFun community database
   (~1,041 cameras, 1,543 lenses). Matches on camera body + EXIF lens model, focal length, and aperture; silent

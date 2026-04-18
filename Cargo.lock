@@ -3602,6 +3602,7 @@ dependencies = [
  "clap",
  "env_logger",
  "glyphon",
+ "half",
  "image",
  "lensfun",
  "log",

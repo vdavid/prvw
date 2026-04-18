@@ -50,9 +50,5 @@ pub(super) fn decode(
         .unwrap_or_else(|| color::srgb_icc_bytes());
     color::transform_icc(&mut rgba, source_icc, target_icc, use_relative_colorimetric);
 
-    Ok(DecodedImage {
-        width,
-        height,
-        rgba_data: rgba,
-    })
+    Ok(DecodedImage::from_rgba8(width, height, rgba))
 }

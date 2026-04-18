@@ -261,15 +261,44 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
 
 ## Phase 5 — HDR / EDR output
 
-- [ ] Don't clip highlights to 1.0 during tone curve. Shape the shoulder to
-      asymptote around 2-4× (classical filmic tone mapping).
-- [ ] Output in a float16 pixel format to the wgpu surface.
-- [ ] `CAMetalLayer.wantsExtendedDynamicRangeContent = YES`.
-- [ ] Read current EDR headroom via
-      `NSScreen.maximumExtendedDynamicRangeColorComponentValue` and adapt the
-      shoulder dynamically per frame.
-- [ ] Graceful SDR fallback: re-clamp to 1.0 when no EDR headroom is
-      available (external SDR monitor, battery save, etc.).
+### Phase 5.0 — filmic curve, f16 cache, SDR fallback (done, 2026-04-17)
+
+- [x] Filmic Reinhard-style highlight shoulder asymptoting at 4.0 for EDR
+      output (1.0 for SDR). Replaces the Phase 4 Hermite shoulder that
+      clipped at 1.0. C¹ continuous with the midtone line at the highlight
+      knee. SDR peak = 1.0 reproduces Phase 4 output bit-for-bit so
+      non-EDR displays see no regression.
+- [x] `DecodedImage.pixels: PixelBuffer` enum with `Rgba8(Vec<u8>)` and
+      `Rgba16F(Vec<u16>)` variants. The RAW decoder emits half-float only
+      when `hdr_output == true` **and** the display reports EDR headroom
+      above 1.0. JPEG/PNG/WebP/etc. stay RGBA8 always.
+- [x] EDR headroom query via
+      `NSScreen.maximumExtendedDynamicRangeColorComponentValue`. Refreshed
+      on `AppCommand::DisplayChanged`. Returns 1.0 on SDR displays / SSH /
+      headless so the rest of the pipeline drops back to RGBA8 cleanly.
+- [x] `RawPipelineFlags::hdr_output` (defaults to `true`). New toggle in
+      Settings → RAW → "Output" so users on SDR or who dislike the wider
+      shoulder can opt out per-pipeline.
+- [x] Preloader cache budget auto-scales: 512 MB in SDR mode, 1024 MB in
+      HDR mode. User decision: keep preload count at 6 for 20 MP RAWs by
+      trading RAM rather than caching fewer images. See
+      `docs/notes/raw-support-phase5.md` for the trade-off.
+- [x] Renderer uploads RGBA16F half-float textures as
+      `TextureFormat::Rgba16Float` — the shader samples as `vec4<f32>`
+      either way.
+
+### Phase 5.1 — surface format switch (deferred)
+
+- [ ] Switch the wgpu surface format to `Bgra16Float` / `Rgba16Float` when
+      an HDR RAW is displayed on an EDR-capable screen, and set
+      `CAMetalLayer.wantsExtendedDynamicRangeContent = YES`. Until this
+      lands, HDR highlights survive the decode + cache path but quantise
+      back into SDR at the final blend because the surface is still
+      `Bgra8UnormSrgb`. wgpu 29's surface reconfiguration mid-session is
+      fiddly; rebuild the render pipelines on format change. Tracked as
+      follow-up because Phase 5.0 is the high-value part of the work (the
+      f16 decode path + the filmic shoulder are reusable once 5.1 flips
+      the surface on).
 
 ## Phase 6 — nice-to-haves, probably never
 

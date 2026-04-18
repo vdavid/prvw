@@ -1,7 +1,10 @@
 # Navigation
 
 Scan the parent directory for images, preload adjacent files in the background, and
-keep an LRU cache budgeted at 512 MB.
+keep an LRU cache budgeted at 512 MB (SDR) or 1 GB (HDR, Phase 5). The cache
+auto-scales when the RAW pipeline's `hdr_output` flag flips or the display's EDR
+headroom crosses the 1.0 boundary, so preload count stays constant as we double
+per-pixel bytes for RAW RGBA16F.
 
 | File           | Purpose                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------ |

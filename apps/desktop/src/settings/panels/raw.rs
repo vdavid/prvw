@@ -41,6 +41,7 @@ const TAG_HIGHLIGHT_RECOVERY: isize = 120;
 const TAG_TONE_CURVE: isize = 121;
 const TAG_CAPTURE_SHARPENING: isize = 130;
 const TAG_LENS_CORRECTION: isize = 140;
+const TAG_HDR_OUTPUT: isize = 150;
 
 /// Ivars are raw pointers so the delegate can read current toggle states
 /// without holding Rust borrows through AppKit message dispatch. They all
@@ -58,6 +59,7 @@ struct RawDelegateIvars {
     tone_curve: *const NSSwitch,
     capture_sharpening: *const NSSwitch,
     lens_correction: *const NSSwitch,
+    hdr_output: *const NSSwitch,
     // Custom DCP dir row.
     custom_dcp_field: *const NSTextField,
 }
@@ -165,6 +167,7 @@ impl RawDelegate {
             tone_curve: switch_is_on(ivars.tone_curve),
             capture_sharpening: switch_is_on(ivars.capture_sharpening),
             lens_correction: switch_is_on(ivars.lens_correction),
+            hdr_output: switch_is_on(ivars.hdr_output),
         }
     }
 
@@ -181,6 +184,7 @@ impl RawDelegate {
         set_switch(ivars.tone_curve, flags.tone_curve);
         set_switch(ivars.capture_sharpening, flags.capture_sharpening);
         set_switch(ivars.lens_correction, flags.lens_correction);
+        set_switch(ivars.hdr_output, flags.hdr_output);
     }
 
     fn clear_custom_dcp_field(&self) {
@@ -488,6 +492,13 @@ pub(crate) fn build(
             TAG_LENS_CORRECTION,
             mtm,
         ),
+        build_flag_row(
+            "HDR / EDR output",
+            "Keep highlights above display-white alive when the screen supports it.",
+            flags.hdr_output,
+            TAG_HDR_OUTPUT,
+            mtm,
+        ),
     ];
 
     // Pull out the toggle pointers before handing rows to the panel.
@@ -501,6 +512,7 @@ pub(crate) fn build(
     let tone_header = make_section_header("Tone", mtm);
     let detail_header = make_section_header("Detail", mtm);
     let geometry_header = make_section_header("Geometry", mtm);
+    let output_header = make_section_header("Output", mtm);
 
     // ── Custom DCP dir row + Reset button ─────────────────────────────
     let dcp_header = make_section_header("DCP profile", mtm);
@@ -552,6 +564,8 @@ pub(crate) fn build(
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[9].row) }); // sharpening
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&geometry_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[10].row) }); // lens correction
+    panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&output_header) });
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[11].row) }); // HDR output
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&dcp_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&reset_row) });
@@ -562,6 +576,7 @@ pub(crate) fn build(
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[8].row) });
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[9].row) });
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[10].row) });
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[11].row) });
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
 
     // Pin every row to the panel width so the switches align flush right.
@@ -588,6 +603,7 @@ pub(crate) fn build(
         tone_curve: toggle_ptrs[8],
         capture_sharpening: toggle_ptrs[9],
         lens_correction: toggle_ptrs[10],
+        hdr_output: toggle_ptrs[11],
         custom_dcp_field: &*custom_dcp_field as *const NSTextField,
     };
     let delegate = RawDelegate::new(mtm, ivars);
@@ -611,6 +627,7 @@ pub(crate) fn build(
     retained_views.push(unsafe { Retained::cast_unchecked(tone_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(detail_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(geometry_header) });
+    retained_views.push(unsafe { Retained::cast_unchecked(output_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(dcp_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(reset_spacer) });
     retained_views.push(unsafe { Retained::cast_unchecked(reset_btn) });

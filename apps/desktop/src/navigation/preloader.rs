@@ -6,7 +6,18 @@ use std::sync::{Arc, mpsc};
 use std::thread::available_parallelism;
 use std::time::{Duration, Instant};
 
-const DEFAULT_MEMORY_BUDGET: usize = 512 * 1024 * 1024; // 512 MB
+/// SDR cache budget (Phase 4). 512 MB holds ~6 × 20 MP RAW decodes as
+/// RGBA8. Every JPEG/PNG/WebP cached image fits the same budget.
+const SDR_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
+
+/// HDR cache budget (Phase 5). Doubled from the SDR path because RAW
+/// RGBA16F is 8 bytes per pixel instead of 4. With this bumped budget we
+/// keep the same ~6 preload count for 20 MP RAWs that SDR had. User
+/// decision: trade RAM for preload count, because the preload experience
+/// is the whole value proposition of the preloader (see
+/// `docs/notes/raw-support-phase5.md` for the trade-off note).
+const HDR_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
+
 const PRELOAD_AHEAD: usize = 2;
 
 /// Messages sent from the preloader back to the main thread.
@@ -67,7 +78,33 @@ impl ImageCache {
             entries: HashMap::new(),
             access_order: Vec::new(),
             memory_used: 0,
-            memory_budget: DEFAULT_MEMORY_BUDGET,
+            memory_budget: SDR_MEMORY_BUDGET,
+        }
+    }
+
+    /// Switch the cache budget between SDR (512 MB) and HDR (1 GB). Called
+    /// when the RAW pipeline's `hdr_output` flag or the display's EDR
+    /// headroom changes. Evicts LRU entries if the new budget is smaller
+    /// than the currently-resident total.
+    pub fn set_hdr_mode(&mut self, hdr: bool) {
+        let new_budget = if hdr {
+            HDR_MEMORY_BUDGET
+        } else {
+            SDR_MEMORY_BUDGET
+        };
+        if new_budget == self.memory_budget {
+            return;
+        }
+        log::info!(
+            "Cache budget: {} MB -> {} MB",
+            self.memory_budget / (1024 * 1024),
+            new_budget / (1024 * 1024)
+        );
+        self.memory_budget = new_budget;
+        // Evict LRU entries if the new budget doesn't fit the resident set.
+        while self.memory_used > self.memory_budget && !self.access_order.is_empty() {
+            let evict = self.access_order[0];
+            self.remove(evict);
         }
     }
 
@@ -210,7 +247,10 @@ impl ImageCache {
 }
 
 fn image_memory_cost(image: &DecodedImage) -> usize {
-    image.width as usize * image.height as usize * 4
+    // Respect whichever `PixelBuffer` variant the decoder produced. RGBA8
+    // is 4 bytes per pixel (every non-RAW format + SDR RAW); RGBA16F is 8
+    // bytes per pixel (HDR RAW output).
+    image.width as usize * image.height as usize * image.pixels.bytes_per_pixel()
 }
 
 /// Format a byte count compactly for cache log messages.
@@ -241,6 +281,10 @@ pub struct Preloader {
     /// (all true). Changed via the Settings → RAW panel; the main thread flushes
     /// the cache and re-requests the current image when this changes.
     raw_flags: RawPipelineFlags,
+    /// EDR headroom of the active display (Phase 5). Passed through to
+    /// every decode task so the RAW decoder picks between RGBA8 and
+    /// RGBA16F output.
+    edr_headroom: f32,
 }
 
 impl Preloader {
@@ -248,6 +292,7 @@ impl Preloader {
         display_icc: Vec<u8>,
         use_relative_colorimetric: bool,
         raw_flags: RawPipelineFlags,
+        edr_headroom: f32,
     ) -> Self {
         let num_threads = available_parallelism().map(|n| n.get()).unwrap_or(4);
 
@@ -270,7 +315,16 @@ impl Preloader {
             display_icc: Arc::new(display_icc),
             use_relative_colorimetric,
             raw_flags,
+            edr_headroom,
         }
+    }
+
+    /// Update the display's EDR headroom snapshot used by future decode
+    /// tasks. The caller flushes the image cache and re-submits preload
+    /// tasks so existing entries (possibly RGBA8-only) don't mix with
+    /// fresh RGBA16F ones.
+    pub fn set_edr_headroom(&mut self, headroom: f32) {
+        self.edr_headroom = headroom;
     }
 
     /// Update the target display ICC profile (called when the window moves to a different display).
@@ -316,6 +370,7 @@ impl Preloader {
             let display_icc = Arc::clone(&self.display_icc);
             let use_relative_colorimetric = self.use_relative_colorimetric;
             let raw_flags = self.raw_flags;
+            let edr_headroom = self.edr_headroom;
             let task = move || {
                 let file_name = path
                     .file_name()
@@ -329,6 +384,7 @@ impl Preloader {
                     &display_icc,
                     use_relative_colorimetric,
                     raw_flags,
+                    edr_headroom,
                 ) {
                     Ok(image) => {
                         let duration = start.elapsed();
@@ -388,11 +444,11 @@ mod tests {
     use super::*;
 
     fn make_image(width: u32, height: u32) -> DecodedImage {
-        DecodedImage {
-            width,
-            height,
-            rgba_data: vec![0u8; (width * height * 4) as usize],
-        }
+        DecodedImage::from_rgba8(width, height, vec![0u8; (width * height * 4) as usize])
+    }
+
+    fn make_hdr_image(width: u32, height: u32) -> DecodedImage {
+        DecodedImage::from_rgba16f(width, height, vec![0u16; (width * height * 4) as usize])
     }
 
     fn insert_test_image(cache: &mut ImageCache, index: usize, width: u32, height: u32) {
@@ -482,6 +538,54 @@ mod tests {
         assert_eq!(diag.entries[0].width, 320);
         assert_eq!(diag.entries[1].index, 5);
         assert_eq!(diag.total_memory, 320 * 240 * 4 + 640 * 480 * 4);
+    }
+
+    #[test]
+    fn cache_accounts_f16_at_eight_bytes_per_pixel() {
+        // Phase 5: HDR images cost 2× per-pixel bytes. The LRU budgeter
+        // has to see that so it doesn't over-subscribe the cache.
+        let mut cache = ImageCache::new();
+        cache.insert(
+            0,
+            make_hdr_image(100, 100),
+            Duration::from_millis(10),
+            "hdr_0.arw".to_string(),
+        );
+        assert_eq!(cache.memory_used(), 100 * 100 * 8);
+    }
+
+    #[test]
+    fn cache_hdr_budget_doubles() {
+        // Phase 5: when the preloader is in HDR mode, the cache budget
+        // doubles from 512 MB to 1 GB so RAW previews keep their count.
+        let mut cache = ImageCache::new();
+        assert_eq!(cache.memory_budget, SDR_MEMORY_BUDGET);
+        cache.set_hdr_mode(true);
+        assert_eq!(cache.memory_budget, HDR_MEMORY_BUDGET);
+        cache.set_hdr_mode(false);
+        assert_eq!(cache.memory_budget, SDR_MEMORY_BUDGET);
+    }
+
+    #[test]
+    fn cache_shrinks_on_budget_drop() {
+        // Switching from HDR mode back to SDR must evict entries that no
+        // longer fit the tighter budget.
+        let mut cache = ImageCache::new();
+        cache.set_hdr_mode(true);
+        // Plant 3 × 200 MB HDR images (fits in 1 GB).
+        for i in 0..3 {
+            cache.insert(
+                i,
+                make_hdr_image(5000, 5000),
+                Duration::from_millis(10),
+                format!("hdr_{i}.arw"),
+            );
+        }
+        assert_eq!(cache.len(), 3);
+        cache.set_hdr_mode(false); // Drop to 512 MB.
+        // Post-drop, the cache must shrink until resident <= budget.
+        assert!(cache.memory_used() <= SDR_MEMORY_BUDGET);
+        assert!(cache.len() <= 2); // at least one eviction happened
     }
 
     #[test]

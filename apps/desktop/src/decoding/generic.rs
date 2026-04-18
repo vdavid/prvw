@@ -50,9 +50,5 @@ pub(super) fn decode(
         use_relative_colorimetric,
     );
 
-    Ok(DecodedImage {
-        width,
-        height,
-        rgba_data,
-    })
+    Ok(DecodedImage::from_rgba8(width, height, rgba_data))
 }

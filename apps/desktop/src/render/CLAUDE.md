@@ -28,7 +28,11 @@ owns `ViewState`) plug transforms into the renderer's uniform buffer via
   viewport offset, pills, and text. Pixel tests of the live window's appearance need
   a different approach.
 - **Surface format is `Bgra8UnormSrgb` on macOS.** Screenshot readback swizzles
-  BGRA → RGBA before PNG encoding.
+  BGRA → RGBA before PNG encoding. Phase 5.0 uploads `Rgba16Float` textures for HDR
+  RAWs but the surface itself stays `Bgra8UnormSrgb`; values above 1.0 survive the
+  texture sample but quantise back to SDR at the final blend. The surface-format
+  switch + `CAMetalLayer.wantsExtendedDynamicRangeContent` land in Phase 5.1 (see
+  `docs/notes/raw-support-phase5.md`).
 - **`CAMetalLayer` is a sublayer, not the NSView's direct layer.** Walk
   `[ns_view layer].sublayers`. See `crate::color::display_profile::set_layer_colorspace`.
 - **wgpu 29 API quirks.** `Instance::new()` takes a value. `get_current_texture()`

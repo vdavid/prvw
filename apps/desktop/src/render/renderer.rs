@@ -1,5 +1,5 @@
 use super::text::{GlyphonRenderer, TextBlock};
-use crate::decoding::DecodedImage;
+use crate::decoding::{DecodedImage, PixelBuffer};
 use crate::pixels::{Logical, Physical};
 use crate::zoom::view::TransformUniform;
 use image::ImageEncoder;
@@ -313,11 +313,27 @@ impl Renderer {
     }
 
     /// Upload a decoded image as a GPU texture and create the bind group.
+    ///
+    /// `PixelBuffer::Rgba8` uploads to `Rgba8UnormSrgb`. `PixelBuffer::Rgba16F`
+    /// uploads to `Rgba16Float` — the fragment shader samples it as
+    /// `vec4<f32>` either way, so the same shader works for both paths.
+    ///
+    /// The surface itself stays at `Bgra8UnormSrgb` in this phase (see
+    /// `docs/notes/raw-support-phase5.md` — the surface format switch plus
+    /// `CAMetalLayer.wantsExtendedDynamicRangeContent` is deferred to
+    /// Phase 5.1). Until that lands, HDR highlights quantise back into SDR
+    /// range at the final blend. The f16 cache entry still pays off because
+    /// every non-texture step in the pipeline (tone curve, ICC transform)
+    /// preserves the wide-gamut values.
     pub fn set_image(&mut self, image: &DecodedImage) {
         let texture_size = wgpu::Extent3d {
             width: image.width,
             height: image.height,
             depth_or_array_layers: 1,
+        };
+        let (format, bytes_per_pixel) = match &image.pixels {
+            PixelBuffer::Rgba8(_) => (wgpu::TextureFormat::Rgba8UnormSrgb, 4u32),
+            PixelBuffer::Rgba16F(_) => (wgpu::TextureFormat::Rgba16Float, 8u32),
         };
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -326,11 +342,15 @@ impl Renderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
+        let pixel_bytes: &[u8] = match &image.pixels {
+            PixelBuffer::Rgba8(v) => v.as_slice(),
+            PixelBuffer::Rgba16F(v) => bytemuck::cast_slice(v.as_slice()),
+        };
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -338,10 +358,10 @@ impl Renderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &image.rgba_data,
+            pixel_bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * image.width),
+                bytes_per_row: Some(bytes_per_pixel * image.width),
                 rows_per_image: Some(image.height),
             },
             texture_size,

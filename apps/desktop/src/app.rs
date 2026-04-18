@@ -95,6 +95,13 @@ pub(crate) struct App {
     /// default is all-true; the Settings → RAW panel flips individual
     /// stages off for transparency and diagnostics.
     pub(crate) raw_flags: crate::decoding::RawPipelineFlags,
+    /// Current EDR (extended dynamic range) headroom of the active display
+    /// (Phase 5). `1.0` on SDR displays — the decoder produces RGBA8 like
+    /// Phase 4. Values above `1.0` switch the RAW decoder into its
+    /// `RGBA16F` + filmic-4×-shoulder path so HDR highlights survive to the
+    /// renderer. Refreshed on `AppCommand::DisplayChanged` and whenever a
+    /// new display is queried.
+    pub(crate) edr_headroom: f32,
 
     // ── Runtime input / rendering ───────────────────────────────────
     pub(crate) modifiers: ModifiersState,
@@ -138,6 +145,7 @@ impl App {
             navigation: navigation::State::new(),
             title_bar: initial_settings.title_bar,
             raw_flags: initial_settings.raw,
+            edr_headroom: 1.0,
             modifiers: ModifiersState::empty(),
             drag_start: None,
             last_mouse_pos: (Logical(0.0), Logical(0.0)),
@@ -416,6 +424,18 @@ impl App {
 
         // Configure ICC color management based on settings
         self.color.display_icc = self.effective_display_icc(&win);
+
+        // Query the display's EDR headroom. 1.0 on SDR displays (so the
+        // RAW decoder stays on the Phase 4 RGBA8 path, bit-identical).
+        // XDR and OLED displays return >1.0 which promotes RAWs to the
+        // RGBA16F + filmic-4×-shoulder path.
+        #[cfg(target_os = "macos")]
+        {
+            self.edr_headroom = display_profile::current_edr_headroom(&win);
+            log::info!("Display EDR headroom: {:.2}", self.edr_headroom);
+        }
+        let hdr_active = self.raw_flags.hdr_output && self.edr_headroom > 1.0;
+        self.navigation.image_cache.set_hdr_mode(hdr_active);
         #[cfg(target_os = "macos")]
         {
             if !self.color.display_icc.is_empty() {
@@ -446,6 +466,7 @@ impl App {
             self.color.display_icc.clone(),
             self.color.relative_col,
             self.raw_flags,
+            self.edr_headroom,
         );
 
         // Load and display the initial image
@@ -507,6 +528,7 @@ impl App {
             &self.color.display_icc,
             self.color.relative_col,
             self.raw_flags,
+            self.edr_headroom,
         ) {
             Ok(image) => {
                 self.navigation.current_image_size = Some((image.width, image.height));
@@ -854,7 +876,12 @@ impl App {
 
     /// Push new RAW pipeline flags into the preloader, flush the cache, and
     /// re-decode. Phase 3.7 Settings → RAW toggles funnel through here.
+    /// Phase 5: also retunes the cache's memory budget between SDR (512 MB)
+    /// and HDR (1 GB) so the preload count stays constant when the user
+    /// flips `hdr_output`.
     pub(crate) fn apply_raw_flag_change(&mut self) {
+        let hdr_active = self.raw_flags.hdr_output && self.edr_headroom > 1.0;
+        self.navigation.image_cache.set_hdr_mode(hdr_active);
         self.navigation.image_cache.clear();
         if let Some(preloader) = &mut self.navigation.preloader {
             preloader.set_raw_flags(self.raw_flags);
@@ -877,10 +904,30 @@ impl App {
         }
     }
 
-    /// Re-query the display ICC profile and re-decode the current image if the profile changed.
+    /// Re-query the display ICC profile + EDR headroom and re-decode the
+    /// current image if either changed. EDR headroom moves with display
+    /// switches and with macOS brightness changes, so we refresh it here on
+    /// every `DisplayChanged` event.
     #[cfg(target_os = "macos")]
     fn handle_display_changed(&mut self) {
-        log::debug!("Display changed, re-evaluating ICC settings");
+        log::debug!("Display changed, re-evaluating ICC + EDR");
+        if let Some(win) = &self.window {
+            let new_headroom = display_profile::current_edr_headroom(win);
+            if (new_headroom - self.edr_headroom).abs() > 1e-3 {
+                log::info!(
+                    "EDR headroom changed: {:.2} -> {:.2}",
+                    self.edr_headroom,
+                    new_headroom
+                );
+                self.edr_headroom = new_headroom;
+                if let Some(preloader) = &mut self.navigation.preloader {
+                    preloader.set_edr_headroom(new_headroom);
+                }
+                let hdr_active = self.raw_flags.hdr_output && new_headroom > 1.0;
+                self.navigation.image_cache.set_hdr_mode(hdr_active);
+                self.navigation.image_cache.clear();
+            }
+        }
         self.apply_icc_settings();
     }
 

@@ -53,6 +53,17 @@ pub struct RawPipelineFlags {
     /// correction.
     #[serde(default = "default_true")]
     pub lens_correction: bool,
+
+    // ── Output (Phase 5) ──────────────────────────────────────────────
+    /// HDR / EDR output: keep highlights above display-white alive through
+    /// the tone curve and ship a `RGBA16F` buffer to the renderer so an
+    /// EDR-capable display can show them. Silent no-op on SDR-only displays
+    /// (the headroom query returns 1.0 and the f16 conversion is the same
+    /// [0, 1] clamp Phase 4 produced). Defaults to `true`; users on mini-LED
+    /// or OLED XDR displays get HDR highlights by default, and the toggle
+    /// in Settings → RAW → Output lets them opt out.
+    #[serde(default = "default_true")]
+    pub hdr_output: bool,
 }
 
 fn default_true() -> bool {
@@ -73,6 +84,7 @@ impl Default for RawPipelineFlags {
             tone_curve: true,
             capture_sharpening: true,
             lens_correction: true,
+            hdr_output: true,
         }
     }
 }
@@ -123,6 +135,9 @@ impl RawPipelineFlags {
         if !self.lens_correction {
             out.push("lens correction");
         }
+        if !self.hdr_output {
+            out.push("HDR output");
+        }
         out
     }
 }
@@ -145,6 +160,7 @@ mod tests {
         assert!(flags.tone_curve);
         assert!(flags.capture_sharpening);
         assert!(flags.lens_correction);
+        assert!(flags.hdr_output);
         assert!(flags.is_default());
         assert!(flags.disabled_step_labels().is_empty());
     }

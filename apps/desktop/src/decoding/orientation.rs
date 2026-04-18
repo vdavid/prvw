@@ -35,117 +35,138 @@ pub(super) fn parse_exif_orientation(bytes: &[u8], filename: &str) -> u16 {
     orientation
 }
 
-/// Apply EXIF orientation transform to an RGBA pixel buffer.
-/// Returns the new (width, height) after rotation.
-pub(super) fn apply_orientation(
+/// Apply EXIF orientation transform to an RGBA byte buffer with 4 bytes
+/// per pixel. Returns the new (width, height) after rotation. Same logic as
+/// before Phase 5; kept as a byte-stride specialisation because it's the
+/// hot path for every non-RAW format.
+pub(super) fn apply_orientation_bytes(
     width: u32,
     height: u32,
     rgba: &mut Vec<u8>,
     orientation: u16,
+    bpp: usize,
 ) -> (u32, u32) {
-    // Zero-dimension buffers have nothing to rotate and would underflow the
-    // index math below (orientation 2's `(width - 1) * 4`, etc.).
+    apply_orientation_generic(width, height, rgba, orientation, bpp, 0u8)
+}
+
+/// RGBA16F variant: each "pixel" is four `u16`s (R, G, B, A half-floats).
+/// Same rotation logic as the byte path; we just swap 4-element blocks of
+/// `u16` instead of `bpp`-element blocks of `u8`.
+pub(super) fn apply_orientation_u16(
+    width: u32,
+    height: u32,
+    rgba: &mut Vec<u16>,
+    orientation: u16,
+    channels_per_pixel: usize,
+) -> (u32, u32) {
+    apply_orientation_generic(width, height, rgba, orientation, channels_per_pixel, 0u16)
+}
+
+/// Generic orientation fixup: walks `stride`-sized pixel blocks and swaps /
+/// re-layouts them per EXIF orientation. `T` is the channel unit (u8 for
+/// RGBA8, u16 for RGBA16F). `_zero` disambiguates the type for `vec![_; n]`
+/// at the allocation sites.
+fn apply_orientation_generic<T: Copy + Default>(
+    width: u32,
+    height: u32,
+    pixels: &mut Vec<T>,
+    orientation: u16,
+    block: usize,
+    _zero: T,
+) -> (u32, u32) {
     if width == 0 || height == 0 {
         return (width, height);
     }
     match orientation {
         1 => (width, height),
         2 => {
-            // Flip horizontal: reverse each row
-            let stride = (width as usize) * 4;
-            for row in rgba.chunks_exact_mut(stride) {
+            let stride = (width as usize) * block;
+            for row in pixels.chunks_exact_mut(stride) {
                 let mut left = 0usize;
-                let mut right = (width as usize - 1) * 4;
+                let mut right = (width as usize - 1) * block;
                 while left < right {
-                    for i in 0..4 {
+                    for i in 0..block {
                         row.swap(left + i, right + i);
                     }
-                    left += 4;
-                    right -= 4;
+                    left += block;
+                    right -= block;
                 }
             }
             (width, height)
         }
         3 => {
-            // Rotate 180: reverse the entire pixel array
             let pixel_count = (width as usize) * (height as usize);
             for i in 0..pixel_count / 2 {
                 let j = pixel_count - 1 - i;
-                let (a, b) = (i * 4, j * 4);
-                for k in 0..4 {
-                    rgba.swap(a + k, b + k);
+                let (a, b) = (i * block, j * block);
+                for k in 0..block {
+                    pixels.swap(a + k, b + k);
                 }
             }
             (width, height)
         }
         4 => {
-            // Flip vertical: reverse row order
-            let stride = (width as usize) * 4;
+            let stride = (width as usize) * block;
             let h = height as usize;
             for row_idx in 0..h / 2 {
                 let opposite = h - 1 - row_idx;
                 let (top, bottom) = (row_idx * stride, opposite * stride);
                 for col in 0..stride {
-                    rgba.swap(top + col, bottom + col);
+                    pixels.swap(top + col, bottom + col);
                 }
             }
             (width, height)
         }
         5 => {
-            // Transpose (swap x/y)
             let (w, h) = (width as usize, height as usize);
-            let mut out = vec![0u8; w * h * 4];
+            let mut out: Vec<T> = vec![T::default(); w * h * block];
             for y in 0..h {
                 for x in 0..w {
-                    let src = (y * w + x) * 4;
-                    let dst = (x * h + y) * 4;
-                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                    let src = (y * w + x) * block;
+                    let dst = (x * h + y) * block;
+                    out[dst..dst + block].copy_from_slice(&pixels[src..src + block]);
                 }
             }
-            *rgba = out;
+            *pixels = out;
             (height, width)
         }
         6 => {
-            // Rotate 90 CW: new[x][h-1-y] = old[y][x]
             let (w, h) = (width as usize, height as usize);
-            let mut out = vec![0u8; w * h * 4];
+            let mut out: Vec<T> = vec![T::default(); w * h * block];
             for y in 0..h {
                 for x in 0..w {
-                    let src = (y * w + x) * 4;
-                    let dst = (x * h + (h - 1 - y)) * 4;
-                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                    let src = (y * w + x) * block;
+                    let dst = (x * h + (h - 1 - y)) * block;
+                    out[dst..dst + block].copy_from_slice(&pixels[src..src + block]);
                 }
             }
-            *rgba = out;
+            *pixels = out;
             (height, width)
         }
         7 => {
-            // Transverse: rotate 90 CW + flip horizontal
-            // new[w-1-x][h-1-y] = old[y][x]  => new dims are (h, w)
             let (w, h) = (width as usize, height as usize);
-            let mut out = vec![0u8; w * h * 4];
+            let mut out: Vec<T> = vec![T::default(); w * h * block];
             for y in 0..h {
                 for x in 0..w {
-                    let src = (y * w + x) * 4;
-                    let dst = ((w - 1 - x) * h + (h - 1 - y)) * 4;
-                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                    let src = (y * w + x) * block;
+                    let dst = ((w - 1 - x) * h + (h - 1 - y)) * block;
+                    out[dst..dst + block].copy_from_slice(&pixels[src..src + block]);
                 }
             }
-            *rgba = out;
+            *pixels = out;
             (height, width)
         }
         8 => {
-            // Rotate 270 CW (= 90 CCW): new[w-1-x][y] = old[y][x]
             let (w, h) = (width as usize, height as usize);
-            let mut out = vec![0u8; w * h * 4];
+            let mut out: Vec<T> = vec![T::default(); w * h * block];
             for y in 0..h {
                 for x in 0..w {
-                    let src = (y * w + x) * 4;
-                    let dst = ((w - 1 - x) * h + y) * 4;
-                    out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+                    let src = (y * w + x) * block;
+                    let dst = ((w - 1 - x) * h + y) * block;
+                    out[dst..dst + block].copy_from_slice(&pixels[src..src + block]);
                 }
             }
-            *rgba = out;
+            *pixels = out;
             (height, width)
         }
         _ => {

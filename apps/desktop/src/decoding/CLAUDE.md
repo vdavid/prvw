@@ -5,7 +5,7 @@ and hand a `DecodedImage` off to the renderer.
 
 | File             | Purpose                                                                          |
 | ---------------- | -------------------------------------------------------------------------------- |
-| `mod.rs`         | Public API: `DecodedImage`, `load_image`, `load_image_cancellable`, `is_supported_extension` |
+| `mod.rs`         | Public API: `DecodedImage`, `PixelBuffer` (Phase 5 RGBA8/RGBA16F), `load_image`, `load_image_cancellable`, `is_supported_extension` |
 | `dispatch.rs`    | `Backend` enum + extension-to-backend mapping                                    |
 | `jpeg.rs`        | Fast JPEG path via `zune-jpeg` (SIMD)                                            |
 | `raw.rs`         | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)       |
@@ -133,6 +133,12 @@ can keep the intermediate wide-gamut:
 7. `color::transform_f32_with_profile` hands the buffer to moxcms for the
    linear-Rec.2020 → display-ICC conversion in f32. Clamp to [0, 1] on the
    way out to RGBA8.
+7b. **Phase 5: HDR branch.** If the caller's `edr_headroom > 1.0` and
+    `flags.hdr_output == true`, skip the `[0, 1]` clamp and quantise the
+    f32 buffer into `PixelBuffer::Rgba16F` (half-floats via the `half`
+    crate), preserving values above 1.0 for the EDR-capable compositor.
+    Sharpening is skipped in this branch (see `raw-support-phase5.md`).
+    Otherwise the SDR path below fires.
 8. `color::sharpen::sharpen_rgba8_inplace` runs a mild unsharp mask on
    **luminance only** (Rec.709 weights) of the display-space RGBA8 buffer:
    separable Gaussian blur (σ = 0.8 px, 7 taps) on Y in f32, unsharp-mask
