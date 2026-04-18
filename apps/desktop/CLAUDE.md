@@ -21,13 +21,13 @@ src/
 │   Features:
 ├── about.rs                 About window
 ├── color/                   ICC transform + display profile (macOS) + Color settings panel + color::State
-├── decoding/                Image format decoders (JPEG via zune-jpeg, RAW via rawler, generic via `image`)
+├── decoding/                Image format decoders (JPEG via zune-jpeg, RAW via rawler, generic via `image`) + `RawPipelineFlags` per-stage toggle struct
 ├── diagnostics.rs           Performance observability (cache/nav/RSS formatter)
 ├── file_associations/       LaunchServices FFI + File associations settings panel
 ├── navigation/              Directory scan + preloader + LRU cache + navigation::State
 ├── onboarding/              Onboarding window + defaults-sentence generator + SVG checkmark renderer
 ├── qa/                      Embedded HTTP + MCP server
-├── settings/                JSON persistence + Settings window shell + widgets + General panel
+├── settings/                JSON persistence + Settings window shell + widgets + General panel + RAW panel (Phase 3.7)
 ├── updater.rs               Auto-update
 ├── window.rs                Main viewer window: create, fullscreen, auto-fit, vibrancy
 └── zoom/                    ViewState + zoom/pan math + Zoom settings panel + zoom::State

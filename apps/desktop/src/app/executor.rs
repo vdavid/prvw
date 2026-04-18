@@ -179,6 +179,27 @@ impl App {
                 self.apply_content_offset();
                 self.update_shared_state();
             }
+            AppCommand::SetRawPipelineFlags(flags) => {
+                self.raw_flags = flags;
+                log::info!(
+                    "RAW pipeline flags updated: {} step(s) disabled",
+                    flags.disabled_step_labels().len()
+                );
+                let mut s = settings::Settings::load();
+                s.raw = flags;
+                s.save();
+                self.apply_raw_flag_change();
+            }
+            AppCommand::SetCustomDcpDir(dir) => {
+                log::info!(
+                    "Custom DCP directory updated: {}",
+                    dir.as_deref().unwrap_or("<cleared>")
+                );
+                let mut s = settings::Settings::load();
+                s.custom_dcp_dir = dir.clone();
+                s.save();
+                self.apply_custom_dcp_dir_change(dir.as_deref());
+            }
             #[cfg(target_os = "macos")]
             AppCommand::DisplayChanged => {
                 self.handle_display_changed();

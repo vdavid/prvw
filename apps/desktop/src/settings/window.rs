@@ -30,10 +30,12 @@ struct SettingsDelegateIvars {
     general_panel: *const NSStackView,
     zoom_panel: *const NSStackView,
     color_panel: *const NSStackView,
+    raw_panel: *const NSStackView,
     file_assoc_panel: *const NSStackView,
     sidebar_general_btn: *const NSButton,
     sidebar_zoom_btn: *const NSButton,
     sidebar_color_btn: *const NSButton,
+    sidebar_raw_btn: *const NSButton,
     sidebar_file_assoc_btn: *const NSButton,
 }
 
@@ -161,9 +163,14 @@ define_class!(
             self.select_panel(2);
         }
 
+        #[unsafe(method(selectRaw:))]
+        fn select_raw(&self, _sender: &AnyObject) {
+            self.select_panel(3);
+        }
+
         #[unsafe(method(selectFileAssoc:))]
         fn select_file_assoc(&self, _sender: &AnyObject) {
-            self.select_panel(3);
+            self.select_panel(4);
         }
     }
 );
@@ -180,12 +187,14 @@ impl SettingsDelegate {
             ivars.general_panel,
             ivars.zoom_panel,
             ivars.color_panel,
+            ivars.raw_panel,
             ivars.file_assoc_panel,
         ];
         let buttons = [
             ivars.sidebar_general_btn,
             ivars.sidebar_zoom_btn,
             ivars.sidebar_color_btn,
+            ivars.sidebar_raw_btn,
             ivars.sidebar_file_assoc_btn,
         ];
         for (i, &panel) in panels.iter().enumerate() {
@@ -297,6 +306,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     let sidebar_general_btn = make_sidebar_button("General");
     let sidebar_zoom_btn = make_sidebar_button("Zoom");
     let sidebar_color_btn = make_sidebar_button("Color");
+    let sidebar_raw_btn = make_sidebar_button("RAW");
     let sidebar_file_assoc_btn = make_sidebar_button("File associations");
 
     // General starts selected
@@ -309,6 +319,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_general_btn) });
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_zoom_btn) });
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_color_btn) });
+    sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_raw_btn) });
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_file_assoc_btn) });
 
     // ── Build each panel ──────────────────────────────────────────────
@@ -319,6 +330,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         crate::zoom::settings_panel::build(&settings, content_max_width, &mut retained_views, mtm);
     let color =
         crate::color::settings_panel::build(&settings, content_max_width, &mut retained_views, mtm);
+    let raw = super::panels::raw::build(&settings, content_max_width, &mut retained_views, mtm);
     let file_assoc_panel =
         crate::file_associations::settings_panel::build(&mut retained_views, mtm);
 
@@ -332,10 +344,12 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         general_panel: &*general.panel as *const NSStackView,
         zoom_panel: &*zoom.panel as *const NSStackView,
         color_panel: &*color.panel as *const NSStackView,
+        raw_panel: &*raw.panel as *const NSStackView,
         file_assoc_panel: &*file_assoc_panel as *const NSStackView,
         sidebar_general_btn: &*sidebar_general_btn as *const NSButton,
         sidebar_zoom_btn: &*sidebar_zoom_btn as *const NSButton,
         sidebar_color_btn: &*sidebar_color_btn as *const NSButton,
+        sidebar_raw_btn: &*sidebar_raw_btn as *const NSButton,
         sidebar_file_assoc_btn: &*sidebar_file_assoc_btn as *const NSButton,
     };
     let delegate = SettingsDelegate::new(mtm, ivars);
@@ -396,6 +410,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
         sidebar_color_btn.setTarget(Some(&delegate as &AnyObject));
         sidebar_color_btn.setAction(Some(sel!(selectColor:)));
+
+        sidebar_raw_btn.setTarget(Some(&delegate as &AnyObject));
+        sidebar_raw_btn.setAction(Some(sel!(selectRaw:)));
 
         sidebar_file_assoc_btn.setTarget(Some(&delegate as &AnyObject));
         sidebar_file_assoc_btn.setAction(Some(sel!(selectFileAssoc:)));
@@ -477,11 +494,13 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         let _: () = msg_send![&*general.panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         let _: () = msg_send![&*zoom.panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         let _: () = msg_send![&*color.panel, setTranslatesAutoresizingMaskIntoConstraints: false];
+        let _: () = msg_send![&*raw.panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         let _: () =
             msg_send![&*file_assoc_panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         content_container.addSubview(as_view::<NSStackView>(&general.panel));
         content_container.addSubview(as_view::<NSStackView>(&zoom.panel));
         content_container.addSubview(as_view::<NSStackView>(&color.panel));
+        content_container.addSubview(as_view::<NSStackView>(&raw.panel));
         content_container.addSubview(as_view::<NSStackView>(&file_assoc_panel));
 
         // Horizontal separator above Close button
@@ -628,7 +647,13 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         retained_views.push(Retained::cast_unchecked(c));
 
         // Pin each panel to content container edges
-        for panel in [&general.panel, &zoom.panel, &color.panel, &file_assoc_panel] {
+        for panel in [
+            &general.panel,
+            &zoom.panel,
+            &color.panel,
+            &raw.panel,
+            &file_assoc_panel,
+        ] {
             let panel_view = as_view::<NSStackView>(panel);
 
             let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
@@ -688,6 +713,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_general_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_zoom_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_color_btn) });
+    retained_views.push(unsafe { Retained::cast_unchecked(sidebar_raw_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_file_assoc_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_stack) });
     retained_views.push(unsafe { Retained::cast_unchecked(general.panel) });
@@ -702,6 +728,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(color.icc_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(color.cm_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(color.rc_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(raw.panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(file_assoc_panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(close_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(esc_button) });
@@ -732,7 +759,8 @@ pub fn switch_settings_section(section: &str) {
         "general" => 0,
         "zoom" => 1,
         "color" => 2,
-        "file associations" | "file_associations" | "fileassociations" => 3,
+        "raw" => 3,
+        "file associations" | "file_associations" | "fileassociations" => 4,
         _ => {
             log::warn!("Unknown settings section: {section}");
             return;
@@ -758,7 +786,8 @@ pub fn switch_settings_section(section: &str) {
                             0 => sel!(selectGeneral:),
                             1 => sel!(selectZoom:),
                             2 => sel!(selectColor:),
-                            3 => sel!(selectFileAssoc:),
+                            3 => sel!(selectRaw:),
+                            4 => sel!(selectFileAssoc:),
                             _ => return,
                         };
                         let _: () = msg_send![delegate, performSelector: sel, withObject: std::ptr::null::<AnyObject>()];

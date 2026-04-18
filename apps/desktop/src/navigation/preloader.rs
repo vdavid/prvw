@@ -1,4 +1,4 @@
-use crate::decoding::{self, DecodedImage};
+use crate::decoding::{self, DecodedImage, RawPipelineFlags};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -237,10 +237,18 @@ pub struct Preloader {
     display_icc: Arc<Vec<u8>>,
     /// Whether to use relative colorimetric rendering intent instead of perceptual.
     use_relative_colorimetric: bool,
+    /// Per-stage RAW pipeline toggles. Defaults to `RawPipelineFlags::default()`
+    /// (all true). Changed via the Settings → RAW panel; the main thread flushes
+    /// the cache and re-requests the current image when this changes.
+    raw_flags: RawPipelineFlags,
 }
 
 impl Preloader {
-    pub fn start(display_icc: Vec<u8>, use_relative_colorimetric: bool) -> Self {
+    pub fn start(
+        display_icc: Vec<u8>,
+        use_relative_colorimetric: bool,
+        raw_flags: RawPipelineFlags,
+    ) -> Self {
         let num_threads = available_parallelism().map(|n| n.get()).unwrap_or(4);
 
         let pool = rayon::ThreadPoolBuilder::new()
@@ -261,6 +269,7 @@ impl Preloader {
             cancellation_tokens: Vec::new(),
             display_icc: Arc::new(display_icc),
             use_relative_colorimetric,
+            raw_flags,
         }
     }
 
@@ -271,6 +280,12 @@ impl Preloader {
 
     pub fn set_use_relative_colorimetric(&mut self, value: bool) {
         self.use_relative_colorimetric = value;
+    }
+
+    /// Update the RAW pipeline flags. The caller is responsible for flushing the image
+    /// cache and resubmitting preload tasks so new decodes run with the new flags.
+    pub fn set_raw_flags(&mut self, flags: RawPipelineFlags) {
+        self.raw_flags = flags;
     }
 
     /// Cancel all in-flight tasks and submit new ones.
@@ -300,6 +315,7 @@ impl Preloader {
             let tx = self.response_tx.clone();
             let display_icc = Arc::clone(&self.display_icc);
             let use_relative_colorimetric = self.use_relative_colorimetric;
+            let raw_flags = self.raw_flags;
             let task = move || {
                 let file_name = path
                     .file_name()
@@ -312,6 +328,7 @@ impl Preloader {
                     &cancelled,
                     &display_icc,
                     use_relative_colorimetric,
+                    raw_flags,
                 ) {
                     Ok(image) => {
                         let duration = start.elapsed();

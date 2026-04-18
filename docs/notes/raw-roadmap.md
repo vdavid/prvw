@@ -196,12 +196,28 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       `same_phase_neighbor_offsets` returns the eight `{±2}` offset pairs.
       Deferred from Phase 3.0 commit `ecc9973`.
 
+### Phase 3.7 — pipeline transparency settings (done, 2026-04-17)
+
+- [x] `RawPipelineFlags` struct with one bool per stage (10 toggles across
+      sensor, color, tone, detail). Defaults all-true reproduce today's
+      pipeline bit-for-bit.
+- [x] Threaded through `decoding::load_image(_cancellable)` →
+      `raw::decode` → each stage and through `color::dcp::apply_if_available`
+      so DCP HueSatMap / LookTable each have their own gate.
+- [x] Settings → RAW panel with grouped per-stage toggles and a
+      "Reset to defaults" button. Toggling flushes the image cache and
+      re-decodes via a new `AppCommand::SetRawPipelineFlags`.
+- [x] **Custom DCP directory** picker in the same panel. Writes to
+      `Settings.custom_dcp_dir`, which `App` pushes into `$PRVW_DCP_DIR`
+      so `color::dcp::discovery` honors it.
+- [x] One INFO log line per decode when any flag is non-default, listing
+      the disabled steps. Silent on the default path.
+
 ### Phase 3.x — still ahead
+
 - [ ] DCP dual-illuminant, full fidelity: iterate ForwardMatrix1/2 +
       `AsShotNeutral` to converge a proper scene CCT instead of the
       one-shot WB-ratio approximation.
-- [ ] Settings UI: a "Custom DCP directory" picker + "per-camera profile"
-      toggle in the Color panel.
 
 ## Phase 4 — Lens correction (via lensfun-rs)
 

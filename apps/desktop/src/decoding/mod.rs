@@ -28,6 +28,7 @@ mod generic;
 mod jpeg;
 mod orientation;
 mod raw;
+mod raw_flags;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +36,8 @@ use std::time::Instant;
 
 use dispatch::Backend;
 use orientation::{apply_orientation, parse_exif_orientation};
+
+pub use raw_flags::RawPipelineFlags;
 
 /// Decoded image data ready for GPU upload.
 pub struct DecodedImage {
@@ -51,6 +54,7 @@ pub fn load_image(
     path: &Path,
     target_icc: &[u8],
     use_relative_colorimetric: bool,
+    raw_flags: RawPipelineFlags,
 ) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -70,6 +74,7 @@ pub fn load_image(
         None,
         target_icc,
         use_relative_colorimetric,
+        raw_flags,
     );
 
     log_result(&result, ext, backend, path, start);
@@ -85,6 +90,7 @@ pub fn load_image_cancellable(
     cancelled: &AtomicBool,
     target_icc: &[u8],
     use_relative_colorimetric: bool,
+    raw_flags: RawPipelineFlags,
 ) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -106,6 +112,7 @@ pub fn load_image_cancellable(
         Some(cancelled),
         target_icc,
         use_relative_colorimetric,
+        raw_flags,
     );
 
     log_result(&result, ext, backend, path, start);
@@ -120,6 +127,7 @@ pub fn is_supported_extension(ext: &str) -> bool {
 /// Dispatch to the chosen backend. JPEG and Generic parse EXIF orientation from the
 /// outer file bytes; Raw gets orientation from rawler's decoder metadata instead
 /// (rawler always sets `RawImage.orientation` to Normal).
+#[allow(clippy::too_many_arguments)] // Internal dispatch; plumbing trumps struct-ifying
 fn decode_with(
     backend: Backend,
     path: &Path,
@@ -128,6 +136,7 @@ fn decode_with(
     cancelled: Option<&AtomicBool>,
     target_icc: &[u8],
     use_relative_colorimetric: bool,
+    raw_flags: RawPipelineFlags,
 ) -> Result<DecodedImage, String> {
     match backend {
         Backend::Jpeg => {
@@ -147,6 +156,7 @@ fn decode_with(
                 cancelled,
                 target_icc,
                 use_relative_colorimetric,
+                raw_flags,
             )?;
             if orientation != 1 {
                 log::debug!("RAW orientation: {orientation} for {filename}");
@@ -252,7 +262,13 @@ mod tests {
     #[ignore]
     fn arw_end_to_end() {
         let path = Path::new("/tmp/raw/sample1.arw");
-        let img = load_image(path, color::srgb_icc_bytes(), false).expect("decode failed");
+        let img = load_image(
+            path,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("decode failed");
         assert_eq!((img.width, img.height), (5456, 3632));
     }
 
@@ -263,7 +279,13 @@ mod tests {
     #[ignore]
     fn dng_end_to_end() {
         let path = Path::new("/tmp/raw/sample2.dng");
-        let img = load_image(path, color::srgb_icc_bytes(), false).expect("decode failed");
+        let img = load_image(
+            path,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("decode failed");
         assert_eq!((img.width, img.height), (3000, 3990));
     }
 
@@ -286,8 +308,13 @@ mod tests {
         let raw_path = fixture_dir.join("synthetic-bayer-128.dng");
         let golden_path = fixture_dir.join("synthetic-bayer-128.golden.png");
 
-        let img = load_image(&raw_path, color::srgb_icc_bytes(), false)
-            .expect("synthetic DNG should decode");
+        let img = load_image(
+            &raw_path,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("synthetic DNG should decode");
         assert_eq!(
             (img.width, img.height),
             (128, 128),

@@ -4,3 +4,4 @@
 //! their feature module as `settings_panel`.
 
 pub(super) mod general;
+pub(super) mod raw;

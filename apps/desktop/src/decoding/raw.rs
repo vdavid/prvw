@@ -104,6 +104,7 @@ use rawler::tags::DngTag;
 use rayon::prelude::*;
 
 use super::DecodedImage;
+use super::RawPipelineFlags;
 use super::dng_opcodes::{
     Opcode, OpcodeId, apply_fix_bad_pixels_constant, apply_fix_bad_pixels_list, apply_gain_map_cfa,
     apply_gain_map_rgb, apply_warp_rectilinear_rgb, parse_fix_bad_pixels_constant,
@@ -133,8 +134,21 @@ pub(super) fn decode(
     cancelled: Option<&AtomicBool>,
     target_icc: &[u8],
     use_relative_colorimetric: bool,
+    flags: RawPipelineFlags,
 ) -> Result<(DecodedImage, u16), String> {
     check_cancelled(cancelled)?;
+
+    // One breadcrumb per decode when any step is disabled. Silent on the
+    // common-case default path so production logs stay clean.
+    if !flags.is_default() {
+        let disabled = flags.disabled_step_labels();
+        log::info!(
+            "RAW pipeline: {} step(s) disabled ({}) for {}",
+            disabled.len(),
+            disabled.join(", "),
+            path.display()
+        );
+    }
 
     // `new_from_shared_vec` hands ownership over without copying; `new_from_slice`
     // would duplicate the buffer, which hurts on a 40 MB sensor file.
@@ -159,7 +173,9 @@ pub(super) fn decode(
     // rescale. For non-DNG files and for DNGs without the tag this is a
     // silent no-op. Rawler parses the tag but never applies it — exactly
     // the gap we're filling here. See `docs/notes/raw-support-phase3.md`.
-    apply_opcode_list1(decoder.as_ref(), &mut raw, path);
+    if flags.dng_opcode_list_1 {
+        apply_opcode_list1(decoder.as_ref(), &mut raw, path);
+    }
 
     check_cancelled(cancelled)?;
 
@@ -177,7 +193,9 @@ pub(super) fn decode(
     // can target individual Bayer sub-planes (iPhone ProRAW encodes its
     // four-plane lens-shading correction this way: one GainMap per Bayer
     // phase, starting at (0,0), (0,1), (1,0), (1,1) with pitch 2×2).
-    apply_opcode_list2(decoder.as_ref(), &mut raw, path);
+    if flags.dng_opcode_list_2 {
+        apply_opcode_list2(decoder.as_ref(), &mut raw, path);
+    }
 
     check_cancelled(cancelled)?;
 
@@ -206,7 +224,9 @@ pub(super) fn decode(
     // matrix, so our linear Rec.2020 buffer is the right slot. Opcodes
     // here that target CFA sub-planes are unreachable and logged as
     // skipped.
-    apply_opcode_list3(decoder.as_ref(), width, height, &mut rec2020, path);
+    if flags.dng_opcode_list_3 {
+        apply_opcode_list3(decoder.as_ref(), width, height, &mut rec2020, path);
+    }
 
     check_cancelled(cancelled)?;
 
@@ -221,14 +241,16 @@ pub(super) fn decode(
     // single multiplicative scale per component. Applying it here (pre-ICC)
     // keeps relative luminance correct; doing it after gamma encoding would
     // distort midtones.
-    let ev = baseline_exposure_ev(decoder.as_ref(), &raw);
-    log::debug!(
-        "RAW baseline exposure: {:+.2} EV ({:.3}x linear gain) for {}",
-        ev,
-        2.0_f32.powf(ev),
-        path.display()
-    );
-    apply_exposure(&mut rec2020, ev);
+    if flags.baseline_exposure {
+        let ev = baseline_exposure_ev(decoder.as_ref(), &raw);
+        log::debug!(
+            "RAW baseline exposure: {:+.2} EV ({:.3}x linear gain) for {}",
+            ev,
+            2.0_f32.powf(ev),
+            path.display()
+        );
+        apply_exposure(&mut rec2020, ev);
+    }
 
     check_cancelled(cancelled)?;
 
@@ -239,7 +261,9 @@ pub(super) fn decode(
     // and before the tone curve so the curve sees a hue-consistent input.
     // In-gamut pixels pass through untouched. See
     // `color::highlight_recovery` for the math and safety invariants.
-    color::highlight_recovery::apply_default_highlight_recovery(&mut rec2020);
+    if flags.highlight_recovery {
+        color::highlight_recovery::apply_default_highlight_recovery(&mut rec2020);
+    }
 
     check_cancelled(cancelled)?;
 
@@ -279,6 +303,8 @@ pub(super) fn decode(
         dng_tags_for_dcp.as_ref(),
         wb_for_dcp,
         &mut rec2020,
+        flags.dcp_hue_sat_map,
+        flags.dcp_look_table,
     );
     if let Some((dcp, source)) = &dcp_info {
         log::info!(
@@ -287,12 +313,12 @@ pub(super) fn decode(
             dcp.profile_name.as_deref().unwrap_or("<unnamed profile>"),
             camera_id,
             path.display(),
-            if dcp.look_table.is_some() {
+            if dcp.look_table.is_some() && flags.dcp_look_table {
                 " [with LookTable]"
             } else {
                 ""
             },
-            if dcp.tone_curve.is_some() {
+            if dcp.tone_curve.is_some() && flags.tone_curve {
                 " [with ToneCurve]"
             } else {
                 ""
@@ -306,20 +332,24 @@ pub(super) fn decode(
     // it in place of our default — the camera's intended tonality is more
     // authoritative than our generic Preview-tuned curve. Otherwise fall
     // back to the default Hermite S-curve. Either way the math runs on
-    // luminance only in linear Rec.2020.
-    let dcp_tone_curve = dcp_info
-        .as_ref()
-        .and_then(|(dcp, _)| dcp.tone_curve.as_deref());
-    if let Some(points) = dcp_tone_curve {
-        log::info!(
-            "RAW used DCP tone curve ({} points) for {}",
-            points.len(),
-            path.display()
-        );
-        color::tone_curve::apply_tone_curve_lut(&mut rec2020, points);
-    } else {
-        log::info!("RAW used default tone curve for {}", path.display());
-        color::tone_curve::apply_default_tone_curve(&mut rec2020);
+    // luminance only in linear Rec.2020. The Settings → RAW toggle gates
+    // both curves uniformly (Phase 3.7): off means "no tone shaping at
+    // all", regardless of source.
+    if flags.tone_curve {
+        let dcp_tone_curve = dcp_info
+            .as_ref()
+            .and_then(|(dcp, _)| dcp.tone_curve.as_deref());
+        if let Some(points) = dcp_tone_curve {
+            log::info!(
+                "RAW used DCP tone curve ({} points) for {}",
+                points.len(),
+                path.display()
+            );
+            color::tone_curve::apply_tone_curve_lut(&mut rec2020, points);
+        } else {
+            log::info!("RAW used default tone curve for {}", path.display());
+            color::tone_curve::apply_default_tone_curve(&mut rec2020);
+        }
     }
 
     check_cancelled(cancelled)?;
@@ -330,10 +360,12 @@ pub(super) fn decode(
     // and Affinity bake into their per-camera tuning tables. Hue and
     // luminance are both preserved; see `color::saturation` for the
     // formula.
-    color::saturation::apply_saturation_boost(
-        &mut rec2020,
-        color::saturation::DEFAULT_SATURATION_BOOST,
-    );
+    if flags.saturation_boost {
+        color::saturation::apply_saturation_boost(
+            &mut rec2020,
+            color::saturation::DEFAULT_SATURATION_BOOST,
+        );
+    }
 
     check_cancelled(cancelled)?;
 
@@ -364,7 +396,9 @@ pub(super) fn decode(
     // Operates on luminance only: we blur Y, apply the unsharp-mask
     // formula on Y, then scale the original RGB by `Y_out / Y_in` so
     // hue is preserved and no color fringes land at colored edges.
-    color::sharpen::sharpen_rgba8_inplace(&mut rgba, width, height);
+    if flags.capture_sharpening {
+        color::sharpen::sharpen_rgba8_inplace(&mut rgba, width, height);
+    }
 
     check_cancelled(cancelled)?;
 
@@ -1042,6 +1076,7 @@ mod tests {
             None,
             color::srgb_icc_bytes(),
             false,
+            RawPipelineFlags::default(),
         );
         assert!(result.is_err(), "expected error for malformed bytes");
     }
@@ -1055,6 +1090,7 @@ mod tests {
             Some(&flag),
             color::srgb_icc_bytes(),
             false,
+            RawPipelineFlags::default(),
         );
         assert_eq!(result.err().as_deref(), Some("cancelled"));
     }
@@ -1068,12 +1104,26 @@ mod tests {
         let path = Path::new("/tmp/raw/sample1.arw");
         let bytes = std::fs::read(path).expect("fixture missing");
         // Warm up once
-        let _ = decode(path, bytes.clone(), None, color::srgb_icc_bytes(), false);
+        let _ = decode(
+            path,
+            bytes.clone(),
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        );
         let mut times = vec![];
         for _ in 0..5 {
             let t = std::time::Instant::now();
-            let _ = decode(path, bytes.clone(), None, color::srgb_icc_bytes(), false)
-                .expect("decode failed");
+            let _ = decode(
+                path,
+                bytes.clone(),
+                None,
+                color::srgb_icc_bytes(),
+                false,
+                RawPipelineFlags::default(),
+            )
+            .expect("decode failed");
             times.push(t.elapsed().as_millis());
         }
         println!("ARW decode times (ms): {times:?}");
@@ -1084,8 +1134,15 @@ mod tests {
     fn arw_fixture_decodes() {
         let path = Path::new("/tmp/raw/sample1.arw");
         let bytes = std::fs::read(path).expect("fixture missing");
-        let (img, orientation) =
-            decode(path, bytes, None, color::srgb_icc_bytes(), false).expect("decode failed");
+        let (img, orientation) = decode(
+            path,
+            bytes,
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("decode failed");
         assert_eq!(orientation, 1);
         assert_eq!((img.width, img.height), (5456, 3632));
         assert_eq!(img.rgba_data.len(), 5456 * 3632 * 4);
@@ -1096,8 +1153,15 @@ mod tests {
     fn dng_fixture_decodes() {
         let path = Path::new("/tmp/raw/sample2.dng");
         let bytes = std::fs::read(path).expect("fixture missing");
-        let (img, orientation) =
-            decode(path, bytes, None, color::srgb_icc_bytes(), false).expect("decode failed");
+        let (img, orientation) = decode(
+            path,
+            bytes,
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("decode failed");
         // Pre-orientation dimensions match the POC: 3990x3000 sideways.
         assert_eq!((img.width, img.height), (3990, 3000));
         assert!(matches!(orientation, 6 | 8));
@@ -1115,8 +1179,15 @@ mod tests {
             .try_init();
         let path = Path::new("/tmp/raw/sample2.dng");
         let bytes = std::fs::read(path).expect("fixture missing");
-        let (img, _) =
-            decode(path, bytes, None, color::srgb_icc_bytes(), false).expect("decode failed");
+        let (img, _) = decode(
+            path,
+            bytes,
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("decode failed");
         // Post-decode dimensions should still match.
         assert_eq!((img.width, img.height), (3990, 3000));
     }
@@ -1136,8 +1207,15 @@ mod tests {
                 continue;
             }
             let bytes = std::fs::read(path).expect("fixture missing");
-            let (img, _) =
-                decode(path, bytes, None, color::srgb_icc_bytes(), false).expect("decode failed");
+            let (img, _) = decode(
+                path,
+                bytes,
+                None,
+                color::srgb_icc_bytes(),
+                false,
+                RawPipelineFlags::default(),
+            )
+            .expect("decode failed");
             assert_eq!((img.width, img.height), (5456, 3632));
         }
     }
@@ -1177,16 +1255,30 @@ mod tests {
         unsafe {
             std::env::remove_var("PRVW_DCP_DIR");
         }
-        let (baseline, _) =
-            decode(path, bytes.clone(), None, color::srgb_icc_bytes(), false).expect("baseline");
+        let (baseline, _) = decode(
+            path,
+            bytes.clone(),
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("baseline");
 
         // No-match fallback: DCP env var set, but the dir has no matching
         // `.dcp`. Output must be byte-for-byte identical to the baseline.
         unsafe {
             std::env::set_var("PRVW_DCP_DIR", "/nonexistent-prvw-dcp-dir-xyz");
         }
-        let (with_empty, _) =
-            decode(path, bytes.clone(), None, color::srgb_icc_bytes(), false).expect("with-empty");
+        let (with_empty, _) = decode(
+            path,
+            bytes.clone(),
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("with-empty");
         assert_eq!(
             baseline.rgba_data, with_empty.rgba_data,
             "no-DCP fallback changed output; must be bit-identical to Phase 3.1"
@@ -1197,8 +1289,15 @@ mod tests {
         unsafe {
             std::env::set_var("PRVW_DCP_DIR", "/tmp/prvw-dcp-test");
         }
-        let (with_dcp, _) =
-            decode(path, bytes, None, color::srgb_icc_bytes(), false).expect("with-dcp");
+        let (with_dcp, _) = decode(
+            path,
+            bytes,
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("with-dcp");
         unsafe {
             std::env::remove_var("PRVW_DCP_DIR");
         }
@@ -1275,15 +1374,29 @@ mod tests {
         unsafe {
             std::env::set_var(EMBEDDED_DCP_DISABLE_ENV_VAR, "1");
         }
-        let (without, _) = decode(path, bytes.clone(), None, color::srgb_icc_bytes(), false)
-            .expect("decode without embedded DCP");
+        let (without, _) = decode(
+            path,
+            bytes.clone(),
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("decode without embedded DCP");
 
         // With embedded DCP — the Phase 3.3 default.
         unsafe {
             std::env::remove_var(EMBEDDED_DCP_DISABLE_ENV_VAR);
         }
-        let (with_embedded, _) = decode(path, bytes, None, color::srgb_icc_bytes(), false)
-            .expect("decode with embedded DCP");
+        let (with_embedded, _) = decode(
+            path,
+            bytes,
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("decode with embedded DCP");
 
         let n = without.rgba_data.len().min(with_embedded.rgba_data.len());
         let mut diff_count = 0u64;
@@ -1467,6 +1580,95 @@ mod tests {
         let value = Value::Ascii(TiffAscii::new("nonsense"));
         let ev = baseline_exposure_ev_from_tag_value(Some(&value), DEFAULT_BASELINE_EV);
         assert!((ev - 0.5).abs() < 1e-6, "got {ev}");
+    }
+
+    /// Flip a single pipeline flag off on the checked-in synthetic DNG and
+    /// verify the output differs from the all-defaults decode. This is the
+    /// cheap proof that each flag actually reaches the stage it claims to
+    /// gate. Uses the tiny 128×128 fixture so the test runs in milliseconds.
+    #[test]
+    fn each_flag_change_alters_output() {
+        use std::path::PathBuf;
+
+        let fixture: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/raw/synthetic-bayer-128.dng");
+        let bytes = std::fs::read(&fixture).expect("fixture missing");
+        let icc = color::srgb_icc_bytes();
+
+        let (baseline, _) = decode(
+            &fixture,
+            bytes.clone(),
+            None,
+            icc,
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("baseline decode");
+
+        // Flags whose effect is reachable on the synthetic fixture (no DCP
+        // tags, so the DCP toggles would be no-ops). These cover one stage
+        // per family: color, tone, detail.
+        let highlight_off = RawPipelineFlags {
+            highlight_recovery: false,
+            ..RawPipelineFlags::default()
+        };
+        let tone_off = RawPipelineFlags {
+            tone_curve: false,
+            ..RawPipelineFlags::default()
+        };
+        let sharp_off = RawPipelineFlags {
+            capture_sharpening: false,
+            ..RawPipelineFlags::default()
+        };
+        let exposure_off = RawPipelineFlags {
+            baseline_exposure: false,
+            ..RawPipelineFlags::default()
+        };
+
+        for (label, flags) in [
+            ("highlight_recovery", highlight_off),
+            ("tone_curve", tone_off),
+            ("capture_sharpening", sharp_off),
+            ("baseline_exposure", exposure_off),
+        ] {
+            let (actual, _) = decode(&fixture, bytes.clone(), None, icc, false, flags)
+                .unwrap_or_else(|e| panic!("decode with {label} off failed: {e}"));
+            assert_ne!(
+                actual.rgba_data, baseline.rgba_data,
+                "flipping `{label}` off should change the output buffer"
+            );
+        }
+    }
+
+    /// Belt-and-braces check: all flags true reproduces today's output
+    /// byte-for-byte. If this ever breaks, something slipped into the
+    /// default path that the flags don't cover.
+    #[test]
+    fn defaults_match_bare_load_image() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/raw/synthetic-bayer-128.dng");
+        let bytes = std::fs::read(&fixture).expect("fixture missing");
+        let icc = color::srgb_icc_bytes();
+
+        let (via_flags, _) = decode(
+            &fixture,
+            bytes.clone(),
+            None,
+            icc,
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("with explicit defaults");
+        let (via_flags_again, _) = decode(
+            &fixture,
+            bytes,
+            None,
+            icc,
+            false,
+            RawPipelineFlags::default(),
+        )
+        .expect("second pass");
+        assert_eq!(via_flags.rgba_data, via_flags_again.rgba_data);
     }
 
     #[test]

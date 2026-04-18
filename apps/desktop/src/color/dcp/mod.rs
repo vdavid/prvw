@@ -168,12 +168,26 @@ impl DcpSource {
 ///
 /// Returns `Some((dcp, source))` when a profile was applied, `None` when
 /// nothing matched.
+/// Production entry point. Thread-through for the Settings → RAW panel's
+/// per-stage toggles (Phase 3.7): `apply_hue_sat = false` short-circuits
+/// the entire DCP path (no profile lookup even runs); `apply_look = false`
+/// resolves the profile and applies `HueSatMap` but skips the `LookTable`.
+/// The returned `(Dcp, DcpSource)` is still the resolved profile in either
+/// case, so the caller can read `dcp.tone_curve` off it when the tone-curve
+/// stage is still on. Pass `true, true` for today's default behavior.
 pub fn apply_if_available(
     camera_id: &str,
     dng_tags: Option<&std::collections::HashMap<u16, rawler::formats::tiff::Value>>,
     wb_coeffs: [f32; 4],
     rgb: &mut [f32],
+    apply_hue_sat: bool,
+    apply_look: bool,
 ) -> Option<(Dcp, DcpSource)> {
+    if !apply_hue_sat {
+        // HueSatMap off = the whole DCP stage is skipped, including LookTable.
+        // Preserves pre-DCP output bit-for-bit.
+        return None;
+    }
     // Prefer the embedded profile so smartphone DNGs "just work" without
     // the user installing anything. The filesystem summary is still worth
     // logging on the first call so power users see whether ACR is wired
@@ -217,7 +231,7 @@ pub fn apply_if_available(
         }
         apply_hue_sat_map(rgb, &map, dcp.hue_sat_map_encoding);
     }
-    if let Some(look) = &dcp.look_table {
+    if apply_look && let Some(look) = &dcp.look_table {
         log::debug!(
             "DCP LookTable apply ({}×{}×{})",
             look.hue_divs,

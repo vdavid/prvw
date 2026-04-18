@@ -1205,3 +1205,103 @@ script is idempotent (skips files already present) and prints a summary.
 - `apps/desktop/src/color/CLAUDE.md` — updated DCP row.
 - `docs/notes/` — this file + `raw-roadmap.md` updated.
 - `CHANGELOG.md` — added Phase 3.5 bullets.
+
+## Phase 3.7 — Settings UI for pipeline transparency
+
+Ships a new **RAW** section in the Settings window with per-stage toggles
+plus a custom DCP directory picker. Aim is pre-v1 transparency: users can
+see (and flip off) each step the RAW pipeline performs, and diagnose
+issues without going through the CLI or building from source.
+
+### Toggles
+
+`RawPipelineFlags` (in `decoding::raw_flags`) carries one bool per stage,
+grouped in the UI by pipeline family:
+
+- **Sensor corrections** (DNG only, silent no-op on ARW, CR2, NEF, etc.):
+  `dng_opcode_list_1`, `dng_opcode_list_2`, `dng_opcode_list_3`.
+- **Color**: `baseline_exposure`, `dcp_hue_sat_map`, `dcp_look_table`,
+  `saturation_boost`.
+- **Tone**: `highlight_recovery`, `tone_curve` (gates both the default
+  Hermite S-curve and any DCP-supplied `ProfileToneCurve`).
+- **Detail**: `capture_sharpening`.
+
+All default to `true`. When every flag is at its default, `raw::decode`
+produces the exact same bytes as before this phase — the flags wrap each
+stage in an `if` at the same position.
+
+### Cache flush + re-decode
+
+Toggling any switch sends `AppCommand::SetRawPipelineFlags(new_flags)`.
+`App::execute_command` writes the new flags through to `App.raw_flags`,
+saves `settings.json`, swaps them into the preloader, flushes
+`ImageCache`, and re-decodes the current image. The flush path lives in
+`App::apply_raw_flag_change`, sibling to `flush_and_redisplay` (the same
+pattern rendering-intent toggles use).
+
+### One-line diagnostic log
+
+`raw::decode` emits a single INFO line per decode when `flags.is_default()`
+returns false:
+
+```
+RAW pipeline: 2 step(s) disabled (highlight recovery, capture sharpening) for /tmp/raw/sample3.arw
+```
+
+Default path stays silent.
+
+### Custom DCP directory
+
+The same panel hosts a "Custom DCP directory" row. The value lives in
+`Settings.custom_dcp_dir` (serialized as `Option<String>`). When the user
+picks or clears a path, `AppCommand::SetCustomDcpDir` flows through
+`App::apply_custom_dcp_dir_change`, which:
+
+1. Pushes the path into the `PRVW_DCP_DIR` env var (the same knob the
+   DCP discovery module already honors — no change needed there).
+2. Flushes the image cache.
+3. Re-decodes.
+
+Choosing `None` clears the env var so discovery falls back to Adobe
+Camera Raw's install dir and the bundled collection.
+
+### Why env var rather than threading a path
+
+`color::dcp::discovery::find_dcp_for_camera` already reads `PRVW_DCP_DIR`
+directly. Threading a `custom_dir: Option<&Path>` through the pipeline
+would have duplicated the discovery plumbing and added a parameter to
+`apply_if_available` for no runtime gain. The env var is process-wide,
+which fits: DCP discovery is a process-wide concern and there's no
+per-image or per-thread variation. `unsafe` around `std::env::set_var` is
+isolated to `app::apply_custom_dcp_dir` and called only from the main
+thread (App startup + command executor).
+
+### Files touched
+
+- `apps/desktop/src/decoding/raw_flags.rs` (new) — `RawPipelineFlags`
+  struct + unit tests (default, round-trip, disabled-labels order).
+- `apps/desktop/src/decoding/mod.rs` — `load_image{,_cancellable}` take
+  `raw_flags: RawPipelineFlags`.
+- `apps/desktop/src/decoding/raw.rs` — each stage wrapped in
+  `if flags.X { … }`; the DCP apply path forwards the two DCP flags into
+  `color::dcp::apply_if_available`. Two new tests:
+  `each_flag_change_alters_output` (proves the flags reach their stage)
+  and `defaults_match_bare_load_image` (reproducibility).
+- `apps/desktop/src/color/dcp/mod.rs` — `apply_if_available` gains
+  `apply_hue_sat: bool` + `apply_look: bool` params.
+- `apps/desktop/src/navigation/preloader.rs` — `Preloader::start` takes
+  flags; `set_raw_flags` updates them.
+- `apps/desktop/src/settings/persistence.rs` — new `raw` and
+  `custom_dcp_dir` fields with `#[serde(default)]`.
+- `apps/desktop/src/commands.rs` — `SetRawPipelineFlags` and
+  `SetCustomDcpDir` variants.
+- `apps/desktop/src/app/executor.rs` — two new arms.
+- `apps/desktop/src/app.rs` — `raw_flags` field; `apply_raw_flag_change`
+  and `apply_custom_dcp_dir_change` helpers; `apply_custom_dcp_dir` free
+  function for the env-var sync.
+- `apps/desktop/src/settings/panels/raw.rs` (new) — RAW panel, AppKit
+  delegate, 10 toggles + custom DCP picker + reset button.
+- `apps/desktop/src/settings/window.rs` — sidebar entry; panel wiring;
+  `switch_settings_section` knows "raw".
+- `docs/notes/` — this file + `raw-roadmap.md`.
+- `CHANGELOG.md` — single `### Added` bullet.

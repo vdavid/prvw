@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::decoding::RawPipelineFlags;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default = "default_true")]
@@ -44,6 +46,21 @@ pub struct Settings {
     /// Keys are UTIs (e.g., "public.jpeg"), values are bundle IDs (e.g., "com.apple.Preview").
     #[serde(default)]
     pub previous_handlers: HashMap<String, String>,
+
+    /// Per-stage toggles for the RAW decode pipeline. Defaults match today's
+    /// production behavior; flipping any flag off short-circuits that stage
+    /// (see `decoding::RawPipelineFlags` and `decoding::raw::decode`). The
+    /// Settings → RAW panel drives these interactively.
+    #[serde(default)]
+    pub raw: RawPipelineFlags,
+
+    /// Optional user-provided directory of `.dcp` profiles. When set and
+    /// non-empty, wins over the bundled collection and Adobe Camera Raw's
+    /// directory. Exposed in Settings → RAW → "Custom DCP directory".
+    /// Stored as a string (not a `PathBuf`) because the settings JSON is
+    /// user-editable and consistent serde string handling is clearest.
+    #[serde(default)]
+    pub custom_dcp_dir: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -62,6 +79,8 @@ impl Default for Settings {
             scroll_to_zoom: false,
             title_bar: true,
             previous_handlers: HashMap::new(),
+            raw: RawPipelineFlags::default(),
+            custom_dcp_dir: None,
         }
     }
 }
@@ -133,6 +152,12 @@ mod tests {
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
+        let raw = RawPipelineFlags {
+            tone_curve: false,
+            capture_sharpening: false,
+            ..RawPipelineFlags::default()
+        };
+
         let settings = Settings {
             auto_update: false,
             auto_fit_window: false,
@@ -146,6 +171,8 @@ mod tests {
                 "public.jpeg".to_string(),
                 "com.apple.Preview".to_string(),
             )]),
+            raw,
+            custom_dcp_dir: Some("/tmp/my-dcps".to_string()),
         };
         fs::write(&path, serde_json::to_string(&settings).unwrap()).unwrap();
 
@@ -153,6 +180,10 @@ mod tests {
         assert!(!loaded.auto_update);
         assert!(!loaded.auto_fit_window);
         assert!(loaded.enlarge_small_images);
+        assert!(!loaded.raw.tone_curve);
+        assert!(!loaded.raw.capture_sharpening);
+        assert!(loaded.raw.highlight_recovery); // untouched flag stays true
+        assert_eq!(loaded.custom_dcp_dir.as_deref(), Some("/tmp/my-dcps"));
     }
 
     #[test]
@@ -162,5 +193,8 @@ mod tests {
         assert!(!loaded.auto_update);
         assert!(loaded.auto_fit_window);
         assert!(!loaded.enlarge_small_images);
+        // Missing `raw` → all RAW flags default to true.
+        assert!(loaded.raw.is_default());
+        assert!(loaded.custom_dcp_dir.is_none());
     }
 }

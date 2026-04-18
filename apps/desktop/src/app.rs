@@ -33,6 +33,37 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
 
+/// Push the user-provided custom DCP directory into the `PRVW_DCP_DIR` env
+/// var so `color::dcp::discovery::find_dcp_for_camera` picks it up. When
+/// `None` (or an empty string), clear the var so discovery falls back to
+/// Adobe Camera Raw's default path and the bundled collection.
+///
+/// SAFETY: `std::env::set_var` / `remove_var` are unsafe in multi-threaded
+/// contexts. We call this from the main thread, before the preloader or
+/// QA threads read the var — either at startup or from the command executor,
+/// which is single-threaded by construction. Rayon decode tasks read the
+/// env var through `discovery::find_dcp_for_camera` on a fresh call each
+/// decode, so the worst case is a cached value for one already-in-flight
+/// decode, which is harmless.
+fn apply_custom_dcp_dir(dir: Option<&str>) {
+    let key = crate::color::dcp::discovery::DCP_DIR_ENV_VAR;
+    match dir {
+        Some(path) if !path.trim().is_empty() => {
+            log::info!("DCP: using custom directory {path}");
+            // SAFETY: see the function comment.
+            unsafe {
+                std::env::set_var(key, path);
+            }
+        }
+        _ => {
+            // SAFETY: see the function comment.
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+    }
+}
+
 /// Application state, created before the event loop starts.
 /// The window and renderer are initialized in `resumed()` (required by winit 0.30 on macOS).
 pub(crate) struct App {
@@ -60,6 +91,10 @@ pub(crate) struct App {
     // ── Cross-cutting toggles (owned by App because they don't fit one feature) ──
     /// Whether to reserve space at the top for the title bar.
     pub(crate) title_bar: bool,
+    /// Per-stage RAW decode pipeline toggles (Phase 3.7). Production
+    /// default is all-true; the Settings → RAW panel flips individual
+    /// stages off for transparency and diagnostics.
+    pub(crate) raw_flags: crate::decoding::RawPipelineFlags,
 
     // ── Runtime input / rendering ───────────────────────────────────
     pub(crate) modifiers: ModifiersState,
@@ -85,6 +120,11 @@ impl App {
         shared_state: Arc<Mutex<SharedAppState>>,
     ) -> Self {
         let initial_settings = settings::Settings::load();
+        // Thread the user-provided DCP dir into the decoder via the same env
+        // var the DCP discovery module already honors. Done at startup so the
+        // very first decode sees it; the SetCustomDcpDir command maintains
+        // this in sync on later changes.
+        apply_custom_dcp_dir(initial_settings.custom_dcp_dir.as_deref());
         Self {
             file_path,
             explicit_files,
@@ -97,6 +137,7 @@ impl App {
             color: color::State::from_settings(&initial_settings),
             navigation: navigation::State::new(),
             title_bar: initial_settings.title_bar,
+            raw_flags: initial_settings.raw,
             modifiers: ModifiersState::empty(),
             drag_start: None,
             last_mouse_pos: (Logical(0.0), Logical(0.0)),
@@ -401,8 +442,11 @@ impl App {
         };
 
         // Start preloader thread pool
-        let mut preloader =
-            preloader::Preloader::start(self.color.display_icc.clone(), self.color.relative_col);
+        let mut preloader = preloader::Preloader::start(
+            self.color.display_icc.clone(),
+            self.color.relative_col,
+            self.raw_flags,
+        );
 
         // Load and display the initial image
         let initial_path = self.file_path.clone();
@@ -458,7 +502,12 @@ impl App {
 
         let filename = path.file_name().unwrap_or_default().to_string_lossy();
 
-        match decoding::load_image(path, &self.color.display_icc, self.color.relative_col) {
+        match decoding::load_image(
+            path,
+            &self.color.display_icc,
+            self.color.relative_col,
+            self.raw_flags,
+        ) {
             Ok(image) => {
                 self.navigation.current_image_size = Some((image.width, image.height));
                 let offset = self.content_offset_y();
@@ -797,6 +846,31 @@ impl App {
         if let Some(preloader) = &mut self.navigation.preloader {
             preloader.set_use_relative_colorimetric(self.color.relative_col);
         }
+        if let Some(dir) = &self.navigation.dir_list {
+            let path = dir.current().to_path_buf();
+            self.display_image(&path);
+        }
+    }
+
+    /// Push new RAW pipeline flags into the preloader, flush the cache, and
+    /// re-decode. Phase 3.7 Settings → RAW toggles funnel through here.
+    pub(crate) fn apply_raw_flag_change(&mut self) {
+        self.navigation.image_cache.clear();
+        if let Some(preloader) = &mut self.navigation.preloader {
+            preloader.set_raw_flags(self.raw_flags);
+        }
+        if let Some(dir) = &self.navigation.dir_list {
+            let path = dir.current().to_path_buf();
+            self.display_image(&path);
+        }
+    }
+
+    /// Sync the custom DCP directory env var and re-decode so the active
+    /// DCP lookup picks up the new search root. Called by
+    /// `AppCommand::SetCustomDcpDir`.
+    pub(crate) fn apply_custom_dcp_dir_change(&mut self, dir: Option<&str>) {
+        apply_custom_dcp_dir(dir);
+        self.navigation.image_cache.clear();
         if let Some(dir) = &self.navigation.dir_list {
             let path = dir.current().to_path_buf();
             self.display_image(&path);

@@ -8,6 +8,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **RAW Settings panel** (Phase 3.7): a new "RAW" section in Settings exposes 10 per-stage toggles for the RAW decode
+  pipeline (DNG opcode lists 1 / 2 / 3, baseline exposure, DCP HueSatMap, DCP LookTable, saturation boost, highlight
+  recovery, tone curve, capture sharpening), plus a "Custom DCP directory" picker and a "Reset to defaults" button.
+  Defaults reproduce today's output bit-for-bit; flipping any flag flushes the cached decode and re-runs the pipeline,
+  so users can see exactly what each step contributes. A single INFO log line per decode spells out the disabled steps
+  when any flag is non-default. The custom DCP directory feeds `color::dcp::discovery` via the existing `PRVW_DCP_DIR`
+  env var, so user-provided profiles override the bundled collection. See `docs/notes/raw-support-phase3.md`.
 - **Bundled DCP library** (Phase 3.5): 161 community-contributed RawTherapee DCP profiles are now packed into the
   binary at build time (~10 MB via zstd, Strategy B). They serve as a fourth search tier after `PRVW_DCP_DIR`,
   Adobe Camera Raw's install dir, and ahead of "return None." Zero user setup required — cameras in the collection

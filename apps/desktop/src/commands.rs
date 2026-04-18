@@ -12,6 +12,8 @@ use std::sync::OnceLock;
 use std::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
 
+use crate::decoding::RawPipelineFlags;
+
 /// Global event loop proxy, set once in `resumed()`. Allows non-main-loop code (like the
 /// native Settings window delegate) to send commands into the event loop.
 static EVENT_LOOP_PROXY: OnceLock<EventLoopProxy<AppCommand>> = OnceLock::new();
@@ -72,6 +74,15 @@ pub enum AppCommand {
     SetScrollToZoom(bool),
     /// Set title bar mode (true = reserve a strip at the top, false = image fills window).
     SetTitleBar(bool),
+
+    // ── RAW pipeline (Phase 3.7) ─────────────────────────────────────
+    /// Replace the RAW pipeline flags wholesale. Used by the Settings → RAW
+    /// panel so a single event carries all stage toggles in one update
+    /// (plus the "Reset to defaults" button).
+    SetRawPipelineFlags(RawPipelineFlags),
+    /// Replace the custom DCP directory. `None` clears the override and
+    /// falls back to Adobe Camera Raw + the bundled collection.
+    SetCustomDcpDir(Option<String>),
 
     // ── Color management ─────────────────────────────────────────────
     /// The window moved to a different display — re-query the display ICC profile.

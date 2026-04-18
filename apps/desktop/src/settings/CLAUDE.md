@@ -10,6 +10,7 @@ and the "General" panel (which mixes toggles from several features).
 | `window.rs`       | Window creation, `SettingsDelegate`, sidebar, assembles panels from all features    |
 | `widgets.rs`      | `make_setting_row` and `make_wrapping_label` — shared AppKit widget factories       |
 | `panels/general.rs` | General panel: Auto-update + Scroll-to-zoom + Title bar (cross-feature toggles)   |
+| `panels/raw.rs`   | RAW panel (Phase 3.7): 10 per-stage `RawPipelineFlags` toggles + custom DCP dir picker + Reset button |
 
 ## Key patterns
 
