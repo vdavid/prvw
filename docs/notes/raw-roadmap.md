@@ -232,16 +232,32 @@ is at `docs/notes/lensfun-rs.md` — 7,756 LoC of C++ with minimal deps,
 ~6-8 weeks focused work. Delivering it as a standalone crate keeps Prvw
 pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
 
-- [ ] Build `lensfun-rs` crate per `docs/notes/lensfun-rs.md`. LGPL-3.0.
-      v0.1 covers distortion + TCA + vignetting for the 1,543 lenses and
-      1,041 camera bodies in LensFun's database. Standalone release on
-      crates.io.
-- [ ] Integrate into Prvw. Look up body + lens via rawler's metadata,
-      fetch a `Modifier` from `lensfun-rs`, apply distortion + TCA +
-      vignetting post-demosaic. ~100 LoC in Prvw; the heavy lifting lives
-      in the crate.
-- [ ] Settings toggle to disable lens correction for photographers who
-      prefer uncorrected output.
+### Phase 4.0 — integration (done, 2026-04-17)
+
+- [x] `lensfun-rs` crate scaffolded and ported per
+      `docs/notes/lensfun-rs.md`. LGPL-3.0. v0.1 covers distortion + TCA +
+      vignetting for the 1,543 lenses and 1,041 camera bodies in LensFun's
+      database. Bundled database ships inside the crate via `build.rs`
+      (gzipped XML), so `Database::load_bundled()` has no runtime I/O.
+- [x] Integrated into Prvw via `color::lens_correction` (new module).
+      Looks up body + lens via rawler's metadata (`raw.camera.make/model`
+      + EXIF `lens_model/focal_length/fnumber`), builds a `Modifier`, and
+      applies vignetting → distortion → TCA in place on the linear
+      Rec.2020 buffer. Pipeline slot matches DNG `OpcodeList3`'s —
+      post-demosaic, pre-exposure. Skipped on DNGs whose
+      `OpcodeList3::WarpRectilinear` already handled distortion (avoids
+      double correction).
+- [x] `RawPipelineFlags::lens_correction` toggle (defaults to `true`) and
+      a "Geometry" section in Settings → RAW. Wires through the same
+      `AppCommand::SetRawPipelineFlags` path as the other Phase 3.7
+      toggles.
+- [x] Smoke tested on sample1.arw + sample3.arw (Sony ILCE-5000 + E PZ
+      16-50mm f/3.5-5.6 OSS): 66-71 % of output bytes change, visible
+      barrel-distortion rectification, corner-vignette lift, and closed
+      color fringing. sample2.dng (Pixel 6 Pro) is bit-identical
+      with/without the toggle because its `OpcodeList3::WarpRectilinear`
+      already baked in the manufacturer's correction — exactly the
+      intended skip. See `docs/notes/raw-support-phase4.md`.
 
 ## Phase 5 — HDR / EDR output
 

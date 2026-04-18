@@ -43,6 +43,16 @@ pub struct RawPipelineFlags {
     // ── Detail ─────────────────────────────────────────────────────────
     #[serde(default = "default_true")]
     pub capture_sharpening: bool,
+
+    // ── Geometry ──────────────────────────────────────────────────────
+    /// Lens distortion, TCA, and vignetting correction via `lensfun-rs`.
+    /// Fires post-demosaic, pre-`camera_to_linear_rec2020`. Silent no-op
+    /// when rawler exposes no lens model or the lens isn't in LensFun's
+    /// database. DNGs whose `OpcodeList3` already ran `WarpRectilinear`
+    /// are skipped (see `decoding::raw::decode`) to avoid double
+    /// correction.
+    #[serde(default = "default_true")]
+    pub lens_correction: bool,
 }
 
 fn default_true() -> bool {
@@ -62,6 +72,7 @@ impl Default for RawPipelineFlags {
             highlight_recovery: true,
             tone_curve: true,
             capture_sharpening: true,
+            lens_correction: true,
         }
     }
 }
@@ -109,6 +120,9 @@ impl RawPipelineFlags {
         if !self.capture_sharpening {
             out.push("capture sharpening");
         }
+        if !self.lens_correction {
+            out.push("lens correction");
+        }
         out
     }
 }
@@ -130,6 +144,7 @@ mod tests {
         assert!(flags.highlight_recovery);
         assert!(flags.tone_curve);
         assert!(flags.capture_sharpening);
+        assert!(flags.lens_correction);
         assert!(flags.is_default());
         assert!(flags.disabled_step_labels().is_empty());
     }

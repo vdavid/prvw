@@ -224,8 +224,71 @@ pub(super) fn decode(
     // matrix, so our linear Rec.2020 buffer is the right slot. Opcodes
     // here that target CFA sub-planes are unreachable and logged as
     // skipped.
+    //
+    // We remember whether `WarpRectilinear` fired — when it does, the
+    // camera manufacturer's per-shot distortion correction is already
+    // baked into the buffer (iPhone ProRAW, Pixel, Adobe-converted DNGs),
+    // so Phase 4's `lens_correction` step below is skipped to avoid
+    // double correction.
+    let mut warp_rectilinear_applied = false;
     if flags.dng_opcode_list_3 {
-        apply_opcode_list3(decoder.as_ref(), width, height, &mut rec2020, path);
+        warp_rectilinear_applied =
+            apply_opcode_list3(decoder.as_ref(), width, height, &mut rec2020, path);
+    }
+
+    check_cancelled(cancelled)?;
+
+    // Phase 4.0 — lens correction via lensfun-rs. Distortion + TCA +
+    // vignetting from the LensFun community database, matched by camera
+    // body + EXIF lens model. Silent no-op for lenses not in the DB and
+    // for DNG files whose `OpcodeList3 :: WarpRectilinear` already ran
+    // (the manufacturer already corrected geometry; doubling would warp
+    // straight lines back the other way). Runs after `OpcodeList3` so we
+    // match its pipeline slot and reuse the same post-color linear
+    // Rec.2020 buffer. See `color::lens_correction`.
+    if flags.lens_correction && !warp_rectilinear_applied {
+        let meta = decoder.raw_metadata(&src, &params).ok();
+        let lens_model = meta
+            .as_ref()
+            .and_then(|m| m.exif.lens_model.as_deref())
+            .unwrap_or("");
+        let focal = meta
+            .as_ref()
+            .and_then(|m| m.exif.focal_length)
+            .map(|r| r.n as f32 / r.d.max(1) as f32)
+            .unwrap_or(0.0);
+        let aperture = meta
+            .as_ref()
+            .and_then(|m| m.exif.fnumber)
+            .map(|r| r.n as f32 / r.d.max(1) as f32)
+            .unwrap_or(0.0);
+        let distance = meta
+            .as_ref()
+            .and_then(|m| m.exif.subject_distance)
+            .and_then(|r| {
+                if r.d == 0 {
+                    None
+                } else {
+                    Some(r.n as f32 / r.d as f32)
+                }
+            })
+            .filter(|d| d.is_finite() && *d > 0.0 && *d < 10_000.0)
+            .unwrap_or(1000.0);
+        let _ = color::lens_correction::apply_lens_correction(
+            &raw,
+            lens_model,
+            focal,
+            aperture,
+            distance,
+            &mut rec2020,
+            width,
+            height,
+        );
+    } else if flags.lens_correction && warp_rectilinear_applied {
+        log::debug!(
+            "lens_correction: skipped for {} (DNG OpcodeList3 WarpRectilinear already applied)",
+            path.display()
+        );
     }
 
     check_cancelled(cancelled)?;
@@ -965,25 +1028,30 @@ fn apply_cfa_opcode_list(
 /// buffer (3-channel, packed). The main opcode we care about here is
 /// `WarpRectilinear` for lens distortion. CFA-targeted opcodes in this
 /// list would be unreachable (the CFA mosaic is long gone) and log-skipped.
+///
+/// Returns `true` when a `WarpRectilinear` opcode fired. The Phase 4 lens
+/// correction step (`color::lens_correction`) uses this to skip
+/// double-correcting DNGs whose manufacturer-supplied distortion is
+/// already baked in.
 fn apply_opcode_list3(
     decoder: &dyn Decoder,
     width: u32,
     height: u32,
     rec2020: &mut [f32],
     path: &Path,
-) {
+) -> bool {
     let Some(bytes) = fetch_opcode_list_bytes(decoder, DngTag::OpcodeList3) else {
-        return;
+        return false;
     };
     let opcodes = match parse_opcode_list(&bytes) {
         Ok(list) => list,
         Err(e) => {
             log::warn!("DNG OpcodeList3 parse failed for {}: {e}", path.display());
-            return;
+            return false;
         }
     };
     if opcodes.is_empty() {
-        return;
+        return false;
     }
     log::info!(
         "DNG OpcodeList3: {} opcode(s) for {}",
@@ -991,6 +1059,7 @@ fn apply_opcode_list3(
         path.display()
     );
 
+    let mut warp_applied = false;
     for opcode in &opcodes {
         let label = format!("OpcodeList3 {}", opcode.id);
         match opcode.id {
@@ -1003,6 +1072,7 @@ fn apply_opcode_list3(
                         warp.planes[0].cy,
                     );
                     apply_warp_rectilinear_rgb(rec2020, width, height, &warp);
+                    warp_applied = true;
                 }
                 Err(e) => report_opcode_error(&label, opcode, e, path),
             },
@@ -1021,6 +1091,7 @@ fn apply_opcode_list3(
             _ => skip_unknown_opcode(&label, opcode, path),
         }
     }
+    warp_applied
 }
 
 /// Log a failed parse of an opcode and decide whether to tolerate it.
@@ -1190,6 +1261,97 @@ mod tests {
         .expect("decode failed");
         // Post-decode dimensions should still match.
         assert_eq!((img.width, img.height), (3990, 3000));
+    }
+
+    /// Phase 4.0 smoke test: decode sample1.arw + sample3.arw (Sony
+    /// ILCE-5000 + E PZ 16-50mm OSS) with and without lens correction;
+    /// expect a visible pixel delta when the Phase 4 step fires. Also
+    /// decodes sample2.dng twice and confirms the output is byte-identical
+    /// (OpcodeList3 WarpRectilinear already handled distortion there, so
+    /// our lens-correction step should skip).
+    ///
+    /// `#[ignore]` because the fixtures live outside the repo. Run with
+    /// `RUST_LOG=info cargo test --release lens_correction_smoke -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn lens_correction_smoke() {
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+        for arw in ["/tmp/raw/sample1.arw", "/tmp/raw/sample3.arw"] {
+            let path = Path::new(arw);
+            if !path.exists() {
+                log::warn!("skipping missing {arw}");
+                continue;
+            }
+            let bytes = std::fs::read(path).unwrap();
+            let on = decode(
+                path,
+                bytes.clone(),
+                None,
+                color::srgb_icc_bytes(),
+                false,
+                RawPipelineFlags::default(),
+            )
+            .unwrap()
+            .0;
+            let off_flags = RawPipelineFlags {
+                lens_correction: false,
+                ..RawPipelineFlags::default()
+            };
+            let off = decode(path, bytes, None, color::srgb_icc_bytes(), false, off_flags)
+                .unwrap()
+                .0;
+            assert_eq!((on.width, on.height), (off.width, off.height));
+            let diffs = on
+                .rgba_data
+                .iter()
+                .zip(off.rgba_data.iter())
+                .filter(|(a, b)| a != b)
+                .count();
+            let pct = 100.0 * diffs as f64 / on.rgba_data.len() as f64;
+            println!("{arw}: {diffs} bytes differ ({pct:.2} %) between lens_correction on/off");
+            assert!(
+                diffs > 0,
+                "lens_correction should visibly change ARW output for {arw}"
+            );
+        }
+
+        // sample2.dng: WarpRectilinear already in OpcodeList3, so our
+        // Phase 4 step skips. Output must be bit-identical.
+        let dng = Path::new("/tmp/raw/sample2.dng");
+        if !dng.exists() {
+            log::warn!("skipping missing sample2.dng");
+            return;
+        }
+        let bytes = std::fs::read(dng).unwrap();
+        let on = decode(
+            dng,
+            bytes.clone(),
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+        )
+        .unwrap()
+        .0;
+        let off = decode(
+            dng,
+            bytes,
+            None,
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags {
+                lens_correction: false,
+                ..RawPipelineFlags::default()
+            },
+        )
+        .unwrap()
+        .0;
+        assert_eq!(
+            on.rgba_data, off.rgba_data,
+            "sample2.dng must be bit-identical with/without lens_correction (WarpRectilinear already fired)"
+        );
+        println!("sample2.dng: bit-identical (OpcodeList3 WarpRectilinear handled distortion)");
     }
 
     /// Sony ARW files have no DNG opcode tags, so the opcode passes should

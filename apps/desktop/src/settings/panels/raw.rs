@@ -1,10 +1,12 @@
 //! "RAW" panel: per-stage toggles for the RAW decode pipeline + a custom
-//! DCP directory picker (Phase 3.7).
+//! DCP directory picker (Phase 3.7 + 4.0).
 //!
 //! Each row mirrors the pattern in the other panels: title label on the left,
-//! NSSwitch on the right, secondary description directly underneath. Three
-//! section headers (sensor corrections, color, tone, detail) and a final
-//! "Custom DCP directory" row + "Reset to defaults" button live at the bottom.
+//! NSSwitch on the right, secondary description directly underneath. Section
+//! headers group the toggles into "Sensor corrections (DNG only)", "Color",
+//! "Tone", "Detail", and "Geometry" (Phase 4.0 — lens correction via
+//! `lensfun-rs`). A final "Custom DCP directory" row + "Reset to defaults"
+//! button live at the bottom.
 //!
 //! All toggles write back through a single `AppCommand::SetRawPipelineFlags`
 //! so the executor flushes the image cache and re-decodes once per change.
@@ -38,6 +40,7 @@ const TAG_SATURATION_BOOST: isize = 113;
 const TAG_HIGHLIGHT_RECOVERY: isize = 120;
 const TAG_TONE_CURVE: isize = 121;
 const TAG_CAPTURE_SHARPENING: isize = 130;
+const TAG_LENS_CORRECTION: isize = 140;
 
 /// Ivars are raw pointers so the delegate can read current toggle states
 /// without holding Rust borrows through AppKit message dispatch. They all
@@ -54,6 +57,7 @@ struct RawDelegateIvars {
     highlight_recovery: *const NSSwitch,
     tone_curve: *const NSSwitch,
     capture_sharpening: *const NSSwitch,
+    lens_correction: *const NSSwitch,
     // Custom DCP dir row.
     custom_dcp_field: *const NSTextField,
 }
@@ -160,6 +164,7 @@ impl RawDelegate {
             highlight_recovery: switch_is_on(ivars.highlight_recovery),
             tone_curve: switch_is_on(ivars.tone_curve),
             capture_sharpening: switch_is_on(ivars.capture_sharpening),
+            lens_correction: switch_is_on(ivars.lens_correction),
         }
     }
 
@@ -175,6 +180,7 @@ impl RawDelegate {
         set_switch(ivars.highlight_recovery, flags.highlight_recovery);
         set_switch(ivars.tone_curve, flags.tone_curve);
         set_switch(ivars.capture_sharpening, flags.capture_sharpening);
+        set_switch(ivars.lens_correction, flags.lens_correction);
     }
 
     fn clear_custom_dcp_field(&self) {
@@ -475,6 +481,13 @@ pub(crate) fn build(
             TAG_CAPTURE_SHARPENING,
             mtm,
         ),
+        build_flag_row(
+            "Lens correction",
+            "Distortion, TCA, and vignetting from the LensFun database.",
+            flags.lens_correction,
+            TAG_LENS_CORRECTION,
+            mtm,
+        ),
     ];
 
     // Pull out the toggle pointers before handing rows to the panel.
@@ -487,6 +500,7 @@ pub(crate) fn build(
     let color_header = make_section_header("Color", mtm);
     let tone_header = make_section_header("Tone", mtm);
     let detail_header = make_section_header("Detail", mtm);
+    let geometry_header = make_section_header("Geometry", mtm);
 
     // ── Custom DCP dir row + Reset button ─────────────────────────────
     let dcp_header = make_section_header("DCP profile", mtm);
@@ -536,6 +550,8 @@ pub(crate) fn build(
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[8].row) }); // tone curve
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&detail_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[9].row) }); // sharpening
+    panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&geometry_header) });
+    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[10].row) }); // lens correction
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&dcp_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&reset_row) });
@@ -545,6 +561,7 @@ pub(crate) fn build(
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[6].row) });
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[8].row) });
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[9].row) });
+    panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&rows[10].row) });
     panel.setCustomSpacing_afterView(14.0, unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
 
     // Pin every row to the panel width so the switches align flush right.
@@ -570,6 +587,7 @@ pub(crate) fn build(
         highlight_recovery: toggle_ptrs[7],
         tone_curve: toggle_ptrs[8],
         capture_sharpening: toggle_ptrs[9],
+        lens_correction: toggle_ptrs[10],
         custom_dcp_field: &*custom_dcp_field as *const NSTextField,
     };
     let delegate = RawDelegate::new(mtm, ivars);
@@ -592,6 +610,7 @@ pub(crate) fn build(
     retained_views.push(unsafe { Retained::cast_unchecked(color_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(tone_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(detail_header) });
+    retained_views.push(unsafe { Retained::cast_unchecked(geometry_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(dcp_header) });
     retained_views.push(unsafe { Retained::cast_unchecked(reset_spacer) });
     retained_views.push(unsafe { Retained::cast_unchecked(reset_btn) });

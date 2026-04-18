@@ -19,6 +19,11 @@
 //! - `after-opcode3` — linear Rec.2020 after `OpcodeList3` (WarpRectilinear
 //!   lens distortion correction). For non-DNG files this matches
 //!   `linear-rec2020`.
+//! - `before-lens-correction` / `after-lens-correction` — Phase 4.0
+//!   linear Rec.2020 before / after the `lensfun-rs` lens correction
+//!   (distortion + TCA + vignetting). Skipped for DNGs whose
+//!   `OpcodeList3 :: WarpRectilinear` already handled distortion (both
+//!   preview PNGs come out byte-identical in that case).
 //! - `post-exposure` — linear Rec.2020 after the baseline-exposure lift
 //!   (Phase 2.2). Same sRGB-ish preview encoding as `linear-rec2020` so
 //!   side-by-side brightness changes are eyeballable.
@@ -212,9 +217,73 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
 
     // Stage 3b: OpcodeList3 (lens distortion / post-color opcodes).
     let t0 = Instant::now();
-    apply_opcode_list3_rgb(decoder.as_ref(), demosaic_w, demosaic_h, &mut rec2020);
+    let warp_applied =
+        apply_opcode_list3_rgb(decoder.as_ref(), demosaic_w, demosaic_h, &mut rec2020);
     let after_opcode3_preview = linear_to_srgb_preview(&rec2020);
     let after_opcode3_ms = t0.elapsed().as_millis();
+
+    // Stage 3c: Phase 4.0 — lens correction via lensfun-rs. Mirrors
+    // `src/decoding/raw.rs` — skipped when OpcodeList3 already ran
+    // WarpRectilinear (DNG files). Produces a before/after preview so
+    // barrel distortion rectification and corner-vignette lift land in
+    // the dump side-by-side.
+    let before_lens_correction_preview = linear_to_srgb_preview(&rec2020);
+    let t0 = Instant::now();
+    let lens_fired = if !warp_applied {
+        let params = RawDecodeParams::default();
+        let meta = decoder.raw_metadata(&src, &params).ok();
+        let lens_model = meta
+            .as_ref()
+            .and_then(|m| m.exif.lens_model.as_deref())
+            .unwrap_or("")
+            .to_string();
+        let focal = meta
+            .as_ref()
+            .and_then(|m| m.exif.focal_length)
+            .map(|r| r.n as f32 / r.d.max(1) as f32)
+            .unwrap_or(0.0);
+        let aperture = meta
+            .as_ref()
+            .and_then(|m| m.exif.fnumber)
+            .map(|r| r.n as f32 / r.d.max(1) as f32)
+            .unwrap_or(0.0);
+        let distance = meta
+            .as_ref()
+            .and_then(|m| m.exif.subject_distance)
+            .and_then(|r| {
+                if r.d == 0 {
+                    None
+                } else {
+                    Some(r.n as f32 / r.d as f32)
+                }
+            })
+            .filter(|d| d.is_finite() && *d > 0.0 && *d < 10_000.0)
+            .unwrap_or(1000.0);
+        if !lens_model.is_empty() && focal > 0.0 && aperture > 0.0 {
+            apply_lens_correction_stage(
+                &raw,
+                &lens_model,
+                focal,
+                aperture,
+                distance,
+                &mut rec2020,
+                demosaic_w,
+                demosaic_h,
+            )
+        } else {
+            false
+        }
+    } else {
+        println!("  lens_correction: skipped (OpcodeList3 WarpRectilinear already applied)");
+        false
+    };
+    let after_lens_correction_preview = linear_to_srgb_preview(&rec2020);
+    let lens_correction_ms = t0.elapsed().as_millis();
+    if lens_fired {
+        println!("  lens_correction: applied");
+    } else if !warp_applied {
+        println!("  lens_correction: no-op (no lens match, or no calibration)");
+    }
 
     // Stage 4: baseline exposure lift (Phase 2.2). Same sRGB-ish preview
     // encoding as the linear stage above so brightness differences are
@@ -320,6 +389,20 @@ fn run_pipeline(path: &Path) -> Result<Vec<Stage>, Box<dyn std::error::Error>> {
             height: demosaic_h,
             rgb: after_opcode3_preview,
             took_ms: after_opcode3_ms,
+        },
+        Stage {
+            name: "before-lens-correction",
+            width: demosaic_w,
+            height: demosaic_h,
+            rgb: before_lens_correction_preview,
+            took_ms: 0,
+        },
+        Stage {
+            name: "after-lens-correction",
+            width: demosaic_w,
+            height: demosaic_h,
+            rgb: after_lens_correction_preview,
+            took_ms: lens_correction_ms,
         },
         Stage {
             name: "post-exposure",
@@ -980,23 +1063,160 @@ fn apply_opcode_list(decoder: &dyn Decoder, raw: &mut RawImage, tag: DngTag, lab
     }
 }
 
-/// Apply `OpcodeList3` opcodes on a 3-channel RGB buffer.
-fn apply_opcode_list3_rgb(decoder: &dyn Decoder, width: u32, height: u32, rec2020: &mut [f32]) {
+/// Apply `OpcodeList3` opcodes on a 3-channel RGB buffer. Returns `true`
+/// when a `WarpRectilinear` fired (signals to the caller that Phase 4
+/// lens correction should be skipped).
+fn apply_opcode_list3_rgb(
+    decoder: &dyn Decoder,
+    width: u32,
+    height: u32,
+    rec2020: &mut [f32],
+) -> bool {
     let Some(bytes) = fetch_opcode_list_bytes(decoder, DngTag::OpcodeList3) else {
-        return;
+        return false;
     };
     let entries = parse_opcode_count_and_entries(&bytes);
     if entries.is_empty() {
-        return;
+        return false;
     }
     println!("  OpcodeList3: {} opcode(s)", entries.len());
+    let mut warp_applied = false;
     for (id, _flags, _len, params) in &entries {
         if *id == 1
             && let Some(warp) = parse_warp_rectilinear_params(params)
         {
             apply_warp_rectilinear_rgb(rec2020, width, height, &warp);
+            warp_applied = true;
         }
     }
+    warp_applied
+}
+
+/// Phase 4 lens correction: look up camera + lens in LensFun and apply
+/// distortion + TCA + vignetting. Mirrors the logic in
+/// `src/color/lens_correction.rs`; inlined so the example stays a
+/// standalone binary. Returns `true` when at least one pass fired.
+#[allow(clippy::too_many_arguments)]
+fn apply_lens_correction_stage(
+    raw: &RawImage,
+    lens_model: &str,
+    focal: f32,
+    aperture: f32,
+    distance: f32,
+    rgb: &mut [f32],
+    width: u32,
+    height: u32,
+) -> bool {
+    use lensfun::{Database, Modifier};
+    use std::sync::OnceLock;
+    static DB: OnceLock<Option<Database>> = OnceLock::new();
+    let Some(db) = DB.get_or_init(|| Database::load_bundled().ok()).as_ref() else {
+        return false;
+    };
+    let cameras = db.find_cameras(Some(&raw.camera.make), &raw.camera.model);
+    let Some(camera) = cameras.first().copied() else {
+        return false;
+    };
+    let lenses = db.find_lenses(Some(camera), lens_model);
+    let Some(lens) = lenses.first().copied() else {
+        return false;
+    };
+    println!(
+        "  lens_correction: matched '{}' ({}mm f/{}) on '{} {}'",
+        lens.model, focal, aperture, camera.maker, camera.model
+    );
+    let mut modifier = Modifier::new(lens, focal, camera.crop_factor, width, height, true);
+    let d = modifier.enable_distortion_correction(lens);
+    let t = modifier.enable_tca_correction(lens);
+    let v = modifier.enable_vignetting_correction(lens, aperture, distance);
+    if !(d || t || v) {
+        return false;
+    }
+    if v {
+        modifier.apply_color_modification_f32(rgb, 0.0, 0.0, width as usize, height as usize, 3);
+    }
+    let w = width as usize;
+    let h = height as usize;
+    if d {
+        let src = rgb.to_vec();
+        let mut coords = vec![0.0_f32; w * 2];
+        for y in 0..h {
+            modifier.apply_geometry_distortion(0.0, y as f32, w, 1, &mut coords);
+            for x in 0..w {
+                let (r, g, b) =
+                    sample_rgb_bilinear_inline(&src, w, h, coords[2 * x], coords[2 * x + 1]);
+                let off = (y * w + x) * 3;
+                rgb[off] = r;
+                rgb[off + 1] = g;
+                rgb[off + 2] = b;
+            }
+        }
+    }
+    if t {
+        let src = rgb.to_vec();
+        let mut coords = vec![0.0_f32; w * 6];
+        for y in 0..h {
+            modifier.apply_subpixel_distortion(0.0, y as f32, w, 1, &mut coords);
+            for x in 0..w {
+                let base = x * 6;
+                let (r, _, _) =
+                    sample_rgb_bilinear_inline(&src, w, h, coords[base], coords[base + 1]);
+                let (_, g, _) =
+                    sample_rgb_bilinear_inline(&src, w, h, coords[base + 2], coords[base + 3]);
+                let (_, _, b) =
+                    sample_rgb_bilinear_inline(&src, w, h, coords[base + 4], coords[base + 5]);
+                let off = (y * w + x) * 3;
+                rgb[off] = r;
+                rgb[off + 1] = g;
+                rgb[off + 2] = b;
+            }
+        }
+    }
+    d || t || v
+}
+
+fn sample_rgb_bilinear_inline(
+    src: &[f32],
+    w: usize,
+    h: usize,
+    sx: f32,
+    sy: f32,
+) -> (f32, f32, f32) {
+    if !sx.is_finite() || !sy.is_finite() {
+        return (0.0, 0.0, 0.0);
+    }
+    let max_x = (w - 1) as f32;
+    let max_y = (h - 1) as f32;
+    let x = sx.clamp(0.0, max_x);
+    let y = sy.clamp(0.0, max_y);
+    let x0 = x.floor() as usize;
+    let y0 = y.floor() as usize;
+    let x1 = (x0 + 1).min(w - 1);
+    let y1 = (y0 + 1).min(h - 1);
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let idx = |yy: usize, xx: usize| (yy * w + xx) * 3;
+    let p00 = idx(y0, x0);
+    let p01 = idx(y0, x1);
+    let p10 = idx(y1, x0);
+    let p11 = idx(y1, x1);
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let r = lerp(
+        lerp(src[p00], src[p01], tx),
+        lerp(src[p10], src[p11], tx),
+        ty,
+    );
+    let g = lerp(
+        lerp(src[p00 + 1], src[p01 + 1], tx),
+        lerp(src[p10 + 1], src[p11 + 1], tx),
+        ty,
+    );
+    let b = lerp(
+        lerp(src[p00 + 2], src[p01 + 2], tx),
+        lerp(src[p10 + 2], src[p11 + 2], tx),
+        ty,
+    );
+    (r, g, b)
 }
 
 #[derive(Debug, Clone)]

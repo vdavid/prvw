@@ -8,6 +8,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **Lens correction for non-DNG RAWs** (Phase 4.0): Sony, Canon, Nikon, Fuji, and other non-DNG RAWs now get
+  distortion, transverse chromatic aberration, and vignetting correction from the LensFun community database
+  (~1,041 cameras, 1,543 lenses). Matches on camera body + EXIF lens model, focal length, and aperture; silent
+  no-op when no match. DNGs whose `OpcodeList3::WarpRectilinear` already handled distortion are skipped to avoid
+  double correction. New toggle under Settings → RAW → "Geometry". Powered by the pure-Rust `lensfun-rs` port
+  (bundled database, no runtime I/O). See `docs/notes/raw-support-phase4.md`.
 - **RAW Settings panel** (Phase 3.7): a new "RAW" section in Settings exposes 10 per-stage toggles for the RAW decode
   pipeline (DNG opcode lists 1 / 2 / 3, baseline exposure, DCP HueSatMap, DCP LookTable, saturation boost, highlight
   recovery, tone curve, capture sharpening), plus a "Custom DCP directory" picker and a "Reset to defaults" button.

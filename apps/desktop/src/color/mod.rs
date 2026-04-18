@@ -4,6 +4,7 @@
 pub mod dcp;
 pub mod delta_e;
 pub mod highlight_recovery;
+pub mod lens_correction;
 pub mod profiles;
 pub mod saturation;
 pub mod sharpen;

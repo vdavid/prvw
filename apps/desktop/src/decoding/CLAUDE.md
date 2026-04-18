@@ -81,6 +81,17 @@ can keep the intermediate wide-gamut:
 2a. **Phase 3.0: DNG `OpcodeList3` applied**. Post-color `WarpRectilinear`
     for lens distortion, `GainMap` if any. On iPhone ProRAW, the
     optional `WarpRectilinear` fires here.
+2b. **Phase 4.0: lens correction via `lensfun-rs`**
+    (`color::lens_correction::apply_lens_correction`). Uses the bundled
+    LensFun community database (~1,041 cameras, 1,543 lenses) to apply
+    distortion (ptlens / poly3 / poly5), TCA (linear / poly3), and
+    vignetting (pa model) in place on the linear Rec.2020 buffer.
+    Matches on `raw.camera.make/model` + EXIF
+    `lens_model/focal_length/fnumber`. Silent no-op when any of those is
+    missing, when the lens isn't in the DB, or when the DNG's
+    `OpcodeList3::WarpRectilinear` already fired (the caller tracks
+    `warp_rectilinear_applied` from step 2a and skips to avoid double
+    correction). Order within: vignetting → distortion → TCA.
 3. Default crop.
 4. `raw.rs::apply_exposure` lifts the linear buffer by the baseline EV picked
    by `baseline_exposure_ev` (DNG `BaselineExposure` tag first, fallback
