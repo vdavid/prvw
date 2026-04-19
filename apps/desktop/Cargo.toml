@@ -27,7 +27,7 @@ base64 = "0.22.1"
 nom-exif = { version = "2.7.0", default-features = false }
 rawler = "0.7.2"
 multiversion = "0.8.0"
-lensfun = { path = "../../../lensfun-rs" }
+lensfun = { git = "https://github.com/vdavid/lensfun-rs", rev = "d63f6d849b0a1bf3627104fe6df63c8fb4114651" }
 zstd = "0.13.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
 glyphon = { git = "https://github.com/grovesNL/glyphon.git", rev = "28f1cb9" }
