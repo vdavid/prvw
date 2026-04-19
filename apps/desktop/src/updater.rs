@@ -1,19 +1,25 @@
 //! # Auto-updater
 //!
-//! Background check for newer Prvw releases on GitHub. Runs once at startup on a
-//! background thread, governed by `Settings::auto_update`.
+//! Background update flow for Prvw, governed by `Settings::auto_update`.
 //!
-//! Checks `https://api.github.com/repos/vdavid/prvw/releases/latest`, compares semver
-//! to `CARGO_PKG_VERSION`, and writes a notification into the app log. Does NOT
-//! auto-download or auto-install — we show the user a link and let them choose.
+//! Two entry points:
+//!
+//! - [`check_only`] — fetches the manifest, compares versions, logs the result. No download
+//!   or install. Used on launches without a file (onboarding state) so we never trigger an
+//!   admin-password prompt while the user is just poking around.
+//! - [`check_and_update`] — full flow: fetch manifest, download DMG, mount, replace the
+//!   running `.app` bundle. Used once a file is actually opened.
+//!
+//! Both check `https://getprvw.com/latest.json` (override with `PRVW_UPDATE_URL`), parse
+//! the semver, and compare to `CARGO_PKG_VERSION`.
 //!
 //! ## Gotchas
 //!
-//! - **Net I/O is fire-and-forget.** If GitHub is down, we log and move on. No user-visible
-//!   error, no retries. Not worth the complexity.
-//! - **Only runs when installed in `/Applications/`** (via `features::file_associations::is_in_applications`).
-//!   Dev builds skip the check to avoid confusing "update available" messages when running
-//!   locally from `target/`.
+//! - **Net I/O is fire-and-forget.** If the manifest host is down, we log and move on. No
+//!   user-visible error, no retries.
+//! - **Only runs when installed in `/Applications/`** (via `file_associations::is_in_applications`).
+//!   Dev builds and copies in `~/Downloads` etc. skip the check so they don't try to update
+//!   themselves in place.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -38,6 +44,43 @@ struct PlatformEntry {
     url: String,
 }
 
+/// Spawns a background thread that only *checks* for an update and logs the result.
+/// Use this on launches where the user hasn't opened a file yet — we don't want to
+/// download or prompt for admin privileges while they're staring at the onboarding.
+pub fn check_only() {
+    if let Err(e) = std::thread::Builder::new()
+        .name("update-check".into())
+        .spawn(|| {
+            if let Err(e) = run_check_only() {
+                log::warn!("Update check failed: {e}");
+            }
+        })
+    {
+        log::warn!("Couldn't spawn update-check thread: {e}");
+    }
+}
+
+fn run_check_only() -> Result<(), String> {
+    if !should_run_update() {
+        return Ok(());
+    }
+
+    let current_version = env!("CARGO_PKG_VERSION");
+    log::info!("Checking for updates (current: v{current_version})");
+
+    let manifest = fetch_manifest()?;
+
+    if is_newer(&manifest.version, current_version) {
+        log::info!(
+            "Update available: v{} (current: v{current_version}). Will install once a file is opened.",
+            manifest.version
+        );
+    } else {
+        log::debug!("No update available (latest: v{})", manifest.version);
+    }
+    Ok(())
+}
+
 /// Spawns a background thread that checks for updates, downloads, and installs if available.
 /// Never blocks the calling thread. All errors are logged as warnings, never panics.
 pub fn check_and_update() {
@@ -53,40 +96,49 @@ pub fn check_and_update() {
     }
 }
 
-fn run_update() -> Result<(), String> {
-    // Skip in CI
+/// Shared preamble for both entry points. Returns `false` if the updater should
+/// skip this session (CI or not installed in `/Applications`).
+fn should_run_update() -> bool {
     if std::env::var("CI").is_ok() {
         log::debug!("Skipping update check in CI");
-        return Ok(());
+        return false;
     }
+    if !crate::file_associations::is_in_applications() {
+        log::debug!("Not installed in /Applications, skipping update check");
+        return false;
+    }
+    true
+}
 
-    // Skip if not running from a .app bundle (dev builds)
-    let bundle_path = match find_running_bundle() {
-        Some(p) => p,
-        None => {
-            log::debug!("Not running from a .app bundle, skipping update check");
-            return Ok(());
-        }
-    };
-
-    let current_version = env!("CARGO_PKG_VERSION");
-    log::info!("Checking for updates (current: v{current_version})");
-
-    // Fetch manifest
+fn fetch_manifest() -> Result<UpdateManifest, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Couldn't create HTTP client: {e}"))?;
 
     let url = manifest_url();
-    let manifest: UpdateManifest = client
+    client
         .get(&url)
         .send()
         .map_err(|e| format!("Couldn't fetch update manifest: {e}"))?
         .json()
-        .map_err(|e| format!("Couldn't parse update manifest: {e}"))?;
+        .map_err(|e| format!("Couldn't parse update manifest: {e}"))
+}
 
-    // Compare versions
+fn run_update() -> Result<(), String> {
+    if !should_run_update() {
+        return Ok(());
+    }
+
+    // `is_in_applications()` already verified the prefix; this just resolves the exact path.
+    let bundle_path =
+        find_running_bundle().ok_or_else(|| "Couldn't find running .app bundle".to_string())?;
+
+    let current_version = env!("CARGO_PKG_VERSION");
+    log::info!("Checking for updates (current: v{current_version})");
+
+    let manifest = fetch_manifest()?;
+
     if !is_newer(&manifest.version, current_version) {
         log::debug!("No update available (latest: v{})", manifest.version);
         return Ok(());
@@ -108,7 +160,11 @@ fn run_update() -> Result<(), String> {
     log::info!("Downloading update from {url}...");
 
     // Download DMG to a temp file
-    let dmg_bytes = client
+    let download_client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| format!("Couldn't create HTTP client: {e}"))?;
+    let dmg_bytes = download_client
         .get(url)
         .send()
         .map_err(|e| format!("Couldn't download update: {e}"))?

@@ -1282,6 +1282,14 @@ impl ApplicationHandler<AppCommand> for App {
                         self.event_loop_proxy.clone(),
                     );
                 }
+                // Check-only: log if an update is available, but don't download yet — an
+                // admin-password prompt while the user is on the onboarding screen would be
+                // invasive. The actual install fires from `initialize_viewer` once they open
+                // a file.
+                #[cfg(target_os = "macos")]
+                if settings::Settings::load().auto_update {
+                    updater::check_only();
+                }
                 // Use Poll so about_to_wait fires continuously and can check the timer
                 event_loop.set_control_flow(ControlFlow::Poll);
             }
