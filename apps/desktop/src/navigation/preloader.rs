@@ -1,9 +1,8 @@
 use crate::decoding::{self, DecodedImage, RawPipelineFlags};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
-use std::thread::available_parallelism;
 use std::time::{Duration, Instant};
 
 /// SDR cache budget (Phase 4). 512 MB holds ~6 × 20 MP RAW decodes as
@@ -19,6 +18,16 @@ const SDR_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
 const HDR_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
 
 const PRELOAD_AHEAD: usize = 2;
+
+/// Worker thread count for the preloader's rayon pool. Kept small on purpose:
+/// with one thread per task we'd have all four neighbor decodes race in
+/// parallel and submission order would be cosmetic. With 3 threads the
+/// priority-zero FIFO slot (current image, then `N+1` on a directional nav)
+/// actually gets a head start and the background slots are always ready to
+/// pick up the next one as soon as one finishes. Each RAW decode already
+/// parallelises internally through rawler's own rayon pool, so total CPU
+/// utilisation stays high.
+const PRELOAD_THREADS: usize = 3;
 
 /// Messages sent from the preloader back to the main thread.
 pub enum PreloadResponse {
@@ -269,10 +278,11 @@ pub struct Preloader {
     pool: rayon::ThreadPool,
     response_tx: mpsc::Sender<PreloadResponse>,
     pub response_rx: mpsc::Receiver<PreloadResponse>,
-    /// Indices currently being decoded (prevents duplicate work).
-    in_flight: HashSet<usize>,
-    /// Cancellation tokens for in-flight tasks.
-    cancellation_tokens: Vec<Arc<AtomicBool>>,
+    /// In-flight cancellation tokens keyed by directory index. When
+    /// `request_preload` runs, indices still in the new task list keep their
+    /// existing token (so a mid-decode task survives), and indices no longer
+    /// in the list have their token flipped (cancelling that decode).
+    in_flight: HashMap<usize, Arc<AtomicBool>>,
     /// ICC profile bytes for the current display (target color space for decoding).
     display_icc: Arc<Vec<u8>>,
     /// Whether to use relative colorimetric rendering intent instead of perceptual.
@@ -294,15 +304,13 @@ impl Preloader {
         raw_flags: RawPipelineFlags,
         edr_headroom: f32,
     ) -> Self {
-        let num_threads = available_parallelism().map(|n| n.get()).unwrap_or(4);
-
         let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(num_threads)
+            .num_threads(PRELOAD_THREADS)
             .thread_name(|i| format!("prvw-preload-{i}"))
             .build()
             .expect("Failed to create preloader thread pool");
 
-        log::info!("Preloader started with {num_threads} threads");
+        log::info!("Preloader started with {PRELOAD_THREADS} threads");
 
         let (response_tx, response_rx) = mpsc::channel();
 
@@ -310,8 +318,7 @@ impl Preloader {
             pool,
             response_tx,
             response_rx,
-            in_flight: HashSet::new(),
-            cancellation_tokens: Vec::new(),
+            in_flight: HashMap::new(),
             display_icc: Arc::new(display_icc),
             use_relative_colorimetric,
             raw_flags,
@@ -342,29 +349,44 @@ impl Preloader {
         self.raw_flags = flags;
     }
 
-    /// Cancel all in-flight tasks and submit new ones.
-    /// Tasks are submitted in priority order: indices earlier in the list get higher priority.
+    /// Cancel any in-flight tasks not in `tasks`, leave the rest running,
+    /// and spawn the new ones. `tasks` is priority-ordered — earlier entries
+    /// are more likely to be what the user wants next. The first entry goes
+    /// through `spawn_fifo` to jump the queue; the rest use `spawn` (LIFO).
+    ///
+    /// Tasks already in flight for one of the requested indices are NOT
+    /// cancelled and NOT resubmitted — their decode continues from wherever
+    /// it was. Only indices that disappear from the list get their
+    /// cancellation token flipped.
     pub fn request_preload(&mut self, tasks: Vec<(usize, PathBuf)>) {
-        // Cancel all existing in-flight tasks
-        let cancelled_count = self.cancellation_tokens.len();
-        for token in &self.cancellation_tokens {
-            token.store(true, Ordering::Relaxed);
-        }
-        self.cancellation_tokens.clear();
-        self.in_flight.clear();
+        let requested: std::collections::HashSet<usize> = tasks.iter().map(|(i, _)| *i).collect();
 
+        // Cancel tokens for indices no longer wanted.
+        let mut cancelled_count = 0usize;
+        self.in_flight.retain(|index, token| {
+            if requested.contains(index) {
+                true
+            } else {
+                token.store(true, Ordering::Relaxed);
+                cancelled_count += 1;
+                false
+            }
+        });
         if cancelled_count > 0 {
-            log::debug!("Cancelled {cancelled_count} in-flight tasks");
+            log::debug!("Cancelled {cancelled_count} stale in-flight tasks");
         }
 
         let indices: Vec<usize> = tasks.iter().map(|(i, _)| *i).collect();
         log::debug!("Preloading {} images: {indices:?}", tasks.len());
 
         for (priority, (index, path)) in tasks.into_iter().enumerate() {
-            self.in_flight.insert(index);
+            // Already decoding this index — leave it alone.
+            if self.in_flight.contains_key(&index) {
+                continue;
+            }
 
             let cancelled = Arc::new(AtomicBool::new(false));
-            self.cancellation_tokens.push(Arc::clone(&cancelled));
+            self.in_flight.insert(index, Arc::clone(&cancelled));
 
             let tx = self.response_tx.clone();
             let display_icc = Arc::clone(&self.display_icc);
@@ -414,7 +436,8 @@ impl Preloader {
                 }
             };
 
-            // First task (highest priority) gets FIFO scheduling
+            // First task (highest priority) gets FIFO scheduling so it
+            // doesn't get buried under the LIFO background slots.
             if priority == 0 {
                 self.pool.spawn_fifo(task);
             } else {

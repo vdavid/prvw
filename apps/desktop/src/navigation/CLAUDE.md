@@ -31,11 +31,20 @@ targets directly — only settings re-decode and `Refresh` still call the sync
 
 ## Key patterns
 
-- **`std::thread` + channels, no `tokio`.** Preloader uses rayon (`min(4, cores-1)`
-  threads) for CPU-bound decoding. Results come back via `std::sync::mpsc`. An
-  in-flight `HashSet` prevents duplicate work.
-- **Cancellation.** Preload tasks hold an `Arc<AtomicBool>`; navigation away cancels
-  in-flight decodes so they don't block newer work.
+- **`std::thread` + channels, no `tokio`.** Preloader uses rayon (3 worker
+  threads — `PRELOAD_THREADS`) for CPU-bound decoding. Results come back via
+  `std::sync::mpsc`. An in-flight `HashMap<index, Arc<AtomicBool>>` lets us
+  keep a task running across successive `request_preload` calls when it's
+  still wanted, and cancel only the tokens for indices that dropped out.
+- **Direction-aware priority.** `DirectoryList::preload_range` takes a
+  `Direction` (forward / backward / unknown) and returns indices ordered by
+  likelihood of being viewed next. Forward nav returns `[N+1, N+2, N-1, N-2]`;
+  `navigate` in `app.rs` prepends the current index when it's uncached,
+  submits the full list to `Preloader::request_preload`, and the preloader
+  gives the first entry `spawn_fifo` scheduling so it leads the pool.
+- **Cancellation.** Preload tasks hold an `Arc<AtomicBool>`; navigation away
+  flips the tokens for any indices no longer in the priority list. Tasks
+  still wanted keep their existing token and don't restart mid-decode.
 - **Supported extensions are decided by `decoding`** — `DirectoryList` filters via
   `decoding::is_supported_extension`. New format support = one change, two effects
   (decode + list).

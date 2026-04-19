@@ -493,8 +493,9 @@ impl App {
             }
 
             if self.navigation.preload_neighbors {
+                // Startup direction is unknown — warm both sides symmetrically.
                 let to_preload: Vec<(usize, PathBuf)> = dir
-                    .preload_range(preloader::preload_count())
+                    .preload_range(preloader::preload_count(), directory::Direction::Unknown)
                     .iter()
                     .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
                     .collect();
@@ -698,10 +699,18 @@ impl App {
         let nav_start = Instant::now();
         let direction = if forward { "next" } else { "prev" };
 
+        // Record the travel direction so neighbor priority follows the user.
+        self.navigation.last_direction = if forward {
+            directory::Direction::Forward
+        } else {
+            directory::Direction::Backward
+        };
+
         // Extract what we need from dir_list before mutable borrow
         let (current_path, current_index, total, preload_indices) = {
             let dir = self.navigation.dir_list.as_ref().unwrap();
-            let indices = dir.preload_range(preloader::preload_count());
+            let indices =
+                dir.preload_range(preloader::preload_count(), self.navigation.last_direction);
             (
                 dir.current().to_path_buf(),
                 dir.current_index(),

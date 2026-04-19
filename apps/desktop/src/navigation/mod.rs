@@ -29,6 +29,10 @@ pub struct State {
     /// again (pointing us at a different target). While `Some`, the window
     /// title shows "Loading…".
     pub pending_current: Option<usize>,
+    /// Direction of the last navigation — drives neighbor preload priority
+    /// (`DirectoryList::preload_range`). `Unknown` at startup and after
+    /// non-directional jumps (open-file, refresh, settings re-decode).
+    pub last_direction: directory::Direction,
 }
 
 impl State {
@@ -41,6 +45,7 @@ impl State {
             current_image_size: None,
             preload_neighbors: true,
             pending_current: None,
+            last_direction: directory::Direction::Unknown,
         }
     }
 

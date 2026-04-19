@@ -121,18 +121,76 @@ impl DirectoryList {
         self.files.get(index).map(|p| p.as_path())
     }
 
-    /// Return indices of files to preload: up to `count` ahead and `count` behind current.
-    pub fn preload_range(&self, count: usize) -> Vec<usize> {
-        let mut indices = Vec::new();
-        let start = self.current_index.saturating_sub(count);
-        let end = (self.current_index + count + 1).min(self.files.len());
-        for i in start..end {
-            if i != self.current_index {
-                indices.push(i);
+    /// Return indices of files to preload, ordered by priority (most
+    /// likely next first). `count` controls how many indices ahead and
+    /// behind current to include. The highest-priority index comes first
+    /// so callers can submit with FIFO scheduling for the preloader.
+    ///
+    /// Ordering rules:
+    /// - `Direction::Forward`  → `[N+1, N+2, … , N-1, N-2, …]`
+    /// - `Direction::Backward` → `[N-1, N-2, … , N+1, N+2, …]`
+    /// - `Direction::Unknown`  → interleaved `[N+1, N-1, N+2, N-2, …]`
+    pub fn preload_range(&self, count: usize, direction: Direction) -> Vec<usize> {
+        if count == 0 {
+            return Vec::new();
+        }
+        let total = self.files.len();
+        let cur = self.current_index;
+        let mut indices = Vec::with_capacity(count * 2);
+
+        let ahead = |step: usize| cur.checked_add(step).filter(|&i| i < total);
+        let behind = |step: usize| if cur >= step { Some(cur - step) } else { None };
+
+        match direction {
+            Direction::Forward => {
+                for step in 1..=count {
+                    if let Some(i) = ahead(step) {
+                        indices.push(i);
+                    }
+                }
+                for step in 1..=count {
+                    if let Some(i) = behind(step) {
+                        indices.push(i);
+                    }
+                }
+            }
+            Direction::Backward => {
+                for step in 1..=count {
+                    if let Some(i) = behind(step) {
+                        indices.push(i);
+                    }
+                }
+                for step in 1..=count {
+                    if let Some(i) = ahead(step) {
+                        indices.push(i);
+                    }
+                }
+            }
+            Direction::Unknown => {
+                for step in 1..=count {
+                    if let Some(i) = ahead(step) {
+                        indices.push(i);
+                    }
+                    if let Some(i) = behind(step) {
+                        indices.push(i);
+                    }
+                }
             }
         }
+
         indices
     }
+}
+
+/// Direction hint for `preload_range`. Set by the last navigation — the
+/// preloader prioritizes the direction the user is moving.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Forward,
+    Backward,
+    /// Before the first navigation, or after a non-directional jump (e.g.
+    /// open-file). Interleaves ahead/behind so both sides are warmed.
+    Unknown,
 }
 
 #[cfg(test)]
@@ -223,20 +281,38 @@ mod tests {
         let target = dir.path().join("apple.jpg");
         let list = DirectoryList::from_file(&target).unwrap();
 
-        // At index 0, preload_range(2) should return indices 1, 2 (nothing before)
-        let range = list.preload_range(2);
-        assert_eq!(range, vec![1, 2]);
+        // At index 0, forward preload should go [1, 2] (nothing before).
+        assert_eq!(list.preload_range(2, Direction::Forward), vec![1, 2]);
+        assert_eq!(list.preload_range(2, Direction::Backward), vec![1, 2]);
+        assert_eq!(list.preload_range(2, Direction::Unknown), vec![1, 2]);
     }
 
     #[test]
-    fn preload_range_in_middle() {
+    fn preload_range_forward_priority() {
+        // At index 2 of 5 with count=2, forward order is [N+1, N+2, N-1, N-2]
+        // = [3, 4, 1, 0]. The highest-priority slot (first) goes to N+1.
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
         let list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.preload_range(2, Direction::Forward), vec![3, 4, 1, 0]);
+    }
 
-        // At index 2, preload_range(2) should return 0, 1, 3, 4
-        let range = list.preload_range(2);
-        assert_eq!(range, vec![0, 1, 3, 4]);
+    #[test]
+    fn preload_range_backward_priority() {
+        // Backward flips the ordering: [N-1, N-2, N+1, N+2] = [1, 0, 3, 4].
+        let dir = create_test_dir();
+        let target = dir.path().join("cherry.gif");
+        let list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.preload_range(2, Direction::Backward), vec![1, 0, 3, 4]);
+    }
+
+    #[test]
+    fn preload_range_unknown_interleaves() {
+        // Unknown interleaves both sides: [N+1, N-1, N+2, N-2] = [3, 1, 4, 0].
+        let dir = create_test_dir();
+        let target = dir.path().join("cherry.gif");
+        let list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.preload_range(2, Direction::Unknown), vec![3, 1, 4, 0]);
     }
 
     #[test]
