@@ -12,28 +12,34 @@ struct TestApp {
     child: Child,
     base_url: String,
     client: reqwest::blocking::Client,
+    // Per-test settings dir. Kept alive for the test's duration; auto-removed on Drop.
+    // Without this, tests would share `/tmp/prvw-integration-test-{port}` across cargo
+    // test invocations (ports get recycled), leaking state like `title_bar: false` from
+    // one test into another and producing flakes.
+    _data_dir: tempfile::TempDir,
 }
 
 impl TestApp {
     fn start() -> Self {
         let test_image = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build/icon.png");
+        Self::start_with_image(&test_image)
+    }
 
+    /// Start the app with a custom image file.
+    fn start_with_image(image_path: &std::path::Path) -> Self {
         // Find a free port by binding to :0, then closing the listener
         let port = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap().port()
         };
 
+        // Fresh per-test settings dir — no cross-test leakage.
+        let data_dir = tempfile::tempdir().expect("Couldn't create temp data dir");
+
         let child = Command::new(env!("CARGO_BIN_EXE_prvw"))
-            .arg(&test_image)
+            .arg(image_path)
             .env("PRVW_QA_PORT", port.to_string())
-            .env(
-                "PRVW_DATA_DIR",
-                std::env::temp_dir()
-                    .join(format!("prvw-integration-test-{port}"))
-                    .to_str()
-                    .unwrap(),
-            )
+            .env("PRVW_DATA_DIR", data_dir.path())
             .spawn()
             .expect("Failed to start prvw");
 
@@ -62,52 +68,7 @@ impl TestApp {
             child,
             base_url,
             client,
-        }
-    }
-
-    /// Start the app with a custom image file.
-    fn start_with_image(image_path: &std::path::Path) -> Self {
-        let port = {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.local_addr().unwrap().port()
-        };
-
-        let child = Command::new(env!("CARGO_BIN_EXE_prvw"))
-            .arg(image_path)
-            .env("PRVW_QA_PORT", port.to_string())
-            .env(
-                "PRVW_DATA_DIR",
-                std::env::temp_dir()
-                    .join(format!("prvw-integration-test-{port}"))
-                    .to_str()
-                    .unwrap(),
-            )
-            .spawn()
-            .expect("Failed to start prvw");
-
-        let base_url = format!("http://127.0.0.1:{port}");
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()
-            .unwrap();
-
-        let start = Instant::now();
-        loop {
-            if start.elapsed() > Duration::from_secs(10) {
-                panic!("QA server didn't start within 10 seconds");
-            }
-            if client.get(format!("{base_url}/state")).send().is_ok() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        std::thread::sleep(Duration::from_millis(500));
-
-        Self {
-            child,
-            base_url,
-            client,
+            _data_dir: data_dir,
         }
     }
 
