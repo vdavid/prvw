@@ -1501,6 +1501,9 @@ mod tests {
         }
     }
 
+    // Gated to macOS because `color::srgb_icc_bytes` reads a macOS-only
+    // system profile path. Linux CI can't run these.
+    #[cfg(target_os = "macos")]
     #[test]
     fn malformed_bytes_return_error() {
         let bytes = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03];
@@ -1515,6 +1518,7 @@ mod tests {
         assert!(result.is_err(), "expected error for malformed bytes");
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn cancellation_short_circuits() {
         let flag = AtomicBool::new(true);
