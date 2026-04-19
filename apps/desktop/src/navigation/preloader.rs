@@ -19,15 +19,23 @@ const HDR_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
 
 const PRELOAD_AHEAD: usize = 2;
 
-/// Worker thread count for the preloader's rayon pool. Kept small on purpose:
-/// with one thread per task we'd have all four neighbor decodes race in
-/// parallel and submission order would be cosmetic. With 3 threads the
-/// priority-zero FIFO slot (current image, then `N+1` on a directional nav)
-/// actually gets a head start and the background slots are always ready to
-/// pick up the next one as soon as one finishes. Each RAW decode already
-/// parallelises internally through rawler's own rayon pool, so total CPU
-/// utilisation stays high.
-const PRELOAD_THREADS: usize = 3;
+// The preloader runs on a single dedicated `std::thread`, not a rayon
+// pool. Reason: each RAW decode internally calls `rayon::par_iter` through
+// rawler and our own stages, and rayon's `par_iter` inherits the caller's
+// pool. If the caller runs on a custom rayon pool with N threads, those
+// parallel stages get N threads too — not the global pool's all-cores.
+// A plain OS thread isn't a rayon worker, so `par_iter` inside it falls
+// back to the global pool (every logical core), matching the main-thread
+// sync decode path.
+//
+// Observed on an M3 Max, 20 MP ARW:
+//   main-thread sync decode:   demosaic 61 ms, chroma_nr 64 ms, sharpen 19 ms
+//   single-thread rayon pool:  demosaic 403 ms, chroma_nr 510 ms, sharpen 194 ms
+//   dedicated std::thread:     same as main-thread sync (~500 ms total)
+//
+// Serial execution is fine: we only want one decode running at a time so
+// the priority-zero task gets full CPU and finishes first. Queueing more
+// tasks just makes the priority-zero task share cores for no benefit.
 
 /// Messages sent from the preloader back to the main thread.
 pub enum PreloadResponse {
@@ -285,9 +293,13 @@ fn image_memory_cost(image: &DecodedImage) -> usize {
     image.width as usize * image.height as usize * image.pixels.bytes_per_pixel()
 }
 
-/// Parallel image preloader backed by a rayon thread pool.
+/// Serial image preloader backed by a dedicated OS thread.
 pub struct Preloader {
-    pool: rayon::ThreadPool,
+    /// FIFO queue of decode tasks. The worker thread pops and runs them
+    /// one at a time. Tasks queued behind cancelled ones still "consume
+    /// their turn" but exit in microseconds via the cancellation flag
+    /// check at the start of `load_image`.
+    task_tx: mpsc::Sender<Box<dyn FnOnce() + Send + 'static>>,
     response_tx: mpsc::Sender<PreloadResponse>,
     pub response_rx: mpsc::Receiver<PreloadResponse>,
     /// In-flight cancellation tokens keyed by directory index. When
@@ -316,18 +328,23 @@ impl Preloader {
         raw_flags: RawPipelineFlags,
         edr_headroom: f32,
     ) -> Self {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(PRELOAD_THREADS)
-            .thread_name(|i| format!("prvw-preload-{i}"))
-            .build()
-            .expect("Failed to create preloader thread pool");
+        let (task_tx, task_rx) = mpsc::channel::<Box<dyn FnOnce() + Send + 'static>>();
+        std::thread::Builder::new()
+            .name("prvw-preload".into())
+            .spawn(move || {
+                while let Ok(task) = task_rx.recv() {
+                    task();
+                }
+                log::debug!("Preloader worker exiting");
+            })
+            .expect("Failed to spawn preloader worker thread");
 
-        log::info!("Preloader started with {PRELOAD_THREADS} threads");
+        log::info!("Preloader started (serial, dedicated OS thread)");
 
         let (response_tx, response_rx) = mpsc::channel();
 
         Self {
-            pool,
+            task_tx,
             response_tx,
             response_rx,
             in_flight: HashMap::new(),
@@ -362,14 +379,15 @@ impl Preloader {
     }
 
     /// Cancel any in-flight tasks not in `tasks`, leave the rest running,
-    /// and spawn the new ones. `tasks` is priority-ordered — earlier entries
-    /// are more likely to be what the user wants next. The first entry goes
-    /// through `spawn_fifo` to jump the queue; the rest use `spawn` (LIFO).
+    /// and queue the new ones. `tasks` is priority-ordered — earlier entries
+    /// are more likely to be what the user wants next. The worker thread
+    /// pops from the FIFO one at a time, so priority-zero runs first.
     ///
     /// Tasks already in flight for one of the requested indices are NOT
     /// cancelled and NOT resubmitted — their decode continues from wherever
     /// it was. Only indices that disappear from the list get their
-    /// cancellation token flipped.
+    /// cancellation token flipped; their closures still run on the worker
+    /// but exit in microseconds when `load_image` checks the flag.
     pub fn request_preload(
         &mut self,
         tasks: Vec<(usize, PathBuf)>,
@@ -396,7 +414,7 @@ impl Preloader {
         let indices: Vec<usize> = tasks.iter().map(|(i, _)| *i).collect();
         log::debug!("Preloading {} images: {indices:?}", tasks.len());
 
-        for (priority, (index, path)) in tasks.into_iter().enumerate() {
+        for (index, path) in tasks.into_iter() {
             // Already decoding this index — leave it alone.
             if self.in_flight.contains_key(&index) {
                 continue;
@@ -463,12 +481,10 @@ impl Preloader {
                 }
             };
 
-            // First task (highest priority) gets FIFO scheduling so it
-            // doesn't get buried under the LIFO background slots.
-            if priority == 0 {
-                self.pool.spawn_fifo(task);
-            } else {
-                self.pool.spawn(task);
+            // Channel is naturally FIFO — execution order matches
+            // submission order, which is priority order.
+            if self.task_tx.send(Box::new(task)).is_err() {
+                log::warn!("Preloader worker is gone — dropping task for [{index}]");
             }
         }
     }
@@ -478,7 +494,8 @@ impl Preloader {
         self.in_flight.remove(&index);
     }
 
-    /// Shut down the preloader (rayon handles thread cleanup on drop).
+    /// Shut down the preloader. Dropping the `task_tx` closes the channel,
+    /// the worker thread's `recv()` returns `Err`, and it exits.
     pub fn shutdown(self) {
         drop(self);
     }

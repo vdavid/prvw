@@ -42,17 +42,26 @@ path, which flushes pending first so automated tests see deterministic state.
 
 ## Key patterns
 
-- **`std::thread` + channels, no `tokio`.** Preloader uses rayon (3 worker
-  threads — `PRELOAD_THREADS`) for CPU-bound decoding. Results come back via
-  `std::sync::mpsc`. An in-flight `HashMap<index, Arc<AtomicBool>>` lets us
-  keep a task running across successive `request_preload` calls when it's
-  still wanted, and cancel only the tokens for indices that dropped out.
+- **Dedicated `std::thread` worker, not a rayon pool.** Tasks are queued
+  through an `mpsc::channel` to a single OS thread that pops and runs them
+  serially. Responses come back via another `mpsc::channel`. An in-flight
+  `HashMap<index, Arc<AtomicBool>>` lets us cancel only the tokens for
+  indices that dropped out of the priority list; tasks still wanted keep
+  their existing token.
+
+  **Why not rayon?** rawler's internal `par_iter` inherits the caller's
+  rayon pool. On a 1-thread custom pool, rawler's parallel stages
+  (demosaic, chroma_nr, sharpen) collapse to 1 thread and balloon ~10×.
+  A plain OS thread isn't a rayon worker, so `par_iter` inside it falls
+  back to the global pool (every logical core), matching the main-thread
+  sync decode path. See the comment block above `Preloader` in
+  `preloader.rs` for the measurement table.
 - **Direction-aware priority.** `DirectoryList::preload_range` takes a
   `Direction` (forward / backward / unknown) and returns indices ordered by
   likelihood of being viewed next. Forward nav returns `[N+1, N+2, N-1, N-2]`;
   `navigate` in `app.rs` prepends the current index when it's uncached,
-  submits the full list to `Preloader::request_preload`, and the preloader
-  gives the first entry `spawn_fifo` scheduling so it leads the pool.
+  submits the full list to `Preloader::request_preload`, and every task goes
+  through `spawn_fifo` so submission order = execution order.
 - **Cancellation.** Preload tasks hold an `Arc<AtomicBool>`; navigation away
   flips the tokens for any indices no longer in the priority list. Tasks
   still wanted keep their existing token and don't restart mid-decode.
