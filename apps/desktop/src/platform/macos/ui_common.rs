@@ -212,15 +212,24 @@ pub(crate) fn make_close_button(
     }
 }
 
-/// Create a hidden button with Escape as key equivalent that closes the window.
+/// Create an invisible button with Escape as key equivalent that closes the window.
 /// Standard macOS pattern for "ESC to close".
+///
+/// Gotcha/Why: don't use `setHidden: true`. AppKit's `performKeyEquivalent:` traversal
+/// skips hidden views, so a hidden button never fires its key equivalent. Instead make
+/// it borderless with a zero-size frame — still in the responder chain, still invisible.
 pub(crate) fn make_escape_button(window: &NSWindow, mtm: MainThreadMarker) -> Retained<NSButton> {
     unsafe {
         let button = NSButton::new(mtm);
         let _: () = msg_send![&*button, setKeyEquivalent: &*NSString::from_str("\x1b")];
         button.setTarget(Some(window as &AnyObject));
         button.setAction(Some(sel!(performClose:)));
-        let _: () = msg_send![&*button, setHidden: true];
+        button.setBordered(false);
+        button.setTitle(&NSString::from_str(""));
+        let _: () = msg_send![
+            &*button,
+            setFrame: NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0))
+        ];
         button
     }
 }
