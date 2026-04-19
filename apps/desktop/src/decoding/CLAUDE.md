@@ -221,6 +221,74 @@ line) make the decision audit-able without a debugger — if HDR looks wrong,
 the logs tell you whether the pipeline clipped, quantized, or rendered the
 above-1.0 range away.
 
+## Per-stage timing (Phase 6.4)
+
+`raw::decode` instruments every pipeline stage with a `StageTimings` helper
+(private to `raw.rs`). Each stage mark emits one `log::debug!` line, and a
+summary `log::debug!` line fires at the end:
+
+```
+RAW pipeline stages [293.2 ms total]: raw_image=4.4, opcode1=0.0, rescale=2.2,
+  opcode2=0.0, demosaic=34.7, cam_matrix=6.0, opcode3=0.0, lens=83.0, crop=5.4,
+  chroma_nr=49.3, exposure=2.8, hl_recovery=2.7, dcp=38.9, tone=7.7,
+  hdr_diag_pre=2.6, saturation=2.4, color_conv=6.2, hdr_diag_post=2.2,
+  to_rgba16f=4.7, clarity=14.0, sharpen=21.4, hdr_diag_f16=2.3 for …
+```
+
+Flag-gated stages with near-zero elapsed confirm their gate fired (useful
+sanity check). Turn it on with `RUST_LOG=prvw::decoding::raw=debug`.
+
+### Typical warm-decode budget on a 20 MP ARW
+
+Reference numbers: `/tmp/raw/sample3.arw` (Sony α7R IV, 5456×3632 ≈ 20 MP),
+Apple Silicon M3 Max, release build, all RAW flags at their defaults (HDR
+output active on an EDR-capable display, so the numbers below include the
+half-float path). Re-run measurements for a fresh cold decode by flipping
+Settings → General → "Preload next/prev images" off and restarting — the
+preloader otherwise warms caches and decode-time drops.
+
+| Stage              | Warm ms | Notes |
+| ------------------ | ------: | ----- |
+| `raw_image`        |     4.4 | Inside rawler: file parse + mosaic extraction |
+| `opcode1`          |     0.0 | DNG only; ARW no-op |
+| `rescale`          |     2.2 | rawler's black-level subtract + linear rescale |
+| `opcode2`          |     0.0 | DNG only; ARW no-op |
+| `demosaic`         |    34.7 | Inside rawler; bilinear (no Markesteijn) |
+| `cam_matrix`       |     6.0 | camera → linear Rec.2020 (WB + color matrix in one pass) |
+| `opcode3`          |     0.0 | DNG only; ARW no-op |
+| `lens`             |    83.0 | LensFun distortion + TCA + vignetting (SIMD, 6.3) |
+| `crop`             |     5.4 | Default crop |
+| `chroma_nr`        |    49.3 | σ=1.5 blur on Cb/Cr (SIMD, 6.1) |
+| `exposure`         |     2.8 | Baseline EV lift |
+| `hl_recovery`      |     2.7 | Highlight recovery |
+| `dcp`              |    38.9 | DCP HueSatMap + LookTable (trilinear 3D LUT) |
+| `tone`             |     7.7 | Filmic shoulder curve on luminance |
+| `hdr_diag_pre`     |     2.6 | Info-level diagnostic (0.1 ms when info off) |
+| `saturation`       |     2.4 | Global chroma scale |
+| `color_conv`       |     6.2 | Rec.2020 → linear Display P3 matrix (HDR) or moxcms (SDR) |
+| `hdr_diag_post`    |     2.2 | Info-level diagnostic (0.1 ms when info off) |
+| `to_rgba16f`       |     4.7 | f32 → half-float quantize |
+| `clarity`          |    14.0 | σ=10 downsample fast path (6.4 — was 144 ms pre-6.4) |
+| `sharpen`          |    21.4 | σ=0.8 luminance-only unsharp |
+| `hdr_diag_f16`     |     2.3 | Info-level diagnostic (0.1 ms when info off) |
+| **total**          | **293** | Warm cache; cold decode ≈ 650 ms |
+
+**How to read the table:** numbers are guide-rail order-of-magnitude, not a
+contract. They shift with image resolution, scene content, cache state,
+thermal throttling, and flag combinations. The absolute values matter less
+than the *ranking* — `lens`, `chroma_nr`, `dcp`, `demosaic`, `sharpen`,
+`clarity` are the six stages that dominate. Demosaic and rawler parse live
+inside the `rawler` crate; everything else is our code.
+
+**If you're optimizing:** start by reading the DEBUG summary line on your
+own hardware / input. If you see a stage taking ≥ 2× the value here, that
+specific stage is the suspect. If every stage is proportionally higher, it
+probably isn't our code — check `log::info!` lines above for clues (e.g.
+"RAW applied DCP" means DCP matched and the trilinear 3D LUT ran). See
+Phase 6.2 (clarity downsample) and 6.3 (lens-correction SIMD) in
+`docs/notes/raw-support-phase6.md` for examples of how past per-stage
+wins were found and landed.
+
 ## Testing the RAW pipeline
 
 The RAW pipeline has two kinds of tests:

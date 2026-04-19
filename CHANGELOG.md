@@ -21,6 +21,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Added
 
+- **RAW per-stage timing + benchmark table** (Phase 6.4): `decoding::raw::decode` now emits one DEBUG log line per
+  pipeline stage plus a comma-separated summary line, ready to grep. Enable with `RUST_LOG=prvw::decoding::raw=debug`.
+  `apps/desktop/src/decoding/CLAUDE.md` ships a reference table of typical warm-decode timings on a 20 MP ARW (M3 Max,
+  release, defaults) so agents and humans can spot regressions without a profiler. Pairs with a new
+  Settings → General → "Preload next/prev images" toggle that disables background preloading so single-image
+  cold-start decodes can be measured without concurrent work interfering.
 - **HDR brightness gain** (Phase 5.2): a new 0.5 – 4.0 slider in Settings → RAW → Output (default 2.0) pushes
   scene-white content into the EDR headroom so HDR output reads genuinely "HDR-bright" on an XDR / OLED panel instead
   of timidly preserving SDR brightness and only using headroom for sparse specular highlights. Matches the visual
@@ -37,6 +43,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **Clarity ~10× faster on 20 MP** (Phase 6.4): the σ=10 local-contrast pass now takes ~14 ms instead of ~144 ms on a
+  20 MP image (Apple Silicon M3 Max, release). For σ ≥ 4 and images ≥ 1 MP, clarity now downsamples the luma plane 4×
+  (box average), blurs at σ' = σ/4 (~15-tap kernel instead of 61), then bilinearly upsamples — the Gaussian-blurred
+  signal is low-frequency by design, so the round-trip is near-invisible. Small σ and small images still take the
+  direct-convolution path for byte-identical output against pre-6.4. Total per-decode budget on a 20 MP HDR ARW drops
+  from ~650 ms to ~293 ms warm, a ~2.2× overall speedup when paired with the HDR-diagnostic log gating below. See
+  `apps/desktop/src/decoding/CLAUDE.md` § "Per-stage timing" for the reference table.
+- **HDR-diagnostic log scans now run only when info logging is active** (Phase 6.4): the three post-pipeline
+  peak-value scans (`peak linear value`, `peak post-ICC`, `peak f16`) are now gated behind `log::log_enabled!(Info)`
+  and, on the HDR branch, parallelized via rayon. ~40 ms saved per HDR decode when info logging is off; ~30 ms when
+  it's on. No observable behavior change — release builds that don't ship info logging pay nothing.
 - **RAW defaults tuned against Affinity / Preview** (Phase 6.1.1): the parametric RAW stages now ship with values
   closer to Affinity Photo's per-camera-tuned output on our sample set — `DEFAULT_SATURATION_BOOST` 0.08 → 0.18,
   `DEFAULT_MIDTONE_ANCHOR` 0.40 → 0.45, and a new `baseline_exposure_offset` slider (default +0.73 EV) adds a

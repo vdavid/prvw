@@ -248,3 +248,80 @@ one from the previous detail/denoise/geometry/output block.
 The slider row builder grew a small `LabelFormat` enum
 (`TwoDecimal` | `IntegerPx`) so one factory can emit both "0.40" and
 "10 px" labels without parallel constructors.
+
+## Phase 6.4 — RAW perf pass
+
+A measurement-driven performance pass. Split into three pieces: instrumentation,
+two concrete optimizations, and a benchmarking toggle.
+
+### Instrumentation — `StageTimings`
+
+Added a small helper in `decoding::raw` that marks every pipeline stage at
+DEBUG level and emits a comma-separated summary line at the end. Zero cost
+at non-debug levels (one `Instant::now` per mark). Flag-gated stages that
+skip still get marked — their near-zero elapsed confirms the gate fired.
+
+Turn on with `RUST_LOG=prvw::decoding::raw=debug`.
+
+### Clarity downsample fast path
+
+The σ=10 Gaussian unsharp mask was the single biggest user-controllable
+stage at 144 ms on a 20 MP image (61-tap kernel × 2 separable passes
+× 20 M pixels ≈ 2.4 B FMAs). The signal a Gaussian unsharp-mask extracts
+is low-frequency by definition, so sampling it at 1/4 resolution is
+near-lossless visually.
+
+New path when σ ≥ `SIGMA_DIRECT_THRESHOLD` (4.0) and pixels ≥
+`MIN_PIXELS_FOR_FAST_PATH` (1 MP):
+
+1. Downsample the luma plane 4× with a box filter (linear cost, 16× fewer
+   pixels out).
+2. Blur at σ' = σ/4 using the same separable Gaussian + `pub(super)`
+   helpers as `sharpen.rs` — kernel drops from 61 taps to ~15.
+3. Bilinearly upsample the blurred luma back to full resolution.
+4. Apply the unsharp-mask formula at full resolution (`Y_out = Y + (Y -
+   Y_blurred) * amount`).
+5. Rescale RGB proportionally to `Y_out / Y_in`.
+
+Measured on sample3.arw (5456 × 3632 ≈ 20 MP, M3 Max, release):
+**144 ms → 14 ms, ~10× speedup**. Small σ and small images fall through to
+the direct path for byte-identical output against pre-6.4 (needed to keep
+the `synthetic-bayer-128.dng` golden test bit-for-bit stable).
+
+### HDR-diagnostic log gating
+
+Three peak-value scans in the HDR branch (pre-ICC, post-ICC, and the
+half-float peak right before GPU upload) were running unconditionally,
+costing ~40 ms per HDR decode just to log three INFO lines:
+
+- Pre-ICC peak: rayon-parallel over f32 buffer (~2.5 ms)
+- Post-ICC peak: rayon-parallel over f32 buffer (~2.5 ms)
+- HDR f16 peak: **sequential** scan over the half-float buffer (~35 ms)
+
+Fix: gate all three behind `log::log_enabled!(log::Level::Info)` and
+rayon-parallelize the f16 scan to match the f32 ones. When info logging is
+off (production with warnings-only), release builds pay 0 ms. When on,
+~5 ms total.
+
+### "Preload next/prev images" toggle
+
+Settings → General → "Preload next/prev images" (default on). When off,
+`navigation::State::preload_neighbors = false` gates both
+`preloader.request_preload` call sites in `app.rs`, so only the currently
+displayed image consumes decode work. Built specifically so cold-start
+single-image decodes can be benchmarked without background preloads
+skewing the per-stage timings. Not intended for normal use.
+
+### Results summary on sample3.arw (20 MP HDR ARW, M3 Max, release, warm)
+
+| Metric                | Pre-6.4 | Post-6.4 | Δ |
+| --------------------- | ------: | -------: | - |
+| `clarity` stage       |  144 ms |    14 ms | ~10× |
+| `hdr_diag_f16` stage  |   35 ms |   2.3 ms | ~15× |
+| Full decode (warm)    |  650 ms |   293 ms | ~2.2× |
+
+Remaining dominant stages after the pass: `lens` (83 ms, already SIMD),
+`chroma_nr` (49 ms, already SIMD), `dcp` (39 ms), `demosaic` (35 ms,
+inside rawler), `sharpen` (21 ms). See
+`apps/desktop/src/decoding/CLAUDE.md` § "Per-stage timing" for the full
+table and how to read it.

@@ -9,7 +9,7 @@ and the "General" panel (which mixes toggles from several features).
 | `persistence.rs`  | `Settings` struct + JSON load/save (override path via `PRVW_DATA_DIR` env var)      |
 | `window.rs`       | Window creation, `SettingsDelegate`, sidebar, assembles panels from all features    |
 | `widgets.rs`      | `make_setting_row` and `make_wrapping_label` — shared AppKit widget factories       |
-| `panels/general.rs` | General panel: Auto-update + Scroll-to-zoom + Title bar (cross-feature toggles)   |
+| `panels/general.rs` | General panel: Auto-update + Scroll-to-zoom + Preload next/prev images + Title bar (cross-feature toggles) |
 | `panels/raw.rs`   | RAW panel (Phase 3.7 + 5.2 + 6.0 + 6.1 + 6.2): 15 per-stage `RawPipelineFlags` toggles (chroma denoise under its "Denoise" section, the Phase 6.2 "Clarity (local contrast)" row atop the "Detail" section) + 7 NSSliders co-located under their matching toggles (baseline exposure offset under baseline exposure, saturation amount under saturation boost, midtone anchor under default tone curve, sharpening amount under capture sharpening, clarity radius + amount under clarity, Phase 5.2 HDR brightness gain under HDR / EDR output) + custom DCP dir picker + Reset button |
 
 ## Key patterns

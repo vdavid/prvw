@@ -8,7 +8,7 @@ per-pixel bytes for RAW RGBA16F.
 
 | File           | Purpose                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------ |
-| `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size }`      |
+| `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors }` |
 | `directory.rs` | `DirectoryList` — scan parent dir for supported extensions, sort, track current position   |
 | `preloader.rs` | Rayon thread pool + `ImageCache` with LRU eviction (512 MB budget)                         |
 
@@ -28,6 +28,12 @@ field holds `VecDeque<NavigationRecord>` — the type is defined in `crate::diag
 - **Supported extensions are decided by `decoding`** — `DirectoryList` filters via
   `decoding::is_supported_extension`. New format support = one change, two effects
   (decode + list).
+- **Preload can be disabled for benchmarking.** `State.preload_neighbors` (driven
+  by Settings → General → "Preload next/prev images", default on) gates both
+  `preloader.request_preload` call sites in `app.rs`. When off, only the
+  currently-displayed image consumes decode work — intended for single-image
+  cold-start perf measurements where concurrent preloads would skew the
+  per-stage timings logged by `decoding::raw::decode`.
 
 ## Gotchas
 
