@@ -8,9 +8,9 @@ per-pixel bytes for RAW RGBA16F.
 
 | File           | Purpose                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------ |
-| `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current }` |
-| `directory.rs` | `DirectoryList` — scan parent dir for supported extensions, sort, track current position   |
-| `preloader.rs` | Rayon thread pool + `ImageCache` with LRU eviction (512 MB budget)                         |
+| `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline }`; `format_offset` + `format_bytes` + `NAV_DEBOUNCE` helpers |
+| `directory.rs` | `DirectoryList` — scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range`; `go_by(delta)` |
+| `preloader.rs` | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction (512 MB / 1 GB budget)                                           |
 
 ## State
 
@@ -59,9 +59,9 @@ path, which flushes pending first so automated tests see deterministic state.
 - **Direction-aware priority.** `DirectoryList::preload_range` takes a
   `Direction` (forward / backward / unknown) and returns indices ordered by
   likelihood of being viewed next. Forward nav returns `[N+1, N+2, N-1, N-2]`;
-  `navigate` in `app.rs` prepends the current index when it's uncached,
-  submits the full list to `Preloader::request_preload`, and every task goes
-  through `spawn_fifo` so submission order = execution order.
+  `navigate_by` in `app.rs` prepends the current index when it's uncached,
+  submits the full list to `Preloader::request_preload`, and the channel is
+  naturally FIFO so submission order = execution order.
 - **Cancellation.** Preload tasks hold an `Arc<AtomicBool>`; navigation away
   flips the tokens for any indices no longer in the priority list. Tasks
   still wanted keep their existing token and don't restart mid-decode.

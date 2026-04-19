@@ -30,7 +30,7 @@ on setting changes and on `AppCommand::DisplayChanged`.
 
 Display ICC bytes: `CGDisplayCopyColorSpace` (at startup) → `App.display_icc` →
 `Preloader` (as `Arc<Vec<u8>>`) → per-rayon-task closure →
-`decoding::load_image_cancellable` → `color::transform_icc`. On display change,
+`decoding::load_image` → `color::transform_icc`. On display change,
 `AppCommand::DisplayChanged` re-queries, flushes the cache, and re-decodes.
 
 ## Decisions

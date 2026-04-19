@@ -5,7 +5,7 @@ and hand a `DecodedImage` off to the renderer.
 
 | File             | Purpose                                                                          |
 | ---------------- | -------------------------------------------------------------------------------- |
-| `mod.rs`         | Public API: `DecodedImage`, `PixelBuffer` (Phase 5 RGBA8/RGBA16F), `load_image`, `load_image_cancellable`, `is_supported_extension` |
+| `mod.rs`         | Public API: `DecodedImage`, `PixelBuffer` (Phase 5 RGBA8/RGBA16F), `load_image` (always-cancellable), `is_supported_extension` |
 | `dispatch.rs`    | `Backend` enum + extension-to-backend mapping                                    |
 | `jpeg.rs`        | Fast JPEG path via `zune-jpeg` (SIMD)                                            |
 | `raw.rs`         | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)       |
