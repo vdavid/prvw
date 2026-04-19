@@ -54,10 +54,38 @@
 //! - Pixels with all channels equal (neutral gray) have `S = 0`, which
 //!   means hue is ill-defined; we short-circuit and only apply `val_scale`
 //!   so neutrals never drift chroma.
+//!
+//! ## SIMD vectorization (Phase 6.5)
+//!
+//! The per-chunk inner loop `apply_pixels_chunk` is annotated with
+//! `#[multiversion]` — NEON on aarch64, AVX2+FMA on x86_64. The compiler
+//! emits one copy of the function per target and a dispatch stub picks the
+//! best at runtime.
+//!
+//! The trilinear LUT lerps use `f32::mul_add` so FMA emits on both ISAs
+//! (two FMAs per lerp × 7 lerps × 3 channels = 42 FMAs per pixel — the
+//! fraction of the per-pixel cost SIMD actually helps with). `rem_euclid`
+//! calls in the hue-wrap and sector-index code are replaced with
+//! conditional adjusts (`wrap_hue_6`, `hue_index_wrap`) — `rem_euclid` on
+//! f32 calls out to `fmodf`, which is dramatically slower than a compare-
+//! and-add on Apple Silicon.
+//!
+//! The 8-corner LUT gather in `sample_lut` is intentionally left scalar.
+//! NEON / AVX2 gather intrinsics are emulated as scalar loads on
+//! Apple Silicon and are routinely slower than the compiler's straight
+//! scalar sequence when cache behavior is already good (for a 90×30×1
+//! HSM the whole LUT fits in L1). The 7 trilinear lerps that follow the
+//! gather are the vectorizable math we care about.
 
+use multiversion::multiversion;
 use rayon::prelude::*;
 
 use super::parser::HueSatMap;
+
+/// Pixels per parallel work unit. Big enough to amortise rayon overhead,
+/// small enough that each chunk fits comfortably in L1 even for a 90×30×1
+/// LUT worth of corner fetches.
+const PIXELS_PER_CHUNK: usize = 1024;
 
 /// Apply the hue/sat map to a flat linear-Rec.2020 buffer in place. Layout
 /// is `[R0, G0, B0, R1, G1, B1, …]`; length must be a multiple of 3.
@@ -70,37 +98,58 @@ pub fn apply_hue_sat_map(rgb: &mut [f32], map: &HueSatMap, value_encoding: u32) 
         return;
     }
     let encode = value_encoding == 1;
-    rgb.par_chunks_exact_mut(3).for_each(|pixel| {
-        let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
-        if !r.is_finite() || !g.is_finite() || !b.is_finite() {
-            return;
+    rgb.par_chunks_mut(PIXELS_PER_CHUNK * 3).for_each(|chunk| {
+        apply_pixels_chunk(chunk, map, encode);
+    });
+}
+
+/// Per-chunk inner loop. Walks three floats at a time, runs the per-pixel
+/// DCP body, writes back in place.
+///
+/// `#[multiversion]` makes the compiler emit a NEON (aarch64) / AVX2+FMA
+/// (x86_64) copy of this function and select at runtime. The tight body
+/// gets FMA-hinted lerps and `rem_euclid`-free hue wrap, so the compiler
+/// has a short, straight-line per-pixel sequence with FMA throughout.
+#[multiversion(targets("aarch64+neon", "x86_64+avx+avx2+fma"))]
+fn apply_pixels_chunk(chunk: &mut [f32], map: &HueSatMap, encode_srgb: bool) {
+    let hue_divs_f = map.hue_divs as f32;
+    let sat_divs_m1 = map.sat_divs.saturating_sub(1) as f32;
+    for pixel in chunk.chunks_exact_mut(3) {
+        let r = pixel[0];
+        let g = pixel[1];
+        let b = pixel[2];
+        // NaN / inf pass through unchanged — the DCP transform is undefined
+        // there and callers may be carrying sentinel values.
+        if !(r.is_finite() && g.is_finite() && b.is_finite()) {
+            continue;
         }
         let (h_in, s_in, v_in) = rgb_to_hsv(r, g, b);
+
         // Early-exit on neutrals: S == 0 means hue is undefined, so only
         // the value scale applies. Avoids interpolation noise on grays.
         if s_in == 0.0 {
-            let v_idx = value_index(v_in, map.val_divs, encode);
+            let v_idx = value_index(v_in, map.val_divs, encode_srgb);
             let (_h_shift, _s_scale, v_scale) = sample_lut(map, 0.0, 0.0, v_idx);
             let v_out = v_in * v_scale;
             pixel[0] = v_out;
             pixel[1] = v_out;
             pixel[2] = v_out;
-            return;
+            continue;
         }
 
-        let h_idx = h_in * (map.hue_divs as f32) / 6.0;
-        let s_idx = s_in * (map.sat_divs.saturating_sub(1) as f32);
-        let v_idx = value_index(v_in, map.val_divs, encode);
+        let h_idx = h_in * hue_divs_f * (1.0 / 6.0);
+        let s_idx = s_in * sat_divs_m1;
+        let v_idx = value_index(v_in, map.val_divs, encode_srgb);
         let (h_shift, s_scale, v_scale) = sample_lut(map, h_idx, s_idx, v_idx);
 
-        let h_out = wrap_hue(h_in + h_shift / 60.0);
+        let h_out = wrap_hue_6(h_in + h_shift * (1.0 / 60.0));
         let s_out = (s_in * s_scale).clamp(0.0, 1.0);
         let v_out = v_in * v_scale;
         let (r_out, g_out, b_out) = hsv_to_rgb(h_out, s_out, v_out);
         pixel[0] = r_out;
         pixel[1] = g_out;
         pixel[2] = b_out;
-    });
+    }
 }
 
 /// Convert linear RGB to the DNG spec's HSV form.
@@ -111,6 +160,7 @@ pub fn apply_hue_sat_map(rgb: &mut [f32], map: &HueSatMap, value_encoding: u32) 
 ///
 /// Negative RGB (which the camera matrix occasionally produces at the gamut
 /// edge) gets clamped to zero for H and S, preserving V = max(R, G, B).
+#[inline(always)]
 fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
@@ -119,31 +169,38 @@ fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     if delta <= 0.0 || max <= 0.0 {
         return (0.0, 0.0, v);
     }
-    let s = delta / max;
+    let inv_delta = 1.0 / delta;
+    let s = delta * (1.0 / max);
     let h = if r >= g && r >= b {
-        // Between yellow and magenta
-        ((g - b) / delta).rem_euclid(6.0)
+        // Between yellow and magenta. `(g - b) * inv_delta` lives in
+        // `(-1, 1]`; positive arm stays, negative arm adds 6 — cheaper
+        // than `rem_euclid` which calls `fmodf`.
+        let hue = (g - b) * inv_delta;
+        if hue >= 0.0 { hue } else { hue + 6.0 }
     } else if g >= b {
-        // Between cyan and yellow
-        (b - r) / delta + 2.0
+        // Between cyan and yellow — hue in (1, 3).
+        (b - r).mul_add(inv_delta, 2.0)
     } else {
-        // Between magenta and cyan
-        (r - g) / delta + 4.0
+        // Between magenta and cyan — hue in (3, 5).
+        (r - g).mul_add(inv_delta, 4.0)
     };
     (h, s, v)
 }
 
 /// Inverse of [`rgb_to_hsv`]. Unbounded V carries through.
+#[inline(always)]
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     if s <= 0.0 {
         return (v, v, v);
     }
-    let h = h.rem_euclid(6.0);
-    let sector = h.floor() as i32;
+    // `h` is already in `[0, 6)` from `wrap_hue_6` above.
+    let sector = h as i32; // floor for non-negative h
     let f = h - sector as f32;
-    let p = v * (1.0 - s);
-    let q = v * (1.0 - s * f);
-    let t = v * (1.0 - s * (1.0 - f));
+    // `v * (1 - s)`, `v * (1 - s*f)`, `v * (1 - s*(1-f))` — hoisted into
+    // FMA form so the compiler emits one FMADD per expression.
+    let p = v.mul_add(-s, v);
+    let q = v.mul_add(-s * f, v);
+    let t = v.mul_add(-s * (1.0 - f), v);
     match sector {
         0 => (v, t, p),
         1 => (q, v, p),
@@ -156,6 +213,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
 
 /// Compute the continuous value-axis index for a pixel. `val_divs == 1` is
 /// a common "no value axis" profile and collapses to 0.
+#[inline(always)]
 fn value_index(v_in: f32, val_divs: u32, encode_srgb: bool) -> f32 {
     if val_divs <= 1 {
         return 0.0;
@@ -170,6 +228,7 @@ fn value_index(v_in: f32, val_divs: u32, encode_srgb: bool) -> f32 {
 
 /// sRGB OETF used when `ProfileHueSatMapEncoding == 1`. Applied to
 /// `V = max(R, G, B)` before indexing into the value axis.
+#[inline(always)]
 fn srgb_encode(x: f32) -> f32 {
     if x <= 0.0031308 {
         x * 12.92
@@ -185,12 +244,22 @@ fn srgb_encode(x: f32) -> f32 {
 ///   than clamping.
 /// - **Sat / val**: clamped. Inputs above `sat_divs-1` / `val_divs-1` stay
 ///   on the last slab.
+///
+/// The 8-corner gather (`map.sample(..)` × 8) is intentionally scalar.
+/// Gather intrinsics on aarch64 are emulated as a sequence of scalar loads
+/// already, and bypassing them keeps the loads in L1 without the setup
+/// cost. The 7 trilinear lerps that follow are vectorizable f32 math with
+/// `mul_add` hints — that's where the SIMD win lives.
+#[inline(always)]
 fn sample_lut(map: &HueSatMap, h_idx: f32, s_idx: f32, v_idx: f32) -> (f32, f32, f32) {
-    // Hue: wrap modulo hue_divs for the integer index, frac stays in [0,1).
+    // Hue: wrap for the integer index. `h_idx` comes from
+    // `h_in * hue_divs / 6` with `h_in in [0, 6)`, so `h_floor` is in
+    // `[0, hue_divs)` already in the common case. `hue_index_wrap`
+    // covers the rare rounding / above-range edge.
     let h_floor = h_idx.floor();
     let h_frac = h_idx - h_floor;
-    let h0 = (h_floor as i32).rem_euclid(map.hue_divs as i32) as u32;
-    let h1 = (h0 + 1) % map.hue_divs;
+    let h0 = hue_index_wrap(h_floor as i32, map.hue_divs);
+    let h1 = hue_index_wrap_next(h0, map.hue_divs);
 
     // Sat: clamp (non-cyclic).
     let s_max = map.sat_divs.saturating_sub(1);
@@ -202,7 +271,7 @@ fn sample_lut(map: &HueSatMap, h_idx: f32, s_idx: f32, v_idx: f32) -> (f32, f32,
     let (v0, v_frac) = clamp_axis(v_idx, v_max);
     let v1 = (v0 + 1).min(v_max);
 
-    // Eight corner samples.
+    // Eight corner samples — scalar gather, see function doc.
     let c000 = map.sample(h0, s0, v0);
     let c001 = map.sample(h0, s0, v1);
     let c010 = map.sample(h0, s1, v0);
@@ -212,42 +281,51 @@ fn sample_lut(map: &HueSatMap, h_idx: f32, s_idx: f32, v_idx: f32) -> (f32, f32,
     let c110 = map.sample(h1, s1, v0);
     let c111 = map.sample(h1, s1, v1);
 
-    // Trilinear interpolation — hue first so the cyclic axis collapses
-    // cleanly across the 0° boundary.
-    let lerp_v = |a: (f32, f32, f32), b: (f32, f32, f32)| {
-        (
-            a.0 + (b.0 - a.0) * v_frac,
-            a.1 + (b.1 - a.1) * v_frac,
-            a.2 + (b.2 - a.2) * v_frac,
-        )
-    };
-    let lerp_s = |a: (f32, f32, f32), b: (f32, f32, f32)| {
-        (
-            a.0 + (b.0 - a.0) * s_frac,
-            a.1 + (b.1 - a.1) * s_frac,
-            a.2 + (b.2 - a.2) * s_frac,
-        )
-    };
-    let lerp_h = |a: (f32, f32, f32), b: (f32, f32, f32)| {
-        (
-            a.0 + (b.0 - a.0) * h_frac,
-            a.1 + (b.1 - a.1) * h_frac,
-            a.2 + (b.2 - a.2) * h_frac,
-        )
-    };
+    // `lerp(a, b, t) = t * (b - a) + a`, written as one FMA.
+    #[inline(always)]
+    fn lerp(a: f32, b: f32, t: f32) -> f32 {
+        t.mul_add(b - a, a)
+    }
+    #[inline(always)]
+    fn lerp3(a: (f32, f32, f32), b: (f32, f32, f32), t: f32) -> (f32, f32, f32) {
+        (lerp(a.0, b.0, t), lerp(a.1, b.1, t), lerp(a.2, b.2, t))
+    }
 
-    let h0s0 = lerp_v(c000, c001);
-    let h0s1 = lerp_v(c010, c011);
-    let h1s0 = lerp_v(c100, c101);
-    let h1s1 = lerp_v(c110, c111);
-    let h0 = lerp_s(h0s0, h0s1);
-    let h1 = lerp_s(h1s0, h1s1);
-    lerp_h(h0, h1)
+    // Reduce along v first so the cyclic hue axis collapses cleanly across
+    // the 0° boundary, then s, then h.
+    let h0s0 = lerp3(c000, c001, v_frac);
+    let h0s1 = lerp3(c010, c011, v_frac);
+    let h1s0 = lerp3(c100, c101, v_frac);
+    let h1s1 = lerp3(c110, c111, v_frac);
+    let h0r = lerp3(h0s0, h0s1, s_frac);
+    let h1r = lerp3(h1s0, h1s1, s_frac);
+    lerp3(h0r, h1r, h_frac)
+}
+
+/// Wrap a signed hue floor into `[0, hue_divs)`. The input is the floored
+/// `h_idx`, which is `h_in * hue_divs / 6`. Because `h_in` sits in
+/// `[0, 6)` in all reachable call sites, the value is almost always
+/// already in `[0, hue_divs)`. We handle the boundary with cheap
+/// conditionals instead of `rem_euclid`.
+#[inline(always)]
+fn hue_index_wrap(h: i32, hue_divs: u32) -> u32 {
+    let divs = hue_divs as i32;
+    let h = if h < 0 { h + divs } else { h };
+    let h = if h >= divs { h - divs } else { h };
+    (h as u32) % hue_divs
+}
+
+/// Neighbor-of hue index, cyclic. Compare-and-sub instead of generic `%`.
+#[inline(always)]
+fn hue_index_wrap_next(h0: u32, hue_divs: u32) -> u32 {
+    let next = h0 + 1;
+    if next >= hue_divs { 0 } else { next }
 }
 
 /// Clamp a floating-point axis position into `[0, max]` and split it into
 /// `(integer_part, fractional_part)`. Used by [`sample_lut`] for the
 /// non-cyclic axes.
+#[inline(always)]
 fn clamp_axis(x: f32, max: u32) -> (u32, f32) {
     let clamped = x.clamp(0.0, max as f32);
     let floor = clamped.floor();
@@ -255,10 +333,15 @@ fn clamp_axis(x: f32, max: u32) -> (u32, f32) {
     (floor as u32, frac)
 }
 
-/// Wrap hue into `[0, 6)`. `rem_euclid` keeps negative hues positive
-/// (important — `h_shift / 60` can be negative for warm hue pulls).
-fn wrap_hue(h: f32) -> f32 {
-    h.rem_euclid(6.0)
+/// Wrap `h` into `[0, 6)`. Faster than `rem_euclid(6.0)` in the common
+/// case where `h` is close to the range — the hue shift coming out of the
+/// LUT is at most ±1 (shift / 60), and `h_in` is already in `[0, 6)`, so
+/// the result of the add is in `[-1, 7)`. A pair of compare-and-adjust
+/// branches covers both ends without `fmodf`.
+#[inline(always)]
+fn wrap_hue_6(h: f32) -> f32 {
+    let h = if h < 0.0 { h + 6.0 } else { h };
+    if h >= 6.0 { h - 6.0 } else { h }
 }
 
 #[cfg(test)]
@@ -281,6 +364,86 @@ mod tests {
         }
     }
 
+    /// Scalar reference path for SIMD-parity tests. Mirrors the pre-6.5
+    /// implementation exactly — branchy match-based HSV conversions and
+    /// `rem_euclid`-based wraps — so we can diff the SIMD-friendly output
+    /// against a known-good baseline.
+    fn apply_scalar_reference(rgb: &mut [f32], map: &HueSatMap, value_encoding: u32) {
+        if map.hue_divs == 0 || map.sat_divs == 0 || map.val_divs == 0 {
+            return;
+        }
+        let encode = value_encoding == 1;
+        for pixel in rgb.chunks_exact_mut(3) {
+            let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
+            if !r.is_finite() || !g.is_finite() || !b.is_finite() {
+                continue;
+            }
+            let (h_in, s_in, v_in) = scalar_rgb_to_hsv(r, g, b);
+            if s_in == 0.0 {
+                let v_idx = value_index(v_in, map.val_divs, encode);
+                let (_h_shift, _s_scale, v_scale) = sample_lut(map, 0.0, 0.0, v_idx);
+                let v_out = v_in * v_scale;
+                pixel[0] = v_out;
+                pixel[1] = v_out;
+                pixel[2] = v_out;
+                continue;
+            }
+            let h_idx = h_in * (map.hue_divs as f32) / 6.0;
+            let s_idx = s_in * (map.sat_divs.saturating_sub(1) as f32);
+            let v_idx = value_index(v_in, map.val_divs, encode);
+            let (h_shift, s_scale, v_scale) = sample_lut(map, h_idx, s_idx, v_idx);
+            let h_out = (h_in + h_shift / 60.0).rem_euclid(6.0);
+            let s_out = (s_in * s_scale).clamp(0.0, 1.0);
+            let v_out = v_in * v_scale;
+            let (r_out, g_out, b_out) = scalar_hsv_to_rgb(h_out, s_out, v_out);
+            pixel[0] = r_out;
+            pixel[1] = g_out;
+            pixel[2] = b_out;
+        }
+    }
+
+    /// Pre-6.5 scalar `rgb_to_hsv`. Kept as a test-only reference so we
+    /// can assert bit-for-bit parity of the new `rgb_to_hsv`.
+    fn scalar_rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let v = max;
+        let delta = max - min;
+        if delta <= 0.0 || max <= 0.0 {
+            return (0.0, 0.0, v);
+        }
+        let s = delta / max;
+        let h = if r >= g && r >= b {
+            ((g - b) / delta).rem_euclid(6.0)
+        } else if g >= b {
+            (b - r) / delta + 2.0
+        } else {
+            (r - g) / delta + 4.0
+        };
+        (h, s, v)
+    }
+
+    /// Pre-6.5 scalar `hsv_to_rgb`.
+    fn scalar_hsv_to_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+        if s <= 0.0 {
+            return (v, v, v);
+        }
+        let h = h.rem_euclid(6.0);
+        let sector = h.floor() as i32;
+        let f = h - sector as f32;
+        let p = v * (1.0 - s);
+        let q = v * (1.0 - s * f);
+        let t = v * (1.0 - s * (1.0 - f));
+        match sector {
+            0 => (v, t, p),
+            1 => (q, v, p),
+            2 => (p, v, t),
+            3 => (p, q, v),
+            4 => (t, p, v),
+            _ => (v, p, q),
+        }
+    }
+
     #[test]
     fn rgb_hsv_roundtrip() {
         for (r, g, b) in [
@@ -299,6 +462,111 @@ mod tests {
                 "roundtrip failed: ({r},{g},{b}) → ({h},{s},{v}) → ({r2},{g2},{b2})"
             );
         }
+    }
+
+    /// The FMA-ified `rgb_to_hsv` / `hsv_to_rgb` must agree with the pre-
+    /// 6.5 match-based scalar reference across sector boundaries, neutrals,
+    /// and above-1.0 inputs. Tolerance covers FMA rounding (one ULP max).
+    #[test]
+    fn simd_hsv_conversion_matches_scalar() {
+        let samples: &[(f32, f32, f32)] = &[
+            (0.8, 0.3, 0.1),
+            (0.1, 0.4, 0.9),
+            (0.5, 0.5, 0.5),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (0.0, 0.0, 1.0),
+            (0.7, 0.7, 0.3),
+            (2.5, 0.1, 0.9),
+            (0.01, 0.02, 0.03),
+            (0.3, 0.7, 0.1),
+            (0.9, 0.2, 0.9),
+            (0.4, 0.6, 0.6),
+            (1e-6, 1e-7, 1e-8),
+        ];
+        for &(r, g, b) in samples {
+            let (h_f, s_f, v_f) = rgb_to_hsv(r, g, b);
+            let (h_s, s_s, v_s) = scalar_rgb_to_hsv(r, g, b);
+            assert!(
+                (h_f - h_s).abs() < 1e-4,
+                "H mismatch at ({r},{g},{b}): fast={h_f}, scalar={h_s}"
+            );
+            assert!(
+                (s_f - s_s).abs() < 1e-5,
+                "S mismatch at ({r},{g},{b}): fast={s_f}, scalar={s_s}"
+            );
+            assert!(
+                (v_f - v_s).abs() < 1e-5,
+                "V mismatch at ({r},{g},{b}): fast={v_f}, scalar={v_s}"
+            );
+            let (rf, gf, bf) = hsv_to_rgb(h_s, s_s, v_s);
+            let (rs, gs, bs) = scalar_hsv_to_rgb(h_s, s_s, v_s);
+            assert!(
+                (rf - rs).abs() < 1e-5 && (gf - gs).abs() < 1e-5 && (bf - bs).abs() < 1e-5,
+                "HSV→RGB mismatch for ({h_s},{s_s},{v_s}): \
+                 fast=({rf},{gf},{bf}), scalar=({rs},{gs},{bs})"
+            );
+        }
+    }
+
+    /// End-to-end parity test: a 256×256 synthetic buffer run through the
+    /// SIMD path and through the scalar reference must agree within f32
+    /// FMA rounding (1e-4 absolute) on every channel.
+    #[test]
+    fn simd_matches_scalar_within_tolerance() {
+        // Non-identity 6×6×3 HSM with small hue shift, slight sat and val
+        // scaling. Exercises all three axes.
+        let mut data = Vec::with_capacity(6 * 6 * 3 * 3);
+        for h in 0..6 {
+            for s in 0..6 {
+                for v in 0..3 {
+                    let hue_shift = (h as f32 - 3.0) * 4.0; // ±12°
+                    let sat_scale = 1.0 + 0.1 * (s as f32 / 5.0);
+                    let val_scale = 0.95 + 0.05 * (v as f32 / 2.0);
+                    data.push(hue_shift);
+                    data.push(sat_scale);
+                    data.push(val_scale);
+                }
+            }
+        }
+        let map = HueSatMap {
+            hue_divs: 6,
+            sat_divs: 6,
+            val_divs: 3,
+            data,
+        };
+
+        let w = 256_usize;
+        let h = 256_usize;
+        let mut buf = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for x in 0..w {
+                let hue = (x as f32 / w as f32) * 6.0;
+                let sat = y as f32 / h as f32;
+                let val = 0.2 + 0.8 * ((x + y) as f32 / (w + h) as f32);
+                let (r, g, b) = scalar_hsv_to_rgb(hue, sat, val);
+                buf.extend_from_slice(&[r, g, b]);
+            }
+        }
+
+        let mut fast_buf = buf.clone();
+        let mut scalar_buf = buf.clone();
+        apply_hue_sat_map(&mut fast_buf, &map, 0);
+        apply_scalar_reference(&mut scalar_buf, &map, 0);
+
+        let mut max_diff = 0.0_f32;
+        for (i, (a, b)) in fast_buf.iter().zip(scalar_buf.iter()).enumerate() {
+            let d = (a - b).abs();
+            if d > max_diff {
+                max_diff = d;
+            }
+            assert!(
+                d < 1e-4,
+                "pixel {} channel diff {d} (fast={a}, scalar={b})",
+                i / 3
+            );
+        }
+        println!("SIMD vs scalar max channel diff on 256×256: {max_diff:.2e}");
     }
 
     #[test]

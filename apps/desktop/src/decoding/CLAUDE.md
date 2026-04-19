@@ -271,7 +271,7 @@ preloader otherwise warms caches and decode-time drops.
 | `chroma_nr`        |    49.3 | σ=1.5 blur on Cb/Cr (SIMD, 6.1) |
 | `exposure`         |     2.8 | Baseline EV lift |
 | `hl_recovery`      |     2.7 | Highlight recovery |
-| `dcp`              |    38.9 | DCP HueSatMap + LookTable (trilinear 3D LUT) |
+| `dcp`              |    22.5 | DCP HueSatMap + LookTable (trilinear 3D LUT, SIMD 6.5) |
 | `tone`             |     7.7 | Filmic shoulder curve on luminance |
 | `hdr_diag_pre`     |     2.6 | Info-level diagnostic (0.1 ms when info off) |
 | `saturation`       |     2.4 | Global chroma scale |
@@ -281,7 +281,7 @@ preloader otherwise warms caches and decode-time drops.
 | `clarity`          |    14.0 | σ=10 downsample fast path (6.4 — was 144 ms pre-6.4) |
 | `sharpen`          |    21.4 | σ=0.8 luminance-only unsharp |
 | `hdr_diag_f16`     |     2.3 | Info-level diagnostic (0.1 ms when info off) |
-| **total**          | **293** | Warm cache; cold decode ≈ 650 ms |
+| **total**          | **277** | Warm cache; cold decode ≈ 650 ms |
 
 **How to read the table:** numbers are guide-rail order-of-magnitude, not a
 contract. They shift with image resolution, scene content, cache state,

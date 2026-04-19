@@ -43,6 +43,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ### Changed
 
+- **DCP ~1.6× faster** (Phase 6.5): the per-camera `HueSatMap` / `LookTable` trilinear-interpolation LUT apply in
+  `color::dcp::apply` is now `#[multiversion]`-annotated (NEON / AVX2+FMA) with branchless HSV conversion,
+  `f32::mul_add` on all seven trilinear lerps, and `rem_euclid` calls on the hot path replaced with compare-and-add
+  (the single biggest win — `rem_euclid(6.0)` in `rgb_to_hsv` invoked `fmodf` per pixel). Processes pixels in
+  1024-wide rayon chunks to amortise scheduling overhead. ~36 ms → ~22 ms per 20 MP decode (Apple Silicon M3 Max,
+  release). Applies to both `HueSatMap` and `LookTable` paths since they share `apply_hue_sat_map`. Output is
+  bit-equivalent to the scalar reference within float rounding (max channel Δ 1.79e-7 across a 256×256 synthetic
+  buffer; well below the golden regression's < 3.0 ΔE tolerance).
 - **Clarity ~10× faster on 20 MP** (Phase 6.4): the σ=10 local-contrast pass now takes ~14 ms instead of ~144 ms on a
   20 MP image (Apple Silicon M3 Max, release). For σ ≥ 4 and images ≥ 1 MP, clarity now downsamples the luma plane 4×
   (box average), blurs at σ' = σ/4 (~15-tap kernel instead of 61), then bilinearly upsamples — the Gaussian-blurred

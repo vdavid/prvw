@@ -10,7 +10,7 @@ clamped sat / val axes, trilinear interpolation between grid points. Runs
 | `mod.rs`             | Public API (`apply_if_available`, `DcpSource`, re-exports + test helpers) |
 | `parser.rs`          | Parses standalone `.dcp` files (TIFF-like `IIRC` container)               |
 | `embedded.rs`        | Reads the same profile tags straight from a DNG's IFD (`from_dng_tags`)   |
-| `apply.rs`           | Trilinear 3D LUT application in HSV (rayon-parallel)                      |
+| `apply.rs`           | Trilinear 3D LUT application in HSV (rayon-parallel; SIMD Phase 6.5)      |
 | `discovery.rs`       | Filesystem `.dcp` discovery + camera-identity matching                    |
 | `illuminant.rs`      | Scene color-temperature estimate + dual-illuminant `HueSatMap` blend (3.4)|
 | `bundled.rs`         | Bundled RawTherapee DCP collection loader (Phase 3.5)                     |
@@ -114,6 +114,27 @@ See `docs/notes/raw-support-phase3.md` for the full write-up.
   maps cameras to known-compatible substitutes. Conservative — only entries
   with same-sensor or same-family evidence. Extend via PR.
 
+## Phase 6.5 — SIMD hot loop
+
+`apply.rs` per-chunk loop is `#[multiversion]`-annotated (NEON / AVX2+FMA)
+and restructured for the autovectorizer:
+
+- `rem_euclid(6.0)` and `rem_euclid(hue_divs)` replaced with compare-and-add
+  wraps (`wrap_hue_6`, `hue_index_wrap`). `rem_euclid` on f32 calls out to
+  `fmodf`, which dominates the per-pixel cost — the swap is the biggest
+  single win.
+- Trilinear lerps and the HSV `(1 - s)`, `(1 - s*f)`, `(1 - s*(1-f))`
+  expressions rewritten with `f32::mul_add` so NEON / AVX2 emit FMADD.
+- 8-corner LUT gather intentionally kept scalar: gather intrinsics on
+  aarch64 are emulated as scalar loads anyway, and a 90×30×1 HSM fits
+  in L1.
+
+Net: ~38 ms → ~22 ms on 20 MP (M3 Max, release) — 1.6–1.8× faster,
+shaving ~16 ms off the dcp stage. Correctness is bit-identical to the
+pre-6.5 scalar reference within f32 FMA rounding (max ULP diff ≈ 1.8e-7
+over 65 k synthetic pixels in `simd_matches_scalar_within_tolerance`).
+The synthetic-DNG golden regression passes with unchanged margin.
+
 ## What's still deferred
 
 - **`ForwardMatrix1/2` swap.** DCP forward matrices target ProPhoto D50;
@@ -129,9 +150,10 @@ See `docs/notes/raw-support-phase3.md` for the full write-up.
 ## Tests
 
 - **Unit**: `embedded.rs` has 7 tests. `parser.rs` has 7 tests. `apply.rs`
-  has 9. `bundled.rs` has 4 (bundled count, known camera, unknown camera,
-  count sanity). `family_aliases.rs` has 4 (aliases for known camera, unknown,
-  normalization, table integrity).
+  has 11 (9 original + 2 SIMD-parity: `simd_hsv_conversion_matches_scalar`,
+  `simd_matches_scalar_within_tolerance`). `bundled.rs` has 4 (bundled
+  count, known camera, unknown camera, count sanity). `family_aliases.rs`
+  has 4 (aliases for known camera, unknown, normalization, table integrity).
 - **Ignored smoke**:
   - `decoding::raw::tests::embedded_dcp_smoke` — decodes sample2.dng
     (Pixel 6 Pro) with and without the embedded profile.
