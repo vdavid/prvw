@@ -358,7 +358,9 @@ impl Preloader {
     /// Update the display's EDR headroom snapshot used by future decode
     /// tasks. The caller flushes the image cache and re-submits preload
     /// tasks so existing entries (possibly RGBA8-only) don't mix with
-    /// fresh RGBA16F ones.
+    /// fresh RGBA16F ones. Only the macOS `handle_display_changed` path
+    /// calls this today; Linux builds would otherwise trip `dead_code`.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn set_edr_headroom(&mut self, headroom: f32) {
         self.edr_headroom = headroom;
     }

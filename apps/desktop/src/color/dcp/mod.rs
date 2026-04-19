@@ -414,7 +414,11 @@ mod apply_tests {
     }
 }
 
-#[cfg(test)]
+// Gated to macOS because every consumer of these helpers (`discovery`'s
+// env-var test, the `apply` smoke tests) is itself `#[cfg(target_os = "macos")]`
+// to avoid the `srgb_icc_bytes` panic on Linux. Building the helpers on Linux
+// would leave them unreferenced and trip `-D dead_code`.
+#[cfg(all(test, target_os = "macos"))]
 pub(crate) mod tests {
     //! Small test helpers shared by the submodules. Kept here so test-only
     //! code doesn't pollute the public API.
