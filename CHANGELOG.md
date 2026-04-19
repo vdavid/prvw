@@ -6,8 +6,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
 
 ## [Unreleased]
 
+### Changed
+
+- **Navigation is now near-instant in RAW folders.** End-to-end rework of the preloader to route the current image
+  through the background pipeline on a cache miss instead of blocking the main thread, so a fast key press never
+  freezes the UI. The pool switched from a custom rayon pool to a single dedicated `std::thread` worker — rawler's
+  internal `par_iter` inherits the caller's pool, so a 1-thread custom pool was starving rawler's parallel stages
+  (demosaic, chroma_nr, sharpen) of cores. A plain OS thread isn't a rayon worker, so `par_iter` falls back to the
+  global pool and each 20 MP ARW preload now decodes in ~300-450 ms instead of ~2 s. Preload priority is now
+  direction-aware: forward navigation loads `N+1, N+2, N-1, N-2` in that order, backward mirrors, and startup
+  interleaves. In-flight decodes for indices still wanted are no longer restarted across successive `request_preload`
+  calls — they keep their cancellation token and continue from where they left off. A 30 ms debounce coalesces wheel
+  spins: 20 fast clicks collapse into a single `navigate_by(±20)` jump with one decode. Cache entries outside `N±2`
+  get evicted on every navigation (previously they lingered until the LRU budget pushed them out — visible on small
+  JPEGs where 50+ could fit the 512 MB budget). The wgpu `Texture` for the currently-displayed image is now
+  explicitly `destroy()`'d on image swap — fixes a 4 GB+ RSS bloat on long RAW sessions where Metal on unified memory
+  wasn't returning the backing just by replacing the bind group. File I/O moved to an abandonable detached thread
+  with channel-based polling, so a wedged network share (SMB, flaky NFS) can't block the caller — `std::fs::File::read`
+  has no timeout, so the old in-thread cancellation check did nothing until the kernel unblocked the syscall.
+- **Preloader debug logs are now structured and greppable.** Each preload task emits one line on start and one on
+  finish with the file name, position label (`N+1`, `N-2`, ...), 1-based directory position, and total wall time:
+  `Initiated loading 9.jpg (N+1, 10/17)` / `Fully loaded 9.jpg (N+1, 10/17) in 25ms`. Cache evictions log
+  `Evicted 7.jpg (N-3) from memory - 2.5 MB freed (out of window)` or `... (LRU)` depending on the trigger. Enable
+  with `RUST_LOG=prvw::navigation=debug`.
+
 ### Fixed
 
+- **Scrolling through a folder of RAWs no longer stutters when decodes can't keep up.** The old preloader kept
+  submitting low-priority neighbor decodes that shared CPU with the currently-needed image, so pressing right six
+  times at 400 ms intervals pushed the priority-zero decode from ~500 ms to 2-3 s. Navigation now defers the
+  priority-zero render until the decode lands on the main thread via `poll_preloader`, with a clean "Loading…" title
+  in the meantime. Side effect: no more double-decoding of the same image (main thread + rayon) on cache miss.
+- **Lens correction polarity was doubling distortion instead of correcting it** on some lenses. The sign was
+  reversed in `apply_distortion_resample` so barrel correction turned into barrel amplification and pincushion
+  correction turned into pincushion amplification. Fixed; distortion now goes the right way.
 - **HDR / EDR output now actually renders HDR-bright on XDR displays** (Phase 5.2). The original Phase 5.1 path decoded
   RAWs into a half-float buffer but routed them through `moxcms` with a gamma-encoded `kCGColorSpaceExtendedDisplayP3`
   layer, which clipped above-1.0 linear values at ICC-transform time and left the EDR compositor with nothing above
@@ -76,6 +108,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning: [S
   `sample_single_channel_bilinear_fast`, eliminating 2/3 of the redundant channel computation the original
   `sample_rgb_bilinear` calls did. Measured per-row speedup on M-series Apple Silicon: distortion ~1.0×
   (already memory-bandwidth-bound), TCA ~1.6×. Output is bit-identical within f32 FMA rounding tolerance.
+- **Capture sharpening now runs on the HDR RGBA16F path too**, not just the SDR RGBA8 path. Previously HDR decodes
+  skipped the unsharp-mask entirely, so XDR output read slightly softer than SDR output of the same image.
+  `color::sharpen::sharpen_rgba16f_inplace` operates on half-floats in f32 with no [0, 1] clamp so above-white
+  highlights survive the pass.
+- **DCP HueSatMap / ProfileToneCurve are now auto-skipped when the match is fuzzy-alias only** (different sensor,
+  same family). Applying a cross-sensor DCP caused noticeable hue shifts on some cameras — the color science
+  doesn't transfer safely across sensor generations. With this change, the fuzzy-alias path keeps the match for
+  documentation / logging but suppresses the color transform. The `DCP HueSatMap` and `DCP tone curve` flags in
+  Settings → RAW are now two independent toggles so users can opt in to either half when they have evidence the
+  fuzzy alias is safe.
+- **DNG `GainMap` opcode now applies to all channels when `Planes = 1`**, matching Adobe's reference implementation
+  (fixes Phase 3.0's original red-channel-only bug). Also tightens bad-pixel opcode spec compliance — small nits
+  the synthetic-bayer golden regression surfaced.
+- **HDR decode diagnostic logs now include EDR grant confirmation and post-pipeline peak values** so agents /
+  humans can audit "is HDR actually flowing end-to-end" without a debugger. One INFO line per decode spells out
+  whether the OS granted the EDR request and what the peak linear / post-ICC / post-f16 values came out to.
 
 ### Added
 
