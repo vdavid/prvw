@@ -501,7 +501,7 @@ impl App {
                     .collect();
 
                 if !to_preload.is_empty() {
-                    preloader.request_preload(to_preload);
+                    preloader.request_preload(to_preload, current_index, total);
                 }
             } else {
                 log::info!("Preload neighbors disabled — skipping startup preload");
@@ -562,9 +562,13 @@ impl App {
                 if let Some(dir) = &self.navigation.dir_list {
                     let index = dir.current_index();
                     let total = dir.len();
-                    self.navigation
-                        .image_cache
-                        .insert(index, image, duration, filename.clone());
+                    let evicted = self.navigation.image_cache.insert(
+                        index,
+                        image,
+                        duration,
+                        filename.clone(),
+                    );
+                    self.log_evictions(evicted, "LRU");
                     if self.display_from_cache(index) {
                         log::info!("Displayed {filename} ({}/{})", index + 1, total);
                     }
@@ -582,6 +586,29 @@ impl App {
                     win.set_title(&format!("Prvw - {msg}"));
                 }
             }
+        }
+    }
+
+    /// Emit a `Cache evicted ...` debug line for each entry the cache just
+    /// dropped. `reason` is a short tag (`LRU`, `out of window`, ...) that
+    /// goes into the message so the logs are easy to scan.
+    fn log_evictions(&self, evicted: Vec<preloader::EvictedEntry>, reason: &str) {
+        if evicted.is_empty() {
+            return;
+        }
+        let current_index = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.current_index())
+            .unwrap_or(0);
+        for e in evicted {
+            log::debug!(
+                "Evicted {} ({}) from memory - {} freed ({reason})",
+                e.file_name,
+                navigation::format_offset(e.index, current_index),
+                navigation::format_bytes(e.memory_cost),
+            );
         }
     }
 
@@ -805,7 +832,7 @@ impl App {
         if !tasks.is_empty()
             && let Some(preloader) = &mut self.navigation.preloader
         {
-            preloader.request_preload(tasks);
+            preloader.request_preload(tasks, current_index, total);
         }
 
         // Drop cache entries outside the hot window. Keeps RAM bounded even
@@ -818,7 +845,8 @@ impl App {
             let end = (current_index + count + 1).min(total);
             (start..end).collect()
         };
-        self.navigation.image_cache.retain_only(&keep);
+        let evicted = self.navigation.image_cache.retain_only(&keep);
+        self.log_evictions(evicted, "out of window");
 
         self.update_shared_state();
     }
@@ -928,9 +956,13 @@ impl App {
                     if let Some(p) = &mut self.navigation.preloader {
                         p.mark_complete(index);
                     }
-                    self.navigation
-                        .image_cache
-                        .insert(index, image, decode_duration, file_name);
+                    let evicted = self.navigation.image_cache.insert(
+                        index,
+                        image,
+                        decode_duration,
+                        file_name,
+                    );
+                    self.log_evictions(evicted, "LRU");
                     if self.navigation.pending_current == Some(index) {
                         self.navigation.pending_current = None;
                         self.display_from_cache(index);

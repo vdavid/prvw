@@ -15,6 +15,33 @@ use std::time::{Duration, Instant};
 /// enough that a single key press still feels immediate.
 pub const NAV_DEBOUNCE: Duration = Duration::from_millis(30);
 
+/// Format a directory index as its offset from the current image: `"N"`,
+/// `"N+1"`, `"N-2"`, etc. Used in preload / cache-eviction debug logs so
+/// the human reading them doesn't have to do mental arithmetic.
+pub fn format_offset(index: usize, current_index: usize) -> String {
+    let delta = index as i64 - current_index as i64;
+    if delta == 0 {
+        "N".to_string()
+    } else if delta > 0 {
+        format!("N+{delta}")
+    } else {
+        // `delta` is already negative, so `{delta}` formats with a sign.
+        format!("N{delta}")
+    }
+}
+
+/// Format a byte count as `"1.2 MB"` or `"42.5 KB"`. Used by cache eviction
+/// debug logs.
+pub fn format_bytes(bytes: usize) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else {
+        format!("{:.1} KB", b / 1024.0)
+    }
+}
+
 /// Per-feature runtime state owned by `App`.
 pub struct State {
     pub dir_list: Option<directory::DirectoryList>,

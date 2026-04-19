@@ -81,6 +81,16 @@ pub struct CacheEntryDiagnostic {
     pub decode_duration: Duration,
 }
 
+/// An image that just got removed from the cache. Returned from
+/// `ImageCache::insert` / `retain_only` / `set_hdr_mode` so the caller can
+/// log it with context (relative offset, reason) that the cache doesn't
+/// have.
+pub struct EvictedEntry {
+    pub index: usize,
+    pub file_name: String,
+    pub memory_cost: usize,
+}
+
 impl ImageCache {
     pub fn new() -> Self {
         Self {
@@ -127,20 +137,23 @@ impl ImageCache {
         }
     }
 
-    /// Insert a decoded image into the cache, evicting LRU entries if over budget.
+    /// Insert a decoded image into the cache, evicting LRU entries if over
+    /// budget. Returns any entries the LRU logic had to drop so the caller
+    /// can log them (the cache doesn't know the current image index, which
+    /// is what makes a log line readable).
     pub fn insert(
         &mut self,
         index: usize,
         image: DecodedImage,
         decode_duration: Duration,
         file_name: String,
-    ) {
+    ) -> Vec<EvictedEntry> {
         let cost = image_memory_cost(&image);
 
         // If this single image exceeds the budget, don't cache it
         if cost > self.memory_budget {
             log::warn!("Image at index {index} ({cost} bytes) exceeds cache budget, not caching");
-            return;
+            return Vec::new();
         }
 
         // Remove existing entry if present
@@ -148,25 +161,16 @@ impl ImageCache {
             self.remove(index);
         }
 
-        // Evict until there's room
+        let mut evicted = Vec::new();
         while self.memory_used + cost > self.memory_budget && !self.access_order.is_empty() {
             let evict_index = self.access_order[0];
-            if let Some(entry) = self.entries.get(&evict_index) {
-                log::debug!(
-                    "Cache evicted [{evict_index}] {} ({}), freeing {}",
-                    entry.file_name,
-                    format_cache_bytes(entry.memory_cost),
-                    format_cache_bytes(entry.memory_cost)
-                );
+            if let Some(e) = self.take_evicted(evict_index) {
+                evicted.push(e);
+            } else {
+                // Stale entry in `access_order` — defensive break to avoid a loop.
+                self.access_order.remove(0);
             }
-            self.remove(evict_index);
         }
-
-        log::debug!(
-            "Cache insert [{index}] {file_name} ({}), total: {}",
-            format_cache_bytes(cost),
-            format_cache_bytes(self.memory_used + cost)
-        );
 
         self.entries.insert(
             index,
@@ -179,6 +183,7 @@ impl ImageCache {
         );
         self.access_order.push(index);
         self.memory_used += cost;
+        evicted
     }
 
     /// Return diagnostics snapshot of the cache.
@@ -210,23 +215,33 @@ impl ImageCache {
     /// Remove entries outside the hot window around the current position.
     /// Called on every navigation so distant images release their RAM
     /// promptly instead of sitting until the LRU budget pushes them out.
-    pub fn retain_only(&mut self, keep: &[usize]) {
+    /// Returns the entries that were dropped so the caller can log them.
+    pub fn retain_only(&mut self, keep: &[usize]) -> Vec<EvictedEntry> {
         let to_remove: Vec<usize> = self
             .entries
             .keys()
             .filter(|k| !keep.contains(k))
             .copied()
             .collect();
+        let mut evicted = Vec::with_capacity(to_remove.len());
         for index in to_remove {
-            if let Some(entry) = self.entries.get(&index) {
-                log::debug!(
-                    "Cache evict (out of window) [{index}] {} ({})",
-                    entry.file_name,
-                    format_cache_bytes(entry.memory_cost)
-                );
+            if let Some(e) = self.take_evicted(index) {
+                evicted.push(e);
             }
-            self.remove(index);
         }
+        evicted
+    }
+
+    /// Remove `index` and return its metadata as an `EvictedEntry`.
+    fn take_evicted(&mut self, index: usize) -> Option<EvictedEntry> {
+        let entry = self.entries.remove(&index)?;
+        self.memory_used = self.memory_used.saturating_sub(entry.memory_cost);
+        self.access_order.retain(|&i| i != index);
+        Some(EvictedEntry {
+            index,
+            file_name: entry.file_name,
+            memory_cost: entry.memory_cost,
+        })
     }
 
     /// Remove all entries from the cache (for example, after a display profile change).
@@ -268,17 +283,6 @@ fn image_memory_cost(image: &DecodedImage) -> usize {
     // is 4 bytes per pixel (every non-RAW format + SDR RAW); RGBA16F is 8
     // bytes per pixel (HDR RAW output).
     image.width as usize * image.height as usize * image.pixels.bytes_per_pixel()
-}
-
-/// Format a byte count compactly for cache log messages.
-fn format_cache_bytes(bytes: usize) -> String {
-    const MB: f64 = 1024.0 * 1024.0;
-    let b = bytes as f64;
-    if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else {
-        format!("{:.1} KB", b / 1024.0)
-    }
 }
 
 /// Parallel image preloader backed by a rayon thread pool.
@@ -366,7 +370,12 @@ impl Preloader {
     /// cancelled and NOT resubmitted — their decode continues from wherever
     /// it was. Only indices that disappear from the list get their
     /// cancellation token flipped.
-    pub fn request_preload(&mut self, tasks: Vec<(usize, PathBuf)>) {
+    pub fn request_preload(
+        &mut self,
+        tasks: Vec<(usize, PathBuf)>,
+        current_index: usize,
+        total: usize,
+    ) {
         let requested: std::collections::HashSet<usize> = tasks.iter().map(|(i, _)| *i).collect();
 
         // Cancel tokens for indices no longer wanted.
@@ -396,6 +405,11 @@ impl Preloader {
             let cancelled = Arc::new(AtomicBool::new(false));
             self.in_flight.insert(index, Arc::clone(&cancelled));
 
+            // Human-readable labels captured at submit time so the logs read
+            // consistently even if the user navigates mid-decode.
+            let offset_label = crate::navigation::format_offset(index, current_index);
+            let position_label = format!("{}/{}", index + 1, total);
+
             let tx = self.response_tx.clone();
             let display_icc = Arc::clone(&self.display_icc);
             let use_relative_colorimetric = self.use_relative_colorimetric;
@@ -407,6 +421,7 @@ impl Preloader {
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
+                log::debug!("Initiated loading {file_name} ({offset_label}, {position_label})");
                 let start = Instant::now();
                 match decoding::load_image(
                     &path,
@@ -419,7 +434,7 @@ impl Preloader {
                     Ok(image) => {
                         let duration = start.elapsed();
                         log::debug!(
-                            "Preloaded [{index}] {file_name} in {}ms",
+                            "Fully loaded {file_name} ({offset_label}, {position_label}) in {}ms",
                             duration.as_millis()
                         );
                         let _ = tx.send(PreloadResponse::Ready {
@@ -430,11 +445,15 @@ impl Preloader {
                         });
                     }
                     Err(reason) if reason == "cancelled" => {
-                        log::debug!("Preload cancelled for [{index}] {file_name}");
+                        log::debug!(
+                            "Cancelled loading {file_name} ({offset_label}, {position_label})"
+                        );
                         let _ = tx.send(PreloadResponse::Cancelled { index });
                     }
                     Err(reason) => {
-                        log::warn!("Preload failed for [{index}] {}: {reason}", path.display());
+                        log::warn!(
+                            "Failed to load {file_name} ({offset_label}, {position_label}): {reason}"
+                        );
                         let _ = tx.send(PreloadResponse::Failed {
                             index,
                             path,
