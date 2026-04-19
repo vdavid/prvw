@@ -36,6 +36,12 @@ pub fn send_command(command: AppCommand) -> bool {
 /// Commands that drive all app behavior. Keyboard, mouse, menu, QA server, and MCP all
 /// map their inputs to these commands. `App::execute_command` is the single place where
 /// each command's effect is implemented.
+///
+/// On non-macOS builds, the Settings window (AppKit-gated) never dispatches
+/// `SetPreloadNeighbors` / `SetRawPipelineFlags` / `SetCustomDcpDir`. Silence
+/// the resulting "variant never constructed" clippy warning here rather than
+/// peppering `#[cfg]`s across the enum.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub enum AppCommand {
     // ── Navigation ───────────────────────────────────────────────────
     /// Navigate forward (true) or backward (false), immediately. Used by

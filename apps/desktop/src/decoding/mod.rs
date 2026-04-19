@@ -41,9 +41,13 @@ use std::time::Instant;
 use dispatch::Backend;
 use orientation::{apply_orientation_bytes, parse_exif_orientation};
 
+pub use raw_flags::RawPipelineFlags;
+// Range constants are re-exported for the Settings → RAW panel, which is
+// currently macOS-only. Silence the Linux unused-import warning.
+#[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
 pub use raw_flags::{
     BASELINE_EXPOSURE_OFFSET_RANGE, CLARITY_AMOUNT_RANGE, CLARITY_RADIUS_RANGE, HDR_GAIN_RANGE,
-    MIDTONE_ANCHOR_RANGE, RawPipelineFlags, SATURATION_BOOST_RANGE, SHARPEN_AMOUNT_RANGE,
+    MIDTONE_ANCHOR_RANGE, SATURATION_BOOST_RANGE, SHARPEN_AMOUNT_RANGE,
 };
 
 /// Pixel-buffer variants. `Rgba8` is `[r, g, b, a, r, g, b, a, …]` in sRGB

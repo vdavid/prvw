@@ -2366,7 +2366,7 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 [[package]]
 name = "lensfun"
 version = "0.1.0-alpha.1"
-source = "git+https://github.com/vdavid/lensfun-rs?rev=d63f6d849b0a1bf3627104fe6df63c8fb4114651#d63f6d849b0a1bf3627104fe6df63c8fb4114651"
+source = "git+https://github.com/vdavid/lensfun-rs?rev=ae65ed6#ae65ed62bc3f73dc209b6d7194beb5e98e4d574a"
 dependencies = [
  "flate2",
  "regex",
