@@ -786,6 +786,18 @@ impl App {
             preloader.request_preload(tasks);
         }
 
+        // Drop cache entries outside the hot window. Keeps RAM bounded even
+        // when the LRU budget isn't hit (e.g. lots of small JPEGs). The
+        // window is current ± PRELOAD_AHEAD on both sides regardless of
+        // travel direction — the user can reverse at any time.
+        let count = preloader::preload_count();
+        let keep: Vec<usize> = {
+            let start = current_index.saturating_sub(count);
+            let end = (current_index + count + 1).min(total);
+            (start..end).collect()
+        };
+        self.navigation.image_cache.retain_only(&keep);
+
         self.update_shared_state();
     }
 

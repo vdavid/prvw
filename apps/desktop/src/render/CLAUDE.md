@@ -24,6 +24,11 @@ owns `ViewState`) plug transforms into the renderer's uniform buffer via
 
 ## Gotchas
 
+- **Image texture must be explicitly destroyed on replace.** `set_image` holds
+  the previous `wgpu::Texture` in `Renderer.image_texture` and calls
+  `texture.destroy()` before allocating the new one. Without this, Metal keeps
+  the old unified-memory backing resident — a long navigation session through
+  20 MP RAWs can grow RSS by gigabytes even though `bind_group` was replaced.
 - **Screenshot path differs from main render.** `capture_screenshot` strips the
   viewport offset, pills, and text. Pixel tests of the live window's appearance need
   a different approach.

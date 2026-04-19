@@ -39,6 +39,11 @@ pub struct Renderer {
     overlay_pipeline_layout: wgpu::PipelineLayout,
     render_pipeline: wgpu::RenderPipeline,
     bind_group: Option<wgpu::BindGroup>,
+    /// The GPU texture backing the currently displayed image. Stored so we
+    /// can call `Texture::destroy()` when a new image loads — on macOS
+    /// (unified memory) the old texture's backing stays resident until
+    /// explicitly destroyed, which bloats RSS over a long session.
+    image_texture: Option<wgpu::Texture>,
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
@@ -368,6 +373,7 @@ impl Renderer {
             overlay_pipeline_layout,
             render_pipeline,
             bind_group: None,
+            image_texture: None,
             bind_group_layout,
             uniform_buffer,
             sampler,
@@ -453,6 +459,16 @@ impl Renderer {
     /// quantise at the final blend — the wide-gamut cache still pays off
     /// for the tone-curve and ICC-transform stages upstream.
     pub fn set_image(&mut self, image: &DecodedImage) {
+        // Drop the bind group first (releases its TextureView ref) and then
+        // explicitly destroy the previous image texture so its GPU / unified-
+        // memory backing returns to the OS. Without this, Metal keeps the
+        // old texture resident and long sessions balloon RSS by ~80 MB per
+        // 20 MP image flipped through.
+        self.bind_group = None;
+        if let Some(old) = self.image_texture.take() {
+            old.destroy();
+        }
+
         let texture_size = wgpu::Extent3d {
             width: image.width,
             height: image.height,
@@ -514,6 +530,7 @@ impl Renderer {
                 },
             ],
         }));
+        self.image_texture = Some(texture);
     }
 
     /// Update the transform uniform buffer with the current view state.

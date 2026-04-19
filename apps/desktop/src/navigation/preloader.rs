@@ -207,8 +207,9 @@ impl ImageCache {
         self.entries.contains_key(&index)
     }
 
-    /// Remove entries not in the given set of indices (cleanup after navigation).
-    #[allow(dead_code)] // Part of cache API, used as the image set grows
+    /// Remove entries outside the hot window around the current position.
+    /// Called on every navigation so distant images release their RAM
+    /// promptly instead of sitting until the LRU budget pushes them out.
     pub fn retain_only(&mut self, keep: &[usize]) {
         let to_remove: Vec<usize> = self
             .entries
@@ -217,6 +218,13 @@ impl ImageCache {
             .copied()
             .collect();
         for index in to_remove {
+            if let Some(entry) = self.entries.get(&index) {
+                log::debug!(
+                    "Cache evict (out of window) [{index}] {} ({})",
+                    entry.file_name,
+                    format_cache_bytes(entry.memory_cost)
+                );
+            }
             self.remove(index);
         }
     }
