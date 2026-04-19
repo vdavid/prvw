@@ -11,17 +11,18 @@
 //! - **`image` crate for everything else non-RAW** — mature, covers the rest.
 //! - **`rawler` for RAW** — runs its built-in develop pipeline (demosaic, white balance,
 //!   color matrix, sRGB gamma) in one call, parallelised via rayon.
-//! - **Cancellation.** `load_image_cancellable` takes an `AtomicBool` — checked at format
+//! - **Cancellation.** `load_image` takes an `AtomicBool` — checked at format
 //!   entry and between decode stages. The preloader uses this so navigating away aborts
-//!   in-flight work before it finishes a wasted decode.
+//!   in-flight work before it finishes a wasted decode. Callers that don't need
+//!   cancellation (startup, settings refresh) pass a fresh `&AtomicBool::new(false)`.
 //!
 //! ## Public API
 //!
 //! - [`DecodedImage`] — pixel buffer plus dimensions, ready for GPU upload.
 //!   Pixels are either RGBA8 (every non-RAW format, plus SDR RAW output) or
 //!   RGBA16F (RAW output when HDR is active and the display can display it).
-//! - [`load_image`] / [`load_image_cancellable`] — decode a file to `DecodedImage`,
-//!   color-managed to a target ICC profile, with EXIF orientation applied.
+//! - [`load_image`] — decode a file to `DecodedImage`, color-managed to a target
+//!   ICC profile, with EXIF orientation applied. Always cancellable.
 //! - [`is_supported_extension`] — format gate used by the directory scanner.
 
 mod dispatch;
@@ -116,47 +117,16 @@ impl DecodedImage {
 /// orientation correction automatically. Images without an embedded ICC
 /// profile are assumed sRGB and transformed to `target_icc`.
 ///
+/// `cancelled` is the cancellation flag, checked while reading the file
+/// (every 64 KB) and between decode stages. Pass `&AtomicBool::new(false)`
+/// if you don't need cancellation.
+///
 /// `edr_headroom` is the peak-white headroom the display can show (use
 /// [`crate::color::display_profile::current_edr_headroom`] on macOS). `1.0`
 /// means "SDR only — clip highlights at display-white". Anything above
 /// `1.0` combined with `raw_flags.hdr_output == true` triggers the
 /// `RGBA16F` output path for RAW files.
 pub fn load_image(
-    path: &Path,
-    target_icc: &[u8],
-    use_relative_colorimetric: bool,
-    raw_flags: RawPipelineFlags,
-    edr_headroom: f32,
-) -> Result<DecodedImage, String> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-
-    log::debug!("Loading {}", path.display());
-    let start = Instant::now();
-
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("Couldn't read {}: {e}", path.display()))?;
-
-    let backend = dispatch::pick_backend(ext);
-    let result = decode_with(
-        backend,
-        path,
-        filename,
-        bytes,
-        None,
-        target_icc,
-        use_relative_colorimetric,
-        raw_flags,
-        edr_headroom,
-    );
-
-    log_result(&result, ext, backend, path, start);
-    result
-}
-
-/// Decode an image file, with cancellation support. See [`load_image`] for
-/// the `edr_headroom` contract.
-pub fn load_image_cancellable(
     path: &Path,
     cancelled: &AtomicBool,
     target_icc: &[u8],
@@ -167,7 +137,7 @@ pub fn load_image_cancellable(
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
-    log::debug!("Loading (cancellable) {}", path.display());
+    log::debug!("Loading {}", path.display());
     let start = Instant::now();
 
     let bytes = read_file_cancellable(path, cancelled)?;
@@ -366,21 +336,22 @@ mod tests {
             };
             let flags_on = RawPipelineFlags::default();
 
+            let noop = AtomicBool::new(false);
             // One warm-up pass each.
-            let _ = load_image(path, &target, false, flags_off, 1.0);
-            let _ = load_image(path, &target, false, flags_on, 1.0);
+            let _ = load_image(path, &noop, &target, false, flags_off, 1.0);
+            let _ = load_image(path, &noop, &target, false, flags_on, 1.0);
 
             let iters = 3;
             let mut off_ms: u128 = 0;
             for _ in 0..iters {
                 let t = Instant::now();
-                let _ = load_image(path, &target, false, flags_off, 1.0).unwrap();
+                let _ = load_image(path, &noop, &target, false, flags_off, 1.0).unwrap();
                 off_ms += t.elapsed().as_millis();
             }
             let mut on_ms: u128 = 0;
             for _ in 0..iters {
                 let t = Instant::now();
-                let _ = load_image(path, &target, false, flags_on, 1.0).unwrap();
+                let _ = load_image(path, &noop, &target, false, flags_on, 1.0).unwrap();
                 on_ms += t.elapsed().as_millis();
             }
             println!(
@@ -402,6 +373,7 @@ mod tests {
         let path = Path::new("/tmp/raw/sample1.arw");
         let img = load_image(
             path,
+            &AtomicBool::new(false),
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),
@@ -420,6 +392,7 @@ mod tests {
         let path = Path::new("/tmp/raw/sample2.dng");
         let img = load_image(
             path,
+            &AtomicBool::new(false),
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),
@@ -450,6 +423,7 @@ mod tests {
 
         let img = load_image(
             &raw_path,
+            &AtomicBool::new(false),
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),

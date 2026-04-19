@@ -22,6 +22,13 @@ pub struct State {
     /// benchmarking single-image cold-start times. Driven by
     /// Settings → General → "Preload next/prev images".
     pub preload_neighbors: bool,
+    /// Index of the image we're waiting on the preloader to finish, if any.
+    /// Set when `navigate` hits a cache miss and submits the target index as
+    /// the priority-zero preload task. Cleared when either a `Ready` arrives
+    /// for that index (which also triggers the render) or the user navigates
+    /// again (pointing us at a different target). While `Some`, the window
+    /// title shows "Loading…".
+    pub pending_current: Option<usize>,
 }
 
 impl State {
@@ -33,6 +40,7 @@ impl State {
             history: VecDeque::with_capacity(10),
             current_image_size: None,
             preload_neighbors: true,
+            pending_current: None,
         }
     }
 

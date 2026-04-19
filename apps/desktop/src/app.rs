@@ -526,68 +526,52 @@ impl App {
         self.request_redraw();
     }
 
-    /// Load and display an image, updating the renderer and view state.
+    /// Synchronously decode an image and render it. Caches the result under
+    /// the dir_list's current index so later navigation hits the cache. Used
+    /// by startup, settings re-decode, and `Refresh` — blocking the main
+    /// thread is acceptable for these user-initiated paths. Navigation goes
+    /// through the preloader instead (see `navigate`).
     fn display_image(&mut self, path: &Path) {
         if self.renderer.is_none() {
             return;
         }
 
-        let filename = path.file_name().unwrap_or_default().to_string_lossy();
+        let filename = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
-        match decoding::load_image(
+        let start = Instant::now();
+        let result = decoding::load_image(
             path,
+            &std::sync::atomic::AtomicBool::new(false),
             &self.color.display_icc,
             self.color.relative_col,
             self.raw_flags,
             self.edr_headroom,
-        ) {
+        );
+
+        match result {
             Ok(image) => {
-                self.navigation.current_image_size = Some((image.width, image.height));
-                self.current_image_is_hdr = image.pixels.is_hdr();
-                let offset = self.content_offset_y();
-
-                // Flip the wgpu surface + CAMetalLayer between SDR and EDR
-                // based on this image's pixel buffer variant. Must run
-                // before `renderer.set_image` so the image-quad pipeline is
-                // valid when we draw next.
-                self.apply_edr_surface_state();
-
-                let renderer = self.renderer.as_mut().unwrap();
-
-                // Resize window to match image (if enabled and not fullscreen).
-                // Use the returned physical size directly — request_inner_size is async,
-                // so window.inner_size() would still return the OLD size.
-                if self.zoom.auto_fit
-                    && let Some(win) = &self.window
-                    && let Some(size) =
-                        window::resize_to_fit_image(win, image.width, image.height, offset)
-                {
-                    let (pw, ph) = from_physical_size(size);
-                    renderer.resize(pw, ph);
-                }
-
-                self.zoom.view.update_dimensions(
-                    image.width,
-                    image.height,
-                    renderer.logical_width(),
-                    renderer.logical_height(),
-                );
-                renderer.set_image(&image);
-                // Drop the renderer borrow before apply_initial_zoom (which borrows &mut self)
-                self.apply_initial_zoom();
-                self.renderer
-                    .as_ref()
-                    .unwrap()
-                    .update_transform(&self.zoom.view.transform());
-                self.request_redraw();
+                let duration = start.elapsed();
+                // We cleared whatever we were waiting on; this path replaces it.
+                self.navigation.pending_current = None;
 
                 if let Some(dir) = &self.navigation.dir_list {
-                    log::info!(
-                        "Displayed {filename} ({}/{})",
-                        dir.current_index() + 1,
-                        dir.len()
-                    );
+                    let index = dir.current_index();
+                    let total = dir.len();
+                    self.navigation
+                        .image_cache
+                        .insert(index, image, duration, filename.clone());
+                    if self.display_from_cache(index) {
+                        log::info!("Displayed {filename} ({}/{})", index + 1, total);
+                    }
                 } else {
+                    // Shouldn't happen in practice — every call site sets up
+                    // dir_list first — but fall back to a direct render so
+                    // the app keeps working.
+                    self.display_decoded_direct(&image);
                     log::info!("Displayed {filename}");
                 }
             }
@@ -600,72 +584,93 @@ impl App {
         }
     }
 
-    /// Display an image from the cache or load it fresh.
-    fn display_cached_or_load(
-        &mut self,
-        index: usize,
-        path: PathBuf,
-        current_index: usize,
-        total: usize,
-    ) {
+    /// Render an image from the cache at `index`. Returns true when the image
+    /// was present and rendered; false on cache miss. Touches LRU order.
+    fn display_from_cache(&mut self, index: usize) -> bool {
         if self.renderer.is_none() {
-            return;
+            return false;
         }
 
         let offset = self.content_offset_y();
         // First pass: inspect the cached image enough to reconfigure the
         // surface (can't hold an `image_cache` borrow while calling
         // `apply_edr_surface_state`, which needs `&mut self`).
-        let cached_meta = self
+        let Some((iw, ih, is_hdr)) = self
             .navigation
             .image_cache
             .get(index)
-            .map(|img| (img.width, img.height, img.pixels.is_hdr()));
+            .map(|img| (img.width, img.height, img.pixels.is_hdr()))
+        else {
+            return false;
+        };
 
-        if let Some((iw, ih, is_hdr)) = cached_meta {
-            self.navigation.current_image_size = Some((iw, ih));
-            self.current_image_is_hdr = is_hdr;
+        self.navigation.current_image_size = Some((iw, ih));
+        self.current_image_is_hdr = is_hdr;
 
-            // Surface state may need to flip because we navigated to (or
-            // from) an HDR decode cached earlier. See `apply_edr_surface_state`.
-            self.apply_edr_surface_state();
+        // Surface state may need to flip because we navigated to (or from)
+        // an HDR decode cached earlier. See `apply_edr_surface_state`.
+        self.apply_edr_surface_state();
 
-            // Second pass: grab the image reference for upload.
-            let image = self
-                .navigation
-                .image_cache
-                .get(index)
-                .expect("image was present a moment ago");
+        // Second pass: grab the image reference for upload.
+        let image = self
+            .navigation
+            .image_cache
+            .get(index)
+            .expect("image was present a moment ago");
+        let renderer = self.renderer.as_mut().unwrap();
 
-            let renderer = self.renderer.as_mut().unwrap();
-
-            if self.zoom.auto_fit
-                && let Some(win) = &self.window
-                && let Some(size) = window::resize_to_fit_image(win, iw, ih, offset)
-            {
-                let (pw, ph) = from_physical_size(size);
-                renderer.resize(pw, ph);
-            }
-
-            self.zoom.view.update_dimensions(
-                iw,
-                ih,
-                renderer.logical_width(),
-                renderer.logical_height(),
-            );
-            renderer.set_image(image);
-            self.apply_initial_zoom();
-            self.renderer
-                .as_ref()
-                .unwrap()
-                .update_transform(&self.zoom.view.transform());
-            self.request_redraw();
-        } else {
-            if let Some(win) = &self.window {
-                win.set_title(&window::window_title_loading(current_index, total));
-            }
-            self.display_image(&path);
+        if self.zoom.auto_fit
+            && let Some(win) = &self.window
+            && let Some(size) = window::resize_to_fit_image(win, iw, ih, offset)
+        {
+            let (pw, ph) = from_physical_size(size);
+            renderer.resize(pw, ph);
         }
+
+        self.zoom.view.update_dimensions(
+            iw,
+            ih,
+            renderer.logical_width(),
+            renderer.logical_height(),
+        );
+        renderer.set_image(image);
+        self.apply_initial_zoom();
+        self.renderer
+            .as_ref()
+            .unwrap()
+            .update_transform(&self.zoom.view.transform());
+        self.request_redraw();
+        true
+    }
+
+    /// Fallback render for the (rare) case where `display_image` succeeds
+    /// without a dir_list — nothing to cache into, so upload directly.
+    fn display_decoded_direct(&mut self, image: &decoding::DecodedImage) {
+        self.navigation.current_image_size = Some((image.width, image.height));
+        self.current_image_is_hdr = image.pixels.is_hdr();
+        let offset = self.content_offset_y();
+        self.apply_edr_surface_state();
+        let renderer = self.renderer.as_mut().unwrap();
+        if self.zoom.auto_fit
+            && let Some(win) = &self.window
+            && let Some(size) = window::resize_to_fit_image(win, image.width, image.height, offset)
+        {
+            let (pw, ph) = from_physical_size(size);
+            renderer.resize(pw, ph);
+        }
+        self.zoom.view.update_dimensions(
+            image.width,
+            image.height,
+            renderer.logical_width(),
+            renderer.logical_height(),
+        );
+        renderer.set_image(image);
+        self.apply_initial_zoom();
+        self.renderer
+            .as_ref()
+            .unwrap()
+            .update_transform(&self.zoom.view.transform());
+        self.request_redraw();
     }
 
     fn navigate(&mut self, forward: bool) {
@@ -709,17 +714,25 @@ impl App {
         let cached_str = if was_cached { "yes" } else { "no" };
         log::debug!("Navigate {direction}: {from_index} -> {current_index} (cached: {cached_str})");
 
-        // Update window title
-        if let Some(win) = &self.window {
-            win.set_title(&window::window_title_with_position(
-                &current_path,
-                current_index,
-                total,
-            ));
+        if was_cached {
+            // Cached — render immediately and clear any pending target.
+            self.navigation.pending_current = None;
+            if let Some(win) = &self.window {
+                win.set_title(&window::window_title_with_position(
+                    &current_path,
+                    current_index,
+                    total,
+                ));
+            }
+            self.display_from_cache(current_index);
+        } else {
+            // Cache miss — show "Loading…" title and mark pending.
+            // The render happens in `poll_preloader` when `Ready` arrives.
+            self.navigation.pending_current = Some(current_index);
+            if let Some(win) = &self.window {
+                win.set_title(&window::window_title_loading(current_index, total));
+            }
         }
-
-        // Display the current image
-        self.display_cached_or_load(current_index, current_path, current_index, total);
 
         // Record navigation timing
         let total_time = nav_start.elapsed();
@@ -734,21 +747,34 @@ impl App {
             timestamp: Instant::now(),
         });
 
-        // Cancel stale preload tasks and submit fresh ones for adjacent images.
-        // When `preload_neighbors` is off, skip the submission entirely so only
-        // the currently displayed image consumes decode work.
+        // Submit preload tasks. When the current image wasn't cached, it
+        // goes first as the priority-zero FIFO task so the preloader decodes
+        // it ahead of neighbors. Neighbor submission is gated on the
+        // `preload_neighbors` setting; the current image is always submitted
+        // when missing so navigation doesn't stall.
+        let mut tasks: Vec<(usize, PathBuf)> = Vec::new();
+        if !was_cached {
+            tasks.push((current_index, current_path));
+        }
         if self.navigation.preload_neighbors
             && let Some(dir) = &self.navigation.dir_list
         {
-            let to_preload: Vec<(usize, PathBuf)> = preload_indices
-                .iter()
-                .filter(|&&i| !self.navigation.image_cache.contains(i))
-                .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
-                .collect();
-
-            if let Some(preloader) = &mut self.navigation.preloader {
-                preloader.request_preload(to_preload);
+            for i in preload_indices {
+                if i == current_index {
+                    continue;
+                }
+                if self.navigation.image_cache.contains(i) {
+                    continue;
+                }
+                if let Some(p) = dir.get(i) {
+                    tasks.push((i, p.to_path_buf()));
+                }
             }
+        }
+        if !tasks.is_empty()
+            && let Some(preloader) = &mut self.navigation.preloader
+        {
+            preloader.request_preload(tasks);
         }
 
         self.update_shared_state();
@@ -835,12 +861,20 @@ impl App {
         ]
     }
 
-    /// Drain preloader responses and cache the results.
+    /// Drain preloader responses, cache the results, and if the pending
+    /// navigation target just arrived, render it immediately.
     fn poll_preloader(&mut self) {
-        let Some(preloader) = &mut self.navigation.preloader else {
+        // Drain responses into an owned Vec so we can release the
+        // preloader borrow before calling `display_from_cache` (which needs
+        // `&mut self`).
+        let responses: Vec<preloader::PreloadResponse> = if let Some(p) = &self.navigation.preloader
+        {
+            p.response_rx.try_iter().collect()
+        } else {
             return;
         };
-        while let Ok(response) = preloader.response_rx.try_recv() {
+
+        for response in responses {
             match response {
                 preloader::PreloadResponse::Ready {
                     index,
@@ -848,24 +882,55 @@ impl App {
                     decode_duration,
                     file_name,
                 } => {
-                    preloader.mark_complete(index);
+                    if let Some(p) = &mut self.navigation.preloader {
+                        p.mark_complete(index);
+                    }
                     self.navigation
                         .image_cache
                         .insert(index, image, decode_duration, file_name);
+                    if self.navigation.pending_current == Some(index) {
+                        self.navigation.pending_current = None;
+                        self.display_from_cache(index);
+                        // Title was "Loading…" — swap to the final title.
+                        if let Some(dir) = &self.navigation.dir_list
+                            && let Some(win) = &self.window
+                        {
+                            win.set_title(&window::window_title_with_position(
+                                dir.current(),
+                                dir.current_index(),
+                                dir.len(),
+                            ));
+                        }
+                        self.update_shared_state();
+                    }
                 }
                 preloader::PreloadResponse::Failed {
                     index,
                     path,
                     reason,
                 } => {
-                    preloader.mark_complete(index);
+                    if let Some(p) = &mut self.navigation.preloader {
+                        p.mark_complete(index);
+                    }
                     log::debug!(
                         "Preload response: failed [{index}] {}: {reason}",
                         path.display()
                     );
+                    if self.navigation.pending_current == Some(index) {
+                        self.navigation.pending_current = None;
+                        log::error!(
+                            "Failed to decode current image {}: {reason}",
+                            path.display()
+                        );
+                        if let Some(win) = &self.window {
+                            win.set_title(&format!("Prvw - {reason}"));
+                        }
+                    }
                 }
                 preloader::PreloadResponse::Cancelled { index } => {
-                    preloader.mark_complete(index);
+                    if let Some(p) = &mut self.navigation.preloader {
+                        p.mark_complete(index);
+                    }
                 }
             }
         }

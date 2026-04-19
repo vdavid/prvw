@@ -378,7 +378,7 @@ impl Preloader {
                     .to_string_lossy()
                     .to_string();
                 let start = Instant::now();
-                match decoding::load_image_cancellable(
+                match decoding::load_image(
                     &path,
                     &cancelled,
                     &display_icc,

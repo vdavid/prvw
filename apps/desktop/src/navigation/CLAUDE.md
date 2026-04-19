@@ -8,7 +8,7 @@ per-pixel bytes for RAW RGBA16F.
 
 | File           | Purpose                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------ |
-| `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors }` |
+| `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current }` |
 | `directory.rs` | `DirectoryList` — scan parent dir for supported extensions, sort, track current position   |
 | `preloader.rs` | Rayon thread pool + `ImageCache` with LRU eviction (512 MB budget)                         |
 
@@ -17,6 +17,17 @@ per-pixel bytes for RAW RGBA16F.
 `App.navigation: navigation::State` owns this feature's runtime. Note the `history`
 field holds `VecDeque<NavigationRecord>` — the type is defined in `crate::diagnostics`
 (it's a measurement record). Navigation pushes entries; diagnostics formats them.
+
+## Navigation render path
+
+On cache hit, `navigate` renders from cache synchronously and submits neighbor
+preloads. On cache miss it sets `State.pending_current = Some(index)`, shows a
+"Loading…" title, and submits the target as the priority-zero preload task
+(first entry in `request_preload`'s `tasks` list → FIFO slot). `poll_preloader`
+runs the render when `PreloadResponse::Ready { index }` matches
+`pending_current`, then clears it. The main thread never decodes navigation
+targets directly — only settings re-decode and `Refresh` still call the sync
+`display_image` path.
 
 ## Key patterns
 
