@@ -19,10 +19,20 @@ and hand a `DecodedImage` off to the renderer.
   decoder; `is_supported_extension` is the gate the directory scanner uses. Adding
   a format means: teach `dispatch` about its extensions, add a backend module, and
   match it in `mod::decode_with`.
-- **Cancellation.** `load_image_cancellable` takes an `AtomicBool`, checked while
-  reading the file (every 64 KB chunk) and again before dispatching to a backend.
-  Returns `Err("cancelled")` if the flag flips. Used by the preloader so navigating
-  away aborts in-flight work.
+- **Cancellation.** `load_image` takes an `AtomicBool`, checked between each
+  RAW pipeline stage and at every 64 KB file-read chunk. Returns
+  `Err("cancelled")` when the flag flips. Worst-case cancel latency inside
+  RAW decode is one stage (≈ 80 ms on the `lens` stage — see the stage
+  budget table). JPEG and generic decodes don't check internally, so cancel
+  there waits for the whole decode to finish.
+- **Abandonable file read.** `read_file_cancellable` reads on a detached
+  `std::thread` and polls the result through a `mpsc::sync_channel` with
+  10 ms timeouts. When cancellation fires, the caller drops the receiver
+  and returns immediately — the IO thread finishes its `read()` on its own
+  and discards its result when the send fails. Critical for slow / wedged
+  network shares: `std::fs::File::read` has no timeout, so the old in-thread
+  flag check did nothing until the kernel unblocked the syscall. Now the
+  caller is never blocked.
 - **ICC profile first, pixels second.** See the gotcha below.
 
 ## Gotchas

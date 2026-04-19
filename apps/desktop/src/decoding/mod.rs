@@ -34,6 +34,7 @@ mod raw;
 mod raw_flags;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -234,26 +235,74 @@ fn finalize(mut img: DecodedImage, orientation: u16) -> DecodedImage {
     img
 }
 
-/// Read a file in 64 KB chunks, checking a cancellation flag between chunks.
+/// Read a file fully, returning its bytes. Runs on a detached `std::thread`
+/// so a slow or wedged `read()` (network drive, SMB share timing out) can
+/// never block the caller: when `cancelled` flips, we drop the receiver and
+/// return `Err("cancelled")` immediately. The reader thread finishes at its
+/// own pace and silently discards its result.
+///
+/// 64 KB chunks + flag check between chunks — same as before, but now we
+/// also abandon the syscall entirely on cancellation. That's the critical
+/// difference: `std::fs::File::read` has no timeout, so on a wedged share
+/// the old in-thread check was useless until the kernel unblocked.
 fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let size = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
-    let mut buf = Vec::with_capacity(size);
-    let mut chunk = [0u8; 65536];
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
+    let path_for_thread = path.to_path_buf();
+    let cancelled_for_thread = Arc::new(AtomicBool::new(false));
+    // Clone the flag the caller owns into an Arc the thread can poll between
+    // chunks. The caller's own reference stays — we check it too after each
+    // `recv_timeout` tick.
+    let thread_cancelled = Arc::clone(&cancelled_for_thread);
+
+    std::thread::Builder::new()
+        .name("prvw-io".into())
+        .spawn(move || {
+            let result = (|| {
+                let mut file = std::fs::File::open(&path_for_thread)
+                    .map_err(|e| format!("{}: {e}", path_for_thread.display()))?;
+                let size = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
+                let mut buf = Vec::with_capacity(size);
+                let mut chunk = [0u8; 65536];
+                loop {
+                    if thread_cancelled.load(Ordering::Relaxed) {
+                        return Err::<Vec<u8>, String>("cancelled".into());
+                    }
+                    let n = file
+                        .read(&mut chunk)
+                        .map_err(|e| format!("{}: {e}", path_for_thread.display()))?;
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                Ok(buf)
+            })();
+            // Send may fail if the caller abandoned us — silently drop.
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("spawn io thread: {e}"))?;
+
+    // Poll the channel with short timeouts so a caller cancellation is
+    // reflected within ~10 ms. The reader thread still reads its own flag,
+    // but that's belt-and-suspenders — the abandon-on-cancel is what
+    // protects against `std::fs::File::read` blocking on a bad mount.
+    use std::time::Duration;
     loop {
         if cancelled.load(Ordering::Relaxed) {
+            cancelled_for_thread.store(true, Ordering::Relaxed);
             return Err("cancelled".into());
         }
-        let n = file
-            .read(&mut chunk)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        if n == 0 {
-            break;
+        match rx.recv_timeout(Duration::from_millis(10)) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("io thread exited without a result".into());
+            }
         }
-        buf.extend_from_slice(&chunk[..n]);
     }
-    Ok(buf)
 }
 
 /// Shared success/failure logging for both entry points.
