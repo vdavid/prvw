@@ -674,7 +674,31 @@ impl App {
         self.request_redraw();
     }
 
-    fn navigate(&mut self, forward: bool) {
+    /// Queue a single nav step for the debounced path. A burst of these
+    /// within `navigation::NAV_DEBOUNCE` collapses into one jump.
+    pub(crate) fn queue_nav_step(&mut self, event_loop: &ActiveEventLoop, step: i32) {
+        self.navigation.pending_nav_delta = self.navigation.pending_nav_delta.saturating_add(step);
+        let deadline = Instant::now() + navigation::NAV_DEBOUNCE;
+        self.navigation.nav_deadline = Some(deadline);
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+    }
+
+    /// Apply any pending debounced delta immediately. Called before
+    /// immediate-nav commands (QA / MCP / HTTP) so tests don't race the
+    /// deadline, and from `about_to_wait` when the deadline fires.
+    pub(crate) fn flush_pending_nav(&mut self) {
+        let delta = self.navigation.pending_nav_delta;
+        self.navigation.pending_nav_delta = 0;
+        self.navigation.nav_deadline = None;
+        if delta != 0 {
+            self.navigate_by(delta);
+        }
+    }
+
+    fn navigate_by(&mut self, delta: i32) {
+        if delta == 0 {
+            return;
+        }
         let from_index = self
             .navigation
             .dir_list
@@ -682,19 +706,17 @@ impl App {
             .map(|d| d.current_index())
             .unwrap_or(0);
 
-        let moved = if let Some(dir) = &mut self.navigation.dir_list {
-            if forward {
-                dir.go_next()
-            } else {
-                dir.go_prev()
-            }
+        let moved_delta = if let Some(dir) = &mut self.navigation.dir_list {
+            dir.go_by(delta)
         } else {
-            false
+            0
         };
 
-        if !moved {
+        if moved_delta == 0 {
             return;
         }
+
+        let forward = moved_delta > 0;
 
         let nav_start = Instant::now();
         let direction = if forward { "next" } else { "prev" };
@@ -1261,6 +1283,17 @@ impl ApplicationHandler<AppCommand> for App {
         // (mouse move, key press, etc.), causing multi-second delays.
         self.poll_preloader();
         self.handle_menu_event();
+
+        // Debounced navigation: fire once the quiet window passes. Between
+        // queue and fire we hold `ControlFlow::WaitUntil(deadline)`, so winit
+        // wakes us exactly at the deadline.
+        if let Some(deadline) = self.navigation.nav_deadline
+            && Instant::now() >= deadline
+        {
+            self.flush_pending_nav();
+            // Drop back to the default idle mode.
+            event_loop.set_control_flow(ControlFlow::Wait);
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1356,9 +1389,10 @@ impl ApplicationHandler<AppCommand> for App {
                         }
                         self.update_transform_and_redraw();
                     } else {
-                        // Navigate: scroll down = next, scroll up = previous
+                        // Navigate: scroll down = next, scroll up = previous.
+                        // Debounced so a wheel spin collapses to one jump.
                         let forward = scroll_y < 0.0;
-                        self.execute_command(event_loop, AppCommand::Navigate(forward));
+                        self.execute_command(event_loop, AppCommand::NavigateDebounced(forward));
                     }
                 }
             }

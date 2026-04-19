@@ -38,8 +38,14 @@ pub fn send_command(command: AppCommand) -> bool {
 /// each command's effect is implemented.
 pub enum AppCommand {
     // ── Navigation ───────────────────────────────────────────────────
-    /// Navigate forward (true) or backward (false).
+    /// Navigate forward (true) or backward (false), immediately. Used by
+    /// QA / MCP / HTTP so tests see the move without waiting for the
+    /// user-debounce window.
     Navigate(bool),
+    /// User-initiated navigation (arrow keys, mouse wheel). Queues one
+    /// step on the debounce accumulator — a burst of these within
+    /// `navigation::NAV_DEBOUNCE` collapses to a single jump.
+    NavigateDebounced(bool),
     /// Open a specific file.
     OpenFile(PathBuf),
 

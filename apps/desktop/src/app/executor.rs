@@ -23,7 +23,15 @@ impl App {
                     self.execute_command(event_loop, cmd);
                 }
             }
-            AppCommand::Navigate(forward) => self.navigate(forward),
+            AppCommand::Navigate(forward) => {
+                // Immediate path (QA / MCP / HTTP). Flush any pending
+                // debounced delta first so tests see a deterministic move.
+                self.flush_pending_nav();
+                self.navigate_by(if forward { 1 } else { -1 });
+            }
+            AppCommand::NavigateDebounced(forward) => {
+                self.queue_nav_step(event_loop, if forward { 1 } else { -1 });
+            }
             AppCommand::ZoomIn => {
                 let old_zoom = self.zoom.view.zoom;
                 self.zoom.view.keyboard_zoom(true);

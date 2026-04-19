@@ -14,12 +14,12 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 /// Takes `Key<&str>` (from `Key::as_ref()`) so callers don't need to clone.
 pub fn key_to_command(key: Key<&str>, _modifiers: &ModifiersState) -> Option<AppCommand> {
     match key {
-        // Navigation
+        // Navigation (user input → debounced so a wheel spin coalesces)
         Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::Backspace) | Key::Character("[") => {
-            Some(AppCommand::Navigate(false))
+            Some(AppCommand::NavigateDebounced(false))
         }
         Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::Space) | Key::Character("]") => {
-            Some(AppCommand::Navigate(true))
+            Some(AppCommand::NavigateDebounced(true))
         }
 
         // Fullscreen
@@ -68,9 +68,9 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
     } else if id == &ids.refresh {
         Some(AppCommand::Refresh)
     } else if id == &ids.previous {
-        Some(AppCommand::Navigate(false))
+        Some(AppCommand::NavigateDebounced(false))
     } else if id == &ids.next {
-        Some(AppCommand::Navigate(true))
+        Some(AppCommand::NavigateDebounced(true))
     } else {
         None
     }

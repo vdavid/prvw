@@ -96,24 +96,19 @@ impl DirectoryList {
         self.files.len()
     }
 
-    /// Move to the next image. Returns true if the position changed.
-    pub fn go_next(&mut self) -> bool {
-        if self.current_index + 1 < self.files.len() {
-            self.current_index += 1;
-            true
-        } else {
-            false
+    /// Move by a signed delta, clamped to `[0, len - 1]`. Returns the net
+    /// movement (may be smaller than `delta` at list boundaries). Used by
+    /// both single-step navigation (delta = ±1) and the debounced path
+    /// (any coalesced delta).
+    pub fn go_by(&mut self, delta: i32) -> i32 {
+        if delta == 0 || self.files.is_empty() {
+            return 0;
         }
-    }
-
-    /// Move to the previous image. Returns true if the position changed.
-    pub fn go_prev(&mut self) -> bool {
-        if self.current_index > 0 {
-            self.current_index -= 1;
-            true
-        } else {
-            false
-        }
+        let old = self.current_index as i64;
+        let max = self.files.len() as i64 - 1;
+        let new = (old + delta as i64).clamp(0, max);
+        self.current_index = new as usize;
+        (new - old) as i32
     }
 
     /// Get the file at a specific index (for preloader lookups).
@@ -252,6 +247,21 @@ mod tests {
     }
 
     #[test]
+    fn go_by_clamps_and_returns_net_delta() {
+        let dir = create_test_dir();
+        let target = dir.path().join("cherry.gif"); // index 2 of 5
+        let mut list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.go_by(0), 0);
+        assert_eq!(list.current_index(), 2);
+        assert_eq!(list.go_by(2), 2); // 2 -> 4
+        assert_eq!(list.current_index(), 4);
+        assert_eq!(list.go_by(5), 0); // clamped at end
+        assert_eq!(list.current_index(), 4);
+        assert_eq!(list.go_by(-10), -4); // clamped at start
+        assert_eq!(list.current_index(), 0);
+    }
+
+    #[test]
     fn navigation_at_boundaries() {
         let dir = create_test_dir();
         let target = dir.path().join("apple.jpg");
@@ -259,19 +269,19 @@ mod tests {
         assert_eq!(list.current_index(), 0);
 
         // Can't go before first
-        assert!(!list.go_prev());
+        assert_eq!(list.go_by(-1), 0);
         assert_eq!(list.current_index(), 0);
 
         // Can go forward
-        assert!(list.go_next());
+        assert_eq!(list.go_by(1), 1);
         assert_eq!(list.current_index(), 1);
 
         // Go to last
-        while list.go_next() {}
+        while list.go_by(1) != 0 {}
         assert_eq!(list.current_index(), 4);
 
         // Can't go past last
-        assert!(!list.go_next());
+        assert_eq!(list.go_by(1), 0);
         assert_eq!(list.current_index(), 4);
     }
 

@@ -20,14 +20,25 @@ field holds `VecDeque<NavigationRecord>` — the type is defined in `crate::diag
 
 ## Navigation render path
 
-On cache hit, `navigate` renders from cache synchronously and submits neighbor
-preloads. On cache miss it sets `State.pending_current = Some(index)`, shows a
-"Loading…" title, and submits the target as the priority-zero preload task
-(first entry in `request_preload`'s `tasks` list → FIFO slot). `poll_preloader`
-runs the render when `PreloadResponse::Ready { index }` matches
-`pending_current`, then clears it. The main thread never decodes navigation
-targets directly — only settings re-decode and `Refresh` still call the sync
-`display_image` path.
+On cache hit, `navigate_by` renders from cache synchronously and submits
+neighbor preloads. On cache miss it sets `State.pending_current = Some(index)`,
+shows a "Loading…" title, and submits the target as the priority-zero preload
+task (first entry in `request_preload`'s `tasks` list → FIFO slot).
+`poll_preloader` runs the render when `PreloadResponse::Ready { index }`
+matches `pending_current`, then clears it. The main thread never decodes
+navigation targets directly — only settings re-decode and `Refresh` still call
+the sync `display_image` path.
+
+## Debounced navigation
+
+User input (arrow keys, mouse wheel, Next/Previous menu items) goes through
+`AppCommand::NavigateDebounced`, which accumulates a signed delta in
+`State.pending_nav_delta` and sets `State.nav_deadline` to now +
+`NAV_DEBOUNCE` (30 ms). `App::about_to_wait` fires the flush when the deadline
+elapses; winit gets `ControlFlow::WaitUntil(deadline)` so the wake is precise.
+A sustained wheel spin collapses into a single `navigate_by(±20)` jump with
+one decode, not twenty. QA / MCP / HTTP use the immediate `AppCommand::Navigate`
+path, which flushes pending first so automated tests see deterministic state.
 
 ## Key patterns
 

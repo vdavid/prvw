@@ -6,6 +6,14 @@ pub mod preloader;
 use crate::diagnostics::NavigationRecord;
 use crate::settings::Settings;
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+/// Coalesce window for user-initiated navigation (arrow keys, mouse wheel).
+/// Events arriving within this window get summed into a single jump instead
+/// of starting a decode per step — blazing through 20 wheel clicks jumps
+/// directly from N to N+20 with one decode, not twenty. The value is low
+/// enough that a single key press still feels immediate.
+pub const NAV_DEBOUNCE: Duration = Duration::from_millis(30);
 
 /// Per-feature runtime state owned by `App`.
 pub struct State {
@@ -33,6 +41,14 @@ pub struct State {
     /// (`DirectoryList::preload_range`). `Unknown` at startup and after
     /// non-directional jumps (open-file, refresh, settings re-decode).
     pub last_direction: directory::Direction,
+    /// Accumulator for the debounced navigation path. Each arrow key / wheel
+    /// tick adds ±1. When `nav_deadline` expires, the app applies the net
+    /// delta in one jump and clears this.
+    pub pending_nav_delta: i32,
+    /// Deadline at which the next pending nav flush fires. Extended on
+    /// every incoming debounced `Navigate` so a sustained wheel spin
+    /// collapses to a single jump at the end.
+    pub nav_deadline: Option<Instant>,
 }
 
 impl State {
@@ -46,6 +62,8 @@ impl State {
             preload_neighbors: true,
             pending_current: None,
             last_direction: directory::Direction::Unknown,
+            pending_nav_delta: 0,
+            nav_deadline: None,
         }
     }
 
