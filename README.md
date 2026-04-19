@@ -54,6 +54,10 @@ for text rendering, `zune-jpeg` for fast JPEG decoding, `rawler` for camera RAW,
 An embedded MCP/HTTP server (`PRVW_QA_PORT=19447`) lets AI agents and E2E tests control the viewer programmatically.
 Good for testing and debugging, but if it's also handy for your agents, use it.
 
+**RAW processing benchmarks**: typical per-stage timings for a 20 MP camera RAW decode on Apple Silicon (demosaic, lens
+correction, color transform, tone curve, sharpening, etc.) live in
+[`apps/desktop/src/decoding/CLAUDE.md`](apps/desktop/src/decoding/CLAUDE.md#per-stage-timing-phase-64).
+
 ## Roadmap / planned features
 
 This is a side project, so consider these someday/maybe-s, but if you open an issue or PR, it's a good signal to me about what people would like to see. 
