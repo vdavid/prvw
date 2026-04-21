@@ -20,6 +20,12 @@
 //! - **Only runs when installed in `/Applications/`** (via `file_associations::is_in_applications`).
 //!   Dev builds and copies in `~/Downloads` etc. skip the check so they don't try to update
 //!   themselves in place.
+//! - **Bundle replacement is atomic via `renamex_np(RENAME_SWAP)`** on the non-admin path.
+//!   We copy the new bundle to a sibling temp path, then swap it with the running bundle in
+//!   a single syscall — no window where `/Applications/Prvw.app` is absent or partial. The
+//!   admin-escalation fallback still uses rm+cp via `osascript` because `renamex_np` can't
+//!   be invoked cleanly through an AppleScript shell; that path is rarely hit (only when
+//!   `/Applications` isn't user-writable).
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -236,53 +242,75 @@ fn run_update() -> Result<(), String> {
 }
 
 /// Replaces the running .app bundle with the new one from the mounted DMG.
-/// Uses atomic approach: cp -R to a temp location, then rename over the original.
-/// Falls back to osascript with admin privileges if direct copy fails with permission denied.
+///
+/// Copies the new bundle to a sibling `Prvw.app.prvw-update-new` path, then swaps it with
+/// the running bundle via `renamex_np(RENAME_SWAP)` — a single kernel-atomic operation.
+/// After the swap, the sibling path holds the old bundle, which we remove best-effort.
+///
+/// Falls back to `osascript` with admin privileges if either the copy or the swap fails
+/// with a permission error — typically when `/Applications` isn't user-writable on a
+/// managed Mac.
 fn replace_app_bundle(source_app: &Path, dest_app: &Path) -> Result<(), String> {
     let parent = dest_app
         .parent()
         .ok_or_else(|| "Couldn't determine parent directory of .app bundle".to_string())?;
-    let temp_app = parent.join("Prvw.app.prvw-update-tmp");
+    // Deliberately not ending in `.app` so Launch Services doesn't index this as a bundle
+    // during the brief window it exists.
+    let staging = parent.join("Prvw.app.prvw-update-new");
 
-    // Clean up any previous temp
-    if temp_app.exists() {
-        let _ = fs::remove_dir_all(&temp_app);
+    // Clean up any leftover staging dir from a previous aborted run.
+    if staging.exists() {
+        let _ = fs::remove_dir_all(&staging);
     }
 
-    // Try direct copy first: cp new to temp, remove old, rename temp to dest.
-    // Using rm + rename instead of direct rename because fs::rename over a non-empty
-    // directory fails on macOS with ENOTEMPTY.
-    match copy_app_recursive(source_app, &temp_app) {
-        Ok(()) => {
-            // Remove the old bundle, then rename temp into its place
-            if let Err(e) = fs::remove_dir_all(dest_app) {
-                let _ = fs::remove_dir_all(&temp_app);
-                if is_permission_error(&e.to_string()) {
-                    log::info!("Direct remove denied, escalating with admin privileges");
-                    return copy_with_admin_privileges(source_app, dest_app);
-                }
-                return Err(format!("Couldn't remove old app bundle: {e}"));
-            }
-            match fs::rename(&temp_app, dest_app) {
-                Ok(()) => Ok(()),
-                Err(e) => {
-                    // Old bundle is gone and rename failed: we're in trouble.
-                    // Try to recover by renaming temp back.
-                    log::error!("Rename failed after removing old bundle: {e}");
-                    Err(format!("Couldn't rename temp app to destination: {e}"))
-                }
-            }
+    if let Err(e) = copy_app_recursive(source_app, &staging) {
+        let _ = fs::remove_dir_all(&staging);
+        if is_permission_error(&e) {
+            log::info!("Direct copy denied, escalating with admin privileges");
+            return copy_with_admin_privileges(source_app, dest_app);
         }
-        Err(e) => {
-            let _ = fs::remove_dir_all(&temp_app);
-            if is_permission_error(&e) {
-                log::info!("Direct copy denied, escalating with admin privileges");
-                copy_with_admin_privileges(source_app, dest_app)
-            } else {
-                Err(e)
-            }
-        }
+        return Err(e);
     }
+
+    // Atomic swap. After this, `dest_app` holds the new bundle and `staging` holds the old.
+    if let Err(e) = atomic_swap(&staging, dest_app) {
+        let _ = fs::remove_dir_all(&staging);
+        if is_permission_error(&e) {
+            log::info!("Atomic swap denied, escalating with admin privileges");
+            return copy_with_admin_privileges(source_app, dest_app);
+        }
+        return Err(e);
+    }
+
+    // Remove the old bundle (now at the staging path). Best-effort — the update itself
+    // already succeeded at this point. Leaving it around is harmless because the path
+    // doesn't end in `.app`, so Launch Services won't surface it.
+    if let Err(e) = fs::remove_dir_all(&staging) {
+        log::warn!("Couldn't remove old bundle at {}: {e}", staging.display());
+    }
+
+    Ok(())
+}
+
+/// Atomically swaps two existing filesystem paths via `renamex_np(RENAME_SWAP)`.
+/// Both paths must exist on the same filesystem. Requires macOS 10.12+ (always true for
+/// Prvw's supported targets).
+#[cfg(target_os = "macos")]
+fn atomic_swap(a: &Path, b: &Path) -> Result<(), String> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let a_c = CString::new(a.as_os_str().as_bytes())
+        .map_err(|e| format!("Invalid path for swap ({}): {e}", a.display()))?;
+    let b_c = CString::new(b.as_os_str().as_bytes())
+        .map_err(|e| format!("Invalid path for swap ({}): {e}", b.display()))?;
+
+    let rc = unsafe { libc::renamex_np(a_c.as_ptr(), b_c.as_ptr(), libc::RENAME_SWAP) };
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(format!("renamex_np(RENAME_SWAP) failed: {err}"));
+    }
+    Ok(())
 }
 
 /// Recursively copies a directory tree using `cp -R`.
@@ -385,5 +413,33 @@ mod tests {
         assert!(!is_newer("1.0.0", "1.0.0"));
         assert!(!is_newer("0.9.0", "1.0.0"));
         assert!(!is_newer("invalid", "1.0.0"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_atomic_swap_exchanges_directory_contents() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        fs::create_dir(&a).unwrap();
+        fs::create_dir(&b).unwrap();
+        fs::write(a.join("marker"), "from-a").unwrap();
+        fs::write(b.join("marker"), "from-b").unwrap();
+
+        atomic_swap(&a, &b).expect("swap");
+
+        assert_eq!(fs::read_to_string(a.join("marker")).unwrap(), "from-b");
+        assert_eq!(fs::read_to_string(b.join("marker")).unwrap(), "from-a");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_atomic_swap_fails_when_path_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let a = tmp.path().join("exists");
+        let b = tmp.path().join("does-not-exist");
+        fs::create_dir(&a).unwrap();
+
+        assert!(atomic_swap(&a, &b).is_err());
     }
 }

@@ -3606,6 +3606,7 @@ dependencies = [
  "half",
  "image",
  "lensfun",
+ "libc",
  "log",
  "moxcms",
  "muda",
