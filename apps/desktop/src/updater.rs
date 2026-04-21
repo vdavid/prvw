@@ -26,6 +26,12 @@
 //!   admin-escalation fallback still uses rm+cp via `osascript` because `renamex_np` can't
 //!   be invoked cleanly through an AppleScript shell; that path is rarely hit (only when
 //!   `/Applications` isn't user-writable).
+//! - **Launch Services is told to forget the old bundle before the swap** (`lsregister -u`)
+//!   and to re-register `dest_app` unconditionally afterward (`lsregister -f`). Without the
+//!   `-u`, LS often keeps the pre-swap registration alive and surfaces both versions in the
+//!   "Open With" menu. The final `-f` runs on success and failure paths — on failure it
+//!   harmlessly re-registers the still-present old bundle, so we never leave LS in an
+//!   "app forgotten, bundle still exists" limbo.
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -226,14 +232,6 @@ fn run_update() -> Result<(), String> {
 
     result?;
 
-    // Force LaunchServices to re-read the new Info.plist. Without this, macOS caches
-    // the old document type registrations and won't recognize new file formats added
-    // in this update.
-    let _ = Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
-        .args(["-f"])
-        .arg(&bundle_path)
-        .output();
-
     log::info!(
         "Update installed: v{}. Restart to use it.",
         manifest.version
@@ -247,10 +245,27 @@ fn run_update() -> Result<(), String> {
 /// the running bundle via `renamex_np(RENAME_SWAP)` — a single kernel-atomic operation.
 /// After the swap, the sibling path holds the old bundle, which we remove best-effort.
 ///
+/// Also coordinates with Launch Services: unregisters the old bundle right before the swap
+/// so LS doesn't end up with two records for the same path (the "Open With menu shows both
+/// 0.6.3 and 0.10.0" class of bug), and re-registers whatever ends up at `dest_app` at the
+/// very end — idempotent on success, restorative on failure.
+///
 /// Falls back to `osascript` with admin privileges if either the copy or the swap fails
 /// with a permission error — typically when `/Applications` isn't user-writable on a
 /// managed Mac.
 fn replace_app_bundle(source_app: &Path, dest_app: &Path) -> Result<(), String> {
+    let result = replace_app_bundle_inner(source_app, dest_app);
+
+    // Always re-register whatever is at `dest_app` with Launch Services. On success this
+    // ensures LS re-reads the new Info.plist (needed to pick up document-type additions
+    // from the update). On failure this restores LS's view of the still-present old
+    // bundle, in case we got as far as calling `lsregister -u` before the swap failed.
+    register_with_launch_services(dest_app);
+
+    result
+}
+
+fn replace_app_bundle_inner(source_app: &Path, dest_app: &Path) -> Result<(), String> {
     let parent = dest_app
         .parent()
         .ok_or_else(|| "Couldn't determine parent directory of .app bundle".to_string())?;
@@ -272,6 +287,13 @@ fn replace_app_bundle(source_app: &Path, dest_app: &Path) -> Result<(), String> 
         return Err(e);
     }
 
+    // Forget the old bundle in Launch Services before we replace it. Without this, LS
+    // often keeps the old registration alive post-swap (inode changed, LS didn't notice)
+    // and surfaces both versions in the "Open With" menu until the LS database is
+    // rebuilt. The outer `replace_app_bundle` re-registers `dest_app` unconditionally
+    // once this function returns, so a failure after this point is self-healing.
+    unregister_from_launch_services(dest_app);
+
     // Atomic swap. After this, `dest_app` holds the new bundle and `staging` holds the old.
     if let Err(e) = atomic_swap(&staging, dest_app) {
         let _ = fs::remove_dir_all(&staging);
@@ -290,6 +312,28 @@ fn replace_app_bundle(source_app: &Path, dest_app: &Path) -> Result<(), String> 
     }
 
     Ok(())
+}
+
+const LSREGISTER_PATH: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+
+/// Tells Launch Services to drop any registration for the bundle at `path`. Best-effort:
+/// a failure here isn't fatal, it just means the user might see a stale entry in
+/// "Open With" until LS's next scan.
+fn unregister_from_launch_services(path: &Path) {
+    let _ = Command::new(LSREGISTER_PATH)
+        .args(["-u"])
+        .arg(path)
+        .output();
+}
+
+/// Tells Launch Services to (re-)register the bundle at `path`. Best-effort.
+/// `-f` forces a re-read of Info.plist so new document types added in an update are
+/// picked up.
+fn register_with_launch_services(path: &Path) {
+    let _ = Command::new(LSREGISTER_PATH)
+        .args(["-f"])
+        .arg(path)
+        .output();
 }
 
 /// Atomically swaps two existing filesystem paths via `renamex_np(RENAME_SWAP)`.
