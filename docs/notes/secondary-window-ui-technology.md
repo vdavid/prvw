@@ -7,7 +7,7 @@ Decision date: 2025-04-13. Decided: **AppKit via objc2**.
 Prvw has four windows:
 
 - **Main window**: Shows images. Uses winit + wgpu + glyphon for text overlays. This works well and stays as-is.
-- **About window**: Currently an `osascript display dialog` — a dumb macOS system alert with no rich UI.
+- **About window**: Currently an `osascript display dialog` (a dumb macOS system alert with no rich UI).
 - **Onboarding window**: Currently rendered with wgpu + glyphon in the main window. Manual pixel positioning, hardcoded
   colors, no system font size awareness.
 - **Settings window**: Doesn't exist yet.
@@ -26,7 +26,7 @@ font size settings, native controls (toggles, buttons, dropdowns), and consisten
 2. **System text rendering**: System font only, at the user's configured size (respecting System Settings font scale).
 3. **Native controls**: Real OS toggles, buttons, dropdowns on Settings. OS-native-looking buttons on About and
    Onboarding.
-4. **Easy layout**: Centering text, consistent paddings, line heights — without manually computing pixel offsets like the
+4. **Easy layout**: Centering text, consistent paddings, and line heights, without manually computing pixel offsets like the
    current glyphon onboarding code does.
 5. **Rich UI on all three windows**, including About (currently a plain text alert).
 6. **Cross-platform eventually** (Linux, Windows), but macOS-first.
@@ -52,12 +52,12 @@ Build the three windows using real AppKit components through the objc2 crate (al
 for layout, `NSTextField` for labels, `NSButton` for buttons and toggles, `NSPopUpButton` for dropdowns.
 
 **Strengths:**
-- 100% native controls: dark mode, accent colors, accessibility, VoiceOver — all free
+- 100% native controls: dark mode, accent colors, accessibility, and VoiceOver (all free)
 - System font at user's configured size via `NSFont::systemFontOfSize` / `.controlContentFontOfSize`
 - Liquid glass titlebar via NSWindow property (already partially implemented in `window.rs`)
 - Zero additional binary size (AppKit is a system framework)
-- Zero build complexity — it's Rust code with `use objc2_app_kit::*`
-- Same process, same address space — settings sharing via `Arc<Mutex<Settings>>` or `NSUserDefaults` with Cocoa Bindings
+- Zero build complexity. It's Rust code with `use objc2_app_kit::*`
+- Same process, same address space: settings sharing via `Arc<Mutex<Settings>>` or `NSUserDefaults` with Cocoa Bindings
 - Best debuggability: single process, single language, `log::info!()` everywhere, breakpoints work normally
 - The objc2 crate is already a dependency and the gotchas are already documented in AGENTS.md
 
@@ -65,10 +65,10 @@ for layout, `NSTextField` for labels, `NSButton` for buttons and toggles, `NSPop
 - Verbose: ~15 lines of Rust per labeled toggle. A Settings window with eight controls is ~200–300 lines.
 - The `Retained<>` lifetime gotcha: every view must be kept alive through the modal/window session (documented in
   AGENTS.md and `apps/desktop/CLAUDE.md`)
-- "Never run AppKit modals inside winit's event loop" constraint — these windows need to be independent windows or
-  managed via `EventLoopProxy`
+- "Never run AppKit modals inside winit's event loop" constraint (these windows need to be independent windows or
+  managed via `EventLoopProxy`)
 - `NSStackView` distribution modes are confusing (gravity areas vs. equal centering vs. equal spacing)
-- `NSTextField` is both label AND input — must explicitly configure as non-editable, non-selectable for labels
+- `NSTextField` is both label AND input. Must explicitly configure as non-editable, non-selectable for labels
 - No cross-platform code reuse. Linux/Windows need entirely different implementations.
 
 **Cross-platform strategy:** Define a `trait SecondaryWindow` with methods like `show_about()`, `show_settings()`.
@@ -81,7 +81,7 @@ Embed a WKWebView (macOS) / WebView2 (Windows) / WebKitGTK (Linux) for the three
 [wry](https://github.com/nicotinetroll/nicotinetroll) crate. Main image window stays winit+wgpu.
 
 **Strengths:**
-- Easy layout: HTML/CSS (flexbox/grid) — trivially easy to center, pad, align
+- Easy layout: HTML/CSS (flexbox/grid). Trivially easy to center, pad, and align
 - Cross-platform out of the box with the same HTML/CSS/JS on all three platforms
 - Can build any layout imaginable
 - System font matching: CSS `-apple-system` font family works. `font: -apple-system-body` even respects user text size.
@@ -99,7 +99,7 @@ Embed a WKWebView (macOS) / WebView2 (Windows) / WebKitGTK (Linux) for the three
   JS errors fail silently without explicit `window.onerror` handling.
 - Communication requires JSON IPC: Rust → JS via `evaluate_script()`, JS → Rust via `window.ipc.postMessage()`.
   Must define a protocol, handle serialization. Works but adds ceremony.
-- Dark mode: must implement CSS theme via `prefers-color-scheme` media query — you write and maintain all the theme CSS.
+- Dark mode: must implement CSS theme via `prefers-color-scheme` media query. You write and maintain all the theme CSS.
 - On Windows, WebView2 requires the WebView2 runtime (ships with Win11, optional on Win10). On Linux, WebKitGTK is a
   system package dependency.
 
@@ -114,7 +114,7 @@ Build the three windows as SwiftUI views in a small Swift package, compile as a 
 - Most productive UI code: a toggle with label is `Toggle("Auto zoom", isOn: $autoZoom)`. A Settings window is ~50
   lines of Swift vs ~300 lines of objc2 Rust.
 - Excellent accessibility support with `.accessibilityLabel()` modifiers.
-- Apple is all-in on SwiftUI — it's the official future of Apple platform UI.
+- Apple is all-in on SwiftUI. It's the official future of Apple platform UI.
 
 **Weaknesses:**
 - **Build complexity is significant.** Need a `build.rs` that invokes `swiftc` or `xcodebuild`, handles linking, sets
@@ -125,7 +125,7 @@ Build the three windows as SwiftUI views in a small Swift package, compile as a 
   ownership.
 - SwiftUI views must be created on the main thread.
 - SwiftUI on macOS is less mature than on iOS. Some controls behave unexpectedly.
-- SwiftUI APIs evolve fast — deprecations happen, code targeting macOS 13 may need updating for macOS 16.
+- SwiftUI APIs evolve fast. Deprecations happen, and code targeting macOS 13 may need updating for macOS 16.
 - macOS only. Zero help for Linux/Windows cross-platform.
 - ~1–2 MB additional DMG size for the compiled Swift dylib.
 - Debuggability is good but requires setup: Swift's `print()` goes to stdout, but for unified logging you'd expose a
@@ -157,7 +157,7 @@ Build the three windows as SwiftUI views in a small Swift package, compile as a 
 
 1. **Already in the project.** objc2 is a dependency, the gotchas are documented, and the team knows the patterns.
 2. **Zero build/toolchain overhead.** No Swift compiler, no WebView runtime, no IPC protocol.
-3. **Settings communication is trivial.** Shared memory in the same process — no serialization or message passing.
+3. **Settings communication is trivial.** Shared memory in the same process, no serialization or message passing.
 4. **Best debuggability.** Single process, single language, unified logging.
 5. **True native controls.** For a "platform-native" image viewer (principle #5 in AGENTS.md), real NSButton/NSSwitch
    beats HTML styled to look like them.

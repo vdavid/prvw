@@ -22,13 +22,13 @@ and hand a `DecodedImage` off to the renderer.
 - **Cancellation.** `load_image` takes an `AtomicBool`, checked between each
   RAW pipeline stage and at every 64 KB file-read chunk. Returns
   `Err("cancelled")` when the flag flips. Worst-case cancel latency inside
-  RAW decode is one stage (≈ 80 ms on the `lens` stage — see the stage
+  RAW decode is one stage (≈ 80 ms on the `lens` stage; see the stage
   budget table). JPEG and generic decodes don't check internally, so cancel
   there waits for the whole decode to finish.
 - **Abandonable file read.** `read_file_cancellable` reads on a detached
   `std::thread` and polls the result through a `mpsc::sync_channel` with
   10 ms timeouts. When cancellation fires, the caller drops the receiver
-  and returns immediately — the IO thread finishes its `read()` on its own
+  and returns immediately. The IO thread finishes its `read()` on its own
   and discards its result when the send fails. Critical for slow / wedged
   network shares: `std::fs::File::read` has no timeout, so the old in-thread
   flag check did nothing until the kernel unblocked the syscall. Now the
@@ -58,7 +58,7 @@ and hand a `DecodedImage` off to the renderer.
   bilinear demosaic, not Markesteijn. Usable in a viewer but less detailed than
   what dedicated RAW tools produce.
 - **Rawler applies `LinearizationTable` (tag 50712) itself.** Look in
-  `rawler-0.7.2/src/decoders/mod.rs::641` — the generic raw path
+  `rawler-0.7.2/src/decoders/mod.rs::641`: the generic raw path
   dither-interpolates every raw pixel through the table when the tag is
   present, so we don't need a second pass in `dng_opcodes.rs`. The Phase 3.0
   investigation (see `docs/notes/raw-support-phase3.md`) confirmed this.
@@ -67,7 +67,7 @@ and hand a `DecodedImage` off to the renderer.
   `OpcodeList3` on the demosaiced+cropped buffer we currently ignore the active-
   area origin; every fixture we test starts the active area at (0, 0), so no
   shift is needed today. Cameras with a nonzero origin would miscrop post-color
-  opcodes — tracked as Phase 3.x future work.
+  opcodes. Tracked as Phase 3.x future work.
 
 ## RAW pipeline (Phase 2.5a + Phase 3.0)
 
@@ -78,7 +78,7 @@ can keep the intermediate wide-gamut:
 1a. **Phase 3.0: DNG `OpcodeList1` applied** (`dng_opcodes.rs`). Pre-
     linearization gain maps and bad-pixel fixes on the CFA mosaic.
     Silent no-op for non-DNG files and for DNGs without the tag.
-1b. `raw.apply_scaling()` — rawler's black-level subtract + [0, 1] linear
+1b. `raw.apply_scaling()`: rawler's black-level subtract + [0, 1] linear
     rescale, split out so we can slip the next step in between.
 1c. **Phase 3.0: DNG `OpcodeList2` applied**. Post-linearization, pre-
     demosaic CFA-level gain maps. This is where iPhone ProRAW stashes its
@@ -126,7 +126,7 @@ can keep the intermediate wide-gamut:
     overflow too, and pre-tone-curve so the curve sees a hue-consistent
     input.
 4b. **Phase 3.2 / 3.3 / 3.4: DCP** (`color::dcp::apply_if_available`).
-    Finds a DCP matching the camera — either embedded in a DNG (Phase
+    Finds a DCP matching the camera, either embedded in a DNG (Phase
     3.3, preferred) or a standalone `.dcp` under `$PRVW_DCP_DIR` /
     Adobe Camera Raw (Phase 3.2, fallback). Applies its
     `ProfileHueSatMap` as a trilinearly-interpolated 3D LUT in
@@ -139,7 +139,7 @@ can keep the intermediate wide-gamut:
 5. **Tone curve.** When the active DCP carries a `ProfileToneCurve`
    (Phase 3.4), `color::tone_curve::apply_tone_curve_lut` runs it via
    piecewise-linear interpolation on the pixel's Rec.2020 luminance,
-   then scales RGB uniformly by `Y_out / Y_in` — same hue-preserving
+   then scales RGB uniformly by `Y_out / Y_in`, same hue-preserving
    pattern as the default curve. Otherwise `apply_default_tone_curve`
    shapes luminance with a mild filmic S-curve: shadow Hermite →
    midtone line (slope 1.08, anchored at 0.25) → highlight shoulder.
@@ -153,12 +153,12 @@ can keep the intermediate wide-gamut:
    linear-Rec.2020 → user's display-ICC conversion in f32. Clamp to [0, 1]
    on the way out to RGBA8. HDR path (`hdr_active == true`):
    `color::profiles::rec2020_to_linear_display_p3_inplace` applies a direct
-   3×3 matrix Rec.2020 → linear Display P3 with **no clipping** (Phase 5.2
-   — moxcms clips at 1.0 which eats HDR headroom, and the `CAMetalLayer`
+   3×3 matrix Rec.2020 → linear Display P3 with **no clipping** (Phase 5.2:
+   moxcms clips at 1.0 which eats HDR headroom, and the `CAMetalLayer`
    is pinned to `extendedLinearDisplayP3` on EDR anyway so a direct matrix
    to that target is the natural fit). HDR brightness gain
    (`flags.hdr_gain`, default 2.0) multiplies the buffer before the matrix
-   to push scene-white content into the EDR headroom — without it, HDR
+   to push scene-white content into the EDR headroom. Without it, HDR
    output reads timidly SDR-bright rather than "HDR-bright" against Preview.
 7b. **Phase 5: HDR branch.** If the caller's `edr_headroom > 1.0` and
     `flags.hdr_output == true`, skip the `[0, 1]` clamp and quantise the
@@ -172,7 +172,7 @@ can keep the intermediate wide-gamut:
 7c. **Phase 6.2: clarity (local contrast).**
     `color::clarity::apply_clarity_rgba8_inplace_with` runs a larger-
     radius (`σ ≈ 10 px`) separable-Gaussian unsharp mask on **luminance
-    only**, lifting midtone features — shape silhouettes, textures — that
+    only**, lifting midtone features (shape silhouettes, textures) that
     survive display downscaling so the image reads crisper at every zoom
     level. Same math as capture sharpening, different defaults. Runs
     before step 8 so the order is midtone lift → fine-edge sharpening.
@@ -202,7 +202,7 @@ hdr_active = flags.hdr_output && edr_headroom > 1.0
 `edr_headroom` is threaded in from `app.rs` (queried via
 `color::display_profile::current_edr_headroom` on `NSScreen`). `App` also
 tracks `current_image_is_hdr` so the window's `CAMetalLayer` can be flipped
-between SDR and EDR modes per-decode — `edr_should_be_active` fuses all three
+between SDR and EDR modes per-decode. `edr_should_be_active` fuses all three
 inputs (flag, headroom, image-is-HDR).
 
 Once inside `raw::decode`, `hdr_active` gates four different behaviors:
@@ -227,7 +227,7 @@ and calls `color::display_profile::apply_edr_state` to flip the
 (HDR) and the user's display ICC + `BGRA8Unorm_sRGB` (SDR). Two diagnostic
 peak-value log lines (`peak linear value` pre-conversion,
 `peak post-ICC` post-conversion, plus `peak f16` on the HDR-output summary
-line) make the decision audit-able without a debugger — if HDR looks wrong,
+line) make the decision audit-able without a debugger. If HDR looks wrong,
 the logs tell you whether the pipeline clipped, quantized, or rendered the
 above-1.0 range away.
 
@@ -254,7 +254,7 @@ Reference numbers: `/tmp/raw/sample3.arw` (Sony α7R IV, 5456×3632 ≈ 20 MP),
 Apple Silicon M3 Max, release build, all RAW flags at their defaults (HDR
 output active on an EDR-capable display, so the numbers below include the
 half-float path). Re-run measurements for a fresh cold decode by flipping
-Settings → General → "Preload next/prev images" off and restarting — the
+Settings → General → "Preload next/prev images" off and restarting. The
 preloader otherwise warms caches and decode-time drops.
 
 | Stage              | Warm ms | Notes |
@@ -278,7 +278,7 @@ preloader otherwise warms caches and decode-time drops.
 | `color_conv`       |     6.2 | Rec.2020 → linear Display P3 matrix (HDR) or moxcms (SDR) |
 | `hdr_diag_post`    |     2.2 | Info-level diagnostic (0.1 ms when info off) |
 | `to_rgba16f`       |     4.7 | f32 → half-float quantize |
-| `clarity`          |    14.0 | σ=10 downsample fast path (6.4 — was 144 ms pre-6.4) |
+| `clarity`          |    14.0 | σ=10 downsample fast path (6.4; was 144 ms pre-6.4) |
 | `sharpen`          |    21.4 | σ=0.8 luminance-only unsharp |
 | `hdr_diag_f16`     |     2.3 | Info-level diagnostic (0.1 ms when info off) |
 | **total**          | **277** | Warm cache; cold decode ≈ 650 ms |
@@ -286,14 +286,14 @@ preloader otherwise warms caches and decode-time drops.
 **How to read the table:** numbers are guide-rail order-of-magnitude, not a
 contract. They shift with image resolution, scene content, cache state,
 thermal throttling, and flag combinations. The absolute values matter less
-than the *ranking* — `lens`, `chroma_nr`, `dcp`, `demosaic`, `sharpen`,
+than the *ranking*: `lens`, `chroma_nr`, `dcp`, `demosaic`, `sharpen`,
 `clarity` are the six stages that dominate. Demosaic and rawler parse live
 inside the `rawler` crate; everything else is our code.
 
 **If you're optimizing:** start by reading the DEBUG summary line on your
 own hardware / input. If you see a stage taking ≥ 2× the value here, that
 specific stage is the suspect. If every stage is proportionally higher, it
-probably isn't our code — check `log::info!` lines above for clues (e.g.
+probably isn't our code. Check `log::info!` lines above for clues (e.g.
 "RAW applied DCP" means DCP matched and the trilinear 3D LUT ran). See
 Phase 6.2 (clarity downsample) and 6.3 (lens-correction SIMD) in
 `docs/notes/raw-support-phase6.md` for examples of how past per-stage
@@ -303,7 +303,7 @@ wins were found and landed.
 
 The RAW pipeline has two kinds of tests:
 
-- **Unit tests in `raw.rs`** — malformed bytes, cancellation. Cheap, always on.
+- **Unit tests in `raw.rs`**: malformed bytes, cancellation. Cheap, always on.
 - **Golden regression test in `mod.rs` (`synthetic_dng_matches_golden`).** Runs
   the full `load_image` path on `tests/fixtures/raw/synthetic-bayer-128.dng`
   (a tiny synthetic DNG, ~33 KB) and compares the RGBA8 output against a

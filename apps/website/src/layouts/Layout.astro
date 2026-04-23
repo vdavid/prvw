@@ -82,7 +82,7 @@ const {
             }
         </style>
 
-        {/* Umami analytics — self-hosted, cookieless */}
+        {/* Umami analytics: self-hosted, cookieless */}
         {
             import.meta.env.PUBLIC_UMAMI_WEBSITE_ID && (
                 <script
@@ -93,7 +93,7 @@ const {
             )
         }
 
-        {/* PostHog session replay — cookieless (persistence: memory, no cookies) */}
+        {/* PostHog session replay, cookieless (persistence: memory, no cookies) */}
         {
             import.meta.env.PUBLIC_POSTHOG_KEY && (
                 <script

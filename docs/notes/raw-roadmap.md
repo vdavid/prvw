@@ -6,7 +6,7 @@ source for "what's done, what's next."
 
 Last updated: 2026-04-17 (Phase 6.1 shipped).
 
-## Phase 1 — shipped in v0.9.0 🎉
+## Phase 1: shipped in v0.9.0 🎉
 
 - [x] Decode DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW via `rawler`
 - [x] Extension whitelist + directory-scan support for all 10 formats
@@ -19,7 +19,7 @@ Last updated: 2026-04-17 (Phase 6.1 shipped).
       defaults sentence, left-aligned layout
 - [x] Linux CI fix (gate macOS-only tests), Node 24 action bumps
 
-## Phase 2 — shipped pre-v0.10.0 🎉
+## Phase 2: shipped pre-v0.10.0 🎉
 
 - [x] Test infrastructure: synthetic Bayer DNG fixture, CIE76 Delta-E util,
       golden-image regression test, `raw-dev-dump` example
@@ -32,9 +32,9 @@ Last updated: 2026-04-17 (Phase 6.1 shipped).
 - [x] Capture sharpening: unsharp mask, σ = 0.8 px, amount = 0.3, applied
       post-ICC on RGBA8
 
-## Phase 2.5 — in flight
+## Phase 2.5: in flight
 
-### Phase 2.5a — structural fix (done, 2026-04-17)
+### Phase 2.5a: structural fix (done, 2026-04-17)
 
 - [x] Move tone curve to luminance-only (RGB → Y → curve → scale RGB).
       Preserves saturation at the highlight shoulder.
@@ -42,7 +42,7 @@ Last updated: 2026-04-17 (Phase 6.1 shipped).
 - [x] Mild global saturation boost (default +8%, linear Rec.2020, post-tone
       pre-ICC).
 
-### Phase 2.5b — empirical tuning (done, 2026-04-17)
+### Phase 2.5b: empirical tuning (done, 2026-04-17)
 
 - [x] Empirical parameter tuning harness: `apps/desktop/examples/raw-tune.rs`,
       grid-searches against reference PNGs, cross-validates across N files,
@@ -58,23 +58,23 @@ Last updated: 2026-04-17 (Phase 6.1 shipped).
       across three RAW files. Winning combo matched the Phase 2.5a
       educated-guess defaults (`anchor=0.25, amount=0.30, boost=+0.08`).
       Shipped unchanged. On visual QA against Preview.app on an M3 XDR
-      display, the output read as "washed out and blurrier" — `sips` is
+      display, the output read as "washed out and blurrier". `sips` is
       Apple's conservative export path, not what Preview renders on screen.
 - [x] Rerun: grid searched against a Preview.app screenshot of
       `sample3.arw` (single reference, 288 combos). New winner:
       `anchor=0.40, amount=0.30, boost=+0.00`. Beat the old defaults by
       0.81 Delta-E on sample3 and 0.50 Delta-E on sample1 (reference-vs-
       reference). Visual spot-check on sample1 and sample2 confirmed no
-      broken output under the new defaults. Amount stays at 0.30 — the
+      broken output under the new defaults. Amount stays at 0.30; the
       screenshot metric is resolution-limited and Delta-E couldn't
       distinguish amount 0.10 from 0.65; Phase 2.4's Laplacian measurement
       remains the authority. See `raw-support-phase2.md` for the full
       ranked table, per-axis sub-optima, and the single-reference overfit
       caveat.
 
-## Phase 3 — per-camera color fidelity
+## Phase 3: per-camera color fidelity
 
-### Phase 3.0 — DNG correctness (done, 2026-04-17)
+### Phase 3.0: DNG correctness (done, 2026-04-17)
 
 - [x] DNG `OpcodeList1` application (pre-linearization gain maps + bad
       pixels). No fixture exercises it, but the pipeline slot is wired.
@@ -92,7 +92,7 @@ Last updated: 2026-04-17 (Phase 6.1 shipped).
 See `docs/notes/raw-support-phase3.md` for per-opcode status, pipeline
 diagram, and iPhone ProRAW specifics.
 
-### Phase 3.1 — highlight recovery (done, 2026-04-17)
+### Phase 3.1: highlight recovery (done, 2026-04-17)
 
 - [x] Desaturate-to-neutral highlight recovery in linear Rec.2020. Pixels
       whose brightest channel exceeds 0.95 are blended toward their own
@@ -103,7 +103,7 @@ diagram, and iPhone ProRAW specifics.
       other two kept rising. See `docs/notes/raw-support-phase3.md` for
       algorithm, parameter rationale, and smoke-test observations.
 
-### Phase 3.2 — DCP profile support (done, 2026-04-17)
+### Phase 3.2: DCP profile support (done, 2026-04-17)
 
 - [x] Parse Adobe `.dcp` files (TIFF-like `IIRC` container): extract
       `UniqueCameraModel`, `ProfileName`, `ProfileCopyright`,
@@ -130,7 +130,7 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
 (our matrix already targets Rec.2020). See
 `docs/notes/raw-support-phase3.md` for rationale and format details.
 
-### Phase 3.3 — DCP embedded in DNG (done, 2026-04-17)
+### Phase 3.3: DCP embedded in DNG (done, 2026-04-17)
 
 - [x] **Apply DCP data embedded in DNG files.** Smartphone DNGs (Pixel,
       Samsung Galaxy, iPhone ProRAW) and Adobe-converted DNGs carry
@@ -138,7 +138,7 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       their main IFD. New `color::dcp::embedded::from_dng_tags` reads
       them into the same `Dcp` struct the standalone parser produces, so
       `apply_hue_sat_map` runs unchanged. Embedded wins over filesystem
-      DCP — the manufacturer's profile is authoritative. Non-DNG files
+      DCP (the manufacturer's profile is authoritative). Non-DNG files
       and DNGs without profile tags are byte-for-byte identical to
       Phase 3.2. On sample2.dng (Pixel 6 Pro), the embedded profile
       produces a visible warmer / better-balanced output (63 % of bytes
@@ -146,7 +146,7 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       (`"RAW applied EMBEDDED DCP 'Google Embedded Camera Profile' …"`).
       See `docs/notes/raw-support-phase3.md`.
 
-### Phase 3.4 — DCP LookTable + tone curve + dual-illuminant (done, 2026-04-17)
+### Phase 3.4: DCP LookTable + tone curve + dual-illuminant (done, 2026-04-17)
 
 - [x] DCP `LookTable` application (second HSV LUT after `HueSatMap`).
       Parses tags 50981 / 50982 / 51108 from both standalone `.dcp` files
@@ -157,8 +157,8 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       applied via a new `tone_curve::apply_tone_curve_lut` helper that
       shapes luminance only and scales RGB uniformly, matching the
       default curve's pattern. When a DCP (embedded or filesystem)
-      carries a tone curve, we apply **it instead of** our default —
-      the camera's intended tonality wins. Logged at INFO so users can
+      carries a tone curve, we apply **it instead of** our default.
+      The camera's intended tonality wins. Logged at INFO so users can
       tell which curve ran.
 - [x] DCP dual-illuminant interpolation. Compromise fidelity: simple
       `temp ≈ 7000 − 2000 × (R/G − 1)` scene-temperature estimate from
@@ -166,12 +166,12 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       `HueSatMap2` weighted by where the estimate falls between the two
       illuminant temperatures (clamped outside the endpoints). The
       spec's full iterative procedure (ForwardMatrix1/2 + scene neutral
-      + CCT convergence) remains future work — the compromise gets the
+      + CCT convergence) remains future work. The compromise gets the
       direction and order-of-magnitude right, which is enough for a
       viewer. See `docs/notes/raw-support-phase3.md` for the algorithm
       choice and limitations.
 
-### Phase 3.5 — bundled collection + fuzzy matching (done, 2026-04-17)
+### Phase 3.5: bundled collection + fuzzy matching (done, 2026-04-17)
 
 - [x] Bundle RawTherapee DCP collection (161 profiles, BSD-redistributable)
       at build time into a zstd-compressed blob (~10 MB binary delta).
@@ -181,7 +181,7 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       (20 entries covering Sony, Fujifilm, Nikon, Canon, Olympus,
       Panasonic). When exact matching fails on all tiers, try each alias
       across filesystem then bundled tiers. Logs at INFO so users see the
-      substitution. Conservative seed list — better to miss than mismatch.
+      substitution. Conservative seed list (better to miss than mismatch).
 - [x] Fuzzy-alias matches skip the whole DCP color stage (HueSatMap +
       LookTable). `apply_if_available` takes a new `allow_fuzzy: bool`
       parameter; the RAW pipeline passes `false`, so cross-sensor
@@ -190,7 +190,7 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       profile applied anyway can drop an exact-match DCP under
       `$PRVW_DCP_DIR`. See `docs/notes/raw-support-phase3.md`.
 
-### Phase 3.6 — DNG GainMap + bad-pixel spec compliance (done, 2026-04-17)
+### Phase 3.6: DNG GainMap + bad-pixel spec compliance (done, 2026-04-17)
 
 - [x] GainMap: honor `Planes > MapPlanes` fallback on the RGB path. When
       `MapPlanes < Planes`, the last gain-map plane now fans out to all
@@ -203,7 +203,7 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
       `same_phase_neighbor_offsets` returns the eight `{±2}` offset pairs.
       Deferred from Phase 3.0 commit `ecc9973`.
 
-### Phase 3.7 — pipeline transparency settings (done, 2026-04-17)
+### Phase 3.7: pipeline transparency settings (done, 2026-04-17)
 
 - [x] `RawPipelineFlags` struct with one bool per stage (10 toggles across
       sensor, color, tone, detail). Defaults all-true reproduce today's
@@ -220,26 +220,26 @@ interpolation (we use D65 straight through), `ForwardMatrix1/2` swap
 - [x] One INFO log line per decode when any flag is non-default, listing
       the disabled steps. Silent on the default path.
 
-### Phase 3.x — still ahead
+### Phase 3.x: still ahead
 
 - [ ] DCP dual-illuminant, full fidelity: iterate ForwardMatrix1/2 +
       `AsShotNeutral` to converge a proper scene CCT instead of the
       one-shot WB-ratio approximation.
 
-## Phase 4 — Lens correction (via lensfun-rs)
+## Phase 4: Lens correction (via lensfun-rs)
 
 Complements Phase 3's color work. Phase 3 handles color fidelity (DCP,
-HueSatMap, DNG opcodes); Phase 4 handles geometry — distortion, transverse
+HueSatMap, DNG opcodes); Phase 4 handles geometry: distortion, transverse
 chromatic aberration, and vignetting. Different math, different data,
 different upstream source of truth.
 
 Approach: port LensFun's C++ core to pure Rust in a **separate crate**
 (`github.com/vdavid/lensfun-rs`), then depend on it from Prvw. The port spec
-is at `docs/notes/lensfun-rs.md` — 7,756 LoC of C++ with minimal deps,
+is at `docs/notes/lensfun-rs.md`. It's 7,756 LoC of C++ with minimal deps,
 ~6-8 weeks focused work. Delivering it as a standalone crate keeps Prvw
 pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
 
-### Phase 4.0 — integration (done, 2026-04-17)
+### Phase 4.0: integration (done, 2026-04-17)
 
 - [x] `lensfun-rs` crate scaffolded and ported per
       `docs/notes/lensfun-rs.md`. LGPL-3.0. v0.1 covers distortion + TCA +
@@ -250,7 +250,7 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
       Looks up body + lens via rawler's metadata (`raw.camera.make/model`
       + EXIF `lens_model/focal_length/fnumber`), builds a `Modifier`, and
       applies vignetting → distortion → TCA in place on the linear
-      Rec.2020 buffer. Pipeline slot matches DNG `OpcodeList3`'s —
+      Rec.2020 buffer. Pipeline slot matches DNG `OpcodeList3`'s:
       post-demosaic, pre-exposure. Skipped on DNGs whose
       `OpcodeList3::WarpRectilinear` already handled distortion (avoids
       double correction).
@@ -263,12 +263,12 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
       barrel-distortion rectification, corner-vignette lift, and closed
       color fringing. sample2.dng (Pixel 6 Pro) is bit-identical
       with/without the toggle because its `OpcodeList3::WarpRectilinear`
-      already baked in the manufacturer's correction — exactly the
+      already baked in the manufacturer's correction, exactly the
       intended skip. See `docs/notes/raw-support-phase4.md`.
 
-## Phase 5 — HDR / EDR output
+## Phase 5: HDR / EDR output
 
-### Phase 5.0 — filmic curve, f16 cache, SDR fallback (done, 2026-04-17)
+### Phase 5.0: filmic curve, f16 cache, SDR fallback (done, 2026-04-17)
 
 - [x] Filmic Reinhard-style highlight shoulder asymptoting at 4.0 for EDR
       output (1.0 for SDR). Replaces the Phase 4 Hermite shoulder that
@@ -291,10 +291,10 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
       trading RAM rather than caching fewer images. See
       `docs/notes/raw-support-phase5.md` for the trade-off.
 - [x] Renderer uploads RGBA16F half-float textures as
-      `TextureFormat::Rgba16Float` — the shader samples as `vec4<f32>`
+      `TextureFormat::Rgba16Float`. The shader samples as `vec4<f32>`
       either way.
 
-### Phase 5.1 — surface format switch (done, 2026-04-17)
+### Phase 5.1: surface format switch (done, 2026-04-17)
 
 - [x] Switch the wgpu surface format to `Rgba16Float` when an HDR RAW is
       displayed on an EDR-capable screen, and set the three CAMetalLayer
@@ -315,9 +315,9 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
       changes the HDR preview on an EDR display; before, the HDR branch
       skipped the step unconditionally.
 
-## Phase 6 — tuning knobs and performance polish
+## Phase 6: tuning knobs and performance polish
 
-### Phase 6.0 — user-facing tuning sliders (done, 2026-04-17)
+### Phase 6.0: user-facing tuning sliders (done, 2026-04-17)
 
 - [x] `RawPipelineFlags` gains three float knobs alongside the bools:
       `sharpen_amount` (0.0 – 1.0), `saturation_boost_amount` (0.0 – 0.30),
@@ -335,28 +335,28 @@ pure Rust and gives the wider Rust imaging ecosystem its first LensFun.
 - [x] New "Tuning" section in Settings → RAW, sitting between the "Output"
       toggle and the "DCP profile" row. Three NSSlider rows with a title,
       a description, the slider, and a 2-decimal numeric label.
-      `setContinuous(false)` — the action fires once on mouse release, not
+      `setContinuous(false)`: the action fires once on mouse release, not
       on every pixel during drag, so a single gesture triggers a single
       re-decode. Reset-to-defaults snaps the sliders back in one atomic
       step.
 - [x] Settings persistence round-trip tests cover the three floats at the
       `RawPipelineFlags` level and at the `Settings` level (JSON path).
 - [x] Rationale for the three-knob shortlist:
-      - **Sharpening amount** — Phase 2.4's Laplacian tuning concluded
+      - **Sharpening amount**: Phase 2.4's Laplacian tuning concluded
         that amount is the most visually load-bearing sharpen parameter,
         not σ. σ (the blur radius) stays internal to keep the kernel
         cheap and predictable.
-      - **Saturation boost** — the one knob that users with "Fuji-pop"
+      - **Saturation boost**: the one knob that users with "Fuji-pop"
         or "muted" preferences reach for most. Post-tone-curve global
         chroma lift in linear Rec.2020, hue- and luminance-preserving.
-      - **Midtone anchor** — lifts or crushes midtones without touching
+      - **Midtone anchor**: lifts or crushes midtones without touching
         the shoulder. The filmic `DEFAULT_PEAK_SDR` / `DEFAULT_PEAK_HDR`
         values stay internal; peak is a display decision, not a taste
         decision.
 
 See `docs/notes/raw-support-phase6.md`.
 
-### Phase 6.1 — chroma noise reduction (done, 2026-04-17)
+### Phase 6.1: chroma noise reduction (done, 2026-04-17)
 
 - [x] `color::chroma_denoise` module: Rec.2020 Y / Cb / Cr split,
       separable Gaussian blur (`σ = 1.5 px`, 11 taps) on Cb and Cr,
@@ -364,7 +364,7 @@ See `docs/notes/raw-support-phase6.md`.
       rounding. Rayon-parallel, inner blur rows annotated with
       `#[multiversion(targets("aarch64+neon", "x86_64+avx+avx2+fma"))]`
       and `f32::mul_add` for FMA hints.
-- [x] `RawPipelineFlags::chroma_denoise` defaults to `true` — matches
+- [x] `RawPipelineFlags::chroma_denoise` defaults to `true`, matching
       the silent chroma-NR default in Preview.app and Affinity Photo.
       Runs in linear Rec.2020 post-crop, pre-baseline-exposure. At
       `false`, per-image output is bit-identical to pre-6.1.
@@ -380,7 +380,7 @@ See `docs/notes/raw-support-phase6.md`.
       +58 ms on 20 MP sample1.arw, +72 ms on 20 MP sample3.arw. See
       `docs/notes/raw-support-phase6.md`.
 
-### Phase 6.3 — SIMD-vectorize lens correction resampler (done, 2026-04-17)
+### Phase 6.3: SIMD-vectorize lens correction resampler (done, 2026-04-17)
 
 - [x] `resample_distortion_row` and `resample_tca_row` extracted from the
       `apply_distortion_resample` / `apply_tca_resample` per-row rayon
@@ -389,7 +389,7 @@ See `docs/notes/raw-support-phase6.md`.
       scalar NEON float ops throughout.
 - [x] `sample_rgb_bilinear_fast`: branchless bilinear sampler using
       `f32::mul_add` for FMA hints. NaN/inf coords handled via `if` select
-      (not multiply — `NaN × 0.0 = NaN`) so the loop body is branch-free.
+      (not multiply: `NaN × 0.0 = NaN`) so the loop body is branch-free.
 - [x] `sample_single_channel_bilinear_fast`: per-channel variant for the TCA
       path. Eliminates 2/3 of the redundant `sample_rgb_bilinear` computation
       the original code did (3 calls each returning all 3 channels).
@@ -401,7 +401,7 @@ See `docs/notes/raw-support-phase6.md`.
       `fast_sampler_nan_inf_returns_zero`, `single_channel_fast_matches_scalar`.
       All pass bit-for-bit (tolerance 1e-5, covering FMA rounding).
 
-## Phase 7 — nice-to-haves, probably never
+## Phase 7: nice-to-haves, probably never
 
 - [ ] Better Bayer demosaic: AMaZE or RCD instead of PPG. Editor-grade
       sharpness on edges. ~2000 LoC per algorithm.
@@ -422,7 +422,7 @@ See `docs/notes/raw-support-phase6.md`.
 - [ ] SIMD (NEON) the sharpen kernel. Current perf is ~60 ms on 20 MP; a
       NEON pass would land around ~20 ms.
 - [ ] Smaller, better-than-perceptual gamut mapping. moxcms's matrix-only
-      profiles don't differentiate intents — fine for in-gamut content, less
+      profiles don't differentiate intents. Fine for in-gamut content, less
       so for highly saturated subjects.
 
 ## Sequencing principle

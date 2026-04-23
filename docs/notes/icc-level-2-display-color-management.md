@@ -49,7 +49,7 @@ we'd upgrade to option B or C.
 |---|---|---|
 | **A: Always transform (chosen)** | Remove the sRGB-specific early exit. Even sRGB images get transformed to the display profile. | Always correct. One code path. ~45ms cost on the first image, hidden by preloader for adjacent images. |
 | **B: Set layer colorspace per image** | sRGB layer for sRGB content, P3 layer for P3 content. | Possible flicker on navigation. More state to track. |
-| **C: Keep sRGB skip, accept inaccuracy** | sRGB content on a P3 display without transform. | If `CAMetalLayer.colorspace` is P3, the compositor interprets sRGB pixels as P3 — colors are slightly undersaturated. Defeats the purpose. |
+| **C: Keep sRGB skip, accept inaccuracy** | sRGB content on a P3 display without transform. | If `CAMetalLayer.colorspace` is P3, the compositor interprets sRGB pixels as P3. Colors are slightly undersaturated. Defeats the purpose. |
 
 **Why A**: the generalized skip is byte-equality (`profiles_match`). If source ICC bytes == target ICC bytes, the
 transform is skipped with zero cost. This handles P3-on-P3, sRGB-on-sRGB, and any other identity case. Non-identity
@@ -148,7 +148,7 @@ Benchmarked on Apple M3 Max, release build, 24MP (6000x4000) Adobe RGB JPEG:
 | ICC transform (moxcms, NEON SIMD) | ~45ms |
 | **Total** | **~263ms** |
 
-Level 2's per-pixel cost is the same as Level 1 — only the LUT contents change based on the target profile. The
+Level 2's per-pixel cost is the same as Level 1. Only the LUT contents change based on the target profile. The
 preloader handles adjacent images in background threads, so the user only pays this on the first image.
 
 ## Key files

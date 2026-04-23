@@ -13,10 +13,10 @@ Settings → Zoom panel.
 ## State
 
 `App.zoom: zoom::State` owns this feature's fields:
-- `auto_fit` — setting, whether window resizes to match each image
-- `enlarge` — setting, whether to upscale small images
-- `scroll_to_zoom` — setting, scroll wheel zooms vs navigates
-- `view: ViewState` — runtime zoom/pan math + `TransformUniform`
+- `auto_fit`: setting, whether window resizes to match each image
+- `enlarge`: setting, whether to upscale small images
+- `scroll_to_zoom`: setting, scroll wheel zooms vs navigates
+- `view: ViewState`: runtime zoom/pan math + `TransformUniform`
 
 Inside `ViewState`: `zoom: f32` is the absolute scale (1.0 = pixel-perfect),
 `pan_x/pan_y`, `min_zoom` (the floor), image + window dimensions.
@@ -25,7 +25,7 @@ Inside `ViewState`: `zoom: f32` is the absolute scale (1.0 = pixel-perfect),
 
 Zoom is **absolute**: `zoom=1.0` means 1 image pixel = 1 screen pixel. `fit_zoom()`
 is the zoom that exactly fills the content area (< 1.0 for large images, > 1.0 for
-small ones). `min_zoom` is the floor — prevents zooming out past fit.
+small ones). `min_zoom` is the floor, preventing zooming out past fit.
 
 On image load, `App::apply_initial_zoom` picks the starting zoom and floor based on
 the three settings (`auto_fit`, `enlarge`, `min_zoom`) and the image vs window sizes.
@@ -34,7 +34,7 @@ See the full matrix in `apps/desktop/CLAUDE.md`.
 ## Transform
 
 Zoom and pan become a 2D affine transform in the vertex shader via `TransformUniform`
-(a uniform buffer write). No re-decode, no re-upload — just a uniform update.
+(a uniform buffer write). No re-decode, no re-upload. Just a uniform update.
 
 ## Gotchas
 

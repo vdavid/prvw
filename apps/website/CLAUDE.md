@@ -54,12 +54,12 @@ compensates for it so the solid window edges align with the body text.
 **David's part:**
 1. Pick a nice photo from family collection (good colors, interesting subject)
 2. Make sure the crop looks good in Prvw
-3. Open it in Prvw (the installed version, not a debug build — the title bar matters)
+3. Open it in Prvw (the installed version, not a debug build; the title bar matters)
 4. Screenshot with CleanShot X: **window capture, no background** (transparent PNG, includes the macOS shadow)
 5. Save as `~/Downloads/prvw-scrshot-2@2x.png` (or similar) and hand it to the agent
 
 **Agent's part:**
-1. Measure the shadow on each side of the raw screenshot (in pixels). The shadow is uneven — macOS uses more shadow at
+1. Measure the shadow on each side of the raw screenshot (in pixels). The shadow is uneven: macOS uses more shadow at
    the bottom than the top/sides.
 2. Crop to exactly **65px of shadow on all four sides** (this is the design target). The math:
    ```

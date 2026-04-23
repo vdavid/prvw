@@ -2,8 +2,8 @@
 
 macOS default-handler registration for each supported image UTI. Used by:
 
-- **Onboarding** — "Set as default viewer" button
-- **Settings → File associations panel** — two sections, each with a master toggle + per-UTI toggles
+- **Onboarding**: "Set as default viewer" button
+- **Settings → File associations panel**: two sections, each with a master toggle + per-UTI toggles
 
 ## UTI source of truth
 
@@ -28,7 +28,7 @@ The per-row handler caption is the main UX transparency signal. It says
 `"Currently opens with Preview.app."` when Prvw isn't the handler, or
 `"Before Prvw, these opened with Preview.app."` when Prvw is. Unknown apps render as
 `"another app"`. The caption pointer is stored per row in `FileAssocDelegateIvars`
-and `refresh_all` rewrites all 16 captions on every 1-second tick — that way the
+and `refresh_all` rewrites all 16 captions on every 1-second tick, so the
 text stays truthful even when another app steals the association behind our back.
 
 Storage: the "before" app is looked up from `Settings.previous_handlers` via
@@ -46,7 +46,7 @@ we signal it by:
 Click behavior on a master switch follows macOS Finder's "Select all" convention:
 
 - `None` → all on
-- `Mixed` → all on (promotes, rather than collapsing to off — avoids accidental
+- `Mixed` → all on (promotes, rather than collapsing to off, to avoid accidental
   widespread disables)
 - `All` → all off
 
@@ -56,8 +56,8 @@ handlers change elsewhere (another viewer, Get Info → "Open With…" → Chang
 ## Approach
 
 Direct CoreServices FFI via `objc2-core-services`:
-- `LSCopyDefaultRoleHandlerForContentType` — query current handler
-- `LSSetDefaultRoleHandlerForContentType` — set Prvw or restore
+- `LSCopyDefaultRoleHandlerForContentType`: query current handler
+- `LSSetDefaultRoleHandlerForContentType`: set Prvw or restore
 
 No Swift toolchain dependency, near-instant, deprecated but stable.
 
@@ -70,7 +70,7 @@ UTI was installed after Prvw), falls back to `com.apple.Preview`.
 
 ## Onboarding coupling
 
-`set_as_default_viewer()` claims every entry in `SUPPORTED_UTIS` — onboarding calls it
+`set_as_default_viewer()` claims every entry in `SUPPORTED_UTIS`. Onboarding calls it
 when the user clicks "Set as default viewer". Extending `SUPPORTED_UTIS` widens
 onboarding's scope. That's intentional while RAW support is new; the onboarding flow
 will get a dedicated revamp later.

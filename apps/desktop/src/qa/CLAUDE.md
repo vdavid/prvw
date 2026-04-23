@@ -10,7 +10,7 @@ MCP JSON-RPC surface at `POST /mcp`.
 | `http.rs`   | Simple HTTP endpoint handlers (`/state`, `/key`, `/zoom`, `/open`, ...)  |
 | `mcp.rs`    | MCP JSON-RPC handler: `handle_mcp`, tools/list, tools/call, resources/list, resources/read |
 
-`server.rs::handle_request` is the only dispatcher — it parses the request line, reads
+`server.rs::handle_request` is the only dispatcher. It parses the request line, reads
 the body, then calls into either `http::handle_*` or `mcp::handle_mcp`.
 
 ## Key patterns
@@ -29,12 +29,12 @@ the body, then calls into either `http::handle_*` or `mcp::handle_mcp`.
 - **`format_state_json` and `write_response` are shared** utilities in `server.rs`,
   marked `pub(super)` so both handler modules can reach them.
 - **Screenshots via offscreen render target.** A separate wgpu render target + buffer
-  readback + PNG encoding. Stripped path (no pills, no title bar viewport) — pixel
+  readback + PNG encoding. Stripped path (no pills, no title bar viewport). Pixel
   tests of the live window's appearance need a different approach.
 
 ## Env vars
 
-- `PRVW_QA_PORT` — port to bind (default 19447). `0` disables the server.
+- `PRVW_QA_PORT`: port to bind (default 19447). `0` disables the server.
 
 ## Gotchas
 

@@ -41,7 +41,7 @@ colocated `CLAUDE.md` or rely on `//!` docs on each submodule (`onboarding/`).
 
 `App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`.
 Each feature's runtime state lives in its own module. App only keeps truly
-cross-cutting state — handles (window, renderer, menu), launch flags (file_path,
+cross-cutting state: handles (window, renderer, menu), launch flags (file_path,
 waiting_for_file), runtime input (modifiers, drag_start, etc.), and the single
 cross-feature toggle `title_bar`.
 
@@ -63,11 +63,11 @@ cross-feature toggle `title_bar`.
 
 See `platform/macos/CLAUDE.md` for the full list. Short version:
 
-- **Never run AppKit modals inside winit's event loop** — segfault. Run them before
+- **Never run AppKit modals inside winit's event loop.** Segfault. Run them before
   `EventLoop::new()` or defer via `EventLoopProxy`.
 - **`Retained<>` outlives the window.** Store every objc2 `Retained<...>` in a `Vec`
   that outlives the window. No compile-time check.
-- **Finder file opens need ObjC method injection** into winit's delegate — see
+- **Finder file opens need ObjC method injection** into winit's delegate. See
   `platform/macos/open_handler.rs`.
 - **`zune-jpeg` in debug builds.** SIMD unusably slow without optimizations.
   `Cargo.toml` sets `[profile.dev.package.zune-jpeg] opt-level = 3`.

@@ -9,13 +9,13 @@ per-pixel bytes for RAW RGBA16F.
 | File           | Purpose                                                                                    |
 | -------------- | ------------------------------------------------------------------------------------------ |
 | `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline }`; `format_offset` + `format_bytes` + `NAV_DEBOUNCE` helpers |
-| `directory.rs` | `DirectoryList` — scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range`; `go_by(delta)` |
+| `directory.rs` | `DirectoryList`: scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range`; `go_by(delta)` |
 | `preloader.rs` | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction (512 MB / 1 GB budget)                                           |
 
 ## State
 
 `App.navigation: navigation::State` owns this feature's runtime. Note the `history`
-field holds `VecDeque<NavigationRecord>` — the type is defined in `crate::diagnostics`
+field holds `VecDeque<NavigationRecord>`. The type is defined in `crate::diagnostics`
 (it's a measurement record). Navigation pushes entries; diagnostics formats them.
 
 ## Navigation render path
@@ -26,7 +26,7 @@ shows a "Loading…" title, and submits the target as the priority-zero preload
 task (first entry in `request_preload`'s `tasks` list → FIFO slot).
 `poll_preloader` runs the render when `PreloadResponse::Ready { index }`
 matches `pending_current`, then clears it. The main thread never decodes
-navigation targets directly — only settings re-decode and `Refresh` still call
+navigation targets directly. Only settings re-decode and `Refresh` still call
 the sync `display_image` path.
 
 ## Debounced navigation
@@ -65,13 +65,13 @@ path, which flushes pending first so automated tests see deterministic state.
 - **Cancellation.** Preload tasks hold an `Arc<AtomicBool>`; navigation away
   flips the tokens for any indices no longer in the priority list. Tasks
   still wanted keep their existing token and don't restart mid-decode.
-- **Supported extensions are decided by `decoding`** — `DirectoryList` filters via
+- **Supported extensions are decided by `decoding`.** `DirectoryList` filters via
   `decoding::is_supported_extension`. New format support = one change, two effects
   (decode + list).
 - **Preload can be disabled for benchmarking.** `State.preload_neighbors` (driven
   by Settings → General → "Preload next/prev images", default on) gates both
   `preloader.request_preload` call sites in `app.rs`. When off, only the
-  currently-displayed image consumes decode work — intended for single-image
+  currently-displayed image consumes decode work. Intended for single-image
   cold-start perf measurements where concurrent preloads would skew the
   per-stage timings logged by `decoding::raw::decode`.
 

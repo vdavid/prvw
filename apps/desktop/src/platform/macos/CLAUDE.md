@@ -1,4 +1,4 @@
-# Platform — macOS (truly cross-cutting glue)
+# Platform: macOS (truly cross-cutting glue)
 
 Feature-owned macOS code lives in the feature. This module only holds the glue that
 doesn't belong to any single feature.
@@ -18,8 +18,8 @@ without duplicating.
   Run native modals BEFORE `EventLoop::new()` (see `main()`), or defer via
   `EventLoopProxy`.
 - **`Retained<>` lifetime inside long-lived windows.** Every objc2
-  `Retained<NSTextField/NSButton/...>` must stay alive for the window's lifetime —
-  store them in a `Vec<Retained<AnyObject>>` that outlives the window. Dropping
+  `Retained<NSTextField/NSButton/...>` must stay alive for the window's lifetime.
+  Store them in a `Vec<Retained<AnyObject>>` that outlives the window. Dropping
   early = segfault in autorelease pool cleanup. No compile-time check.
 - **`define_class!` methods get an implicit `_cmd: Sel`.** For plain Rust helpers,
   put them in a separate `impl` block outside the macro.

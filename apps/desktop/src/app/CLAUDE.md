@@ -1,11 +1,11 @@
-# App (infrastructure — core state + event loop)
+# App (infrastructure: core state + event loop)
 
-Not a feature — this is the runtime scaffolding every feature plugs into.
+Not a feature. This is the runtime scaffolding every feature plugs into.
 
 | File              | Purpose                                                                 |
 | ----------------- | ----------------------------------------------------------------------- |
 | `app.rs`          | `App` struct, `App::new`, `ApplicationHandler` impl                     |
-| `executor.rs`     | `App::execute_command` — single dispatcher for every `AppCommand`       |
+| `executor.rs`     | `App::execute_command`: single dispatcher for every `AppCommand`        |
 | `shared_state.rs` | `SharedAppState` snapshot + `App::update_shared_state` writer           |
 
 ## App's fields
@@ -24,7 +24,7 @@ truly cross-cutting state:
   `needs_redraw`, `scale_factor`.
 - **Cross-thread**: `shared_state`, `event_loop_proxy`, `_qa_handle`.
 
-App doesn't implement any feature's logic — the handler arms in `execute_command`
+App doesn't implement any feature's logic. The handler arms in `execute_command`
 mutate `self.zoom`, `self.color`, `self.navigation` fields or delegate to the
 feature (e.g. `window::toggle_fullscreen`, `crate::settings::show_settings_window`).
 
@@ -49,14 +49,14 @@ feature (e.g. `window::toggle_fullscreen`, `crate::settings::show_settings_windo
 3. Map input to the command somewhere (`crate::input` for keys/menus, `crate::qa::http`
    or `crate::qa::mcp` for HTTP/MCP).
 
-## Decision — per-feature State structs
+## Decision: per-feature State structs
 
 **Decision:** Each feature owns its runtime state (`zoom::State`, `color::State`,
 `navigation::State`) rather than flat fields on `App`. App holds the struct as a
 field.
 
 **Why:** Lets features grow state without bloating App. State is physically close
-to the code that reads/writes it. Visibility boundary is natural — external code
+to the code that reads/writes it. Visibility boundary is natural: external code
 goes through `App.feature.field`, not a grab bag of flat fields.
 
 **How to apply:** When you need state for a new feature, decide:

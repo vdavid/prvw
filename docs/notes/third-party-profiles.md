@@ -15,15 +15,15 @@ community contributions whose individual authors hold the copyright.
 
 ### Principal contributors
 
-- **Maciej Dworak** — author of the majority of profiles in the collection,
+- **Maciej Dworak**: author of the majority of profiles in the collection,
   covering Canon, Fujifilm, Nikon, Olympus, Panasonic, Pentax, Ricoh, and Sony.
   Copyright strings appear in the embedded `ProfileCopyright` tag of his profiles
   as "Copyright Maciej Dworak".
-- **Lawrence Lee** — Canon EOS R8 and several other Canon / Fujifilm profiles.
-- **Alberto Griggio** — Panasonic DC-S5 Mark II and others.
-- **Thanatomanic** — Fujifilm DBP for GX680.
-- **Morgan Hardwood** — Sony ILCE-7M3 and others.
-- **Other RawTherapee contributors** — see the git history at
+- **Lawrence Lee**: Canon EOS R8 and several other Canon / Fujifilm profiles.
+- **Alberto Griggio**: Panasonic DC-S5 Mark II and others.
+- **Thanatomanic**: Fujifilm DBP for GX680.
+- **Morgan Hardwood**: Sony ILCE-7M3 and others.
+- **Other RawTherapee contributors**: see the git history at
   https://github.com/Beep6581/RawTherapee/commits/dev/rtdata/dcpprofiles
 
 The source RAW files (color-target shots) used to generate many of these profiles

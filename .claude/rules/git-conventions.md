@@ -2,7 +2,7 @@
 
 - Title: Optional prefix like "Bugfix: ", "Docs: ", "Tooling: ", "File viewer: ", etc. Max 50 chars. Capture the IMPACT
   of the change, not the tech details.
-- Body: A few bullets of details if needed. No word wrap — don't hard-wrap body lines at 72 chars or any other width.
+- Body: A few bullets of details if needed. No word wrap; don't hard-wrap body lines at 72 chars or any other width.
   Let the terminal/viewer wrap naturally. Enclose entities in ``. No co-author.
 
 ## PRs

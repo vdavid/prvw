@@ -1,6 +1,6 @@
-# Render (infrastructure — wgpu)
+# Render (infrastructure: wgpu)
 
-Not a feature — this is the GPU rendering scaffolding. Features like `zoom` (which
+Not a feature. This is the GPU rendering scaffolding. Features like `zoom` (which
 owns `ViewState`) plug transforms into the renderer's uniform buffer via
 `crate::zoom::view::TransformUniform`.
 
@@ -27,7 +27,7 @@ owns `ViewState`) plug transforms into the renderer's uniform buffer via
 - **Image texture must be explicitly destroyed on replace.** `set_image` holds
   the previous `wgpu::Texture` in `Renderer.image_texture` and calls
   `texture.destroy()` before allocating the new one. Without this, Metal keeps
-  the old unified-memory backing resident — a long navigation session through
+  the old unified-memory backing resident. A long navigation session through
   20 MP RAWs can grow RSS by gigabytes even though `bind_group` was replaced.
 - **Screenshot path differs from main render.** `capture_screenshot` strips the
   viewport offset, pills, and text. Pixel tests of the live window's appearance need
@@ -42,11 +42,11 @@ owns `ViewState`) plug transforms into the renderer's uniform buffer via
   rebuilds the image-quad pipeline, the overlay pipeline, and the glyphon text
   renderer against the new format. Shader modules and pipeline layouts are cached,
   so only the `RenderPipeline` objects get recreated. The glyphon renderer is
-  rebuilt wholesale because `TextAtlas::new` pins the format — cheap, one
+  rebuilt wholesale because `TextAtlas::new` pins the format. Cheap: one
   allocation plus a fresh swash cache. See `docs/notes/raw-support-phase5.md`.
 - **`CAMetalLayer` is a sublayer, not the NSView's direct layer.** Walk
   `[ns_view layer].sublayers`. See `crate::color::display_profile::set_layer_colorspace`.
 - **wgpu 29 API quirks.** `Instance::new()` takes a value. `get_current_texture()`
   returns an enum. `PipelineLayoutDescriptor` uses `immediate_size`.
   `RenderPassColorAttachment` requires `depth_slice`.
-- **Shaders are `include_str!`'d** relative to `renderer.rs` — keep them colocated.
+- **Shaders are `include_str!`'d** relative to `renderer.rs`. Keep them colocated.

@@ -1,4 +1,4 @@
-# lensfun-rs — pure-Rust port spec
+# lensfun-rs: pure-Rust port spec
 
 A spec for porting [LensFun](https://github.com/lensfun/lensfun) (C++, LGPL-3.0) to
 pure Rust as a standalone crate. Intended to be consumed by a lead agent that
@@ -15,7 +15,7 @@ actual rewrite; the surrounding project setup is "do what mtp-rs does".
 
 Add camera lens correction (distortion, TCA, vignetting) to Rust applications
 without pulling in C/C++ dependencies. First consumer: the Prvw image viewer's
-Phase 5 roadmap — see `raw-roadmap.md` in the Prvw repo.
+Phase 5 roadmap. See `raw-roadmap.md` in the Prvw repo.
 
 ## Why port instead of bind
 
@@ -36,25 +36,25 @@ Phase 5 roadmap — see `raw-roadmap.md` in the Prvw repo.
 
 ### Must-have for v1 (covers Prvw's use case)
 
-- **XML database loader** — read LensFun's `data/db/*.xml` files, produce
+- **XML database loader**: read LensFun's `data/db/*.xml` files, produce
   queryable structs for mounts, cameras, lenses, and calibration data.
-- **Distortion correction** — all three models: `ptlens`, `poly3`, `poly5`.
+- **Distortion correction**: all three models: `ptlens`, `poly3`, `poly5`.
   Inverse warp with Newton iteration for poly3/poly5.
-- **TCA correction** — `linear` and `poly3` models.
-- **Vignetting correction** — `pa` model (three coefficients).
-- **Geometry conversions** — rectilinear, fisheye, panoramic, equirectangular.
+- **TCA correction**: `linear` and `poly3` models.
+- **Vignetting correction**: `pa` model (three coefficients).
+- **Geometry conversions**: rectilinear, fisheye, panoramic, equirectangular.
   Textbook trigonometry.
 - **Catmull-Rom spline interpolation** across focal-length and aperture axes,
   with nearest-neighbor fallback when calibration points are sparse.
-- **Matching logic** — `MatchScore` for pairing a camera body + lens model
+- **Matching logic**: `MatchScore` for pairing a camera body + lens model
   string with the right profile.
-- **Fuzzy string matcher** — `lfFuzzyStrCmp` port.
+- **Fuzzy string matcher**: `lfFuzzyStrCmp` port.
 
 ### Nice-to-have for v1.x
 
-- **Perspective correction** (`mod-pc.cpp`) — requires SVD. `nalgebra` has
+- **Perspective correction** (`mod-pc.cpp`): requires SVD. `nalgebra` has
   SVD; or port the hand-rolled Jacobi from Rasmussen 1996 directly.
-- **Build-time data bundling** — a `build.rs` that reads the XML and emits
+- **Build-time data bundling**: a `build.rs` that reads the XML and emits
   compressed `&'static [u8]` or `phf` maps, so consumers don't need the XML
   at runtime.
 
@@ -70,9 +70,9 @@ Phase 5 roadmap — see `raw-roadmap.md` in the Prvw repo.
 
 1. **Upstream LensFun repo**: https://github.com/lensfun/lensfun
 2. **Upstream core**: `libs/lensfun/` (C++ source)
-3. **Upstream API**: `include/lensfun/lensfun.h.in` — the public surface to
-   mirror.
-4. **Upstream tests**: `tests/test_*.cpp` — port 1:1 as Rust integration
+3. **Upstream API**: `include/lensfun/lensfun.h.in` (the public surface to
+   mirror).
+4. **Upstream tests**: `tests/test_*.cpp`. Port 1:1 as Rust integration
    tests. These ARE the spec.
 5. **Upstream database**: `data/db/*.xml` plus `data/db/lensfun-database.dtd`
    and `data/db/lensfun-database.xsd`.
@@ -80,7 +80,7 @@ Phase 5 roadmap — see `raw-roadmap.md` in the Prvw repo.
 Pin to a specific upstream tag or commit. Periodically rebase and sync database
 changes.
 
-## Architecture — what's actually in the 7,756-LoC C++ core
+## Architecture: what's actually in the 7,756-LoC C++ core
 
 | File | LoC | Purpose |
 |---|---:|---|
@@ -89,10 +89,10 @@ changes.
 | `mod-coord.cpp` | 1,250 | 28 coordinate transforms (distortion + geometry) |
 | `mod-pc.cpp` | 766 | perspective correction + hand-rolled SVD |
 | `auxfun.cpp` | 523 | `lfFuzzyStrCmp`, `_lf_interpolate`, MLstr helpers |
-| `mod-coord-sse.cpp` | (skip) | SSE variants — skip for v1 |
+| `mod-coord-sse.cpp` | (skip) | SSE variants (skip for v1) |
 | `mod-color.cpp` | 374 | vignetting pixel pass, scalar + templated |
 | `mod-subpix.cpp` | 406 | TCA sub-pixel correction |
-| `mod-color-sse*.cpp` | (skip) | SSE variants — skip for v1 |
+| `mod-color-sse*.cpp` | (skip) | SSE variants (skip for v1) |
 | `modifier.cpp`, `camera.cpp`, `mount.cpp`, `cpuid.cpp` | ~570 | glue + constructors |
 
 **Zero virtual functions. Minimal use of `class`.** The public types (`lfLens`,
@@ -100,14 +100,14 @@ changes.
 external functions. Port target: idiomatic Rust structs plus free functions or
 inherent impls.
 
-## External C++ deps — what to replace with
+## External C++ deps: what to replace with
 
 | C++ dep | Used in | Rust replacement |
 |---|---|---|
 | **glib 2.x** (SAX parser, `GString`, `GPtrArray`, `g_build_filename`) | `database.cpp`, `auxfun.cpp`, trivial use in `camera.cpp` | `quick-xml` (SAX) or `roxmltree` (DOM), `std::path`, `dirs` crate |
 | **`std::regex`** (3 fixed patterns) | `lens.cpp:152-169` | `regex` crate, `once_cell::sync::Lazy` |
 | **`<math.h>`** | everywhere | `f32::sqrt` etc. in `std` |
-| libxml2, boost, icu, sqlite | not used | — |
+| libxml2, boost, icu, sqlite | not used | - |
 
 ## Database format
 
@@ -119,9 +119,9 @@ inherent impls.
   Multi-language strings via `lang="xx"` attribute.
 - **Counts**: 1,041 cameras, 1,543 lenses, 6,377 distortion entries, 3,717 TCA
   entries, 29,085 vignetting entries.
-- **Distortion models supported**: exactly 3 — `ptlens`, `poly3`, `poly5`.
-- **TCA models**: 2 — `linear`, `poly3`.
-- **Vignetting model**: 1 — `pa` with 3 coefficients.
+- **Distortion models supported**: exactly 3: `ptlens`, `poly3`, `poly5`.
+- **TCA models**: 2: `linear`, `poly3`.
+- **Vignetting model**: 1: `pa` with 3 coefficients.
 
 Two valid runtime strategies; pick one per milestone:
 
@@ -172,13 +172,13 @@ Roughly 25 LoC.
 **The tricky one.** Given a sparse set of calibration entries indexed by
 (crop-factor, focal, aperture, distance), find the right interpolant. Falls
 back to nearest-neighbor when no clean spline is available. Port
-test-by-test — `tests/test_modifier_coord_distortion.cpp` and its cousins
+test-by-test. `tests/test_modifier_coord_distortion.cpp` and its cousins
 pin down the expected behavior.
 
 ### Perspective correction SVD (`mod-pc.cpp:104`)
 
 One-sided Jacobi SVD from Rasmussen 1996, ~80 LoC. Either reuse `nalgebra`'s
-SVD or port directly. Not exotic — just needs care and test coverage.
+SVD or port directly. Not exotic; just needs care and test coverage.
 
 ## Matching logic
 
@@ -199,7 +199,7 @@ Score-based combining:
 - Split pattern into words.
 - Score = `matched_words / mean(word_count_a, word_count_b) × 100`.
 - No locale-awareness, no unicode normalization, no complex regex.
-- Uses glib UTF-8 helpers — port against `test_lffuzzystrcmp.cpp` for
+- Uses glib UTF-8 helpers. Port against `test_lffuzzystrcmp.cpp` for
   bit-exact fidelity.
 
 ### `lfLens::GuessParameters` (`lens.cpp:171`)
@@ -228,7 +228,7 @@ Key test files (all in upstream `tests/`):
 Port each file as `tests/integration/<name>.rs`. Use the same input values; assert
 the same output values within documented float tolerance.
 
-Add native Rust property tests (`proptest` — mtp-rs uses it already) on top:
+Add native Rust property tests (`proptest`, which mtp-rs uses already) on top:
 - Round-trip identity (forward then inverse distortion returns the original
   within tolerance).
 - Monotonicity of the radial distortion correction.
@@ -240,7 +240,7 @@ Add native Rust property tests (`proptest` — mtp-rs uses it already) on top:
   and **must remain LGPL-3.0-or-later**. You cannot relicense.
 - **Upstream database**: CC-BY-SA 3.0. Separate from the code license.
   Attribution required; ShareAlike applies if you modify the DB.
-- **Upstream `apps/` directory**: GPL-3.0 — do NOT read or derive from these
+- **Upstream `apps/` directory**: GPL-3.0. Do NOT read or derive from these
   (the `lenstool` CLI, for example). Stick to `libs/` and `include/` in the
   upstream source tree.
 
@@ -258,7 +258,7 @@ Add a `NOTICE` file listing:
 Rough decomposition for a team lead. Each phase ends in a green CI run and a
 clean tag.
 
-### v0.1 — skeleton + database (1 week)
+### v0.1: skeleton + database (1 week)
 
 - Project scaffold matching mtp-rs layout.
 - Port the public type surface: `Lens`, `Camera`, `Mount`, `CalibDistortion`,
@@ -267,7 +267,7 @@ clean tag.
 - Port `test_database.cpp` scenarios.
 - No correction math yet. The crate is a data loader.
 
-### v0.2 — core distortion (2 weeks)
+### v0.2: core distortion (2 weeks)
 
 - Port all three distortion models (ptlens, poly3, poly5) with Newton
   iteration.
@@ -275,27 +275,27 @@ clean tag.
 - Catmull-Rom spline interpolation.
 - Pass `test_modifier_coord_*` tests.
 
-### v0.3 — TCA and vignetting (1 week)
+### v0.3: TCA and vignetting (1 week)
 
 - `mod-subpix` (linear + poly3).
 - `mod-color` vignetting.
 - Pass `test_modifier_subpix`, `test_modifier_color`, `test_modifier_regression`.
 
-### v0.4 — matching (1 week)
+### v0.4: matching (1 week)
 
 - `MatchScore`, `lfFuzzyStrCmp`, `GuessParameters`.
 - End-to-end query: given camera + lens strings + focal + aperture, produce a
   ready-to-apply `Modifier`.
 - Pass `test_lffuzzystrcmp` and end-to-end matching tests.
 
-### v1.0 — polish + docs (1 week)
+### v1.0: polish + docs (1 week)
 
 - Public API cleanup and documentation.
 - `cargo publish` readiness (metadata, README, examples).
 - Performance pass: measure against upstream C++, document results.
 - NOTICE + license audit.
 
-### Stretch — v1.1+
+### Stretch: v1.1+
 
 - Perspective correction (port `mod-pc.cpp` + SVD).
 - Build-time database bundling.
@@ -307,18 +307,18 @@ correction adds ~2 weeks if wanted later.
 
 ## Known risks and hidden complexity
 
-1. **`lfLens::Interpolate*` (`lens.cpp:910-1292`)** — 4D spline with
+1. **`lfLens::Interpolate*` (`lens.cpp:910-1292`)**: 4D spline with
    nearest-neighbor fallback. Easy to write, hard to get bit-exact with the
    C++ reference. Budget extra time and port `test_modifier_coord_distortion`
    scenarios early; they'll catch divergences.
-2. **`lfFuzzyStrCmp` UTF-8 handling** — uses glib helpers. Test against
+2. **`lfFuzzyStrCmp` UTF-8 handling**: uses glib helpers. Test against
    `test_lffuzzystrcmp.cpp` with bit-exact expected output.
-3. **`MatchScore` magic numbers** — 30+ ad-hoc weights. Don't simplify; port
+3. **`MatchScore` magic numbers**: 30+ ad-hoc weights. Don't simplify; port
    as-is, drive changes from test evidence only.
-4. **Database schema quirks** — sparse calibration sets, conflicting entries
+4. **Database schema quirks**: sparse calibration sets, conflicting entries
    across files, language tags. The XML itself has historical edge cases;
    mirror upstream's tolerance behaviors.
-5. **Float determinism across platforms** — intermediate orderings in the C++
+5. **Float determinism across platforms**: intermediate orderings in the C++
    may matter. Use the same FP operations in the same order; avoid
    rearranging algebra "for clarity" when the test expects a specific value.
 
@@ -326,9 +326,9 @@ correction adds ~2 weeks if wanted later.
 
 - Not a C ABI compatibility layer. If consumers need that, they wrap our Rust
   crate.
-- Not a UI / CLI / GUI — separate projects.
+- Not a UI / CLI / GUI. These are separate projects.
 - Not a DCP reader. Prvw handles DCP in its own pipeline.
-- Not a replacement for `libraw` / `rawler` — lens correction only.
+- Not a replacement for `libraw` / `rawler`. Lens correction only.
 
 ## Project setup
 
@@ -336,17 +336,17 @@ All scaffolding (check script, CI, clippy config, justfile, docs structure,
 testing infrastructure, property-test scaffolds, release workflow) mirrors
 `~/projects-git/vdavid/mtp-rs`. Copy from there and adapt. Specifically:
 
-- `scripts/check.sh` — copy as-is, same output format and discipline.
-- `AGENTS.md` — adapt the project description; keep the rule structure.
-- `CONTRIBUTING.md` — adapt.
-- `justfile` — adapt.
-- `.github/workflows/` — copy CI, adapt paths.
-- `clippy.toml`, `rustfmt.toml`, `deny.toml` — copy as-is.
-- `docs/` layout — `architecture.md`, `style-guide.md`, `design-principles.md`,
-  `notes/` subfolder — copy structure, populate with this-project content.
+- `scripts/check.sh`: copy as-is, same output format and discipline.
+- `AGENTS.md`: adapt the project description; keep the rule structure.
+- `CONTRIBUTING.md`: adapt.
+- `justfile`: adapt.
+- `.github/workflows/`: copy CI, adapt paths.
+- `clippy.toml`, `rustfmt.toml`, `deny.toml`: copy as-is.
+- `docs/` layout: `architecture.md`, `style-guide.md`, `design-principles.md`,
+  and `notes/` subfolder. Copy structure, populate with this-project content.
 - Dependency style: pin to latest stable per `~/.claude/rules/use-latest-dep-versions.md`.
 
-Do NOT copy anything from `src/` or `tests/` in mtp-rs — those are MTP-specific.
+Do NOT copy anything from `src/` or `tests/` in mtp-rs (those are MTP-specific).
 
 ## Integration back into Prvw
 

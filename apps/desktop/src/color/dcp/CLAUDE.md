@@ -25,7 +25,7 @@ A profile reaches the applier via one of these tiers, tried in order:
    ProRAW file ships one; Adobe DNG Converter also bakes one in. The camera
    manufacturer chose this profile, so it's the most trustworthy source.
 2. **Filesystem exact** (`discovery::find_dcp_for_camera`, Phase 3.2). No
-   embedded profile — try a standalone `.dcp` under `$PRVW_DCP_DIR` or
+   embedded profile. Try a standalone `.dcp` under `$PRVW_DCP_DIR` or
    Adobe Camera Raw's default directory
    (`~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/`).
    Matching is by `UniqueCameraModel` (case-insensitive, whitespace-tolerant)
@@ -36,7 +36,7 @@ A profile reaches the applier via one of these tiers, tried in order:
 4. **Fuzzy family alias** (`family_aliases::aliases_for`, Phase 3.5). For
    each curated alias of the camera, repeat tiers 2 and 3. First hit wins.
    Logs at INFO so users see the substitution.
-5. **None** — fall back to the default pipeline.
+5. **None**: fall back to the default pipeline.
 
 All paths produce the same `Dcp` / `HueSatMap` types, so `apply.rs` runs
 unchanged on any source.
@@ -47,7 +47,7 @@ Embedded wins. Always. When a DNG has embedded profile tags AND a
 matching filesystem DCP exists, the embedded profile is picked.
 
 Users who genuinely want to override can set
-`PRVW_DISABLE_EMBEDDED_DCP=1` — the pipeline then falls through to the
+`PRVW_DISABLE_EMBEDDED_DCP=1`: the pipeline then falls through to the
 filesystem path. That knob is aimed at QA comparisons and advanced users;
 normal operation never needs it.
 
@@ -60,7 +60,7 @@ function logs an INFO line and returns `None` without running
 Same-family bodies (ILCE-5000 vs. ILCE-6000) have different CFA
 filters, so a HueSatMap calibrated on one body pushes reds / magentas
 / skin tones into wrong places on another. The ProfileToneCurve is
-skipped too because fuzzy matches never reach the tone-curve stage —
+skipped too because fuzzy matches never reach the tone-curve stage.
 `dcp_info` is `None` for those.
 
 Users who want the fuzzy profile applied anyway can drop an exact-match
@@ -81,7 +81,7 @@ DCP: no exact match for 'Sony ILCE-5000'; using compatible profile 'SONY ILCE-60
 The source label (`EMBEDDED`, `filesystem`, `bundled`, `bundled (alias)`,
 `filesystem (alias)`) is logged as part of the standard INFO line.
 
-## Phase 3.4 — LookTable + ToneCurve + dual-illuminant
+## Phase 3.4: LookTable + ToneCurve + dual-illuminant
 
 Three Phase 3.2-deferred items landed together in Phase 3.4:
 
@@ -99,10 +99,10 @@ Three Phase 3.2-deferred items landed together in Phase 3.4:
   `illuminant.rs` owns the math.
 
 Single-map DCPs, DCPs without a LookTable, and DCPs without a tone
-curve all continue to no-op through the relevant passes — zero
+curve all continue to no-op through the relevant passes. Zero
 regression on Phase 3.3 fixtures.
 
-## Phase 3.5 — bundled collection + fuzzy family matching
+## Phase 3.5: bundled collection + fuzzy family matching
 
 See `docs/notes/raw-support-phase3.md` for the full write-up.
 
@@ -111,17 +111,17 @@ See `docs/notes/raw-support-phase3.md` for the full write-up.
   blob decompresses once on first lookup (a `OnceLock`), then lives in
   memory for the process lifetime (~83 MB). Binary size delta: +9.7 MB.
 - **Fuzzy aliases** (`family_aliases.rs`): a `FAMILY_ALIASES` const table
-  maps cameras to known-compatible substitutes. Conservative — only entries
+  maps cameras to known-compatible substitutes. Conservative: only entries
   with same-sensor or same-family evidence. Extend via PR.
 
-## Phase 6.5 — SIMD hot loop
+## Phase 6.5: SIMD hot loop
 
 `apply.rs` per-chunk loop is `#[multiversion]`-annotated (NEON / AVX2+FMA)
 and restructured for the autovectorizer:
 
 - `rem_euclid(6.0)` and `rem_euclid(hue_divs)` replaced with compare-and-add
   wraps (`wrap_hue_6`, `hue_index_wrap`). `rem_euclid` on f32 calls out to
-  `fmodf`, which dominates the per-pixel cost — the swap is the biggest
+  `fmodf`, which dominates the per-pixel cost. The swap is the biggest
   single win.
 - Trilinear lerps and the HSV `(1 - s)`, `(1 - s*f)`, `(1 - s*(1-f))`
   expressions rewritten with `f32::mul_add` so NEON / AVX2 emit FMADD.
@@ -129,7 +129,7 @@ and restructured for the autovectorizer:
   aarch64 are emulated as scalar loads anyway, and a 90×30×1 HSM fits
   in L1.
 
-Net: ~38 ms → ~22 ms on 20 MP (M3 Max, release) — 1.6–1.8× faster,
+Net: ~38 ms → ~22 ms on 20 MP (M3 Max, release), 1.6–1.8× faster,
 shaving ~16 ms off the dcp stage. Correctness is bit-identical to the
 pre-6.5 scalar reference within f32 FMA rounding (max ULP diff ≈ 1.8e-7
 over 65 k synthetic pixels in `simd_matches_scalar_within_tolerance`).
@@ -155,9 +155,9 @@ The synthetic-DNG golden regression passes with unchanged margin.
   count, known camera, unknown camera, count sanity). `family_aliases.rs`
   has 4 (aliases for known camera, unknown, normalization, table integrity).
 - **Ignored smoke**:
-  - `decoding::raw::tests::embedded_dcp_smoke` — decodes sample2.dng
+  - `decoding::raw::tests::embedded_dcp_smoke`: decodes sample2.dng
     (Pixel 6 Pro) with and without the embedded profile.
-  - `decoding::raw::tests::dcp_smoke` — filesystem path on a Sony ARW.
+  - `decoding::raw::tests::dcp_smoke`: filesystem path on a Sony ARW.
 
 ## Gotchas
 
