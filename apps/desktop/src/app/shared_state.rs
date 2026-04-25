@@ -41,6 +41,40 @@ pub struct SharedAppState {
     pub title_bar: bool,
     /// Pre-formatted diagnostics text, updated by the main thread.
     pub diagnostics_text: String,
+    /// Thumbnail scheduler status, mirrored from `thumbnails::State::status()`.
+    /// Macos-only; on other platforms stays at defaults.
+    pub thumbnails: ThumbnailsSnapshot,
+}
+
+/// Snapshot of the thumbnail scheduler, mirrored into shared state so the
+/// QA server can expose it over MCP without locking the scheduler itself.
+#[derive(Clone, Debug, Default)]
+pub struct ThumbnailsSnapshot {
+    pub folder_len: usize,
+    pub current: usize,
+    pub in_flight: Vec<usize>,
+    pub queue_len: usize,
+    pub cached: Vec<usize>,
+    pub failed: Vec<usize>,
+    pub paused: bool,
+    pub max_parallel: usize,
+    pub pending_current: Option<usize>,
+    /// Whether the image texture currently shows a thumbnail placeholder
+    /// (uploaded while `pending_current.is_some()` because a thumb was
+    /// cached). Resets to false on full-decode arrival.
+    pub placeholder_active: bool,
+    /// Ring buffer of recent thumbnail-lifecycle events with monotonic
+    /// millisecond timestamps since app start. Lets MCP clients
+    /// reconstruct what happened even after the thumb-visible window
+    /// has closed (solves "MCP too slow to catch the placeholder").
+    pub events: Vec<ThumbnailEvent>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ThumbnailEvent {
+    pub ts_ms: u64,
+    pub kind: &'static str,
+    pub detail: String,
 }
 
 impl Default for SharedAppState {
@@ -70,6 +104,7 @@ impl Default for SharedAppState {
             scroll_to_zoom: false,
             title_bar: true,
             diagnostics_text: String::new(),
+            thumbnails: ThumbnailsSnapshot::default(),
         }
     }
 }
@@ -127,5 +162,23 @@ impl App {
             state.current_index,
             &self.navigation.history,
         );
+
+        #[cfg(target_os = "macos")]
+        {
+            let status = self.thumbnails.status();
+            state.thumbnails = ThumbnailsSnapshot {
+                folder_len: status.folder_len,
+                current: status.current,
+                in_flight: status.in_flight,
+                queue_len: status.queue_len,
+                cached: status.cached,
+                failed: status.failed,
+                paused: status.paused,
+                max_parallel: status.max_parallel,
+                pending_current: self.navigation.pending_current,
+                placeholder_active: self.placeholder_active,
+                events: self.thumbnail_events.iter().cloned().collect(),
+            };
+        }
     }
 }

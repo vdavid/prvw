@@ -116,6 +116,12 @@ impl DirectoryList {
         self.files.get(index).map(|p| p.as_path())
     }
 
+    /// Return a clone of every path in the folder. Used by the thumbnail
+    /// scheduler to get a stable list of files to generate thumbs for.
+    pub fn files(&self) -> Vec<PathBuf> {
+        self.files.clone()
+    }
+
     /// Return indices of files to preload, ordered by priority (most
     /// likely next first). `count` controls how many indices ahead and
     /// behind current to include. The highest-priority index comes first

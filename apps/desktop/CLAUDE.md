@@ -28,6 +28,7 @@ src/
 ├── onboarding/              Onboarding window + defaults-sentence generator + SVG checkmark renderer
 ├── qa/                      Embedded HTTP + MCP server
 ├── settings/                JSON persistence + Settings window shell + widgets + General panel + RAW panel (Phase 3.7)
+├── thumbnails/              macOS-only: QuickLook-backed thumbnail preload + blurry-placeholder placeholder
 ├── updater.rs               Auto-update
 ├── window.rs                Main viewer window: create, fullscreen, auto-fit, vibrancy
 └── zoom/                    ViewState + zoom/pan math + Zoom settings panel + zoom::State
@@ -39,11 +40,11 @@ colocated `CLAUDE.md` or rely on `//!` docs on each submodule (`onboarding/`).
 
 ## Per-feature state
 
-`App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`.
-Each feature's runtime state lives in its own module. App only keeps truly
-cross-cutting state: handles (window, renderer, menu), launch flags (file_path,
-waiting_for_file), runtime input (modifiers, drag_start, etc.), and the single
-cross-feature toggle `title_bar`.
+`App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`,
+and (macOS) `thumbnails: thumbnails::State`. Each feature's runtime state lives in
+its own module. App only keeps truly cross-cutting state: handles (window, renderer,
+menu), launch flags (file_path, waiting_for_file), runtime input (modifiers,
+drag_start, etc.), and the single cross-feature toggle `title_bar`.
 
 ## Top-level principles
 

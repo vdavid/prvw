@@ -296,6 +296,11 @@ fn mcp_tools_list() -> Result<Value, Value> {
                     "type": "object",
                     "properties": {}
                 }
+            },
+            {
+                "name": "thumbnails_status",
+                "description": "Report the thumbnail scheduler's state: folder size, in-flight indices, queue length, cached/failed indices, paused flag, parallelism cap.",
+                "inputSchema": { "type": "object", "properties": {} }
             }
         ]
     }))
@@ -558,6 +563,56 @@ fn mcp_tools_call(
             let state_json = send_and_wait(proxy, AppCommand::CloseSettings, state, SYNC_TIMEOUT)?;
             let mut content = mcp_text_content("Settings window closed.");
             content["state"] = state_json;
+            Ok(content)
+        }
+        "thumbnails_status" => {
+            // Round-trip a Sync so the returned state reflects any
+            // in-flight mutations from just-processed commands.
+            let (tx, rx) = mpsc::channel();
+            proxy
+                .send_event(AppCommand::Sync(tx))
+                .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
+            rx.recv_timeout(SYNC_TIMEOUT)
+                .map_err(|_| json_rpc_error(-32603, "Command timeout"))?;
+            let snap = {
+                let guard = state
+                    .lock()
+                    .map_err(|_| json_rpc_error(-32603, "Lock poisoned"))?;
+                guard.thumbnails.clone()
+            };
+            let events: Vec<Value> = snap
+                .events
+                .iter()
+                .map(|e| {
+                    json!({
+                        "ts_ms": e.ts_ms,
+                        "kind": e.kind,
+                        "detail": e.detail,
+                    })
+                })
+                .collect();
+            let payload = json!({
+                "folder_len": snap.folder_len,
+                "current": snap.current,
+                "pending_current": snap.pending_current,
+                "placeholder_active": snap.placeholder_active,
+                "in_flight": snap.in_flight,
+                "queue_len": snap.queue_len,
+                "cached": snap.cached,
+                "failed": snap.failed,
+                "paused": snap.paused,
+                "max_parallel": snap.max_parallel,
+                "events": events,
+            });
+            let mut content = mcp_text_content(&format!(
+                "Thumbnails: {} cached, {} in flight, {} queued, paused={}, placeholder_active={}",
+                snap.cached.len(),
+                snap.in_flight.len(),
+                snap.queue_len,
+                snap.paused,
+                snap.placeholder_active
+            ));
+            content["thumbnails"] = payload;
             Ok(content)
         }
         _ => Err(json_rpc_error(

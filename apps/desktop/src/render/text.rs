@@ -30,6 +30,10 @@ pub struct TextBlock {
     /// If set, `x` is the RIGHT edge of the pill (text + padding), and the block is
     /// repositioned leftward after measuring the actual text width.
     pub align_right: bool,
+    /// If set, `x` is the CENTER of the text, and the block is repositioned
+    /// leftward by half the measured text width. Useful for centered
+    /// status messages like "Loading...".
+    pub align_center: bool,
 }
 
 pub struct PillStyle {
@@ -65,6 +69,7 @@ impl TextBlock {
             max_render_width: None,
             pill: None,
             align_right: false,
+            align_center: false,
         }
     }
 
@@ -96,6 +101,11 @@ impl TextBlock {
 
     pub fn align_right(mut self) -> Self {
         self.align_right = true;
+        self
+    }
+
+    pub fn align_center(mut self) -> Self {
+        self.align_center = true;
         self
     }
 }
@@ -334,6 +344,10 @@ impl GlyphonRenderer {
                     .map(|s| s.padding_x)
                     .unwrap_or(Logical(0.0));
                 block.x - text_width - pad
+            } else if block.align_center {
+                // x is the desired text center — shift left by half the
+                // measured width so the text truly centers on x.
+                block.x - text_width * 0.5
             } else {
                 block.x
             };

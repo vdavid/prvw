@@ -6,6 +6,8 @@
 
 mod executor;
 mod shared_state;
+#[cfg(target_os = "macos")]
+mod thumbnails_hook;
 
 pub(crate) use shared_state::SharedAppState;
 
@@ -87,6 +89,8 @@ pub(crate) struct App {
     pub(crate) zoom: zoom::State,
     pub(crate) color: color::State,
     pub(crate) navigation: navigation::State,
+    #[cfg(target_os = "macos")]
+    pub(crate) thumbnails: crate::thumbnails::State,
 
     // ── Cross-cutting toggles (owned by App because they don't fit one feature) ──
     /// Whether to reserve space at the top for the title bar.
@@ -122,6 +126,26 @@ pub(crate) struct App {
     pub(crate) shared_state: Arc<Mutex<SharedAppState>>,
     pub(crate) event_loop_proxy: EventLoopProxy<AppCommand>,
     _qa_handle: Option<std::thread::JoinHandle<()>>,
+
+    // ── Thumbnail placeholder tracking ─────────────────────────────
+    /// True while the image texture holds a thumbnail placeholder
+    /// (uploaded on a cache-miss before the full decode arrives).
+    /// Cleared when `display_from_cache` runs with the full image.
+    #[cfg(target_os = "macos")]
+    pub(crate) placeholder_active: bool,
+    /// Monotonic start time for event-timeline timestamps.
+    #[cfg(target_os = "macos")]
+    pub(crate) app_start: Instant,
+    /// Ring buffer of recent thumbnail-lifecycle events. Mirrored to
+    /// `SharedAppState` on every `update_shared_state` so MCP clients
+    /// can query the timeline after the fact. Capped at 64.
+    #[cfg(target_os = "macos")]
+    pub(crate) thumbnail_events: std::collections::VecDeque<shared_state::ThumbnailEvent>,
+    /// `Instant::now()` captured at navigation time, keyed by target
+    /// index. Used to compute "displayed after Xms" metrics for both
+    /// thumbs and full decodes. Entries are dropped after the full
+    /// image is displayed (or on folder change).
+    pub(crate) request_times: std::collections::HashMap<usize, Instant>,
 }
 
 impl App {
@@ -149,6 +173,8 @@ impl App {
             zoom: zoom::State::from_settings(&initial_settings),
             color: color::State::from_settings(&initial_settings),
             navigation: navigation::State::from_settings(&initial_settings),
+            #[cfg(target_os = "macos")]
+            thumbnails: crate::thumbnails::State::new(),
             title_bar: initial_settings.title_bar,
             raw_flags: initial_settings.raw,
             edr_headroom: 1.0,
@@ -162,6 +188,13 @@ impl App {
             shared_state,
             event_loop_proxy,
             _qa_handle: None,
+            #[cfg(target_os = "macos")]
+            placeholder_active: false,
+            #[cfg(target_os = "macos")]
+            app_start: Instant::now(),
+            #[cfg(target_os = "macos")]
+            thumbnail_events: std::collections::VecDeque::with_capacity(64),
+            request_times: std::collections::HashMap::new(),
         }
     }
 
@@ -474,6 +507,7 @@ impl App {
             self.color.relative_col,
             self.raw_flags,
             self.edr_headroom,
+            self.event_loop_proxy.clone(),
         );
 
         // Load and display the initial image
@@ -501,7 +535,7 @@ impl App {
                     .collect();
 
                 if !to_preload.is_empty() {
-                    preloader.request_preload(to_preload, current_index, total);
+                    preloader.request_neighbor_preload(to_preload, current_index, total);
                 }
             } else {
                 log::info!("Preload neighbors disabled — skipping startup preload");
@@ -509,6 +543,21 @@ impl App {
         }
 
         self.navigation.preloader = Some(preloader);
+
+        // Seed the thumbnail scheduler with the full folder so every image
+        // will get a thumb in priority order (indices outside the preload
+        // window first). Pause while the initial primary decode is running.
+        #[cfg(target_os = "macos")]
+        if let Some(dir) = &self.navigation.dir_list {
+            let paths = dir.files();
+            let current = dir.current_index();
+            self.thumbnails.set_folder(paths, current);
+            if self.navigation.pending_current.is_some() {
+                self.thumbnails.pause();
+            }
+            self.pump_thumbnail_requests();
+        }
+
         self.update_shared_state();
 
         // Start QA server if not already running (it starts early when waiting_for_file)
@@ -618,11 +667,9 @@ impl App {
         if self.renderer.is_none() {
             return false;
         }
-
-        let offset = self.content_offset_y();
         // First pass: inspect the cached image enough to reconfigure the
         // surface (can't hold an `image_cache` borrow while calling
-        // `apply_edr_surface_state`, which needs `&mut self`).
+        // `prepare_display`, which needs `&mut self`).
         let Some((iw, ih, is_hdr)) = self
             .navigation
             .image_cache
@@ -631,44 +678,64 @@ impl App {
         else {
             return false;
         };
-
-        self.navigation.current_image_size = Some((iw, ih));
-        self.current_image_is_hdr = is_hdr;
-
-        // Surface state may need to flip because we navigated to (or from)
-        // an HDR decode cached earlier. See `apply_edr_surface_state`.
-        self.apply_edr_surface_state();
-
+        self.prepare_display(iw, ih, is_hdr);
         // Second pass: grab the image reference for upload.
         let image = self
             .navigation
             .image_cache
             .get(index)
             .expect("image was present a moment ago");
-        let renderer = self.renderer.as_mut().unwrap();
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_image(image);
+        }
+        self.finalize_display();
+        true
+    }
+
+    /// Shared first half of the display pipeline: update dimensions, flip
+    /// EDR surface if needed, auto-fit the window, sync the zoom view.
+    /// Caller uploads the texture between this and `finalize_display`.
+    ///
+    /// Used by both the cached-image path (`display_from_cache`) and the
+    /// thumbnail placeholder path (`display_thumbnail_placeholder`) so a
+    /// thumb is fitted with exactly the same math as the final image.
+    /// Without this, a thumb shown as a placeholder ended up at whatever
+    /// zoom the previous image left behind (often 1:1, looking like a
+    /// crop of the wrong picture).
+    fn prepare_display(&mut self, source_width: u32, source_height: u32, is_hdr: bool) {
+        let offset = self.content_offset_y();
+        self.navigation.current_image_size = Some((source_width, source_height));
+        self.current_image_is_hdr = is_hdr;
+        self.apply_edr_surface_state();
 
         if self.zoom.auto_fit
             && let Some(win) = &self.window
-            && let Some(size) = window::resize_to_fit_image(win, iw, ih, offset)
+            && let Some(size) =
+                window::resize_to_fit_image(win, source_width, source_height, offset)
         {
             let (pw, ph) = from_physical_size(size);
-            renderer.resize(pw, ph);
+            if let Some(renderer) = &mut self.renderer {
+                renderer.resize(pw, ph);
+            }
         }
+        if let Some(renderer) = &self.renderer {
+            let lw = renderer.logical_width();
+            let lh = renderer.logical_height();
+            self.zoom
+                .view
+                .update_dimensions(source_width, source_height, lw, lh);
+        }
+    }
 
-        self.zoom.view.update_dimensions(
-            iw,
-            ih,
-            renderer.logical_width(),
-            renderer.logical_height(),
-        );
-        renderer.set_image(image);
+    /// Shared second half of the display pipeline: choose initial zoom
+    /// from settings (`apply_initial_zoom`), push the transform to the
+    /// GPU, request a redraw. Call after `renderer.set_image`.
+    fn finalize_display(&mut self) {
         self.apply_initial_zoom();
-        self.renderer
-            .as_ref()
-            .unwrap()
-            .update_transform(&self.zoom.view.transform());
+        if let Some(renderer) = &self.renderer {
+            renderer.update_transform(&self.zoom.view.transform());
+        }
         self.request_redraw();
-        true
     }
 
     /// Fallback render for the (rare) case where `display_image` succeeds
@@ -772,6 +839,16 @@ impl App {
         let cached_str = if was_cached { "yes" } else { "no" };
         log::debug!("Navigate {direction}: {from_index} -> {current_index} (cached: {cached_str})");
 
+        // Mark the request time for this target so we can log "displayed
+        // after Xms" when the image or placeholder actually appears.
+        let request_start = Instant::now();
+        self.request_times.insert(current_index, request_start);
+        log::info!(
+            "Requested image #{current_index} ({}/{})",
+            current_index + 1,
+            total
+        );
+
         if was_cached {
             // Cached — render immediately and clear any pending target.
             self.navigation.pending_current = None;
@@ -783,12 +860,39 @@ impl App {
                 ));
             }
             self.display_from_cache(current_index);
+            let elapsed = request_start.elapsed().as_millis();
+            log::info!("Image #{current_index} displayed after {elapsed}ms (cached)");
+            self.request_times.remove(&current_index);
+            #[cfg(target_os = "macos")]
+            {
+                self.on_primary_decode_settled();
+                self.on_thumbnail_current_changed(current_index);
+            }
         } else {
             // Cache miss — show "Loading…" title and mark pending.
             // The render happens in `poll_preloader` when `Ready` arrives.
             self.navigation.pending_current = Some(current_index);
             if let Some(win) = &self.window {
                 win.set_title(&window::window_title_loading(current_index, total));
+            }
+            #[cfg(target_os = "macos")]
+            {
+                let thumb_cached = self.thumbnails.get(current_index).is_some();
+                self.record_thumb_event(
+                    "nav-cache-miss",
+                    format!("from={from_index} to={current_index} thumb_cached={thumb_cached}"),
+                );
+                self.on_primary_decode_started();
+                self.on_thumbnail_current_changed(current_index);
+                // Try to upload the thumb placeholder — that path now
+                // also resizes the window and applies the initial zoom
+                // via `prepare_display`. If no thumb is cached yet, fall
+                // back to a metadata-only auto-fit so the window still
+                // reaches the right size before pixels arrive.
+                if !self.display_thumbnail_placeholder(current_index) {
+                    self.apply_thumbnail_auto_fit(current_index);
+                }
+                self.needs_redraw = true;
             }
         }
 
@@ -805,34 +909,25 @@ impl App {
             timestamp: Instant::now(),
         });
 
-        // Submit preload tasks. When the current image wasn't cached, it
-        // goes first as the priority-zero FIFO task so the preloader decodes
-        // it ahead of neighbors. Neighbor submission is gated on the
-        // `preload_neighbors` setting; the current image is always submitted
-        // when missing so navigation doesn't stall.
-        let mut tasks: Vec<(usize, PathBuf)> = Vec::new();
+        // Submit preload tasks. Two cases:
+        //
+        // - **Cache miss**: queue ONLY the priority-0 task (current target).
+        //   Defer neighbor submission to `submit_neighbor_preload`, which
+        //   the `PreloadResponse::Ready` arm of `poll_preloader` calls
+        //   after the primary arrives. This keeps the FIFO channel small
+        //   during rapid navigation — without this, every nav adds the
+        //   target plus 4 neighbors, and a 5-nav burst piles up ~20 tasks
+        //   ahead of the latest target. Neighbors are still pre-decoded
+        //   for the image the user actually lands on.
+        //
+        // - **Cache hit**: no priority-0 needed (already in cache).
+        //   Submit neighbors immediately to keep the cache warm.
         if !was_cached {
-            tasks.push((current_index, current_path));
-        }
-        if self.navigation.preload_neighbors
-            && let Some(dir) = &self.navigation.dir_list
-        {
-            for i in preload_indices {
-                if i == current_index {
-                    continue;
-                }
-                if self.navigation.image_cache.contains(i) {
-                    continue;
-                }
-                if let Some(p) = dir.get(i) {
-                    tasks.push((i, p.to_path_buf()));
-                }
+            if let Some(preloader) = &mut self.navigation.preloader {
+                preloader.prioritize_target(current_index, current_path, total);
             }
-        }
-        if !tasks.is_empty()
-            && let Some(preloader) = &mut self.navigation.preloader
-        {
-            preloader.request_preload(tasks, current_index, total);
+        } else if self.navigation.preload_neighbors {
+            self.submit_neighbor_preload(current_index, total, &preload_indices);
         }
 
         // Drop cache entries outside the hot window. Keeps RAM bounded even
@@ -849,6 +944,39 @@ impl App {
         self.log_evictions(evicted, "out of window");
 
         self.update_shared_state();
+    }
+
+    /// Queue background preload tasks for the neighbors of `index`.
+    /// Skips indices already in the image cache. Called both from a
+    /// cache-hit nav (immediately) and from `poll_preloader` after a
+    /// cache-miss primary arrives — in the latter case the target's
+    /// neighbors weren't queued at nav time so the FIFO channel could
+    /// stay small during rapid navigation.
+    fn submit_neighbor_preload(
+        &mut self,
+        current_index: usize,
+        total: usize,
+        preload_indices: &[usize],
+    ) {
+        let mut tasks: Vec<(usize, PathBuf)> = Vec::new();
+        if let Some(dir) = &self.navigation.dir_list {
+            for &i in preload_indices {
+                if i == current_index {
+                    continue;
+                }
+                if self.navigation.image_cache.contains(i) {
+                    continue;
+                }
+                if let Some(p) = dir.get(i) {
+                    tasks.push((i, p.to_path_buf()));
+                }
+            }
+        }
+        if !tasks.is_empty()
+            && let Some(preloader) = &mut self.navigation.preloader
+        {
+            preloader.request_neighbor_preload(tasks, current_index, total);
+        }
     }
 
     fn update_transform_and_redraw(&mut self) {
@@ -918,7 +1046,7 @@ impl App {
         let title_max_render =
             logical_width - title_x - zoom_budget - pad_x * 2.0 - zoom_margin - gap;
 
-        vec![
+        let mut blocks = vec![
             // Left: filename with position
             text::TextBlock::new(title, title_x + pad_x, title_y + pad_y)
                 .bold()
@@ -929,7 +1057,36 @@ impl App {
                 .bold()
                 .align_right()
                 .pill(pill_color, pad_x, pad_y, radius),
-        ]
+        ];
+
+        // Centered "Loading..." overlay during a pending navigation target.
+        // Styled like the title pill but larger — system font, bigger
+        // font size, bigger corner radius to match. The `align_center`
+        // flag measures the actual shaped text width at prepare time and
+        // repositions the block so the text is truly centered on `x`;
+        // the pill follows the text.
+        if self.navigation.pending_current.is_some() {
+            let logical_height = rend.logical_height();
+            let loading_font_size = 14.0_f32;
+            let loading_line_height = 18.0_f32;
+            let loading_pad_x = Logical(11.0_f32);
+            let loading_pad_y = Logical(5.0_f32);
+            let loading_radius = Logical(7.0_f32);
+            let center_x = Logical(logical_width.0 / 2.0);
+            let center_y = Logical((logical_height.0 - loading_line_height) / 2.0);
+            let mut loading = text::TextBlock::new("Loading...", center_x, center_y);
+            loading.font_size = loading_font_size;
+            loading.line_height = loading_line_height;
+            loading = loading.bold().align_center().pill(
+                pill_color,
+                loading_pad_x,
+                loading_pad_y,
+                loading_radius,
+            );
+            blocks.push(loading);
+        }
+
+        blocks
     }
 
     /// Drain preloader responses, cache the results, and if the pending
@@ -976,6 +1133,43 @@ impl App {
                                 dir.len(),
                             ));
                         }
+                        if let Some(requested_at) = self.request_times.remove(&index) {
+                            let elapsed = requested_at.elapsed().as_millis();
+                            log::info!("Image #{index} displayed after {elapsed}ms");
+                        } else {
+                            log::info!("Image #{index} displayed");
+                        }
+                        #[cfg(target_os = "macos")]
+                        {
+                            let had_placeholder = self.placeholder_active;
+                            self.placeholder_active = false;
+                            self.record_thumb_event(
+                                "primary-arrived",
+                                format!("index={index} had_placeholder={had_placeholder}"),
+                            );
+                            self.on_primary_decode_settled();
+                        }
+                        // Now that the user-visible target has arrived,
+                        // queue the neighbors for background pre-decode.
+                        // Deferring this until now keeps the FIFO channel
+                        // small during rapid navigation so the latest
+                        // priority-0 isn't piled behind stale neighbors.
+                        if self.navigation.preload_neighbors {
+                            let (total, neighbors) = if let Some(dir) = &self.navigation.dir_list {
+                                (
+                                    dir.len(),
+                                    dir.preload_range(
+                                        preloader::preload_count(),
+                                        self.navigation.last_direction,
+                                    ),
+                                )
+                            } else {
+                                (0, Vec::new())
+                            };
+                            if !neighbors.is_empty() {
+                                self.submit_neighbor_preload(index, total, &neighbors);
+                            }
+                        }
                         self.update_shared_state();
                     }
                 }
@@ -1000,6 +1194,8 @@ impl App {
                         if let Some(win) = &self.window {
                             win.set_title(&format!("Prvw - {reason}"));
                         }
+                        #[cfg(target_os = "macos")]
+                        self.on_primary_decode_settled();
                     }
                 }
                 preloader::PreloadResponse::Cancelled { index } => {

@@ -569,7 +569,7 @@ pub(super) fn decode(
         } else {
             ""
         };
-        log::info!(
+        log::debug!(
             "RAW used default tone curve (peak {:.1}){} for {}",
             peak,
             reason,
@@ -591,9 +591,9 @@ pub(super) fn decode(
     // means the EDR path has nothing extra to show, regardless of what
     // the display itself can do). Runs in parallel via rayon so the cost
     // is a single pass over the f32 buffer.
-    if flags.hdr_output && log::log_enabled!(log::Level::Info) {
+    if flags.hdr_output && log::log_enabled!(log::Level::Debug) {
         let peak_linear = rec2020.par_iter().copied().reduce(|| 0.0_f32, f32::max);
-        log::info!(
+        log::debug!(
             "RAW pipeline peak linear value: {:.2} (EDR-capable content: {}) for {}",
             peak_linear,
             if peak_linear > 1.0 {
@@ -672,9 +672,9 @@ pub(super) fn decode(
     // the color conversion. With the direct-matrix path above, this
     // should track the pre-ICC peak (modulo gamut projection) and preserve
     // above-white content — unlike the moxcms path, which clipped at 1.0.
-    if flags.hdr_output && log::log_enabled!(log::Level::Info) {
+    if flags.hdr_output && log::log_enabled!(log::Level::Debug) {
         let peak_post_icc = rec2020.par_iter().copied().reduce(|| 0.0_f32, f32::max);
-        log::info!(
+        log::debug!(
             "RAW pipeline peak post-ICC: {:.2} for {}",
             peak_post_icc,
             path.display()

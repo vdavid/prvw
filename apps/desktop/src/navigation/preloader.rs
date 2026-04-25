@@ -1,9 +1,11 @@
+use crate::commands::AppCommand;
 use crate::decoding::{self, DecodedImage, RawPipelineFlags};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
+use winit::event_loop::EventLoopProxy;
 
 /// SDR cache budget (Phase 4). 512 MB holds ~6 × 20 MP RAW decodes as
 /// RGBA8. Every JPEG/PNG/WebP cached image fits the same budget.
@@ -319,6 +321,15 @@ pub struct Preloader {
     /// every decode task so the RAW decoder picks between RGBA8 and
     /// RGBA16F output.
     edr_headroom: f32,
+    /// Sent after each `PreloadResponse` to wake winit's event loop.
+    /// Without this, `ControlFlow::Wait` sleeps until the next OS event
+    /// (mouse, key) and a freshly-decoded image can sit unprocessed in
+    /// the response channel for seconds while the user stares at the
+    /// placeholder. The handler for `AppCommand::PreloaderProgress` is
+    /// a no-op — the wake itself is the side effect, because winit
+    /// always runs `about_to_wait` after any event, which is where we
+    /// poll the response channel.
+    event_proxy: EventLoopProxy<AppCommand>,
 }
 
 impl Preloader {
@@ -327,6 +338,7 @@ impl Preloader {
         use_relative_colorimetric: bool,
         raw_flags: RawPipelineFlags,
         edr_headroom: f32,
+        event_proxy: EventLoopProxy<AppCommand>,
     ) -> Self {
         let (task_tx, task_rx) = mpsc::channel::<Box<dyn FnOnce() + Send + 'static>>();
         std::thread::Builder::new()
@@ -352,6 +364,7 @@ impl Preloader {
             use_relative_colorimetric,
             raw_flags,
             edr_headroom,
+            event_proxy,
         }
     }
 
@@ -380,28 +393,22 @@ impl Preloader {
         self.raw_flags = flags;
     }
 
-    /// Cancel any in-flight tasks not in `tasks`, leave the rest running,
-    /// and queue the new ones. `tasks` is priority-ordered — earlier entries
-    /// are more likely to be what the user wants next. The worker thread
-    /// pops from the FIFO one at a time, so priority-zero runs first.
+    /// Submit the navigation TARGET as the highest-priority decode.
     ///
-    /// Tasks already in flight for one of the requested indices are NOT
-    /// cancelled and NOT resubmitted — their decode continues from wherever
-    /// it was. Only indices that disappear from the list get their
-    /// cancellation token flipped; their closures still run on the worker
-    /// but exit in microseconds when `load_image` checks the flag.
-    pub fn request_preload(
-        &mut self,
-        tasks: Vec<(usize, PathBuf)>,
-        current_index: usize,
-        total: usize,
-    ) {
-        let requested: std::collections::HashSet<usize> = tasks.iter().map(|(i, _)| *i).collect();
-
-        // Cancel tokens for indices no longer wanted.
+    /// Cancels every other in-flight task (including alive neighbors
+    /// from prior navigations), then queues this target if it's not
+    /// already in flight. Use this on cache-miss navigation: the user
+    /// is waiting for THIS image, so neighbors should get out of the
+    /// way. Stale closures still get pulled off the channel by the
+    /// worker, but they exit fast at `load_image`'s cancellation check.
+    ///
+    /// Submit neighbors via [`request_neighbor_preload`] AFTER the
+    /// target arrives, so the FIFO channel stays small during rapid
+    /// navigation.
+    pub fn prioritize_target(&mut self, target: usize, path: PathBuf, total: usize) {
         let mut cancelled_count = 0usize;
         self.in_flight.retain(|index, token| {
-            if requested.contains(index) {
+            if *index == target {
                 true
             } else {
                 token.store(true, Ordering::Relaxed);
@@ -410,84 +417,147 @@ impl Preloader {
             }
         });
         if cancelled_count > 0 {
-            log::debug!("Cancelled {cancelled_count} stale in-flight tasks");
+            log::debug!(
+                "Cancelled {cancelled_count} in-flight tasks to prioritize target {target}"
+            );
         }
+        if !self.in_flight.contains_key(&target) {
+            self.queue_task(target, path, target, total);
+        }
+    }
 
+    /// Submit background neighbor preloads. Cancels in-flight tasks for
+    /// indices NOT in the new list (they're no longer wanted), keeps
+    /// the rest alive, queues fresh tasks for indices not yet in flight.
+    /// Doesn't cancel-all like [`prioritize_target`] — neighbors are
+    /// equal-priority and shouldn't fight each other.
+    pub fn request_neighbor_preload(
+        &mut self,
+        tasks: Vec<(usize, PathBuf)>,
+        current_index: usize,
+        total: usize,
+    ) {
+        let requested: std::collections::HashSet<usize> = tasks.iter().map(|(i, _)| *i).collect();
+        let mut cancelled_count = 0usize;
+        self.in_flight.retain(|index, token| {
+            if requested.contains(index) || *index == current_index {
+                true
+            } else {
+                token.store(true, Ordering::Relaxed);
+                cancelled_count += 1;
+                false
+            }
+        });
+        if cancelled_count > 0 {
+            log::debug!("Cancelled {cancelled_count} stale neighbor tasks");
+        }
         let indices: Vec<usize> = tasks.iter().map(|(i, _)| *i).collect();
-        log::debug!("Preloading {} images: {indices:?}", tasks.len());
-
+        log::debug!("Preloading neighbors: {indices:?}");
         for (index, path) in tasks.into_iter() {
-            // Already decoding this index — leave it alone.
             if self.in_flight.contains_key(&index) {
                 continue;
             }
+            self.queue_task(index, path, current_index, total);
+        }
+    }
 
-            let cancelled = Arc::new(AtomicBool::new(false));
-            self.in_flight.insert(index, Arc::clone(&cancelled));
+    /// Build the task closure and queue it on the worker channel. Both
+    /// `prioritize_target` and `request_neighbor_preload` use this so
+    /// the closure body lives in one place.
+    fn queue_task(&mut self, index: usize, path: PathBuf, current_index: usize, total: usize) {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        self.in_flight.insert(index, Arc::clone(&cancelled));
 
-            // Human-readable labels captured at submit time so the logs read
-            // consistently even if the user navigates mid-decode.
-            let offset_label = crate::navigation::format_offset(index, current_index);
-            let position_label = format!("{}/{}", index + 1, total);
+        let offset_label = crate::navigation::format_offset(index, current_index);
+        let position_label = format!("{}/{}", index + 1, total);
 
-            let tx = self.response_tx.clone();
-            let display_icc = Arc::clone(&self.display_icc);
-            let use_relative_colorimetric = self.use_relative_colorimetric;
-            let raw_flags = self.raw_flags;
-            let edr_headroom = self.edr_headroom;
-            let task = move || {
-                let file_name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                log::debug!("Initiated loading {file_name} ({offset_label}, {position_label})");
-                let start = Instant::now();
-                match decoding::load_image(
-                    &path,
-                    &cancelled,
-                    &display_icc,
-                    use_relative_colorimetric,
-                    raw_flags,
-                    edr_headroom,
-                ) {
-                    Ok(image) => {
-                        let duration = start.elapsed();
-                        log::debug!(
-                            "Fully loaded {file_name} ({offset_label}, {position_label}) in {}ms",
-                            duration.as_millis()
-                        );
-                        let _ = tx.send(PreloadResponse::Ready {
-                            index,
-                            image,
-                            decode_duration: duration,
-                            file_name,
-                        });
+        let tx = self.response_tx.clone();
+        let display_icc = Arc::clone(&self.display_icc);
+        let use_relative_colorimetric = self.use_relative_colorimetric;
+        let raw_flags = self.raw_flags;
+        let edr_headroom = self.edr_headroom;
+        let event_proxy = self.event_proxy.clone();
+        let task = move || {
+            let file_name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            log::debug!("Initiated loading {file_name} ({offset_label}, {position_label})");
+            // Test affordance: when `PRVW_THUMB_HOLD_MS` is set, delay
+            // the decode by N ms so the thumbnail placeholder stays
+            // visible long enough to inspect via MCP or take a
+            // screenshot. Zero cost when unset — `std::env::var`
+            // returns `Err`, the `ok()` is `None`, and `unwrap_or(0)`
+            // short-circuits the sleep. The sleep polls `cancelled`
+            // every 50 ms so a navigation that happens during the
+            // hold cancels its task within ~50 ms instead of the
+            // whole hold — otherwise queued-and-cancelled tasks
+            // each burn the full `hold_ms` before the worker moves
+            // on to the current target.
+            let hold_ms: u64 = std::env::var("PRVW_THUMB_HOLD_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if hold_ms > 0 {
+                let deadline = Instant::now() + Duration::from_millis(hold_ms);
+                while Instant::now() < deadline {
+                    if cancelled.load(Ordering::Relaxed) {
+                        break;
                     }
-                    Err(reason) if reason == "cancelled" => {
-                        log::debug!(
-                            "Cancelled loading {file_name} ({offset_label}, {position_label})"
-                        );
-                        let _ = tx.send(PreloadResponse::Cancelled { index });
-                    }
-                    Err(reason) => {
-                        log::warn!(
-                            "Failed to load {file_name} ({offset_label}, {position_label}): {reason}"
-                        );
-                        let _ = tx.send(PreloadResponse::Failed {
-                            index,
-                            path,
-                            reason,
-                        });
-                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    std::thread::sleep(remaining.min(Duration::from_millis(50)));
                 }
-            };
-
-            // Channel is naturally FIFO — execution order matches
-            // submission order, which is priority order.
-            if self.task_tx.send(Box::new(task)).is_err() {
-                log::warn!("Preloader worker is gone — dropping task for [{index}]");
             }
+            let start = Instant::now();
+            match decoding::load_image(
+                &path,
+                &cancelled,
+                &display_icc,
+                use_relative_colorimetric,
+                raw_flags,
+                edr_headroom,
+            ) {
+                Ok(image) => {
+                    let duration = start.elapsed();
+                    log::debug!(
+                        "Fully loaded {file_name} ({offset_label}, {position_label}) in {}ms",
+                        duration.as_millis()
+                    );
+                    let _ = tx.send(PreloadResponse::Ready {
+                        index,
+                        image,
+                        decode_duration: duration,
+                        file_name,
+                    });
+                }
+                Err(reason) if reason == "cancelled" => {
+                    log::debug!("Cancelled loading {file_name} ({offset_label}, {position_label})");
+                    let _ = tx.send(PreloadResponse::Cancelled { index });
+                }
+                Err(reason) => {
+                    log::warn!(
+                        "Failed to load {file_name} ({offset_label}, {position_label}): {reason}"
+                    );
+                    let _ = tx.send(PreloadResponse::Failed {
+                        index,
+                        path,
+                        reason,
+                    });
+                }
+            }
+            // Wake the main event loop so `about_to_wait` runs and
+            // `poll_preloader` drains the response we just sent. The
+            // mpsc channel by itself doesn't wake winit out of
+            // `ControlFlow::Wait`. The event handler is a no-op; the
+            // wake itself is the side effect.
+            let _ = event_proxy.send_event(AppCommand::PreloaderProgress);
+        };
+
+        // Channel is naturally FIFO — execution order matches
+        // submission order, which is priority order.
+        if self.task_tx.send(Box::new(task)).is_err() {
+            log::warn!("Preloader worker is gone — dropping task for [{index}]");
         }
     }
 

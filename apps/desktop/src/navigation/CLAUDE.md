@@ -21,13 +21,16 @@ field holds `VecDeque<NavigationRecord>`. The type is defined in `crate::diagnos
 ## Navigation render path
 
 On cache hit, `navigate_by` renders from cache synchronously and submits
-neighbor preloads. On cache miss it sets `State.pending_current = Some(index)`,
-shows a "Loading…" title, and submits the target as the priority-zero preload
-task (first entry in `request_preload`'s `tasks` list → FIFO slot).
-`poll_preloader` runs the render when `PreloadResponse::Ready { index }`
-matches `pending_current`, then clears it. The main thread never decodes
-navigation targets directly. Only settings re-decode and `Refresh` still call
-the sync `display_image` path.
+neighbor preloads via `Preloader::request_neighbor_preload`. On cache miss
+it sets `State.pending_current = Some(index)`, shows a "Loading…" title,
+and calls `Preloader::prioritize_target(index, path, total)` — which
+cancels every other in-flight task so the priority-0 target gets the
+worker's full attention. `poll_preloader` runs the render when
+`PreloadResponse::Ready { index }` matches `pending_current`, then
+queues the now-displayed image's neighbors (deferred until after the
+target arrives — see "Preloader prioritization" below). The main thread
+never decodes navigation targets directly. Only settings re-decode and
+`Refresh` still call the sync `display_image` path.
 
 ## Debounced navigation
 
@@ -58,22 +61,76 @@ path, which flushes pending first so automated tests see deterministic state.
   `preloader.rs` for the measurement table.
 - **Direction-aware priority.** `DirectoryList::preload_range` takes a
   `Direction` (forward / backward / unknown) and returns indices ordered by
-  likelihood of being viewed next. Forward nav returns `[N+1, N+2, N-1, N-2]`;
-  `navigate_by` in `app.rs` prepends the current index when it's uncached,
-  submits the full list to `Preloader::request_preload`, and the channel is
-  naturally FIFO so submission order = execution order.
-- **Cancellation.** Preload tasks hold an `Arc<AtomicBool>`; navigation away
-  flips the tokens for any indices no longer in the priority list. Tasks
-  still wanted keep their existing token and don't restart mid-decode.
+  likelihood of being viewed next. Forward nav returns `[N+1, N+2, N-1, N-2]`.
+  Used by `submit_neighbor_preload` to pick which neighbors to warm.
+- **Cancellation.** Preload tasks hold an `Arc<AtomicBool>`; the preloader
+  flips tokens via `prioritize_target` (cancel-all-except-target) or
+  `request_neighbor_preload` (cancel only those that drop out of the new
+  list). Cancelled task closures still get pulled off the FIFO channel
+  but exit fast at `load_image`'s cancellation check.
 - **Supported extensions are decided by `decoding`.** `DirectoryList` filters via
   `decoding::is_supported_extension`. New format support = one change, two effects
   (decode + list).
 - **Preload can be disabled for benchmarking.** `State.preload_neighbors` (driven
   by Settings → General → "Preload next/prev images", default on) gates both
-  `preloader.request_preload` call sites in `app.rs`. When off, only the
-  currently-displayed image consumes decode work. Intended for single-image
-  cold-start perf measurements where concurrent preloads would skew the
-  per-stage timings logged by `decoding::raw::decode`.
+  preload call sites in `app.rs`. When off, only the currently-displayed
+  image consumes decode work. Intended for single-image cold-start perf
+  measurements where concurrent preloads would skew the per-stage timings
+  logged by `decoding::raw::decode`.
+
+## Preloader prioritization (rapid-nav UX)
+
+The preloader has two distinct submission methods:
+
+- `prioritize_target(target, path, total)` — used on cache-miss navigation.
+  Cancels every other in-flight task, then queues `target` if not already
+  in flight. Trade-off: neighbors that were alive get cancelled and may
+  need re-decode later; in exchange, the user-visible target gets the
+  worker's full attention immediately.
+
+- `request_neighbor_preload(tasks, current_index, total)` — used to warm
+  the cache around an already-displayed image (cache-hit nav, post-arrival
+  warm-up). Cancels only indices that dropped out of the new requested
+  set. Doesn't fight the priority-0 target.
+
+**Neighbor preload is deferred on cache miss.** `navigate_by` submits *only*
+the priority-0 target via `prioritize_target`. Neighbors are queued from
+`poll_preloader` after `PreloadResponse::Ready` arrives for `pending_current`
+and `display_from_cache` has run. This keeps the FIFO channel small during
+rapid navigation: a 5-nav burst queues 5 priority-0 closures (4 cancelled,
+1 alive), not 5 × 5 = 25 closures all competing for the worker.
+
+## Gotcha/Why: winit `ControlFlow::Wait` ↔ preloader response channel
+
+`poll_preloader` only runs from `App::about_to_wait` and `App::window_event`.
+When winit is in `ControlFlow::Wait`, the main thread sleeps until an OS
+event arrives. The preloader's `mpsc::channel` does **not** wake winit by
+itself, so a freshly-decoded image's `PreloadResponse::Ready` can sit in
+the channel for *seconds* — until the user moves the mouse, presses a key,
+or some other OS event nudges the loop.
+
+**Fix:** the preloader worker thread sends `AppCommand::PreloaderProgress`
+via `EventLoopProxy::send_event` after every response. The handler is a
+no-op — the wake itself is the side effect, because winit always runs
+`about_to_wait` after any user event, which is where we drain the channel.
+Same pattern the thumbnail completion path uses.
+
+This was masked when neighbor preload was always-on (constant decode
+activity kept the loop awake) and surfaced only after the deferred-neighbor
+change reduced background work. If you add another async-result path,
+include the same `send_event` wakeup or the result will be silently
+delayed.
+
+## Thumbnail placeholder (macOS)
+
+On a cache-miss navigation the title bar shows "Loading…" and a centered
+"Loading..." pill appears mid-screen. If the `thumbnails` module has a
+cached thumb for the target index, that thumb is uploaded to the image
+texture as a blurry placeholder, and `apply_thumbnail_auto_fit` resizes
+the window to the source dimensions (read via ImageIO, no decode) before
+any pixels paint. The full decode later replaces the placeholder when
+`PreloadResponse::Ready` arrives. The thumb scheduler is paused while
+`pending_current.is_some()`. See `apps/desktop/src/thumbnails/CLAUDE.md`.
 
 ## Gotchas
 

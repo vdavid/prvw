@@ -26,6 +26,8 @@ mod onboarding;
 mod qa;
 mod settings;
 #[cfg(target_os = "macos")]
+mod thumbnails;
+#[cfg(target_os = "macos")]
 mod updater;
 mod window;
 mod zoom;

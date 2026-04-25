@@ -372,6 +372,52 @@ impl App {
                 self.update_shared_state();
                 let _ = sender.send(());
             }
+
+            AppCommand::PreloaderProgress => {
+                // No-op handler. Sending ANY user event wakes winit's
+                // event loop, and `about_to_wait` runs after, which
+                // polls the preloader response channel. The preloader
+                // worker thread fires this after every response so a
+                // freshly-decoded image is displayed immediately even
+                // when the user is idle (no key, no mouse).
+            }
+
+            #[cfg(target_os = "macos")]
+            AppCommand::ThumbnailReady {
+                index,
+                request_id,
+                folder_generation,
+                width,
+                height,
+                rgba,
+            } => {
+                if folder_generation != self.thumbnails.generation() {
+                    log::debug!(
+                        "Thumb arrived from stale folder (gen {folder_generation} != {}), dropping index {index}",
+                        self.thumbnails.generation()
+                    );
+                } else {
+                    log::info!("Thumb ready: index={index} {width}x{height}");
+                    self.thumbnails
+                        .mark_ready(index, width, height, rgba, request_id);
+                    if self.navigation.pending_current == Some(index) {
+                        self.display_thumbnail_placeholder(index);
+                    }
+                }
+                self.pump_thumbnail_requests();
+            }
+
+            #[cfg(target_os = "macos")]
+            AppCommand::ThumbnailFailed {
+                index,
+                request_id,
+                folder_generation,
+            } => {
+                if folder_generation == self.thumbnails.generation() {
+                    self.thumbnails.mark_failed(index, request_id);
+                }
+                self.pump_thumbnail_requests();
+            }
         }
     }
 }

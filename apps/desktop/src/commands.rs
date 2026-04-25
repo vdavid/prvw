@@ -142,4 +142,36 @@ pub enum AppCommand {
     TakeScreenshot(mpsc::Sender<Vec<u8>>),
     /// Synchronization barrier — sends () back to confirm all prior commands were processed.
     Sync(mpsc::Sender<()>),
+
+    /// No-op signal sent by the preloader worker thread to wake winit's
+    /// event loop so `about_to_wait` runs and `poll_preloader` drains the
+    /// response channel. Without this, `ControlFlow::Wait` sleeps until
+    /// an OS event arrives, and a freshly-decoded priority-0 image can
+    /// sit in the mpsc channel unprocessed for seconds while the user
+    /// stares at the placeholder.
+    PreloaderProgress,
+
+    // ── Thumbnails (macOS-only; QuickLook-backed) ────────────────────
+    /// A thumbnail finished generating. Raw RGBA8 bytes, row-packed.
+    ///
+    /// `folder_generation` is the generation counter at submit time. The
+    /// main thread drops this event if it doesn't match the current folder
+    /// generation — it means the folder changed after submission and the
+    /// thumb is for a file that's no longer in `thumbnails::State`.
+    #[cfg(target_os = "macos")]
+    ThumbnailReady {
+        index: usize,
+        request_id: u64,
+        folder_generation: u64,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+    /// A thumbnail request failed (unsupported format, corrupt file, etc.).
+    #[cfg(target_os = "macos")]
+    ThumbnailFailed {
+        index: usize,
+        request_id: u64,
+        folder_generation: u64,
+    },
 }
