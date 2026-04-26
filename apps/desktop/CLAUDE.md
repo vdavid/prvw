@@ -1,7 +1,7 @@
 # Desktop app
 
-Feature-based, flat layout. Each directory under `src/` is either infrastructure
-(used by every feature) or one user-visible feature. No `features/` wrapper.
+Feature-based, flat layout. Each directory under `src/` is either infrastructure (used by every feature) or one
+user-visible feature. No `features/` wrapper.
 
 ## Source layout
 
@@ -34,44 +34,39 @@ src/
 └── zoom/                    ViewState + zoom/pan math + Zoom settings panel + zoom::State
 ```
 
-Single-file features (`about.rs`, `diagnostics.rs`, `updater.rs`, `window.rs`) use
-their `//!` module docs in place of a `CLAUDE.md`. Directory-based features have a
-colocated `CLAUDE.md` or rely on `//!` docs on each submodule (`onboarding/`).
+Single-file features (`about.rs`, `diagnostics.rs`, `updater.rs`, `window.rs`) use their `//!` module docs in place of a
+`CLAUDE.md`. Directory-based features have a colocated `CLAUDE.md` or rely on `//!` docs on each submodule
+(`onboarding/`).
 
 ## Per-feature state
 
-`App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`,
-and (macOS) `thumbnails: thumbnails::State`. Each feature's runtime state lives in
-its own module. App only keeps truly cross-cutting state: handles (window, renderer,
-menu), launch flags (file_path, waiting_for_file), runtime input (modifiers,
-drag_start, etc.), and the single cross-feature toggle `title_bar`.
+`App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`, and (macOS)
+`thumbnails: thumbnails::State`. Each feature's runtime state lives in its own module. App only keeps truly
+cross-cutting state: handles (window, renderer, menu), launch flags (file_path, waiting_for_file), runtime input
+(modifiers, drag_start, etc.), and the single cross-feature toggle `title_bar`.
 
 ## Top-level principles
 
-- **`winit` 0.30 `ApplicationHandler`.** App implements the trait. Window + wgpu
-  surface created in `resumed()`, not startup (required on macOS).
+- **`winit` 0.30 `ApplicationHandler`.** App implements the trait. Window + wgpu surface created in `resumed()`, not
+  startup (required on macOS).
 - **Render on demand.** `App.needs_redraw` gates frames. No continuous render loop.
-- **Command architecture.** Every user action becomes an `AppCommand` in
-  `crate::commands`. `App::execute_command` (`app/executor.rs`) is the single
-  dispatcher. Keys, menus, QA HTTP, MCP, AppKit delegates all funnel there.
-- **No `tokio`.** CPU-bound decoding runs on `std::thread` via rayon. `mpsc` channels
-  cross threads.
-- **Shared-state boundary.** `SharedAppState` (in `app/shared_state.rs`) is the
-  snapshot the QA thread reads. Main thread writes on every observable change;
-  diagnostics text is rendered by `diagnostics::build_text`.
+- **Command architecture.** Every user action becomes an `AppCommand` in `crate::commands`. `App::execute_command`
+  (`app/executor.rs`) is the single dispatcher. Keys, menus, QA HTTP, MCP, AppKit delegates all funnel there.
+- **No `tokio`.** CPU-bound decoding runs on `std::thread` via rayon. `mpsc` channels cross threads.
+- **Shared-state boundary.** `SharedAppState` (in `app/shared_state.rs`) is the snapshot the QA thread reads. Main
+  thread writes on every observable change; diagnostics text is rendered by `diagnostics::build_text`.
 
 ## Cross-cutting gotchas
 
 See `platform/macos/CLAUDE.md` for the full list. Short version:
 
-- **Never run AppKit modals inside winit's event loop.** Segfault. Run them before
-  `EventLoop::new()` or defer via `EventLoopProxy`.
-- **`Retained<>` outlives the window.** Store every objc2 `Retained<...>` in a `Vec`
-  that outlives the window. No compile-time check.
-- **Finder file opens need ObjC method injection** into winit's delegate. See
-  `platform/macos/open_handler.rs`.
-- **`zune-jpeg` in debug builds.** SIMD unusably slow without optimizations.
-  `Cargo.toml` sets `[profile.dev.package.zune-jpeg] opt-level = 3`.
+- **Never run AppKit modals inside winit's event loop.** Segfault. Run them before `EventLoop::new()` or defer via
+  `EventLoopProxy`.
+- **`Retained<>` outlives the window.** Store every objc2 `Retained<...>` in a `Vec` that outlives the window. No
+  compile-time check.
+- **Finder file opens need ObjC method injection** into winit's delegate. See `platform/macos/open_handler.rs`.
+- **`zune-jpeg` in debug builds.** SIMD unusably slow without optimizations. `Cargo.toml` sets
+  `[profile.dev.package.zune-jpeg] opt-level = 3`.
 
 ## Running
 

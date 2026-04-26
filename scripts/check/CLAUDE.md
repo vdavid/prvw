@@ -34,18 +34,19 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 
 ## Key files
 
-| File                        | Purpose                                                                 |
-| --------------------------- | ----------------------------------------------------------------------- |
-| `main.go`                   | Entry point: flags, root dir, check selection, runner delegation        |
-| `runner.go`                 | Parallel executor: goroutine pool, dependency graph, TTY status line    |
-| `checks/common.go`          | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`) |
-| `checks/registry.go`        | `AllChecks`: canonical ordered list, lookup and validation functions    |
-| `checks/desktop-rust-*.go`  | Rust checks (rustfmt, clippy, cargo-test)                              |
-| `checks/website-*.go`       | Website checks (prettier, eslint, typecheck, build)                    |
-| `checks/scripts-go-*.go`    | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests) |
-| `stats.go`                  | CSV stats logging (`~/prvw-check-log.csv`)                             |
-| `colors.go`                 | ANSI color constants                                                   |
-| `utils.go`                  | `findRootDir()` (walks up until `AGENTS.md` is found)                  |
+| File                       | Purpose                                                                    |
+| -------------------------- | -------------------------------------------------------------------------- |
+| `main.go`                  | Entry point: flags, root dir, check selection, runner delegation           |
+| `runner.go`                | Parallel executor: goroutine pool, dependency graph, TTY status line       |
+| `checks/common.go`         | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`)  |
+| `checks/registry.go`       | `AllChecks`: canonical ordered list, lookup and validation functions       |
+| `checks/desktop-rust-*.go` | Rust checks (rustfmt, clippy, cargo-test)                                  |
+| `checks/oxfmt.go`          | Monorepo-wide formatter (oxfmt, prettier-compatible)                       |
+| `checks/website-*.go`      | Website checks (eslint, typecheck, build)                                  |
+| `checks/scripts-go-*.go`   | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests) |
+| `stats.go`                 | CSV stats logging (`~/prvw-check-log.csv`)                                 |
+| `colors.go`                | ANSI color constants                                                       |
+| `utils.go`                 | `findRootDir()` (walks up until `AGENTS.md` is found)                      |
 
 ## Adding a new check
 
@@ -63,9 +64,10 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 
 ## Apps and checks
 
-| App     | Tech | Checks                                                    |
-| ------- | ---- | --------------------------------------------------------- |
-| Desktop | Rust | rustfmt, clippy, cargo-test                               |
-| Website | Astro | prettier, eslint, typecheck, build                       |
-| Scripts | Go   | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests |
-| Other   | -    | changelog-commit-links                                          |
+| App     | Tech     | Checks                                                         |
+| ------- | -------- | -------------------------------------------------------------- |
+| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                |
+| Desktop | Rust     | rustfmt, clippy, cargo-test                                    |
+| Website | Astro    | eslint, typecheck, build                                       |
+| Scripts | Go       | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests |
+| Other   | -        | changelog-commit-links                                         |

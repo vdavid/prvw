@@ -1,24 +1,20 @@
 # RAW support — Phase 5
 
-HDR / EDR output. Stops clipping RAW highlights at display-white and
-prepares the pipeline to push peak-white values onto an EDR-capable
-Mac display (XDR mini-LED, OLED). SDR displays stay bit-identical to
-Phase 4 — no regression for users on non-HDR screens.
+HDR / EDR output. Stops clipping RAW highlights at display-white and prepares the pipeline to push peak-white values
+onto an EDR-capable Mac display (XDR mini-LED, OLED). SDR displays stay bit-identical to Phase 4 — no regression for
+users on non-HDR screens.
 
 ## What shipped in Phase 5.0 (2026-04-17)
 
-Scope-down decision up front: Phase 5.0 is everything except the wgpu
-surface format switch + `CAMetalLayer.wantsExtendedDynamicRangeContent`.
-Those land in Phase 5.1 because surface reconfiguration mid-session in
-the wgpu 29 version we ship is more involved than the rest of the phase
-combined, and keeping the decode path + cache + settings ready means the
-follow-up can focus purely on the GPU surface lifecycle.
+Scope-down decision up front: Phase 5.0 is everything except the wgpu surface format switch +
+`CAMetalLayer.wantsExtendedDynamicRangeContent`. Those land in Phase 5.1 because surface reconfiguration mid-session in
+the wgpu 29 version we ship is more involved than the rest of the phase combined, and keeping the decode path + cache +
+settings ready means the follow-up can focus purely on the GPU surface lifecycle.
 
 ### Filmic Reinhard shoulder
 
-`color::tone_curve` now shapes the highlight region with a rational
-Reinhard-like curve asymptoting at `peak` instead of a Hermite cubic
-landing exactly on 1.0. For `x > HIGHLIGHT_KNEE`:
+`color::tone_curve` now shapes the highlight region with a rational Reinhard-like curve asymptoting at `peak` instead of
+a Hermite cubic landing exactly on 1.0. For `x > HIGHLIGHT_KNEE`:
 
 ```text
 y = y_knee + (peak - y_knee) · t / (t + s)
@@ -26,24 +22,20 @@ where t = x - HIGHLIGHT_KNEE
       s = (peak - y_knee) / MIDTONE_SLOPE
 ```
 
-`s` is chosen so the first derivative at `t = 0` equals `MIDTONE_SLOPE`,
-which makes the join C¹ (value + slope match the midtone line). As
-`t → ∞`, `y → peak`. The shape never clips, which matters for the HDR
-path: we want 1.5 or 2.0 linear-light inputs (saturated skies, specular
-highlights) to come out between 1.0 and 4.0 rather than pinned at 1.0.
+`s` is chosen so the first derivative at `t = 0` equals `MIDTONE_SLOPE`, which makes the join C¹ (value + slope match
+the midtone line). As `t → ∞`, `y → peak`. The shape never clips, which matters for the HDR path: we want 1.5 or 2.0
+linear-light inputs (saturated skies, specular highlights) to come out between 1.0 and 4.0 rather than pinned at 1.0.
 
 Defaults:
 
-- `DEFAULT_PEAK_SDR = 1.0` — same ceiling as Phase 4. Used when the
-  display reports no EDR headroom or the user has turned the HDR toggle
-  off.
-- `DEFAULT_PEAK_HDR = 4.0` — user-confirmed target. Peaks above 4.0 start
-  to look unnatural on mini-LED (local-dimming halos around bright
-  points); below 2.0 barely uses the display's headroom. 4.0 lands in
-  the sweet spot for Apple's XDR displays at default brightness.
+- `DEFAULT_PEAK_SDR = 1.0` — same ceiling as Phase 4. Used when the display reports no EDR headroom or the user has
+  turned the HDR toggle off.
+- `DEFAULT_PEAK_HDR = 4.0` — user-confirmed target. Peaks above 4.0 start to look unnatural on mini-LED (local-dimming
+  halos around bright points); below 2.0 barely uses the display's headroom. 4.0 lands in the sweet spot for Apple's XDR
+  displays at default brightness.
 
-Asymptote check at `x = 10`, `peak = 4.0`, anchor = 0.40: `y ≈ 3.44`.
-At `x = 50`: `y ≈ 3.86`. At `x → ∞`: `y → 4.0` but never reaches.
+Asymptote check at `x = 10`, `peak = 4.0`, anchor = 0.40: `y ≈ 3.44`. At `x = 50`: `y ≈ 3.86`. At `x → ∞`: `y → 4.0` but
+never reaches.
 
 ### `PixelBuffer` + `DecodedImage`
 
@@ -62,36 +54,29 @@ pub struct DecodedImage {
 }
 ```
 
-`Rgba16F` stores each half-float as a raw `u16` bit pattern (what the
-`half` crate's `f16::to_bits()` / `from_bits()` use). The renderer
-reinterprets the vector as `&[u8]` via `bytemuck::cast_slice` for the
-`queue.write_texture` upload. `PixelBuffer::bytes_per_pixel()` is the
-single source of truth for row-pitch and cache-cost math.
+`Rgba16F` stores each half-float as a raw `u16` bit pattern (what the `half` crate's `f16::to_bits()` / `from_bits()`
+use). The renderer reinterprets the vector as `&[u8]` via `bytemuck::cast_slice` for the `queue.write_texture` upload.
+`PixelBuffer::bytes_per_pixel()` is the single source of truth for row-pitch and cache-cost math.
 
 ### RAW decoder HDR branch
 
-`decoding::raw::decode` now takes an extra `edr_headroom: f32`. At the
-top of the function:
+`decoding::raw::decode` now takes an extra `edr_headroom: f32`. At the top of the function:
 
 ```rust
 let hdr_active = flags.hdr_output && edr_headroom > 1.0;
 let peak = if hdr_active { DEFAULT_PEAK_HDR } else { DEFAULT_PEAK_SDR };
 ```
 
-The tone curve calls `apply_tone_curve(&mut rec2020, anchor, peak)`
-instead of the old `apply_default_tone_curve`. Post-ICC, branch:
+The tone curve calls `apply_tone_curve(&mut rec2020, anchor, peak)` instead of the old `apply_default_tone_curve`.
+Post-ICC, branch:
 
-- SDR: clamp to `[0, 1]`, quantise to RGBA8, run the existing unsharp-
-  mask on luminance → `PixelBuffer::Rgba8`.
-- HDR: preserve values above 1.0, quantise to RGBA16F via
-  `half::f16::from_f32` → `PixelBuffer::Rgba16F`. Skip the unsharp-mask
-  for now (see "Deferred" below).
+- SDR: clamp to `[0, 1]`, quantise to RGBA8, run the existing unsharp- mask on luminance → `PixelBuffer::Rgba8`.
+- HDR: preserve values above 1.0, quantise to RGBA16F via `half::f16::from_f32` → `PixelBuffer::Rgba16F`. Skip the
+  unsharp-mask for now (see "Deferred" below).
 
-`decoding::load_image` and `load_image_cancellable` also take
-`edr_headroom: f32`. Non-RAW decoders ignore it — JPEG/PNG/WebP stay
-RGBA8 always, because those formats max out at SDR and we don't want
-surprise memory growth for photographers who only browse smartphone
-JPEGs.
+`decoding::load_image` and `load_image_cancellable` also take `edr_headroom: f32`. Non-RAW decoders ignore it —
+JPEG/PNG/WebP stay RGBA8 always, because those formats max out at SDR and we don't want surprise memory growth for
+photographers who only browse smartphone JPEGs.
 
 ### EDR headroom query
 
@@ -101,29 +86,23 @@ New function in `color::display_profile`:
 pub fn current_edr_headroom(window: &Window) -> f32
 ```
 
-Calls `NSScreen.maximumExtendedDynamicRangeColorComponentValue` via
-objc2. Returns 1.0 for SDR displays, 2.0 to 16.0 for EDR displays
-(macOS reports the current headroom live — brightness changes, battery
-saver, ambient light all swing it). Returns 1.0 on any failure so the
-fallback is "behave like Phase 4." On the author's 16" M3 Max XDR with
-default settings we observed `16.00`.
+Calls `NSScreen.maximumExtendedDynamicRangeColorComponentValue` via objc2. Returns 1.0 for SDR displays, 2.0 to 16.0 for
+EDR displays (macOS reports the current headroom live — brightness changes, battery saver, ambient light all swing it).
+Returns 1.0 on any failure so the fallback is "behave like Phase 4." On the author's 16" M3 Max XDR with default
+settings we observed `16.00`.
 
-Re-queried on `AppCommand::DisplayChanged`, alongside the display ICC
-profile refresh. When the value changes by more than 0.001 the image
-cache is flushed, the preloader's copy is updated, and the cache's
-budget is retuned between SDR and HDR.
+Re-queried on `AppCommand::DisplayChanged`, alongside the display ICC profile refresh. When the value changes by more
+than 0.001 the image cache is flushed, the preloader's copy is updated, and the cache's budget is retuned between SDR
+and HDR.
 
 ### Settings toggle
 
-`RawPipelineFlags::hdr_output` (default `true`). Exposed in Settings →
-RAW under a new "Output" group with the label "HDR / EDR output" and
-the description "Keep highlights above display-white alive when the
-screen supports it." Toggling flushes the image cache via the existing
-`AppCommand::SetRawPipelineFlags` path.
+`RawPipelineFlags::hdr_output` (default `true`). Exposed in Settings → RAW under a new "Output" group with the label
+"HDR / EDR output" and the description "Keep highlights above display-white alive when the screen supports it." Toggling
+flushes the image cache via the existing `AppCommand::SetRawPipelineFlags` path.
 
-Default-on means EDR-display users get HDR highlights out of the box;
-SDR-display users see no change (headroom == 1.0 → `hdr_active ==
-false` → pure Phase 4 output).
+Default-on means EDR-display users get HDR highlights out of the box; SDR-display users see no change (headroom == 1.0 →
+`hdr_active == false` → pure Phase 4 output).
 
 ### Cache budget
 
@@ -132,43 +111,35 @@ false` → pure Phase 4 output).
 - SDR: 512 MB budget, unchanged from Phase 4.
 - HDR: 1 GB budget.
 
-The doubling comes from half-float RAWs being 8 bytes per pixel instead
-of 4. Without the bump, a 20 MP RAW jumps from ~80 MB to ~160 MB and
-the preload count drops from ~6 to ~3. User's call: trade RAM for
-preload count, because the whole point of the preloader is zero-latency
-navigation. Users on tight RAM can opt out via the HDR toggle.
+The doubling comes from half-float RAWs being 8 bytes per pixel instead of 4. Without the bump, a 20 MP RAW jumps from
+~80 MB to ~160 MB and the preload count drops from ~6 to ~3. User's call: trade RAM for preload count, because the whole
+point of the preloader is zero-latency navigation. Users on tight RAM can opt out via the HDR toggle.
 
 The mode switch runs in three places:
 
 - On app init, once the initial EDR headroom is known.
-- On `AppCommand::DisplayChanged`, when a screen change flips headroom
-  across the 1.0 boundary.
-- On `AppCommand::SetRawPipelineFlags`, when the user toggles
-  `hdr_output`.
+- On `AppCommand::DisplayChanged`, when a screen change flips headroom across the 1.0 boundary.
+- On `AppCommand::SetRawPipelineFlags`, when the user toggles `hdr_output`.
 
-Shrinking from HDR (1 GB) back to SDR (512 MB) evicts LRU entries until
-the resident set fits — no "we decoded too much" panic.
+Shrinking from HDR (1 GB) back to SDR (512 MB) evicts LRU entries until the resident set fits — no "we decoded too much"
+panic.
 
 ### GPU texture upload
 
-`render::renderer::Renderer::set_image` picks the texture format from
-the `PixelBuffer` variant:
+`render::renderer::Renderer::set_image` picks the texture format from the `PixelBuffer` variant:
 
 - `PixelBuffer::Rgba8` → `TextureFormat::Rgba8UnormSrgb` (unchanged).
 - `PixelBuffer::Rgba16F` → `TextureFormat::Rgba16Float`.
 
-The fragment shader samples both as `vec4<f32>`, so no shader variant
-split is needed. The surface format stays `Bgra8UnormSrgb` in this
-phase; values above 1.0 survive through the decode + cache but get
-clipped at the final blend. That's the part Phase 5.1 will fix.
+The fragment shader samples both as `vec4<f32>`, so no shader variant split is needed. The surface format stays
+`Bgra8UnormSrgb` in this phase; values above 1.0 survive through the decode + cache but get clipped at the final blend.
+That's the part Phase 5.1 will fix.
 
 ## What shipped in Phase 5.1 (2026-04-17)
 
-Phase 5.1 flips the final switch: when the current image is `Rgba16F`,
-HDR output is enabled, and the display reports EDR headroom above 1.0,
-the wgpu surface reconfigures to `Rgba16Float` and `CAMetalLayer` goes
-into its EDR mode. On SDR displays (or with the toggle off), nothing
-changes — the `synthetic_dng_matches_golden` regression test passes
+Phase 5.1 flips the final switch: when the current image is `Rgba16F`, HDR output is enabled, and the display reports
+EDR headroom above 1.0, the wgpu surface reconfigures to `Rgba16Float` and `CAMetalLayer` goes into its EDR mode. On SDR
+displays (or with the toggle off), nothing changes — the `synthetic_dng_matches_golden` regression test passes
 unchanged.
 
 ### `App::want_edr_surface` — the single source of truth
@@ -179,116 +150,89 @@ Three conditions, all AND-ed:
 2. `edr_headroom > 1.0` (display advertises EDR).
 3. `current_image_is_hdr` (the last decode emitted `PixelBuffer::Rgba16F`).
 
-`App.current_image_is_hdr` is a new field set in `display_image` and
-`display_cached_or_load` from the freshly-loaded image's `PixelBuffer`
-variant. It flips back to `false` whenever a non-RAW (or an
-SDR-branch-taking RAW) loads, which naturally degrades the surface
-back to SDR when the user navigates to a JPEG.
+`App.current_image_is_hdr` is a new field set in `display_image` and `display_cached_or_load` from the freshly-loaded
+image's `PixelBuffer` variant. It flips back to `false` whenever a non-RAW (or an SDR-branch-taking RAW) loads, which
+naturally degrades the surface back to SDR when the user navigates to a JPEG.
 
 ### `Renderer::reconfigure_surface_format`
 
-Flips the wgpu `SurfaceConfiguration.format` between `Rgba16Float` and
-the platform's preferred SDR format captured at init time (typically
-`Bgra8UnormSrgb` on macOS). Rebuilds three pipelines that reference
-the surface format:
+Flips the wgpu `SurfaceConfiguration.format` between `Rgba16Float` and the platform's preferred SDR format captured at
+init time (typically `Bgra8UnormSrgb` on macOS). Rebuilds three pipelines that reference the surface format:
 
-- Image-quad pipeline — via the extracted `build_image_pipeline`
-  helper.
+- Image-quad pipeline — via the extracted `build_image_pipeline` helper.
 - Overlay pill pipeline — via `build_overlay_pipeline`.
-- `GlyphonRenderer` — rebuilt wholesale via `GlyphonRenderer::new`
-  because glyphon's `TextAtlas` pins the format at construction and
-  doesn't expose a swap API. Cheap: re-creating the atlas on a format
-  flip is a single allocation and a fresh swash cache.
+- `GlyphonRenderer` — rebuilt wholesale via `GlyphonRenderer::new` because glyphon's `TextAtlas` pins the format at
+  construction and doesn't expose a swap API. Cheap: re-creating the atlas on a format flip is a single allocation and a
+  fresh swash cache.
 
-Shader modules and pipeline layouts are cached on `Renderer`, so the
-rebuild doesn't recompile WGSL or re-validate bind-group layouts. One
-INFO log line per transition spells out the old and new formats.
+Shader modules and pipeline layouts are cached on `Renderer`, so the rebuild doesn't recompile WGSL or re-validate
+bind-group layouts. One INFO log line per transition spells out the old and new formats.
 
 ### `color::display_profile::set_layer_edr_state`
 
-Three CAMetalLayer properties set in lockstep so the wgpu surface
-config and the Metal-layer config can't drift:
+Three CAMetalLayer properties set in lockstep so the wgpu surface config and the Metal-layer config can't drift:
 
-- `setWantsExtendedDynamicRangeContent:YES|NO` (the key knob — the
-  compositor routes the window through the EDR path only when this is
-  `YES`).
-- `setPixelFormat:MTLPixelFormatRGBA16Float (115)` for EDR,
-  `MTLPixelFormatBGRA8Unorm_sRGB (81)` for SDR.
-- `setColorspace:` — `kCGColorSpaceExtendedLinearDisplayP3` for EDR
-  (linear-light, signed floats, Display P3 primaries — perfect pair
-  for our linear Rec.2020 pixels above 1.0), or the display ICC
-  profile bytes when returning to SDR (reuses the existing
-  `set_colorspace_on_layer` path from Phase 2).
+- `setWantsExtendedDynamicRangeContent:YES|NO` (the key knob — the compositor routes the window through the EDR path
+  only when this is `YES`).
+- `setPixelFormat:MTLPixelFormatRGBA16Float (115)` for EDR, `MTLPixelFormatBGRA8Unorm_sRGB (81)` for SDR.
+- `setColorspace:` — `kCGColorSpaceExtendedLinearDisplayP3` for EDR (linear-light, signed floats, Display P3 primaries —
+  perfect pair for our linear Rec.2020 pixels above 1.0), or the display ICC profile bytes when returning to SDR (reuses
+  the existing `set_colorspace_on_layer` path from Phase 2).
 
 ### Colorspace choice: `extendedDisplayP3`
 
-Picked over `extendedLinearDisplayP3` because our ICC pipeline
-encodes the f16 texture through the display profile's transfer
-function (sRGB or P3 gamma, not linear-light) — so the CAMetalLayer
-colorspace needs the matching non-linear transfer. Naming a linear
-colorspace here would make the compositor decode the same gamma
-curve twice, producing washed-out or crushed output.
+Picked over `extendedLinearDisplayP3` because our ICC pipeline encodes the f16 texture through the display profile's
+transfer function (sRGB or P3 gamma, not linear-light) — so the CAMetalLayer colorspace needs the matching non-linear
+transfer. Naming a linear colorspace here would make the compositor decode the same gamma curve twice, producing
+washed-out or crushed output.
 
-`extendedLinearSRGB` was also considered and rejected: the M3 Max
-XDR (and most modern Apple displays) natively covers P3, not sRGB,
-and the pipeline already targets Display-P3 primaries via the
-display ICC.
+`extendedLinearSRGB` was also considered and rejected: the M3 Max XDR (and most modern Apple displays) natively covers
+P3, not sRGB, and the pipeline already targets Display-P3 primaries via the display ICC.
 
-The "Extended" variant is what keeps above-1.0 values alive — the
-non-extended `kCGColorSpaceDisplayP3` clamps at 1.0.
+The "Extended" variant is what keeps above-1.0 values alive — the non-extended `kCGColorSpaceDisplayP3` clamps at 1.0.
 
 ### Trigger points
 
-`App::apply_edr_surface_state` runs whenever anything that feeds
-`want_edr_surface()` changes:
+`App::apply_edr_surface_state` runs whenever anything that feeds `want_edr_surface()` changes:
 
 - `display_image` — after each decode (image-HDR-ness changed).
-- `display_cached_or_load` — after each navigation (cached image may
-  be HDR or SDR).
+- `display_cached_or_load` — after each navigation (cached image may be HDR or SDR).
 - `apply_raw_flag_change` — user flipped `hdr_output` in Settings.
-- `handle_display_changed` — screen change or brightness change, and
-  an `apply_icc_settings` re-decode was already queued.
+- `handle_display_changed` — screen change or brightness change, and an `apply_icc_settings` re-decode was already
+  queued.
 
-The reconfigure is idempotent: if the surface is already in the right
-state, `reconfigure_surface_format` returns `false` and no logs fire.
+The reconfigure is idempotent: if the surface is already in the right state, `reconfigure_surface_format` returns
+`false` and no logs fire.
 
 ### Screenshot path
 
-`capture_screenshot` always renders to an SDR offscreen target now —
-PNG readback and the BGRA→RGBA swizzle stay straightforward, and a
-PNG can't represent above-1.0 values anyway. When the live pipeline
-is already SDR, we reuse it; when it's HDR, we build a one-shot SDR
-image pipeline for the capture pass. Values above 1.0 clip to
-display-white, which is the correct behavior for a screenshot.
+`capture_screenshot` always renders to an SDR offscreen target now — PNG readback and the BGRA→RGBA swizzle stay
+straightforward, and a PNG can't represent above-1.0 values anyway. When the live pipeline is already SDR, we reuse it;
+when it's HDR, we build a one-shot SDR image pipeline for the capture pass. Values above 1.0 clip to display-white,
+which is the correct behavior for a screenshot.
 
 ### Scope
 
-Dynamic switching is in. Tested on M3 Max / XDR: SDR → HDR on RAW
-load, HDR → SDR on navigate to JPEG, HDR → SDR on Settings toggle
-off, all without recreating the window.
+Dynamic switching is in. Tested on M3 Max / XDR: SDR → HDR on RAW load, HDR → SDR on navigate to JPEG, HDR → SDR on
+Settings toggle off, all without recreating the window.
 
 ## HDR diagnostic logging (follow-up, 2026-04-17)
 
-User reported "no visible EDR effect" on an M3 MacBook Pro XDR even
-though Preview.app clearly drove EDR on the same screen. Added two
-diagnostic INFO lines so future reports carry ground-truth data:
+User reported "no visible EDR effect" on an M3 MacBook Pro XDR even though Preview.app clearly drove EDR on the same
+screen. Added two diagnostic INFO lines so future reports carry ground-truth data:
 
-1. **Post-tone-curve peak linear value** (in `decoding::raw`). When
-   `flags.hdr_output` is on, after the tone-curve stage we reduce the
-   f32 Rec.2020 buffer to its max value via a rayon-parallel pass and
-   log:
+1. **Post-tone-curve peak linear value** (in `decoding::raw`). When `flags.hdr_output` is on, after the tone-curve stage
+   we reduce the f32 Rec.2020 buffer to its max value via a rayon-parallel pass and log:
 
    ```
    RAW pipeline peak linear value: 1.45 (EDR-capable content: YES) for …
    RAW pipeline peak linear value: 0.98 (EDR-capable content: NO — all pixels fit within SDR) for …
    ```
 
-   Skipped entirely when `flags.hdr_output` is off so the SDR path's
-   perf stays unchanged.
+   Skipped entirely when `flags.hdr_output` is off so the SDR path's perf stays unchanged.
 
-2. **EDR grant read-back** (in `color::display_profile::set_layer_edr_
-   state`). Immediately after `setWantsExtendedDynamicRangeContent:`
-   we read the property back and log:
+2. **EDR grant read-back** (in `color::display_profile::set_layer_edr_ state`). Immediately after
+   `setWantsExtendedDynamicRangeContent:` we read the property back and log:
 
    ```
    render: CAMetalLayer EDR state confirmed:
@@ -296,120 +240,88 @@ diagnostic INFO lines so future reports carry ground-truth data:
        OS granted: YES, NSScreen headroom: 16.00)
    ```
 
-   A YES-requested / NO-granted mismatch would flag an OS path that
-   silently refuses EDR. The NSScreen headroom on the same line lets us
-   correlate "layer says YES" with "display has headroom right now" —
-   they're both live values on XDR.
+   A YES-requested / NO-granted mismatch would flag an OS path that silently refuses EDR. The NSScreen headroom on the
+   same line lets us correlate "layer says YES" with "display has headroom right now" — they're both live values on XDR.
 
-The existing "EDR on / EDR off" log line stays — it carries the pixel
-format and colorspace, which the new line doesn't. Together they give
-"what we set" (the old line) plus "what the OS reported back" (the new
-line).
+The existing "EDR on / EDR off" log line stays — it carries the pixel format and colorspace, which the new line doesn't.
+Together they give "what we set" (the old line) plus "what the OS reported back" (the new line).
 
 ## Deferred to Phase 5.x
 
-- *(Done 2026-04-17)* ~~**Unsharp-mask on f16.**~~ Shipped as
-  `color::sharpen::sharpen_rgba16f_inplace`. Same luminance-only
-  algorithm as the 8-bit path: compute Y from the f16 RGB, blur Y via
-  the same separable Gaussian, apply the unsharp-mask formula, then
-  multiply the original f16 RGB by `Y_out / Y_in` and re-encode. No
-  `[0, 1]` clamp anywhere, so above-white HDR highlights pass through
-  the sharpener without being pinned at 1.0. The user-facing effect is
-  that toggling capture sharpening in Settings → RAW now actually
-  changes the HDR preview on an EDR display — previously the HDR path
-  skipped the step unconditionally.
+- _(Done 2026-04-17)_ ~~**Unsharp-mask on f16.**~~ Shipped as `color::sharpen::sharpen_rgba16f_inplace`. Same
+  luminance-only algorithm as the 8-bit path: compute Y from the f16 RGB, blur Y via the same separable Gaussian, apply
+  the unsharp-mask formula, then multiply the original f16 RGB by `Y_out / Y_in` and re-encode. No `[0, 1]` clamp
+  anywhere, so above-white HDR highlights pass through the sharpener without being pinned at 1.0. The user-facing effect
+  is that toggling capture sharpening in Settings → RAW now actually changes the HDR preview on an EDR display —
+  previously the HDR path skipped the step unconditionally.
 
 ## Testing + validation notes
 
 - `./scripts/check.sh` green (14 checks, 294 tests).
-- Tone-curve tests now cover: monotonic across `[0, 10]`, SDR output
-  always `≤ 1.0 + 1e-6`, HDR output asymptotes toward 4.0 without
-  reaching, C¹ continuity at the highlight knee across `peak` values,
-  `hdr_apply_keeps_wide_gamut_highlights`, `sdr_apply_matches_phase4_
-  sdr_behavior`.
-- Cache tests: `cache_accounts_f16_at_eight_bytes_per_pixel`,
-  `cache_hdr_budget_doubles`, `cache_shrinks_on_budget_drop`.
-- Interactive EDR verification needs a real XDR display. The author's
-  M3 Max 16" MacBook Pro reports `edr_headroom = 16.00`; smoke-running
-  the release build on sample1.arw / sample2.dng / sample3.arw produces
-  "[HDR]" tags in the decode log and uses the 1 GB cache budget
-  correctly.
+- Tone-curve tests now cover: monotonic across `[0, 10]`, SDR output always `≤ 1.0 + 1e-6`, HDR output asymptotes toward
+  4.0 without reaching, C¹ continuity at the highlight knee across `peak` values,
+  `hdr_apply_keeps_wide_gamut_highlights`, `sdr_apply_matches_phase4_ sdr_behavior`.
+- Cache tests: `cache_accounts_f16_at_eight_bytes_per_pixel`, `cache_hdr_budget_doubles`,
+  `cache_shrinks_on_budget_drop`.
+- Interactive EDR verification needs a real XDR display. The author's M3 Max 16" MacBook Pro reports
+  `edr_headroom = 16.00`; smoke-running the release build on sample1.arw / sample2.dng / sample3.arw produces "[HDR]"
+  tags in the decode log and uses the 1 GB cache budget correctly.
 
 ## SDR parity contract
 
-On an SDR display (`edr_headroom == 1.0`) or with the `hdr_output`
-toggle off, the RAW decode output is **bit-identical to Phase 4 for every
-supported RAW format**. That's enforced by:
+On an SDR display (`edr_headroom == 1.0`) or with the `hdr_output` toggle off, the RAW decode output is **bit-identical
+to Phase 4 for every supported RAW format**. That's enforced by:
 
-1. The filmic shoulder with `peak = 1.0` asymptotes exactly at 1.0. At
-   `x = 1.0` it evaluates to some value close to 1.0 (shoulder lands
-   just inside), but the SDR path then `f32_to_u8`-clips to `[0, 1]`
-   with the same `(v * 255.0 + 0.5) as u8` quantisation Phase 4 used.
-   The golden test on `synthetic-bayer-128.dng` passes without regenerating
-   the golden PNG, which means no byte drifted.
-2. When `edr_headroom == 1.0`, `hdr_active` is `false` no matter what
-   `flags.hdr_output` says, so the decoder goes down the RGBA8 branch
-   and never touches `PixelBuffer::Rgba16F`.
+1. The filmic shoulder with `peak = 1.0` asymptotes exactly at 1.0. At `x = 1.0` it evaluates to some value close to 1.0
+   (shoulder lands just inside), but the SDR path then `f32_to_u8`-clips to `[0, 1]` with the same
+   `(v * 255.0 + 0.5) as u8` quantisation Phase 4 used. The golden test on `synthetic-bayer-128.dng` passes without
+   regenerating the golden PNG, which means no byte drifted.
+2. When `edr_headroom == 1.0`, `hdr_active` is `false` no matter what `flags.hdr_output` says, so the decoder goes down
+   the RGBA8 branch and never touches `PixelBuffer::Rgba16F`.
 
-The Phase 4 contract — "flipping any pipeline stage off flushes and
-re-decodes" — still holds for the new `hdr_output` flag.
+The Phase 4 contract — "flipping any pipeline stage off flushes and re-decodes" — still holds for the new `hdr_output`
+flag.
 
 ## Phase 5.2 — HDR rendering fix: direct matrix + brightness gain
 
-The Phase 5.1 HDR pipeline wired a half-float buffer, an EDR-capable
-`MTLPixelFormat`, and `wantsExtendedDynamicRangeContent = YES` on the
-`CAMetalLayer`. Logs showed everything was going into EDR mode correctly
-(EDR headroom 8.92 on the MBP XDR, OS granted EDR, f16 texture bound).
-But visually the result was barely distinguishable from SDR — and on the
-same XDR, Preview.app rendered the same RAW noticeably brighter.
+The Phase 5.1 HDR pipeline wired a half-float buffer, an EDR-capable `MTLPixelFormat`, and
+`wantsExtendedDynamicRangeContent = YES` on the `CAMetalLayer`. Logs showed everything was going into EDR mode correctly
+(EDR headroom 8.92 on the MBP XDR, OS granted EDR, f16 texture bound). But visually the result was barely
+distinguishable from SDR — and on the same XDR, Preview.app rendered the same RAW noticeably brighter.
 
 ### Root cause
 
 Two stacked issues, both fatal to the HDR pipeline:
 
-1. **moxcms clipped at 1.0.** The linear Rec.2020 → display-ICC transform
-   runs through moxcms regardless of HDR mode. For typical display ICCs
-   (sRGB-ish), moxcms gamut-maps outputs to `[0, 1]` at quantize time.
-   Logged pre-ICC peak on `sample3.arw` was `1.34`; post-ICC peak was
-   `1.00` — the whole above-white range the tone curve preserved got
-   eaten before the half-float quantizer saw it. Only content that
-   clawed back above 1.0 later (clarity + capture-sharpening overshoot)
-   ever reached the EDR compositor.
+1. **moxcms clipped at 1.0.** The linear Rec.2020 → display-ICC transform runs through moxcms regardless of HDR mode.
+   For typical display ICCs (sRGB-ish), moxcms gamut-maps outputs to `[0, 1]` at quantize time. Logged pre-ICC peak on
+   `sample3.arw` was `1.34`; post-ICC peak was `1.00` — the whole above-white range the tone curve preserved got eaten
+   before the half-float quantizer saw it. Only content that clawed back above 1.0 later (clarity + capture-sharpening
+   overshoot) ever reached the EDR compositor.
 
-2. **Gamma-encoded colorspace on the Metal layer.** The layer was set to
-   `kCGColorSpaceExtendedDisplayP3` (gamma-encoded with sRGB-style TRC,
-   extended-range signed values). Matched the gamma-encoded output
-   moxcms produced, so the values rendered approximately correctly
-   visually — but combined with #1 above, there was nothing above white
-   to render anyway.
+2. **Gamma-encoded colorspace on the Metal layer.** The layer was set to `kCGColorSpaceExtendedDisplayP3` (gamma-encoded
+   with sRGB-style TRC, extended-range signed values). Matched the gamma-encoded output moxcms produced, so the values
+   rendered approximately correctly visually — but combined with #1 above, there was nothing above white to render
+   anyway.
 
 ### Fix
 
 Two-part change in `color/` + `decoding/raw.rs`:
 
-- **Direct matrix for color conversion on the HDR branch.** Added
-  `color::profiles::REC2020_TO_LINEAR_DISPLAY_P3_D65` — the 3×3 matrix
-  composed offline from `XYZ_TO_DISPLAY_P3_D65 · REC2020_TO_XYZ_D65`,
-  verified in the unit tests.
-  `color::profiles::rec2020_to_linear_display_p3_inplace` applies it
-  rayon-parallel, in place, without clipping. `decoding::raw::decode`
-  branches: SDR keeps `transform_f32_with_profile` (moxcms → user's
-  display ICC); HDR calls the direct matrix. Values above 1.0 survive
-  end to end.
-- **Linear-variant Metal layer colorspace.** Swapped
-  `kCGColorSpaceExtendedDisplayP3` → `kCGColorSpaceExtendedLinearDisplayP3`
-  in `color::display_profile::apply_edr_state`. The `Extended` prefix
-  is what keeps above-1.0 values alive; the `Linear` prefix matches the
-  direct-matrix output (no gamma round-trip).
+- **Direct matrix for color conversion on the HDR branch.** Added `color::profiles::REC2020_TO_LINEAR_DISPLAY_P3_D65` —
+  the 3×3 matrix composed offline from `XYZ_TO_DISPLAY_P3_D65 · REC2020_TO_XYZ_D65`, verified in the unit tests.
+  `color::profiles::rec2020_to_linear_display_p3_inplace` applies it rayon-parallel, in place, without clipping.
+  `decoding::raw::decode` branches: SDR keeps `transform_f32_with_profile` (moxcms → user's display ICC); HDR calls the
+  direct matrix. Values above 1.0 survive end to end.
+- **Linear-variant Metal layer colorspace.** Swapped `kCGColorSpaceExtendedDisplayP3` →
+  `kCGColorSpaceExtendedLinearDisplayP3` in `color::display_profile::apply_edr_state`. The `Extended` prefix is what
+  keeps above-1.0 values alive; the `Linear` prefix matches the direct-matrix output (no gamma round-trip).
 
-Trade-off to name: HDR output uses a fixed Display P3 target, not the
-user's calibrated display ICC. On EDR, the OS's compositor takes over
-colorspace conversion regardless of what we'd put in the layer — we're
-constrained to a well-known CG-named colorspace the compositor
-understands. SDR output still honors the user's ICC. For well-behaved
-display profiles close to P3 the mismatch is invisible; for oddball
-calibrations users might see a subtle SDR ↔ HDR color shift on the same
-image. That's inherent to going into EDR mode.
+Trade-off to name: HDR output uses a fixed Display P3 target, not the user's calibrated display ICC. On EDR, the OS's
+compositor takes over colorspace conversion regardless of what we'd put in the layer — we're constrained to a well-known
+CG-named colorspace the compositor understands. SDR output still honors the user's ICC. For well-behaved display
+profiles close to P3 the mismatch is invisible; for oddball calibrations users might see a subtle SDR ↔ HDR color shift
+on the same image. That's inherent to going into EDR mode.
 
 ### Verification
 
@@ -421,31 +333,22 @@ post-ICC peak: 1.34 (preserved — was 1.00 before)
 peak f16:      2.00 (matrix + clarity / sharpen overshoot on top)
 ```
 
-SDR toggle still works end to end (layer flips back to the user's
-display ICC, moxcms path runs, `Bgra8UnormSrgb` format). Toggling
-Settings → RAW → Output → HDR / EDR output now produces a clearly
-visible change.
+SDR toggle still works end to end (layer flips back to the user's display ICC, moxcms path runs, `Bgra8UnormSrgb`
+format). Toggling Settings → RAW → Output → HDR / EDR output now produces a clearly visible change.
 
 ### Second fix: HDR brightness gain
 
-Even after the matrix/colorspace fix, the HDR output was visibly dimmer
-than Preview.app's on the same RAW and same XDR. The tone-curve output
-peaks at `1.34` linear; the filmic Reinhard shoulder (asymptote at 4.0)
-barely uses the 0–4 headroom for typical scene content — a pixel at
-`x = 1.3` maps to `y = 1.32`, only 32 % above SDR reference white.
-Preview appears to apply a scene-white-to-HDR-reference gain (BT.2408-style,
-~1.5× – 2×) so the whole image reads "HDR-bright," not just "detail
-preserved in highlights."
+Even after the matrix/colorspace fix, the HDR output was visibly dimmer than Preview.app's on the same RAW and same XDR.
+The tone-curve output peaks at `1.34` linear; the filmic Reinhard shoulder (asymptote at 4.0) barely uses the 0–4
+headroom for typical scene content — a pixel at `x = 1.3` maps to `y = 1.32`, only 32 % above SDR reference white.
+Preview appears to apply a scene-white-to-HDR-reference gain (BT.2408-style, ~1.5× – 2×) so the whole image reads
+"HDR-bright," not just "detail preserved in highlights."
 
-Added `RawPipelineFlags.hdr_gain` (default `2.0`, range `0.5 – 4.0`),
-applied as a scalar multiply on the tone-curve output of `rec2020` **on
-the HDR branch only**, before the direct matrix. Exposed as a slider
-under Settings → RAW → Output → HDR / EDR output. `hdr_gain = 1.0` is a
-no-op and reproduces pre-5.2 HDR behavior; SDR path is unaffected.
+Added `RawPipelineFlags.hdr_gain` (default `2.0`, range `0.5 – 4.0`), applied as a scalar multiply on the tone-curve
+output of `rec2020` **on the HDR branch only**, before the direct matrix. Exposed as a slider under Settings → RAW →
+Output → HDR / EDR output. `hdr_gain = 1.0` is a no-op and reproduces pre-5.2 HDR behavior; SDR path is unaffected.
 
-Ships at default `2.0` because first-run on an XDR should *look* like
-HDR, not like SDR with slightly more headroom. Users who want more
-restrained output can drop it to `1.0`; users on brighter displays or
-who want Apple-HDR-style punch can push to `3.0+`. Log line
-`RAW pipeline peak post-ICC` tracks the effective peak after the gain
-so users can see the numeric effect without guessing.
+Ships at default `2.0` because first-run on an XDR should _look_ like HDR, not like SDR with slightly more headroom.
+Users who want more restrained output can drop it to `1.0`; users on brighter displays or who want Apple-HDR-style punch
+can push to `3.0+`. Log line `RAW pipeline peak post-ICC` tracks the effective peak after the gain so users can see the
+numeric effect without guessing.

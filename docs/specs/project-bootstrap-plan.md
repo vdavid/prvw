@@ -16,12 +16,12 @@ macOS, Vulkan on Linux, DX12 on Windows). `muda` gives native OS menus with shor
 uses). This stack keeps the binary lean and the startup instant.
 
 **Why no tokio**: The preloader does CPU-bound image decoding, not async I/O. `std::thread` + channels is the right tool
-here. `tokio` would add unnecessary weight and event-loop integration complexity with `winit`. Use `pollster` to block on
-`wgpu`'s async adapter/device requests.
+here. `tokio` would add unnecessary weight and event-loop integration complexity with `winit`. Use `pollster` to block
+on `wgpu`'s async adapter/device requests.
 
 **Why a separate app from Cmdr**: Different concerns (image rendering vs file management), different tech stacks (pure
-Rust vs Tauri+Svelte), different release cadences. Cmdr launches Prvw the same way Finder would, via `open`, but with
-an IPC fast path when the Prvw daemon is already running.
+Rust vs Tauri+Svelte), different release cadences. Cmdr launches Prvw the same way Finder would, via `open`, but with an
+IPC fast path when the Prvw daemon is already running.
 
 **Monorepo structure**: Mirrors Cmdr. The desktop app and the getprvw.com website live in `apps/`. Scripts, docs, and CI
 at the root. pnpm workspace for the website.
@@ -49,7 +49,8 @@ every subsequent milestone develops under CI protection.
 
 Steps:
 
-1. **Init git repo** in `~/projects-git/vdavid/prvw`. Create `.gitignore` (based on Cmdr's, adapted for no Tauri/Svelte).
+1. **Init git repo** in `~/projects-git/vdavid/prvw`. Create `.gitignore` (based on Cmdr's, adapted for no
+   Tauri/Svelte).
 2. **Create `AGENTS.md`** in the spirit of Cmdr's. Include: project description, principles (adapted from Cmdr but
    shorter, focused on performance and simplicity), file structure, testing/checking instructions, debugging tips,
    critical rules. Keep it lean, this is a small project. Include Prvw-specific gotchas like "wgpu surface must be
@@ -57,24 +58,25 @@ Steps:
 3. **Create `README.md`** in David's writing style. Short, punchy, welcoming. No em dashes. Use sentence case. Mention
    the ACDSee inspiration. Include a "Someday/maybe" section with: GPU-accelerated image pipeline, EXIF-aware rotation,
    ICC color management. Pricing: free for personal use, $29/year per user for commercial use.
-4. **Create `LICENSE`** file: BSL 1.1, licensor Rymdskottkarra AB, licensed work "Prvw", same structure as Cmdr's. Change
-   date: 2029-04-11 (3 years from now).
+4. **Create `LICENSE`** file: BSL 1.1, licensor Rymdskottkarra AB, licensed work "Prvw", same structure as Cmdr's.
+   Change date: 2029-04-11 (3 years from now).
 5. **Create `.mise.toml`**: pin Go 1.26, Node 25, pnpm 10. Rust managed by `rust-toolchain.toml` at repo root
    (intentionally at repo root, not `apps/desktop/` like Cmdr, because Prvw has a single Rust crate).
 6. **Create root `package.json`** and `pnpm-workspace.yaml` for the monorepo.
-7. **Set up `scripts/check/`**: Port the Go check runner from Cmdr. Strip all Cmdr-specific checks (Svelte, Tauri, etc.).
-   Keep: `gofmt`, `go-vet`, `staticcheck`, `misspell`, `gocyclo`, `deadcode`, `go-tests` for the scripts themselves.
-   Add: `rustfmt`, `clippy`, `cargo-test` for the desktop app. Add: website checks (prettier, eslint, typecheck, build).
-   Keep the same architecture (parallel execution, dependency graph, colored output). Create `scripts/check.sh` wrapper.
+7. **Set up `scripts/check/`**: Port the Go check runner from Cmdr. Strip all Cmdr-specific checks (Svelte, Tauri,
+   etc.). Keep: `gofmt`, `go-vet`, `staticcheck`, `misspell`, `gocyclo`, `deadcode`, `go-tests` for the scripts
+   themselves. Add: `rustfmt`, `clippy`, `cargo-test` for the desktop app. Add: website checks (prettier, eslint,
+   typecheck, build). Keep the same architecture (parallel execution, dependency graph, colored output). Create
+   `scripts/check.sh` wrapper.
 8. **Create `.claude/` structure**: `settings.local.json` (with sensible permissions, no MCP servers yet),
    `rules/docs-maintenance.md`, `rules/git-conventions.md`. Copy/adapt the `plan.md` and `execute.md` commands.
 9. **Create `docs/` structure**: `architecture.md` (lean, will grow), `style-guide.md` (reference Cmdr's, adapted),
    `design-principles.md` (adapted for an image viewer: speed, simplicity, instant response, respect resources).
 10. **GitHub Actions CI** (`.github/workflows/ci.yml`): Set up the CI workflow early. Initially covers only the Go
     scripts checks (gofmt, go-vet, staticcheck, etc.). Rust and website jobs are added as stubs that get fleshed out
-    when those milestones land. Mirror Cmdr's structure: paths-filter for change detection, pinned action SHAs,
-    `CI OK` summary job for branch protection. Include both an **Ubuntu runner** (for Rust compilation, Go checks) and
-    a **macOS runner** (for `cargo build` to catch Metal/macOS-specific issues with winit/wgpu). **Renovate config**:
+    when those milestones land. Mirror Cmdr's structure: paths-filter for change detection, pinned action SHAs, `CI OK`
+    summary job for branch protection. Include both an **Ubuntu runner** (for Rust compilation, Go checks) and a **macOS
+    runner** (for `cargo build` to catch Metal/macOS-specific issues with winit/wgpu). **Renovate config**:
     `renovate.json` at repo root.
 11. **Create the GitHub repo**: `gh repo create vdavid/prvw --private --source .` and push the initial commit.
 
@@ -97,8 +99,8 @@ Steps:
 2. **App entry point** (`src/main.rs`): Parse CLI args (file path), init logging, create event loop. The app struct
    implements `winit::application::ApplicationHandler`. The event loop calls into the app struct's methods. Clean,
    readable, well-structured.
-3. **Window management** (`src/window.rs`): Create a resizable window in `resumed()` (not at startup, this is required by
-   winit 0.30). Support toggling between windowed and fullscreen (F11 or Cmd+F on macOS). Handle window resize events
+3. **Window management** (`src/window.rs`): Create a resizable window in `resumed()` (not at startup, this is required
+   by winit 0.30). Support toggling between windowed and fullscreen (F11 or Cmd+F on macOS). Handle window resize events
    (re-render at new size). Handle close event (actually quit the process, don't just hide). Set window title to
    filename.
 4. **GPU renderer** (`src/renderer.rs`): Init `wgpu` surface in `resumed()` (after window creation). Create device and
@@ -114,8 +116,8 @@ Steps:
    in M3, arrow keys switch to prev/next and pan moves to Shift+arrows). Double-click to toggle fit-to-window vs 100%.
    `0` to reset to fit-to-window. Zoom is smooth and immediate (GPU transform only, no re-decode).
 7. **Native menus** (`src/menu.rs`): Use `muda` to create a menu bar. Menus: File (Close: Cmd+W, Quit: Cmd+Q), View
-   (Zoom In, Zoom Out, Actual Size, Fit to Window, Fullscreen), Navigate (Previous: Left, Next: Right). Wire menu
-   events to app actions.
+   (Zoom In, Zoom Out, Actual Size, Fit to Window, Fullscreen), Navigate (Previous: Left, Next: Right). Wire menu events
+   to app actions.
 8. **App lifecycle**: On macOS, Cmd+Q quits. Closing the window quits (don't keep the process running yet, daemon mode
    is a future feature). ESC in fullscreen exits fullscreen. ESC in windowed mode closes the app.
 9. **Code signing**: A shell script (`scripts/build-and-sign.sh`) that runs `cargo build --release`, then `codesign`
@@ -127,8 +129,8 @@ Steps:
 
 ### Milestone 3: navigation and preloading
 
-**Intention**: this is the feature that makes Prvw feel magical. When the user presses Left/Right, the next image appears
-instantly because it's already decoded and uploaded to the GPU. This is the ACDSee killer feature.
+**Intention**: this is the feature that makes Prvw feel magical. When the user presses Left/Right, the next image
+appears instantly because it's already decoded and uploaded to the GPU. This is the ACDSee killer feature.
 
 Steps:
 
@@ -138,8 +140,8 @@ Steps:
 2. **Preloader** (`src/preloader.rs`): Background `std::thread` (not tokio) that keeps N images ahead and N behind the
    current position decoded in memory (as RGBA8 buffers). N=2 is a good default. Communication via
    `std::sync::mpsc::channel` (or `crossbeam-channel` if ordering gets complex). When the user navigates, the preloader
-   shifts its window. Decoded images are held in a bounded cache (LRU eviction). Max memory budget: configurable, default
-   512 MB. Each image's memory cost is `width * height * 4` bytes.
+   shifts its window. Decoded images are held in a bounded cache (LRU eviction). Max memory budget: configurable,
+   default 512 MB. Each image's memory cost is `width * height * 4` bytes.
 3. **Navigation integration**: Left/Right arrow keys (and menu items) navigate to prev/next. If the image is preloaded,
    display is instant (upload texture to GPU, render). If not preloaded (user jumped far), show the image as soon as
    it's decoded, with the filename in the title bar as the loading indicator. Update window title on navigation.
@@ -195,7 +197,8 @@ Steps:
 - **Rust unit tests**: test image loading with sample images (embed small test images in `tests/fixtures/`). Test
   directory scanning. Test preloader cache eviction. Test zoom/pan math. GPU-dependent tests (renderer) are `#[ignore]`
   for CI (no GPU on headless runners). Can run locally with `cargo test -- --ignored`.
-- **Website**: Astro build succeeds. Prettier/ESLint pass. Optionally Playwright E2E for basic page load (can add later).
+- **Website**: Astro build succeeds. Prettier/ESLint pass. Optionally Playwright E2E for basic page load (can add
+  later).
 - **Go check runner**: port Cmdr's existing Go tests for the check runner framework.
 - **Manual testing**: open various image formats, zoom/pan, navigate prev/next, fullscreen toggle, menu items work.
 

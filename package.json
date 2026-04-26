@@ -13,5 +13,8 @@
     "dev:website": "pnpm --filter @prvw/website dev",
     "build:website": "pnpm --filter @prvw/website build",
     "check": "./scripts/check.sh"
+  },
+  "devDependencies": {
+    "oxfmt": "^0.46.0"
   }
 }

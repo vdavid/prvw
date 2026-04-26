@@ -14,27 +14,27 @@ The brand is **sky blue** (`#4da6ff`) with warm yellow sub-accents (`#ffc206`). 
 
 ### Dark mode (default, landing page)
 
-| Token              | Value                       |
-| ------------------ | --------------------------- |
-| Background         | `#0f1419`                   |
-| Surface            | `#151c24`                   |
-| Text primary       | `#f0f4f8`                   |
-| Text secondary     | `#8899aa`                   |
-| Accent             | `#4da6ff`                   |
-| Accent hover       | `#6bb8ff`                   |
-| Accent glow        | `rgba(77, 166, 255, 0.35)`  |
-| Accent contrast    | `#0f1419`                   |
+| Token           | Value                      |
+| --------------- | -------------------------- |
+| Background      | `#0f1419`                  |
+| Surface         | `#151c24`                  |
+| Text primary    | `#f0f4f8`                  |
+| Text secondary  | `#8899aa`                  |
+| Accent          | `#4da6ff`                  |
+| Accent hover    | `#6bb8ff`                  |
+| Accent glow     | `rgba(77, 166, 255, 0.35)` |
+| Accent contrast | `#0f1419`                  |
 
 ### Light mode (sub-pages, system preference)
 
-| Token              | Value                       |
-| ------------------ | --------------------------- |
-| Background         | `#f8fafb`                   |
-| Surface            | `#eef2f5`                   |
-| Text primary       | `#1a2433`                   |
-| Text secondary     | `#5c6b7a`                   |
-| Accent             | `#2b8ae6`                   |
-| Accent contrast    | `#ffffff`                   |
+| Token           | Value     |
+| --------------- | --------- |
+| Background      | `#f8fafb` |
+| Surface         | `#eef2f5` |
+| Text primary    | `#1a2433` |
+| Text secondary  | `#5c6b7a` |
+| Accent          | `#2b8ae6` |
+| Accent contrast | `#ffffff` |
 
 ## Patterns
 
@@ -87,16 +87,16 @@ size changes from 65px.
 
 ## File structure
 
-| File / directory                   | Purpose                           |
-| ---------------------------------- | --------------------------------- |
-| `src/pages/index.astro`           | Landing page                      |
-| `src/layouts/Layout.astro`        | Base layout (meta, OG, fonts)     |
-| `src/components/Header.astro`     | Top nav with mobile menu          |
-| `src/components/Hero.astro`       | Hero section with CTA             |
-| `src/components/Features.astro`   | Feature cards grid                |
-| `src/components/Pricing.astro`    | Personal vs commercial pricing    |
-| `src/components/Footer.astro`     | Minimal footer with links         |
-| `src/styles/global.css`           | Tailwind v4 theme + global styles |
+| File / directory                | Purpose                           |
+| ------------------------------- | --------------------------------- |
+| `src/pages/index.astro`         | Landing page                      |
+| `src/layouts/Layout.astro`      | Base layout (meta, OG, fonts)     |
+| `src/components/Header.astro`   | Top nav with mobile menu          |
+| `src/components/Hero.astro`     | Hero section with CTA             |
+| `src/components/Features.astro` | Feature cards grid                |
+| `src/components/Pricing.astro`  | Personal vs commercial pricing    |
+| `src/components/Footer.astro`   | Minimal footer with links         |
+| `src/styles/global.css`         | Tailwind v4 theme + global styles |
 
 ## Download metadata (`public/latest.json`)
 
@@ -127,8 +127,8 @@ you add analytics tooling, preserve this property. The tracking script URL and w
 
 ## Gotchas
 
-- The `@ts-expect-error` in `astro.config.mjs` is for a Vite version mismatch between Astro and Tailwind. Doesn't
-  affect the build.
+- The `@ts-expect-error` in `astro.config.mjs` is for a Vite version mismatch between Astro and Tailwind. Doesn't affect
+  the build.
 - `site` must be set in `astro.config.mjs` for OG image URLs to work.
 - Don't hardcode colors. Use CSS variables from `global.css`.
 - In light mode, accent buttons use white text (`--color-accent-contrast: #ffffff`), not the dark background color.

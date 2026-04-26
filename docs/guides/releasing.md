@@ -25,18 +25,16 @@ How to release a new version of Prvw. Use the `/release` command to start.
 
 ## Expected timing
 
-The single self-hosted runner builds the three architectures sequentially. As of v0.11.0, each `Build (...)` job
-takes ~7 minutes 30 seconds (compile + sign + notarise + staple), so the three together come in around **22 - 23
-minutes** before the final `Release` job creates the GitHub Release. The app keeps growing — RAW pipeline,
-LensFun database, bundled DCPs — so this number trends up over time. Re-measure when it feels off, don't trust
-older estimates here.
+The single self-hosted runner builds the three architectures sequentially. As of v0.11.0, each `Build (...)` job takes
+~7 minutes 30 seconds (compile + sign + notarise + staple), so the three together come in around **22 - 23 minutes**
+before the final `Release` job creates the GitHub Release. The app keeps growing — RAW pipeline, LensFun database,
+bundled DCPs — so this number trends up over time. Re-measure when it feels off, don't trust older estimates here.
 
 ## Self-hosted runner
 
 The release workflow targets a self-hosted ARM64 macOS runner installed on David's M3 MacBook Pro at
-`~/actions-runner-prvw/` (registered as
-`actions.runner.vdavid-prvw.Davids-M3-MBP-prvw`). It runs as a per-user `launchd` LaunchAgent so it survives reboots
-and login.
+`~/actions-runner-prvw/` (registered as `actions.runner.vdavid-prvw.Davids-M3-MBP-prvw`). It runs as a per-user
+`launchd` LaunchAgent so it survives reboots and login.
 
 ### Runner-up sanity check during a release
 
@@ -99,5 +97,5 @@ Use "Re-run failed jobs" (not "Re-run all jobs") to avoid rebuilding architectur
 
 ### Release job failed but builds succeeded
 
-The release job downloads DMGs from artifacts and creates a GitHub Release. If it fails, re-run it. The build
-artifacts are retained by GitHub Actions and will be re-downloaded.
+The release job downloads DMGs from artifacts and creates a GitHub Release. If it fails, re-run it. The build artifacts
+are retained by GitHub Actions and will be re-downloaded.

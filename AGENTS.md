@@ -52,8 +52,8 @@ This is a monorepo:
 
 Always use the checker script for compilation, linting, formatting, and tests. Its output is concise and focused.
 
-- Specific checks: `./scripts/check.sh --check <name>` (for example, `--check clippy`, `--check rustfmt`). Use
-  `--help` for the full list, or multiple `--check` flags.
+- Specific checks: `./scripts/check.sh --check <name>` (for example, `--check clippy`, `--check rustfmt`). Use `--help`
+  for the full list, or multiple `--check` flags.
 - All Rust checks: `./scripts/check.sh --rust`
 - All Go checks: `./scripts/check.sh --go`
 - All checks: `./scripts/check.sh`
@@ -84,18 +84,18 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 
 ## Gotchas
 
-- **wgpu surface must be created in `resumed()`, not at startup.** `winit` 0.30 uses the `ApplicationHandler` trait.
-  The window and `wgpu` surface must be created inside `resumed()`, which fires after the event loop starts. Creating
-  them earlier crashes on macOS.
+- **wgpu surface must be created in `resumed()`, not at startup.** `winit` 0.30 uses the `ApplicationHandler` trait. The
+  window and `wgpu` surface must be created inside `resumed()`, which fires after the event loop starts. Creating them
+  earlier crashes on macOS.
 - **Use `std::thread` for CPU-bound work, not `tokio`.** The preloader does CPU-bound image decoding. `std::thread` +
   channels is the right tool. `tokio` adds unnecessary weight and event-loop integration complexity with `winit`.
-- **Keep objc2 `Retained<>` wrappers alive during AppKit modal sessions.** When creating NSTextField, NSButton, or
-  other views via objc2 and running a modal window (`runModalForWindow`), store all `Retained<>` objects in a Vec
-  that lives for the modal's duration. Dropping them early causes segfault in autorelease pool cleanup. No
-  compile-time check exists for this. See `apps/desktop/CLAUDE.md` for details.
-- **Never run AppKit modals inside winit's event loop.** `runModalForWindow` inside `resumed()` or any winit
-  callback creates a nested run loop that segfaults on autorelease pool cleanup. Run native modals BEFORE
-  `EventLoop::new()` instead (see onboarding in `main()`).
+- **Keep objc2 `Retained<>` wrappers alive during AppKit modal sessions.** When creating NSTextField, NSButton, or other
+  views via objc2 and running a modal window (`runModalForWindow`), store all `Retained<>` objects in a Vec that lives
+  for the modal's duration. Dropping them early causes segfault in autorelease pool cleanup. No compile-time check
+  exists for this. See `apps/desktop/CLAUDE.md` for details.
+- **Never run AppKit modals inside winit's event loop.** `runModalForWindow` inside `resumed()` or any winit callback
+  creates a nested run loop that segfaults on autorelease pool cleanup. Run native modals BEFORE `EventLoop::new()`
+  instead (see onboarding in `main()`).
 
 ## Workflow
 

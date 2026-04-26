@@ -26,7 +26,8 @@ RUST_LOG=prvw::render::renderer=debug cargo run -- /path/to/image.jpg
 ./scripts/build-and-sign.sh
 ```
 
-This builds a release binary, signs it with hardened runtime using the Developer ID certificate, and verifies the signature. The signed binary ends up at `apps/desktop/target/release/prvw`.
+This builds a release binary, signs it with hardened runtime using the Developer ID certificate, and verifies the
+signature. The signed binary ends up at `apps/desktop/target/release/prvw`.
 
 ## Running checks
 

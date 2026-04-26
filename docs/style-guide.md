@@ -36,8 +36,8 @@ Writing and code styles.
   - **Spell out numbers one through nine.** Use numerals for 10+.
   - **Use ISO dates**: Use YYYY-MM-DD wherever it makes sense.
 - UI
-  - **Error messages**: Keep conversational, positive, actionable, and specific. Never use the words "error" or "failed".
-    Suggest a next step.
+  - **Error messages**: Keep conversational, positive, actionable, and specific. Never use the words "error" or
+    "failed". Suggest a next step.
     - "Couldn't open the image. The file might be corrupted." not "Error: Failed to decode image."
   - **Window title**: Show the filename (not the full path) while viewing. Show the app name when no image is open.
 

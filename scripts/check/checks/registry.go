@@ -5,6 +5,16 @@ import "fmt"
 // AllChecks contains all check definitions with their metadata.
 // Dependencies define which checks must complete before this one runs.
 var AllChecks = []CheckDefinition{
+	// Monorepo-wide checks
+	{
+		ID:          "oxfmt",
+		DisplayName: "oxfmt",
+		App:         AppOther,
+		Tech:        "📐 Format",
+		DependsOn:   nil,
+		Run:         RunOxfmt,
+	},
+
 	// Desktop - Rust checks
 	{
 		ID:          "desktop-rust-rustfmt",
@@ -36,20 +46,11 @@ var AllChecks = []CheckDefinition{
 
 	// Website - Astro checks
 	{
-		ID:          "website-prettier",
-		Nickname:    "prettier",
-		DisplayName: "prettier",
-		App:         AppWebsite,
-		Tech:        "🚀 Astro",
-		DependsOn:   nil,
-		Run:         RunWebsitePrettier,
-	},
-	{
 		ID:          "website-eslint",
 		DisplayName: "eslint",
 		App:         AppWebsite,
 		Tech:        "🚀 Astro",
-		DependsOn:   []string{"website-prettier"},
+		DependsOn:   []string{"oxfmt"},
 		Run:         RunWebsiteESLint,
 	},
 	{

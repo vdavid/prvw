@@ -17,6 +17,7 @@ cargo run --release -- /tmp/prvw-bench-images/*.jpg
 ```
 
 The benchmark:
+
 - Reads all files into memory first (benchmarks pure decode, not I/O)
 - Runs each (image, scenario) combination 3 times
 - Randomizes execution order to avoid cache bias
@@ -24,12 +25,12 @@ The benchmark:
 
 ## Scenarios
 
-| Scenario | Library | Output resolution |
-|---|---|---|
-| zune-jpeg | zune-jpeg 0.5 (pure Rust, NEON/AVX SIMD) | Full |
-| turbojpeg/full | libjpeg-turbo 1.4 (C, hand-tuned asm) | Full |
-| turbojpeg/1:2 | libjpeg-turbo with DCT scaling | Half |
-| turbojpeg/1:4 | libjpeg-turbo with DCT scaling | Quarter |
-| turbojpeg/1:8 | libjpeg-turbo with DCT scaling | Eighth |
+| Scenario       | Library                                  | Output resolution |
+| -------------- | ---------------------------------------- | ----------------- |
+| zune-jpeg      | zune-jpeg 0.5 (pure Rust, NEON/AVX SIMD) | Full              |
+| turbojpeg/full | libjpeg-turbo 1.4 (C, hand-tuned asm)    | Full              |
+| turbojpeg/1:2  | libjpeg-turbo with DCT scaling           | Half              |
+| turbojpeg/1:4  | libjpeg-turbo with DCT scaling           | Quarter           |
+| turbojpeg/1:8  | libjpeg-turbo with DCT scaling           | Eighth            |
 
 See [findings.md](findings.md) for results.

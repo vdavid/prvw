@@ -16,12 +16,12 @@ Auto-deploy: push to `main` → CI passes → webhook → server pulls + rebuild
 
 ## Components
 
-| Component | Location on server | Repo |
-|---|---|---|
-| Website container | `~/prvw/apps/website/` | vdavid/prvw |
-| Deploy webhook | `~/prvw/infra/deploy-webhook/` | vdavid/prvw |
-| Caddy config | `~/hetzner-server/caddy/Caddyfile` | vdavid/hetzner-server |
-| Systemd service | `/etc/systemd/system/deploy-prvw-webhook.service` | (on server) |
+| Component         | Location on server                                | Repo                  |
+| ----------------- | ------------------------------------------------- | --------------------- |
+| Website container | `~/prvw/apps/website/`                            | vdavid/prvw           |
+| Deploy webhook    | `~/prvw/infra/deploy-webhook/`                    | vdavid/prvw           |
+| Caddy config      | `~/hetzner-server/caddy/Caddyfile`                | vdavid/hetzner-server |
+| Systemd service   | `/etc/systemd/system/deploy-prvw-webhook.service` | (on server)           |
 
 ## One-time setup (already done)
 
@@ -111,5 +111,5 @@ ssh hetzner "cd ~/prvw && git fetch origin main && git reset --hard origin/main 
 
 1. **Cloudflare Email Routing**: enable in the Cloudflare dashboard for getprvw.com zone. Add catch-all rule to forward
    to your Gmail. The API token doesn't have email routing permissions.
-2. **Transactional email sending**: if needed, add getprvw.com as a verified sender domain in Brevo (the tooling doc
-   has the API key). Or use Cloudflare's built-in email sending.
+2. **Transactional email sending**: if needed, add getprvw.com as a verified sender domain in Brevo (the tooling doc has
+   the API key). Or use Cloudflare's built-in email sending.

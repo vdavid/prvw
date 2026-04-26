@@ -1,8 +1,8 @@
 Prepare a release based on docs/guides/releasing.md.
 
 1. Prerequisite: Run `gh secret list` and verify that these secrets exist: `APPLE_CERTIFICATE`,
-   `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY`, `APPLE_API_KEY_BASE64`,
-   `APPLE_API_ISSUER`. If any are missing, warn the user and stop.
+   `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_API_KEY`, `APPLE_API_KEY_BASE64`, `APPLE_API_ISSUER`.
+   If any are missing, warn the user and stop.
 2. Update @CHANGELOG.md based on git commits since last release.
    - Read the file first to match its style.
    - Commits have title + body - read all!

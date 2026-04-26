@@ -49,26 +49,26 @@ Identical to local. Confirms the benchmark measures pure decode, not I/O.
 
 ## Summary
 
-| Scenario | Average decode | vs zune-jpeg | vs turbojpeg full |
-|---|---|---|---|
-| zune-jpeg (pure Rust) | 51.3ms | baseline | +36% |
-| turbojpeg full (C) | 37.6ms | -27% | baseline |
-| turbojpeg 1/2 | 30.5ms | -41% | -19% |
-| turbojpeg 1/4 | 27.6ms | -46% | -27% |
-| turbojpeg 1/8 | 26.2ms | -49% | -30% |
+| Scenario              | Average decode | vs zune-jpeg | vs turbojpeg full |
+| --------------------- | -------------- | ------------ | ----------------- |
+| zune-jpeg (pure Rust) | 51.3ms         | baseline     | +36%              |
+| turbojpeg full (C)    | 37.6ms         | -27%         | baseline          |
+| turbojpeg 1/2         | 30.5ms         | -41%         | -19%              |
+| turbojpeg 1/4         | 27.6ms         | -46%         | -27%              |
+| turbojpeg 1/8         | 26.2ms         | -49%         | -30%              |
 
 ## Key insights
 
 1. **turbojpeg is ~27% faster** than zune-jpeg for full-resolution decode on Apple Silicon.
-2. **DCT scaling helps less than expected**: 1/8 is only ~30% faster than full turbojpeg. Most time is in
-   Huffman/DCT, not pixel output.
-3. **At 50ms per image, decode is not the bottleneck.** The 2-3 second delays observed in the Prvw app when browsing
-   NAS photos were caused by network I/O (SMB file reads), not CPU decode.
-4. **Parallel preloading is the highest-impact optimization**: reading/decoding 4 images simultaneously from NAS
-   cuts worst-case latency from sequential sum (~10s) to the single slowest image (~2.5s).
+2. **DCT scaling helps less than expected**: 1/8 is only ~30% faster than full turbojpeg. Most time is in Huffman/DCT,
+   not pixel output.
+3. **At 50ms per image, decode is not the bottleneck.** The 2-3 second delays observed in the Prvw app when browsing NAS
+   photos were caused by network I/O (SMB file reads), not CPU decode.
+4. **Parallel preloading is the highest-impact optimization**: reading/decoding 4 images simultaneously from NAS cuts
+   worst-case latency from sequential sum (~10s) to the single slowest image (~2.5s).
 
 ## Decision
 
 Use **zune-jpeg** (pure Rust, simpler build, no C dependency). The 27% speed difference is ~13ms per image, which is
-imperceptible in practice. The real bottleneck (NAS I/O) is addressed by parallel preloading with rayon, not by a
-faster decoder.
+imperceptible in practice. The real bottleneck (NAS I/O) is addressed by parallel preloading with rayon, not by a faster
+decoder.
