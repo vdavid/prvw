@@ -102,6 +102,12 @@ Read [docs/style-guide.md](docs/style-guide.md) before writing code or copy. The
 - **No em dashes** (use commas, parentheses, or new sentences)
 - **Rust**: 120 char lines, 4-space indent
 
+## Changelog
+
+User-visible changes go in `CHANGELOG.md` under `[Unreleased]`. Entries are short (one line by default) and link their
+commit(s). Validated by the `changelog-commit-links` check on every PR. Full rules in
+[docs/guides/changelog.md](docs/guides/changelog.md).
+
 ## Reporting issues
 
 Use the [issue tracker](https://github.com/vdavid/prvw/issues). Include your macOS version and any relevant logs

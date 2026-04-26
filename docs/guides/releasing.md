@@ -8,7 +8,10 @@ How to release a new version of Prvw. Use the `/release` command to start.
   - `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` (code signing)
   - `APPLE_SIGNING_IDENTITY` (`Developer ID Application: Rymdskottkarra AB (83H6YAQMNP)`)
   - `APPLE_API_KEY`, `APPLE_API_KEY_BASE64`, `APPLE_API_ISSUER` (notarization)
-- Self-hosted runner tagged `[self-hosted, macOS, ARM64]`
+- Self-hosted runner tagged `[self-hosted, macOS, ARM64]` running on David's M3 MacBook Pro (see
+  [Self-hosted runner](#self-hosted-runner) below)
+- `CHANGELOG.md` `[Unreleased]` section populated per [docs/guides/changelog.md](changelog.md) (entries concise +
+  commit-linked, validated by the `changelog-commit-links` check)
 
 ## What the release does
 
@@ -17,6 +20,48 @@ How to release a new version of Prvw. Use the `/release` command to start.
 3. The workflow builds aarch64, x86_64, and universal binaries
 4. Each binary is signed with hardened runtime, packaged into a DMG, notarized, and stapled
 5. A GitHub Release is created with all three DMGs attached
+
+## Self-hosted runner
+
+The release workflow targets a self-hosted ARM64 macOS runner installed on David's M3 MacBook Pro at
+`~/actions-runner-prvw/` (registered as
+`actions.runner.vdavid-prvw.Davids-M3-MBP-prvw`). It runs as a per-user `launchd` LaunchAgent so it survives reboots
+and login.
+
+### Runner-up sanity check during a release
+
+After pushing the tag, the three `Build (...)` jobs should leave `queued` within ~10 seconds. **If they're still
+`queued` after 10-15 seconds, the runner is not up on the Mac.** Don't wait it out — the agent should fix it
+immediately:
+
+```bash
+# 1) Confirm it's down: PID column will be `-` and the last exit code is non-zero (often -9).
+launchctl list | grep prvw
+# Expected when up:    65420   0   actions.runner.vdavid-prvw.Davids-M3-MBP-prvw
+# When down:           -      -9   actions.runner.vdavid-prvw.Davids-M3-MBP-prvw
+
+# 2) Try the bundled service script first.
+cd ~/actions-runner-prvw && ./svc.sh start
+
+# 3) If that fails with "Load failed: 5: Input/output error", the LaunchAgent is in a stuck state.
+#    Bootout + bootstrap to clear it:
+PLIST=~/Library/LaunchAgents/actions.runner.vdavid-prvw.Davids-M3-MBP-prvw.plist
+UID_=$(id -u)
+launchctl bootout gui/$UID_/actions.runner.vdavid-prvw.Davids-M3-MBP-prvw 2>/dev/null
+launchctl bootstrap gui/$UID_ "$PLIST"
+
+# 4) Verify it's listening.
+launchctl list | grep prvw          # PID > 0, last exit 0
+tail ~/actions-runner-prvw/_diag/Runner_*.log | tail -5
+# Last line should read: "Listening for Jobs"
+```
+
+The queued release jobs will pick up automatically once the runner reports in — no need to re-trigger or re-tag.
+
+### Why it sometimes goes down
+
+The MacBook sleeping or restarting can leave the LaunchAgent loaded but its worker process exited. macOS doesn't
+auto-restart from a stuck `Input/output error` state — the bootout + bootstrap pair clears it.
 
 ## Troubleshooting
 
