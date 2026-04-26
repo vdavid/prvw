@@ -1,5 +1,5 @@
 ---
-import { version, dmgUrls } from '../lib/download'
+import { version, dmgUrls, dmgSizes } from '../lib/download'
 
 interface Props {
     variant: 'hero' | 'pricing'
@@ -15,6 +15,8 @@ const { variant, class: className = '' } = Astro.props
         data-download-link
         data-dmg-arm={dmgUrls.aarch64}
         data-dmg-intel={dmgUrls.x86_64}
+        data-size-arm={dmgSizes?.aarch64}
+        data-size-intel={dmgSizes?.x86_64}
         data-umami-event="download"
         data-umami-event-arch="universal"
         data-umami-event-version={version}
@@ -30,6 +32,7 @@ const { variant, class: className = '' } = Astro.props
         <span class="download-split-btn__stack">
             <span class="download-split-btn__label" data-download-label>
                 {variant === 'hero' ? `Download v${version} for macOS` : `Download`}
+                {dmgSizes && <span data-download-size> · {dmgSizes.universal}</span>}
             </span>
             {variant === 'hero' && (
                 <span class="download-split-btn__sub" data-download-arch-hint></span>
@@ -62,18 +65,21 @@ const { variant, class: className = '' } = Astro.props
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
             </svg>
             <span class="download-split-btn__option-name">Apple Silicon</span>
+            {dmgSizes && <span class="download-split-btn__option-size">{dmgSizes.aarch64}</span>}
         </a>
         <a href={dmgUrls.x86_64} role="menuitem" tabindex="-1" data-arch="x86_64" class="download-split-btn__option" data-umami-event="download" data-umami-event-arch="x86_64" data-umami-event-version={version} data-umami-event-source="dropdown">
             <svg class="download-split-btn__option-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
             </svg>
             <span class="download-split-btn__option-name">Intel</span>
+            {dmgSizes && <span class="download-split-btn__option-size">{dmgSizes.x86_64}</span>}
         </a>
         <a href={dmgUrls.universal} role="menuitem" tabindex="-1" data-arch="universal" class="download-split-btn__option" data-umami-event="download" data-umami-event-arch="universal" data-umami-event-version={version} data-umami-event-source="dropdown">
             <svg class="download-split-btn__option-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
             </svg>
             <span class="download-split-btn__option-name">Universal</span>
+            {dmgSizes && <span class="download-split-btn__option-size">{dmgSizes.universal}</span>}
         </a>
     </div>
 
@@ -287,6 +293,11 @@ const { variant, class: className = '' } = Astro.props
         background: var(--color-surface);
         outline: 2px solid var(--color-accent);
         outline-offset: -2px;
+    }
+
+    .download-split-btn__option-size {
+        color: var(--color-text-secondary);
+        font-size: 0.8125rem;
     }
 
     /* Recommended indicator (set by arch detection script) */

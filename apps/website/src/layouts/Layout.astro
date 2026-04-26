@@ -117,6 +117,12 @@ const {
                         var url = arch === 'aarch64' ? el.dataset.dmgArm : el.dataset.dmgIntel
                         if (url) el.href = url
                         el.setAttribute('data-umami-event-arch', arch)
+                        var size = arch === 'aarch64' ? el.dataset.sizeArm : el.dataset.sizeIntel
+                        if (size) {
+                            el.querySelectorAll('[data-download-size]').forEach(function (s) {
+                                s.textContent = ' · ' + size
+                            })
+                        }
                     })
 
                     document.querySelectorAll('[data-download-arch-hint]').forEach(function (el) {

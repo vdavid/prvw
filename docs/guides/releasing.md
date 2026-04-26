@@ -20,6 +20,8 @@ How to release a new version of Prvw. Use the `/release` command to start.
 3. The workflow builds aarch64, x86_64, and universal binaries
 4. Each binary is signed with hardened runtime, packaged into a DMG, notarized, and stapled
 5. A GitHub Release is created with all three DMGs attached
+6. `apps/website/public/latest.json` is regenerated (with `version`, `pub_date`, per-arch DMG URLs, and `dmgSizes` in
+   bytes) and committed to `main`, then the website redeploy webhook is fired
 
 ## Expected timing
 
