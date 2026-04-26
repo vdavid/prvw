@@ -152,8 +152,8 @@ jobs:
         run: go build -o check .
         working-directory: ./scripts/check
 
-      - name: Run Prettier
-        run: ./scripts/check/check --check prettier --ci
+      - name: Run oxfmt
+        run: ./scripts/check/check --check oxfmt --ci
 
       - name: Run ESLint
         run: ./scripts/check/check --check website-eslint --ci
