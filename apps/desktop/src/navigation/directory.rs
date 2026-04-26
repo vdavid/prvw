@@ -118,6 +118,7 @@ impl DirectoryList {
 
     /// Return a clone of every path in the folder. Used by the thumbnail
     /// scheduler to get a stable list of files to generate thumbs for.
+    #[cfg(target_os = "macos")]
     pub fn files(&self) -> Vec<PathBuf> {
         self.files.clone()
     }
