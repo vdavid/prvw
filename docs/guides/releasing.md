@@ -21,6 +21,14 @@ How to release a new version of Prvw. Use the `/release` command to start.
 4. Each binary is signed with hardened runtime, packaged into a DMG, notarized, and stapled
 5. A GitHub Release is created with all three DMGs attached
 
+## Expected timing
+
+The single self-hosted runner builds the three architectures sequentially. As of v0.11.0, each `Build (...)` job
+takes ~7 minutes 30 seconds (compile + sign + notarise + staple), so the three together come in around **22 - 23
+minutes** before the final `Release` job creates the GitHub Release. The app keeps growing — RAW pipeline,
+LensFun database, bundled DCPs — so this number trends up over time. Re-measure when it feels off, don't trust
+older estimates here.
+
 ## Self-hosted runner
 
 The release workflow targets a self-hosted ARM64 macOS runner installed on David's M3 MacBook Pro at
