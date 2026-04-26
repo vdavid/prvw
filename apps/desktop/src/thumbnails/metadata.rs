@@ -155,3 +155,96 @@ unsafe fn dict_i64(dict: CFDictionaryRef, key: CFStringRef) -> Option<i64> {
         if ok { Some(out) } else { None }
     }
 }
+
+/// Three-tier dispatcher chosen by extension. On a slow network share
+/// each file open is ~150 ms RTT, so the goal is to do **one** open per
+/// file regardless of which tier handles it.
+///
+/// | Tier | Formats | Reader | Why |
+/// |------|---------|--------|-----|
+/// | 1 | PNG, GIF, BMP | `image::image_dimensions` | No EXIF needed, header is tiny, pure-Rust no XPC overhead |
+/// | 2 | JPEG | open once, parse dim + EXIF orientation from same 64 KB buffer | Two parsers, one read, one network RTT |
+/// | 3 | RAW, HEIC, WebP, TIFF, others | `read_dimensions` (ImageIO) | Format coverage is the priority; ImageIO handles them all in one pass |
+///
+/// Used by both the dim prefetcher pool (parallel) and as the lazy
+/// fallback on the main thread when the prefetcher hasn't reached the
+/// requested index yet.
+pub fn read_dimensions_fast(path: &Path) -> Option<Dimensions> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("png" | "gif" | "bmp") => read_via_image_crate(path),
+        Some("jpg" | "jpeg") => read_jpeg_with_orientation(path),
+        // RAW, HEIC, WebP, TIFF, and any unknown extension → ImageIO.
+        _ => read_dimensions(path),
+    }
+}
+
+/// Tier 1: PNG/GIF/BMP. `image::image_dimensions` reads only the header
+/// (IHDR for PNG, Logical Screen Descriptor for GIF, BMP file header).
+/// No EXIF orientation is meaningful for these formats — they don't
+/// store orientation in standard headers.
+fn read_via_image_crate(path: &Path) -> Option<Dimensions> {
+    let (w, h) = image::image_dimensions(path).ok()?;
+    Some(Dimensions {
+        width: w,
+        height: h,
+    })
+}
+
+/// Tier 2: JPEG. Open once, read 64 KB into RAM, parse both dimensions
+/// (via the `image` crate) and EXIF orientation (via `nom-exif`) from
+/// the same in-memory buffer. Single network RTT for both pieces of
+/// data.
+///
+/// 64 KB is comfortably more than any JPEG's SOF + APP1/EXIF segments
+/// — typically both are within the first 4 KB.
+fn read_jpeg_with_orientation(path: &Path) -> Option<Dimensions> {
+    use std::io::{Cursor, Read};
+
+    // One open, one read of up to 64 KB, one close. ~1 SMB RTT.
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::with_capacity(64 * 1024);
+    file.take(64 * 1024).read_to_end(&mut bytes).ok()?;
+
+    // Pure-Rust dim parse from the buffer (no further I/O).
+    let cursor = Cursor::new(&bytes);
+    let reader =
+        image::ImageReader::with_format(std::io::BufReader::new(cursor), image::ImageFormat::Jpeg);
+    let (mut w, mut h) = reader.into_dimensions().ok()?;
+
+    // Pure-Rust EXIF parse from the same buffer.
+    //
+    // `parse_jpeg_exif` is deprecated in nom-exif 2.0 in favour of the
+    // `MediaParser` / `MediaSource` API which reuses internal buffers
+    // across multiple files. We're intentionally using the simpler
+    // function here — buffer reuse is irrelevant when we already have
+    // a 64 KB buffer in hand and parse a single file at a time. If
+    // upstream removes this function we'll migrate; until then the
+    // deprecation note doesn't apply to our usage.
+    let cursor_for_exif = Cursor::new(&bytes);
+    #[allow(deprecated)]
+    let orient = nom_exif::parse_jpeg_exif(cursor_for_exif)
+        .ok()
+        .flatten()
+        .and_then(|exif| {
+            exif.get(nom_exif::ExifTag::Orientation)
+                .and_then(|v| match v {
+                    nom_exif::EntryValue::U16(n) => Some(*n),
+                    nom_exif::EntryValue::I16(n) => u16::try_from(*n).ok(),
+                    nom_exif::EntryValue::U32(n) => u16::try_from(*n).ok(),
+                    _ => None,
+                })
+        })
+        .unwrap_or(1);
+
+    if (5..=8).contains(&orient) {
+        std::mem::swap(&mut w, &mut h);
+    }
+    Some(Dimensions {
+        width: w,
+        height: h,
+    })
+}

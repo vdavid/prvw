@@ -3,13 +3,25 @@
 //! Given a folder of N images and a current index, emits requests in the
 //! order that best serves the user:
 //!
-//! 1. Indices outside the preload window (`|i − current| > 2`), centered-
-//!    outward. These are high-value because the full-decode preloader
-//!    won't cover them.
-//! 2. Indices inside the preload window, centered-outward. Lower value —
-//!    the full-decode preloader will hit them soon anyway.
+//! 1. **Immediate neighbors** (`dist 1..=PRELOAD_HALF`), centered outward.
+//!    The user's most likely next nav target is one step away; a thumb
+//!    placeholder for that should be ready *first* even though the
+//!    full-decode preloader is also working on it (the placeholder shows
+//!    while the primary decode is still in flight, sometimes for 500 ms+
+//!    on a slow share).
+//! 2. **Outside the preload window** (`dist > PRELOAD_HALF`), centered-
+//!    outward, **bounded by [`WINDOW_RADIUS`]**. These cover the
+//!    "exploration" navigations.
 //! 3. `current` itself, last. Primary decode is almost always faster than
-//!    a thumb fetch for an index we're actively loading.
+//!    a thumb fetch for an index we're actively loading, and we don't
+//!    need a placeholder for the image we're displaying anyway.
+//!
+//! Indices outside the window aren't enqueued at all. For a 10 000-image
+//! folder we'd otherwise queue 10 000 thumbnail jobs at startup —
+//! quicklookd serves ~7/sec, so it'd take 24 minutes to drain, with most
+//! of the work going to indices the user will never visit. Windowed
+//! scheduling caps the work at `2 × WINDOW_RADIUS` thumbs (~14 sec at the
+//! current radius) and reseeds when the user navigates.
 //!
 //! Caps in-flight requests at `max_parallel` to avoid stressing the system.
 //! Supports pause/resume so a primary decode can get first dibs on I/O and
@@ -20,6 +32,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// Distance from `current` within which full-decode preloads cover the index
 /// (matches `navigation::preloader::PRELOAD_AHEAD`).
 const PRELOAD_HALF: usize = 2;
+
+/// How far around `current` we generate thumbnails. Indices farther out
+/// are not enqueued — they'd cost quicklookd time without giving the
+/// user a placeholder where they're likely to navigate. Reseeded on every
+/// `set_current`. ~50 means ~100 thumbs total, ~14 sec to populate at
+/// quicklookd's ~7/sec serving rate.
+pub const WINDOW_RADIUS: usize = 50;
 
 /// Opaque handle a caller can use to cancel a specific request. Monotonic.
 pub type RequestId = u64;
@@ -104,6 +123,15 @@ impl Scheduler {
         self.failed.insert(index);
     }
 
+    /// Drop a previously-cached index back to "uncached" so it can be
+    /// re-queued if it ever falls inside the active window again.
+    /// Called by `State::evict_distant_thumbs` when the RAM cache evicts
+    /// — the scheduler's `cached` set must stay in sync or the index
+    /// would get permanently skipped.
+    pub fn uncache(&mut self, index: usize) {
+        self.cached.remove(&index);
+    }
+
     /// Pop the next index to request, if allowed by the parallelism cap
     /// and the paused flag. Returns `(index, request_id)`. Caller is
     /// responsible for actually firing the OS-level request.
@@ -149,8 +177,16 @@ impl Scheduler {
     }
 
     /// Rebuild the queue from scratch based on current `folder_len` and
-    /// `current`. High-priority phase first (outside preload window), then
-    /// low-priority (inside preload window), `current` last.
+    /// `current`. Phases:
+    /// 1. Immediate neighbors (dist 1..=PRELOAD_HALF), centered outward —
+    ///    most likely next nav target, must have a placeholder ready
+    ///    *before* the user presses arrow-left/right.
+    /// 2. Outside preload window (dist > PRELOAD_HALF), capped by
+    ///    [`WINDOW_RADIUS`].
+    /// 3. `current` itself last.
+    ///
+    /// Bounded by [`WINDOW_RADIUS`] so 10k-image folders don't queue 10k
+    /// jobs.
     fn rebuild_queue(&mut self) {
         self.queue.clear();
         if self.folder_len == 0 {
@@ -159,6 +195,10 @@ impl Scheduler {
         let cur = self.current as isize;
         let len = self.folder_len as isize;
         let half = PRELOAD_HALF as isize;
+        // Cap the outer distance at the smaller of the folder bound and
+        // WINDOW_RADIUS. For folders smaller than the radius this
+        // collapses to "all indices" — same shape as before windowing.
+        let max_dist = (len - 1).min(WINDOW_RADIUS as isize).max(0);
 
         let push = |queue: &mut VecDeque<usize>, idx: isize| {
             if idx >= 0 && idx < len {
@@ -166,13 +206,13 @@ impl Scheduler {
             }
         };
 
-        // Phase 1: distances > PRELOAD_HALF, centered outward.
-        for dist in (half + 1)..=len {
+        // Phase 1: immediate neighbors first, centered outward.
+        for dist in 1..=half.min(max_dist) {
             push(&mut self.queue, cur + dist);
             push(&mut self.queue, cur - dist);
         }
-        // Phase 2: distances 1..=PRELOAD_HALF, centered outward.
-        for dist in 1..=half {
+        // Phase 2: distances > PRELOAD_HALF, centered outward.
+        for dist in (half + 1)..=max_dist {
             push(&mut self.queue, cur + dist);
             push(&mut self.queue, cur - dist);
         }
@@ -194,31 +234,32 @@ mod tests {
     }
 
     #[test]
-    fn small_folder_hits_preload_window_last() {
-        // folder of 6, current = 0. Indices 1, 2 are inside the preload
-        // window (|i - 0| <= 2). Indices 3, 4, 5 are outside.
+    fn small_folder_immediate_neighbors_first() {
+        // folder of 6, current = 0. PRELOAD_HALF = 2. Phase 1 (dist 1..=2):
+        // 1, 2. Phase 2 (dist > 2, outside preload window): 3, 4, 5.
+        // Phase 3: 0 (current, last).
         let mut s = Scheduler::new(10);
         s.set_folder(6, 0);
         let mut order = Vec::new();
         while let Some((i, _)) = s.poll_next() {
             order.push(i);
         }
-        // Expected: 3, 4, 5 first (outside window, outward), then 1, 2
-        // (inside window), then 0 (current, last).
-        assert_eq!(order, vec![3, 4, 5, 1, 2, 0]);
+        assert_eq!(order, vec![1, 2, 3, 4, 5, 0]);
     }
 
     #[test]
     fn centered_traversal_mid_folder() {
-        // folder of 11, current = 5. Window is [3..=7]. Outside: 8, 2, 9, 1, 10, 0.
-        // Inside outward: 6, 4, 7, 3. Current: 5.
+        // folder of 11, current = 5. PRELOAD_HALF = 2.
+        // Phase 1 (immediate neighbors, dist 1..=2 outward): 6, 4, 7, 3.
+        // Phase 2 (dist > 2, outward): 8, 2, 9, 1, 10, 0.
+        // Phase 3: 5.
         let mut s = Scheduler::new(100);
         s.set_folder(11, 5);
         let mut order = Vec::new();
         while let Some((i, _)) = s.poll_next() {
             order.push(i);
         }
-        assert_eq!(order, vec![8, 2, 9, 1, 10, 0, 6, 4, 7, 3, 5]);
+        assert_eq!(order, vec![6, 4, 7, 3, 8, 2, 9, 1, 10, 0, 5]);
     }
 
     #[test]
@@ -226,11 +267,11 @@ mod tests {
         let mut s = Scheduler::new(2);
         s.set_folder(10, 0);
         // Poll twice — get two.
-        assert!(s.poll_next().is_some());
+        let (first, _) = s.poll_next().unwrap();
         assert!(s.poll_next().is_some());
         // Third poll is gated by max_parallel until we mark one done.
         assert!(s.poll_next().is_none());
-        s.mark_ready(3);
+        s.mark_ready(first);
         assert!(s.poll_next().is_some());
     }
 
@@ -255,13 +296,11 @@ mod tests {
         // rebuild — but in-flight stay in-flight.
         s.set_current(10);
         assert_eq!(s.status().in_flight.len(), 2);
-        // After rebuild, the queue's first index should be from near
-        // current=10 (outside window phase starts at dist 3 from 10: so 7).
-        // Distances > 2 from 10: 7, 6, 5, 4, 3, 2, 1, 0.
-        // forward from 10: none (out of bounds). Backward: 7, 6, 5, 4, 3, 2, 1, 0.
-        // First pop (skipping any already-in-flight or cached) = 7.
+        // After rebuild centered on 10, Phase 1 (dist 1..=2): 11 (oob),
+        // 9, 12 (oob), 8 → effectively 9, 8 (forward 11/12 out of range).
+        // First pop = 9.
         let first = s.poll_next().map(|(i, _)| i);
-        assert_eq!(first, Some(7));
+        assert_eq!(first, Some(9));
     }
 
     #[test]
@@ -274,10 +313,10 @@ mod tests {
         while let Some((i, _)) = s.poll_next() {
             order.push(i);
         }
-        // Cached 0 and 4 are skipped; remaining in centered order from 2.
-        // Outside window (dist > 2 from 2): none (max dist is 2).
-        // Inside window: 3, 1, 4, 0. But 4 and 0 cached, so: 3, 1.
-        // Then current: 2.
+        // Cached 0 and 4 are skipped; remaining in priority order from 2.
+        // Phase 1 (dist 1..=2, outward from 2): 3, 1, 4, 0. But 4 and 0
+        // cached, so: 3, 1. Phase 2 (dist > 2): none (max dist is 2).
+        // Phase 3: 2.
         assert_eq!(order, vec![3, 1, 2]);
     }
 
@@ -289,5 +328,60 @@ mod tests {
         let first = s.poll_next();
         assert_eq!(first.map(|(i, _)| i), Some(0));
         assert!(s.poll_next().is_none());
+    }
+
+    #[test]
+    fn windowing_caps_huge_folders() {
+        // 10k folder, current = 5000. Without windowing we'd queue 10k.
+        // With WINDOW_RADIUS = 50 we should get at most ~101 indices
+        // (50 forward + 50 backward + current).
+        let mut s = Scheduler::new(1);
+        s.set_folder(10_000, 5000);
+        let mut order = Vec::new();
+        // Drain everything (with parallelism=1 we get them one by one).
+        while let Some((i, _)) = s.poll_next() {
+            order.push(i);
+            // Mark done so the next poll returns the next index.
+            s.mark_ready(i);
+        }
+        let radius = WINDOW_RADIUS;
+        assert!(
+            order.len() <= 2 * radius + 1,
+            "queue should be bounded by window radius, got {} indices",
+            order.len()
+        );
+        // Every emitted index must be within the window.
+        for i in &order {
+            let dist = (*i as isize - 5000).unsigned_abs();
+            assert!(
+                dist <= radius,
+                "index {i} is outside window of radius {radius}"
+            );
+        }
+        // Indices well outside the window must NOT have been emitted.
+        assert!(!order.contains(&100));
+        assert!(!order.contains(&9000));
+    }
+
+    #[test]
+    fn windowing_reseeds_on_set_current() {
+        // After a far jump, the new window centers on the new current.
+        let mut s = Scheduler::new(1);
+        s.set_folder(10_000, 100);
+        // Drain a few from the original window.
+        for _ in 0..5 {
+            if let Some((i, _)) = s.poll_next() {
+                s.mark_ready(i);
+            }
+        }
+        // Jump far away.
+        s.set_current(8000);
+        // Next index should be near 8000, not near 100.
+        let next = s.poll_next().map(|(i, _)| i).unwrap();
+        let dist_from_new = (next as isize - 8000).unsigned_abs();
+        assert!(
+            dist_from_new <= WINDOW_RADIUS,
+            "after jump to 8000, next emit was {next} (dist {dist_from_new})"
+        );
     }
 }
