@@ -42,15 +42,17 @@ pub use scheduler::{RequestId, Status};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// A ready thumbnail stored in the cache.
+/// A ready thumbnail stored in the cache. Just the pixels — source
+/// dimensions are read lazily via `State::source_dimensions(index)` at
+/// display time. Caching them here was a footgun: storing them eagerly
+/// in `mark_ready` issues an ImageIO read per thumb, which blocks the
+/// main thread for hundreds of milliseconds per file on network shares
+/// and stalled the *initial* image render for 10+ seconds. Lazy reads
+/// happen only for the index we're actually displaying.
 pub struct Thumbnail {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
-    /// Source image dimensions (EXIF-oriented), from `metadata::read_dimensions`.
-    /// Available even before the thumb arrives — used for auto-fit window.
-    pub source_width: u32,
-    pub source_height: u32,
 }
 
 /// All thumbnail-related state owned by `App`.
@@ -139,42 +141,36 @@ impl State {
 
     /// Called when `quicklookd` hands back a thumbnail. Stores in cache
     /// and lets the scheduler know the slot is free.
+    ///
+    /// **Does NOT pre-read source dimensions.** That's lazy via
+    /// `source_dimensions(index)` from `display_thumbnail_placeholder`,
+    /// which only fires for the user's actual nav target. Pre-reading
+    /// here for all 38 cached thumbs was a 7+ second main-thread block
+    /// on network shares (ImageIO file-header read per file).
     pub fn mark_ready(
         &mut self,
         index: usize,
         width: u32,
         height: u32,
         rgba: Vec<u8>,
-        request_id: RequestId,
+        _request_id: RequestId,
     ) {
-        #[cfg(target_os = "macos")]
-        self.requests.forget(request_id);
-        #[cfg(not(target_os = "macos"))]
-        let _ = request_id;
-
-        // Read source dims if we haven't yet. Cheap (<1ms) and the auto-
-        // fit path needs them.
-        let source = self
-            .source_dimensions(index)
-            .unwrap_or(metadata::Dimensions { width, height });
+        // The worker thread cleans up its `entries` map by handling
+        // `WorkerMsg::Forget` fired from the completion block — main
+        // thread doesn't need to forget here.
         self.cache.insert(
             index,
             Thumbnail {
                 width,
                 height,
                 rgba,
-                source_width: source.width,
-                source_height: source.height,
             },
         );
         self.scheduler.mark_ready(index);
     }
 
-    pub fn mark_failed(&mut self, index: usize, request_id: RequestId) {
-        #[cfg(target_os = "macos")]
-        self.requests.forget(request_id);
-        #[cfg(not(target_os = "macos"))]
-        let _ = request_id;
+    pub fn mark_failed(&mut self, index: usize, _request_id: RequestId) {
+        // Worker handles its own entries cleanup via Forget message.
         self.scheduler.mark_failed(index);
     }
 

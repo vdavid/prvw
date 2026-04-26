@@ -383,38 +383,54 @@ impl App {
             }
 
             #[cfg(target_os = "macos")]
-            AppCommand::ThumbnailReady {
-                index,
-                request_id,
-                folder_generation,
-                width,
-                height,
-                rgba,
-            } => {
-                if folder_generation != self.thumbnails.generation() {
-                    log::debug!(
-                        "Thumb arrived from stale folder (gen {folder_generation} != {}), dropping index {index}",
-                        self.thumbnails.generation()
-                    );
-                } else {
-                    log::info!("Thumb ready: index={index} {width}x{height}");
-                    self.thumbnails
-                        .mark_ready(index, width, height, rgba, request_id);
-                    if self.navigation.pending_current == Some(index) {
-                        self.display_thumbnail_placeholder(index);
+            AppCommand::ThumbnailsAvailable => {
+                // Drain every queued completion in one go. The
+                // completion blocks fire this command **only when the
+                // queue was previously empty** (see
+                // `quicklook::push_delivery`), so a burst of N thumb
+                // completions sends 1–2 user events instead of N. Each
+                // user event is a winit dispatch; per-event cost adds
+                // up enough that 38 events were starving keyboard input
+                // for ~12 s during the initial folder scan.
+                let batch = self.thumbnails.requests.drain_pending();
+                let mut redraw_for_pending = false;
+                for delivery in batch {
+                    if delivery.folder_generation != self.thumbnails.generation() {
+                        log::debug!(
+                            "Thumb arrived from stale folder (gen {} != {}), dropping index {}",
+                            delivery.folder_generation,
+                            self.thumbnails.generation(),
+                            delivery.index
+                        );
+                        continue;
+                    }
+                    match delivery.result {
+                        Ok(pixels) => {
+                            log::info!(
+                                "Thumb ready: index={} {}x{}",
+                                delivery.index,
+                                pixels.width,
+                                pixels.height
+                            );
+                            self.thumbnails.mark_ready(
+                                delivery.index,
+                                pixels.width,
+                                pixels.height,
+                                pixels.rgba,
+                                delivery.request_id,
+                            );
+                            if self.navigation.pending_current == Some(delivery.index) {
+                                redraw_for_pending = true;
+                            }
+                        }
+                        Err(()) => {
+                            self.thumbnails
+                                .mark_failed(delivery.index, delivery.request_id);
+                        }
                     }
                 }
-                self.pump_thumbnail_requests();
-            }
-
-            #[cfg(target_os = "macos")]
-            AppCommand::ThumbnailFailed {
-                index,
-                request_id,
-                folder_generation,
-            } => {
-                if folder_generation == self.thumbnails.generation() {
-                    self.thumbnails.mark_failed(index, request_id);
+                if redraw_for_pending && let Some(index) = self.navigation.pending_current {
+                    self.display_thumbnail_placeholder(index);
                 }
                 self.pump_thumbnail_requests();
             }

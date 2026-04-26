@@ -152,26 +152,13 @@ pub enum AppCommand {
     PreloaderProgress,
 
     // ── Thumbnails (macOS-only; QuickLook-backed) ────────────────────
-    /// A thumbnail finished generating. Raw RGBA8 bytes, row-packed.
-    ///
-    /// `folder_generation` is the generation counter at submit time. The
-    /// main thread drops this event if it doesn't match the current folder
-    /// generation — it means the folder changed after submission and the
-    /// thumb is for a file that's no longer in `thumbnails::State`.
+    /// One or more QL thumbnail completions are sitting in the
+    /// `thumbnails::State::pending` queue waiting for the main thread to
+    /// drain them. The completion block pushes deliveries onto the queue
+    /// and fires this command **only when the queue was previously empty** —
+    /// so a burst of 38 completions sends 1–2 user events, not 38, and
+    /// keyboard / window events don't get starved by a high-frequency
+    /// EventLoopProxy flood.
     #[cfg(target_os = "macos")]
-    ThumbnailReady {
-        index: usize,
-        request_id: u64,
-        folder_generation: u64,
-        width: u32,
-        height: u32,
-        rgba: Vec<u8>,
-    },
-    /// A thumbnail request failed (unsupported format, corrupt file, etc.).
-    #[cfg(target_os = "macos")]
-    ThumbnailFailed {
-        index: usize,
-        request_id: u64,
-        folder_generation: u64,
-    },
+    ThumbnailsAvailable,
 }

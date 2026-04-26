@@ -1,23 +1,44 @@
-//! `QLThumbnailGenerator` bridge. Submits thumbnail requests; completion
-//! blocks forward results to the main thread via `EventLoopProxy::send_event`.
+//! `QLThumbnailGenerator` bridge.
 //!
-//! ## Life of a request
+//! ## Threading
 //!
-//! 1. Main thread calls [`submit`] with an index, path, and display scale.
-//! 2. We build an `NSURL` + `QLThumbnailGenerationRequest`, retain the
-//!    request in a `HashMap` keyed by `request_id` for cancellation, then
-//!    call `generateBestRepresentationForRequest:completionHandler:`.
-//! 3. `quicklookd` generates the thumb (or hits its cache) and invokes the
-//!    completion block on an internal queue.
-//! 4. The block converts the `CGImage` to `RGBA8` via a bitmap context and
-//!    fires an `AppCommand::ThumbnailReady` (or `::Failed`) through the
-//!    cloned `EventLoopProxy`.
-//! 5. Main thread's `execute_command` hands the bytes to the thumb cache
-//!    and asks the scheduler for the next request.
+//! Submission happens on a **dedicated worker thread**, not the main
+//! thread. `NSURL::fileURLWithPath` and `generateBest…` involve enough
+//! XPC + path-resolution work that on a slow network share each submit
+//! costs ~150 ms. With 7 submissions per pump cycle on the main thread
+//! that's a full second of unresponsive UI per cycle — the user sees a
+//! blank window for the duration. Punting submission off-main moves
+//! that cost where it belongs (a background thread) and leaves the
+//! main thread free to render and process input.
 //!
-//! The cache staleness is handled by `quicklookd` internally — its cache
-//! key includes the file's mtime, so modified files get fresh thumbs
-//! automatically.
+//! ## Message flow
+//!
+//! ```
+//! Main thread                    Worker thread                      QL queue (private)
+//! ─────────────                  ──────────────                     ──────────────────
+//! submit  → Submit(...)      →   recv → create NSURL/request,   →
+//!                                   store in entries[id],
+//!                                   gen.generateBest(block)
+//!                                                                   block runs:
+//!                                                                     pixels = …
+//!                                                                     pending.push(delivery)
+//!                                                                     proxy.send_event(wake)
+//!                                                                     forget_tx.send(Forget(id))
+//!
+//! drain_pending ← drains pending mutex
+//!                                ←   recv → entries.remove(id)
+//!
+//! cancel_all → CancelAll     →   recv → entries.drain().for_each(cancelRequest)
+//! ```
+//!
+//! `entries` (the per-request `Retained<QLThumbnailGenerationRequest>`
+//! map) lives on the worker thread, so cross-thread cancellation works
+//! without sharing `Retained<…>` (which isn't `Send`-friendly).
+//!
+//! The completion block runs on QuickLook's internal queue (not our
+//! worker) — it pushes the delivery, wakes winit, and fires a `Forget`
+//! to the worker so `entries` doesn't grow unbounded over a long
+//! folder browse.
 
 use crate::commands::AppCommand;
 use crate::thumbnails::scheduler::RequestId;
@@ -30,10 +51,11 @@ use objc2_quick_look_thumbnailing::{
     QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes,
     QLThumbnailGenerator, QLThumbnailRepresentation,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use winit::event_loop::EventLoopProxy;
 
 /// A ready thumbnail: raw RGBA8, row-packed (no padding).
@@ -43,9 +65,16 @@ pub struct ThumbnailPixels {
     pub rgba: Vec<u8>,
 }
 
-/// Arguments for [`RequestTable::submit`]. Grouped into a struct because
-/// the call site otherwise exceeds clippy's `too_many_arguments` threshold
-/// and because naming each field makes the submission point readable.
+/// One result slot delivered to the main thread by a QL completion block.
+/// `Ok(pixels)` for a generated thumbnail, `Err` for a failed request.
+pub struct Delivery {
+    pub index: usize,
+    pub request_id: RequestId,
+    pub folder_generation: u64,
+    pub result: Result<ThumbnailPixels, ()>,
+}
+
+/// Arguments for [`RequestTable::submit`].
 pub struct SubmitRequest<'a> {
     pub request_id: RequestId,
     pub index: usize,
@@ -56,163 +85,250 @@ pub struct SubmitRequest<'a> {
     pub proxy: EventLoopProxy<AppCommand>,
 }
 
-/// In-flight request table. Maps `request_id` to the retained QL request
-/// object so we can call `cancelRequest:`. Main-thread only.
+/// Messages sent from the main thread to the worker thread that owns
+/// `entries` and the `QLThumbnailGenerator`.
+enum WorkerMsg {
+    Submit {
+        request_id: RequestId,
+        index: usize,
+        folder_generation: u64,
+        path: PathBuf,
+        size: CGSize,
+        scale: f64,
+        proxy: EventLoopProxy<AppCommand>,
+    },
+    /// Drop the retained request for this id without cancelling — the
+    /// thumbnail completed naturally. Sent by the completion block.
+    Forget(RequestId),
+    /// Cancel every in-flight request. Used on folder change.
+    CancelAll,
+}
+
+/// Front-end handle owned by `thumbnails::State` on the main thread.
+/// All operations are non-blocking from the main thread's perspective:
+/// they just shovel an `mpsc` message to the worker.
 pub struct RequestTable {
-    entries: HashMap<RequestId, Retained<QLThumbnailGenerationRequest>>,
-    generator: Retained<QLThumbnailGenerator>,
+    submit_tx: mpsc::Sender<WorkerMsg>,
+    pending: Arc<Mutex<VecDeque<Delivery>>>,
+    _worker: thread::JoinHandle<()>,
 }
 
 impl RequestTable {
     pub fn new() -> Self {
-        // Shared generator — `sharedGenerator` returns a process-wide
-        // singleton. Fine to cache once.
-        let generator = unsafe { QLThumbnailGenerator::sharedGenerator() };
+        let (submit_tx, submit_rx) = mpsc::channel();
+        let pending = Arc::new(Mutex::new(VecDeque::new()));
+        let pending_for_worker = Arc::clone(&pending);
+        let forget_tx = submit_tx.clone();
+        let worker = thread::Builder::new()
+            .name("prvw-thumbgen".into())
+            .spawn(move || worker_loop(submit_rx, pending_for_worker, forget_tx))
+            .expect("Failed to spawn thumbnail submission worker");
         Self {
-            entries: HashMap::new(),
-            generator,
+            submit_tx,
+            pending,
+            _worker: worker,
         }
     }
 
-    /// Submit a thumbnail request. `completion_proxy` is cloned and moved
-    /// into the completion block; the block fires exactly once and hands
-    /// back either `AppCommand::ThumbnailReady` or `ThumbnailFailed`.
-    ///
-    /// Must be called from the main thread.
-    pub fn submit(&mut self, req: SubmitRequest<'_>) {
-        let SubmitRequest {
-            request_id,
-            index,
-            folder_generation,
-            path,
-            size,
-            scale,
-            proxy,
-        } = req;
-        let Some(path_str) = path.to_str() else {
-            let _ = proxy.send_event(AppCommand::ThumbnailFailed {
-                index,
-                request_id,
-                folder_generation,
-            });
-            return;
-        };
-        unsafe {
-            // Build the `NSURL`. `NSURL::fileURLWithPath` runs through
-            // Foundation's path normalizer (handles spaces, UTF-8, etc.).
-            let ns_path = NSString::from_str(path_str);
-            let url: Retained<NSURL> = NSURL::fileURLWithPath(&ns_path);
-
-            let request =
-                QLThumbnailGenerationRequest::initWithFileAtURL_size_scale_representationTypes(
-                    QLThumbnailGenerationRequest::alloc(),
-                    &url,
-                    size,
-                    scale,
-                    QLThumbnailGenerationRequestRepresentationTypes::All,
-                );
-            // Keep the request alive for cancellation.
-            self.entries.insert(request_id, request.clone());
-
-            // Wrap the proxy + path in shared state the block captures.
-            // The block is `Send` because it's called on quicklookd's
-            // queue; EventLoopProxy is `Send`.
-            let shared = Arc::new(BlockShared {
-                proxy,
-                index,
-                request_id,
-                folder_generation,
-                path: path.to_path_buf(),
-            });
-
-            let block_shared = Arc::clone(&shared);
-            let block = RcBlock::new(
-                move |rep: *mut QLThumbnailRepresentation, err: *mut NSError| {
-                    handle_completion(&block_shared, rep, err);
-                },
-            );
-
-            self.generator
-                .generateBestRepresentationForRequest_completionHandler(&request, &block);
-        }
+    /// Send a submission to the worker. Returns immediately —
+    /// `to_path_buf` is the only thing that runs on the main thread.
+    pub fn submit(&self, req: SubmitRequest<'_>) {
+        let _ = self.submit_tx.send(WorkerMsg::Submit {
+            request_id: req.request_id,
+            index: req.index,
+            folder_generation: req.folder_generation,
+            path: req.path.to_path_buf(),
+            size: req.size,
+            scale: req.scale,
+            proxy: req.proxy,
+        });
     }
 
     /// Cancel every in-flight request. Used on folder change.
-    pub fn cancel_all(&mut self) {
-        let requests: Vec<_> = self.entries.drain().map(|(_, r)| r).collect();
-        for req in requests {
-            unsafe {
-                self.generator.cancelRequest(&req);
+    pub fn cancel_all(&self) {
+        let _ = self.submit_tx.send(WorkerMsg::CancelAll);
+    }
+
+    /// Drain all queued deliveries. Called from the main-thread handler
+    /// for `AppCommand::ThumbnailsAvailable`.
+    pub fn drain_pending(&self) -> Vec<Delivery> {
+        if let Ok(mut q) = self.pending.lock() {
+            q.drain(..).collect()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+fn worker_loop(
+    rx: mpsc::Receiver<WorkerMsg>,
+    pending: Arc<Mutex<VecDeque<Delivery>>>,
+    forget_tx: mpsc::Sender<WorkerMsg>,
+) {
+    // Get the singleton generator on this thread. `sharedGenerator()`
+    // is process-wide; the `Retained<>` we keep here is just a local
+    // reference that we never need to share.
+    let generator = unsafe { QLThumbnailGenerator::sharedGenerator() };
+    let mut entries: HashMap<RequestId, Retained<QLThumbnailGenerationRequest>> = HashMap::new();
+    log::debug!("Thumbnail submission worker started");
+    while let Ok(msg) = rx.recv() {
+        match msg {
+            WorkerMsg::Submit {
+                request_id,
+                index,
+                folder_generation,
+                path,
+                size,
+                scale,
+                proxy,
+            } => {
+                worker_submit(
+                    &generator,
+                    &mut entries,
+                    &pending,
+                    &forget_tx,
+                    request_id,
+                    index,
+                    folder_generation,
+                    path,
+                    size,
+                    scale,
+                    proxy,
+                );
+            }
+            WorkerMsg::Forget(id) => {
+                entries.remove(&id);
+            }
+            WorkerMsg::CancelAll => {
+                let count = entries.len();
+                for (_id, req) in entries.drain() {
+                    unsafe {
+                        generator.cancelRequest(&req);
+                    }
+                }
+                if count > 0 {
+                    log::debug!("Cancelled {count} in-flight thumbnail requests");
+                }
             }
         }
     }
-
-    /// Drop the retained request object for an id that just completed.
-    /// Prevents a tiny leak and keeps the map a truthful in-flight view.
-    pub fn forget(&mut self, request_id: RequestId) {
-        self.entries.remove(&request_id);
-    }
+    log::debug!("Thumbnail submission worker exiting");
 }
 
-struct BlockShared {
-    proxy: EventLoopProxy<AppCommand>,
-    index: usize,
+#[allow(clippy::too_many_arguments)]
+fn worker_submit(
+    generator: &Retained<QLThumbnailGenerator>,
+    entries: &mut HashMap<RequestId, Retained<QLThumbnailGenerationRequest>>,
+    pending: &Arc<Mutex<VecDeque<Delivery>>>,
+    forget_tx: &mpsc::Sender<WorkerMsg>,
     request_id: RequestId,
+    index: usize,
     folder_generation: u64,
     path: PathBuf,
+    size: CGSize,
+    scale: f64,
+    proxy: EventLoopProxy<AppCommand>,
+) {
+    let Some(path_str) = path.to_str() else {
+        push_delivery(
+            pending,
+            Delivery {
+                index,
+                request_id,
+                folder_generation,
+                result: Err(()),
+            },
+            &proxy,
+        );
+        return;
+    };
+    unsafe {
+        let ns_path = NSString::from_str(path_str);
+        let url: Retained<NSURL> = NSURL::fileURLWithPath(&ns_path);
+        let request =
+            QLThumbnailGenerationRequest::initWithFileAtURL_size_scale_representationTypes(
+                QLThumbnailGenerationRequest::alloc(),
+                &url,
+                size,
+                scale,
+                QLThumbnailGenerationRequestRepresentationTypes::All,
+            );
+        entries.insert(request_id, request.clone());
+
+        // The block runs on QL's private queue, not our worker. Capture
+        // by value (Copy primitives) or clone (Arc, Sender, proxy).
+        let pending_for_block = Arc::clone(pending);
+        let forget_for_block = forget_tx.clone();
+        let proxy_for_block = proxy.clone();
+        let log_path = path.clone();
+        let block = RcBlock::new(
+            move |rep: *mut QLThumbnailRepresentation, err: *mut NSError| {
+                // Compiler sees this closure as nested under the outer
+                // `unsafe` block above (the lexical site at which it's
+                // constructed), so the inner pointer dereferences are
+                // already in an unsafe scope. No `unsafe` keyword needed
+                // here even though we deref raw pointers — the safety
+                // contract is documented at the outer block.
+                let result = if rep.is_null() || !err.is_null() {
+                    if !err.is_null() {
+                        let ns_err = &*err;
+                        let msg = ns_err.localizedDescription().to_string();
+                        log::debug!(
+                            "QLThumbnailGenerator failed for {} (index {}): {msg}",
+                            log_path.display(),
+                            index
+                        );
+                    }
+                    Err(())
+                } else {
+                    let rep = &*rep;
+                    cg_image_to_rgba8(rep).ok_or(())
+                };
+                push_delivery(
+                    &pending_for_block,
+                    Delivery {
+                        index,
+                        request_id,
+                        folder_generation,
+                        result,
+                    },
+                    &proxy_for_block,
+                );
+                // Tell the worker to drop our entries[request_id] entry.
+                // Without this, `entries` grows unbounded as the user
+                // browses through a 10k-image folder.
+                let _ = forget_for_block.send(WorkerMsg::Forget(request_id));
+            },
+        );
+
+        generator.generateBestRepresentationForRequest_completionHandler(&request, &block);
+    }
 }
 
-fn handle_completion(
-    shared: &Arc<BlockShared>,
-    rep: *mut QLThumbnailRepresentation,
-    err: *mut NSError,
+/// Push a delivery onto the shared queue and wake the main thread
+/// **only if the queue was previously empty**. A burst of N completions
+/// produces 1–2 user events, not N — so winit's window-event flow
+/// (keyboard, redraw) doesn't get starved.
+fn push_delivery(
+    pending: &Arc<Mutex<VecDeque<Delivery>>>,
+    delivery: Delivery,
+    proxy: &EventLoopProxy<AppCommand>,
 ) {
-    if rep.is_null() || !err.is_null() {
-        if !err.is_null() {
-            let msg = unsafe {
-                let ns_err = &*err;
-                ns_err.localizedDescription().to_string()
-            };
-            log::debug!(
-                "QLThumbnailGenerator failed for {} (index {}): {msg}",
-                shared.path.display(),
-                shared.index
-            );
+    let was_empty = match pending.lock() {
+        Ok(mut q) => {
+            let empty = q.is_empty();
+            q.push_back(delivery);
+            empty
         }
-        let _ = shared.proxy.send_event(AppCommand::ThumbnailFailed {
-            index: shared.index,
-            request_id: shared.request_id,
-            folder_generation: shared.folder_generation,
-        });
-        return;
-    }
-    let pixels = unsafe {
-        let rep = &*rep;
-        cg_image_to_rgba8(rep)
+        Err(_) => return,
     };
-    match pixels {
-        Some(p) => {
-            let _ = shared.proxy.send_event(AppCommand::ThumbnailReady {
-                index: shared.index,
-                request_id: shared.request_id,
-                folder_generation: shared.folder_generation,
-                width: p.width,
-                height: p.height,
-                rgba: p.rgba,
-            });
-        }
-        None => {
-            let _ = shared.proxy.send_event(AppCommand::ThumbnailFailed {
-                index: shared.index,
-                request_id: shared.request_id,
-                folder_generation: shared.folder_generation,
-            });
-        }
+    if was_empty {
+        let _ = proxy.send_event(AppCommand::ThumbnailsAvailable);
     }
 }
 
 // ── CGImage → RGBA8 conversion ─────────────────────────────────────────
-
+//
 // CGImage / CGColorSpace / CGContext opaque types. Declared locally
 // because the `objc2-core-graphics` 0.3 crate doesn't re-export the
 // classic `CGBitmapContextCreate` constructor — it only exposes the
@@ -227,13 +343,9 @@ type CGContextRef = *const c_void;
 #[allow(non_camel_case_types)]
 type CGColorSpaceRef = *const c_void;
 
-/// `kCGImageAlphaPremultipliedLast` (RGBA) | `kCGBitmapByteOrder32Big` on
-/// a little-endian machine. The byte-order constants in CGImage.h are
-/// indexed 1..=4: 16Little, 32Little, 16Big, 32Big. `32Big` is the one
-/// that lays bytes in memory as R, G, B, A — what `wgpu`'s
-/// `Rgba8UnormSrgb` expects. `32Little` (the initial implementation here)
-/// produced `A, B, G, R` memory order on Apple Silicon, which the sampler
-/// then interpreted as pink-tinted, translucent nonsense.
+/// `kCGImageAlphaPremultipliedLast` (RGBA) | `kCGBitmapByteOrder32Big`.
+/// `(4 << 12)` is `kCGBitmapByteOrder32Big`, which lays bytes in memory
+/// as R, G, B, A — what `wgpu`'s `Rgba8UnormSrgb` expects.
 const BITMAP_INFO_RGBA8_PREMUL: u32 = 1 | (4 << 12);
 
 unsafe extern "C" {
@@ -279,9 +391,6 @@ struct CGRectC {
 
 fn cg_image_to_rgba8(rep: &QLThumbnailRepresentation) -> Option<ThumbnailPixels> {
     unsafe {
-        // `CGImage()` returns a `Retained<CGImage>` wrapper; we take its
-        // raw pointer for the FFI blit. The `Retained` drops at end of
-        // scope and releases.
         let cg_image_retained = rep.CGImage();
         let cg_image_ptr: CGImageRef = Retained::as_ptr(&cg_image_retained) as CGImageRef;
         if cg_image_ptr.is_null() {

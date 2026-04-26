@@ -108,18 +108,24 @@ impl App {
         if self.renderer.is_none() {
             return false;
         }
-        let (tw, th, sw, sh, rgba) = {
+        let (tw, th, rgba) = {
             let Some(thumb) = self.thumbnails.get(index) else {
                 return false;
             };
-            (
-                thumb.width,
-                thumb.height,
-                thumb.source_width,
-                thumb.source_height,
-                thumb.rgba.clone(),
-            )
+            (thumb.width, thumb.height, thumb.rgba.clone())
         };
+        // Source dims are read lazily here — only for the index we're
+        // about to display, never for all cached thumbs. On a network
+        // share each ImageIO read costs ~200 ms, so this is the
+        // difference between a snappy display and a 10 s stall.
+        // Falls back to the thumb's own dims if ImageIO fails (rare;
+        // means the file is unreadable, in which case the full decode
+        // will fail too and the user will see an error title).
+        let (sw, sh) = self
+            .thumbnails
+            .source_dimensions(index)
+            .map(|d| (d.width, d.height))
+            .unwrap_or((tw, th));
         // Same display pipeline the cached-image path uses. Source dims
         // drive the zoom math; the thumb is RGBA8 so `is_hdr=false` —
         // the surface flips back to HDR when the primary RAW arrives

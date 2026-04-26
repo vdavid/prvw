@@ -770,11 +770,30 @@ impl App {
 
     /// Queue a single nav step for the debounced path. A burst of these
     /// within `navigation::NAV_DEBOUNCE` collapses into one jump.
+    ///
+    /// Also previews the prospective target in the window title
+    /// **immediately**, so a press always lights up the title bar even
+    /// before the debounce window flushes. Without this, mashing left
+    /// 4 times shows nothing for 30 ms (then jumps to the final target);
+    /// with it, the title walks `10 / 38 → 9 / 38 → 8 / 38 …` in real
+    /// time. The actual decode + display still debounces — only the
+    /// preview is eager.
     pub(crate) fn queue_nav_step(&mut self, event_loop: &ActiveEventLoop, step: i32) {
         self.navigation.pending_nav_delta = self.navigation.pending_nav_delta.saturating_add(step);
         let deadline = Instant::now() + navigation::NAV_DEBOUNCE;
         self.navigation.nav_deadline = Some(deadline);
         event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+
+        if let Some(dir) = &self.navigation.dir_list
+            && let Some(win) = &self.window
+        {
+            let total = dir.len() as i64;
+            let target = (dir.current_index() as i64 + self.navigation.pending_nav_delta as i64)
+                .clamp(0, total.saturating_sub(1)) as usize;
+            if let Some(path) = dir.get(target) {
+                win.set_title(&window::window_title_with_position(path, target, dir.len()));
+            }
+        }
     }
 
     /// Apply any pending debounced delta immediately. Called before
