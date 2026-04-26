@@ -133,6 +133,17 @@ var AllChecks = []CheckDefinition{
 		DependsOn:   []string{"scripts-go-vet"},
 		Run:         RunGoTests,
 	},
+
+	// Repo-wide checks
+	{
+		ID:          "changelog-commit-links",
+		Nickname:    "changelog-links",
+		DisplayName: "CHANGELOG commit links",
+		App:         AppOther,
+		Tech:        "🔗 Links",
+		DependsOn:   nil,
+		Run:         RunChangelogCommitLinks,
+	},
 }
 
 // GetCheckByID returns a check definition by its ID or nickname.

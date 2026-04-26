@@ -18,6 +18,7 @@ const (
 	AppDesktop App = "desktop"
 	AppWebsite App = "website"
 	AppScripts App = "scripts"
+	AppOther   App = "other"
 )
 
 // AppDisplayName returns a human-readable name for an app with icon.
@@ -29,6 +30,8 @@ func AppDisplayName(app App) string {
 		return "🌐 Website"
 	case AppScripts:
 		return "📜 Scripts"
+	case AppOther:
+		return "📦 Other"
 	default:
 		return string(app)
 	}

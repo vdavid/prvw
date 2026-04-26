@@ -68,3 +68,4 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 | Desktop | Rust | rustfmt, clippy, cargo-test                               |
 | Website | Astro | prettier, eslint, typecheck, build                       |
 | Scripts | Go   | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests |
+| Other   | -    | changelog-commit-links                                          |
