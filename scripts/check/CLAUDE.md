@@ -64,10 +64,10 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 
 ## Apps and checks
 
-| App     | Tech     | Checks                                                         |
-| ------- | -------- | -------------------------------------------------------------- |
+| App     | Tech      | Checks                                                         |
+| ------- | --------- | -------------------------------------------------------------- |
 | Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                |
-| Desktop | Rust     | rustfmt, clippy, cargo-test                                    |
-| Website | Astro    | eslint, typecheck, build                                       |
-| Scripts | Go       | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests |
-| Other   | -        | changelog-commit-links                                         |
+| Desktop | Rust      | rustfmt, clippy, cargo-test                                    |
+| Website | Astro     | eslint, typecheck, build                                       |
+| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests |
+| Other   | -         | changelog-commit-links                                         |
