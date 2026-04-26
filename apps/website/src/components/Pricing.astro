@@ -12,11 +12,11 @@ import DownloadButton from './DownloadButton.astro'
         <div class="grid gap-6 md:grid-cols-2 md:max-w-3xl">
             <!-- Free (current) -->
             <div
-                class="relative overflow-hidden rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-surface)] p-8"
+                class="relative rounded-xl border border-[var(--color-accent)]/30 bg-[var(--color-surface)] p-8"
             >
-                <!-- Accent glow top edge -->
+                <!-- Accent glow top edge. inset-x-3 (= rounded-xl radius) keeps the line between the rounded corners without overflow-hidden on the parent — overflow-hidden would clip the download dropdown. -->
                 <div
-                    class="pointer-events-none absolute inset-x-0 top-0 h-px bg-[var(--color-accent)]"
+                    class="pointer-events-none absolute inset-x-3 top-0 h-px bg-[var(--color-accent)]"
                 >
                 </div>
 
