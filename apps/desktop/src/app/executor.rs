@@ -212,6 +212,18 @@ impl App {
                 self.request_redraw();
                 self.update_shared_state();
             }
+            AppCommand::ToggleExifInfo => {
+                self.exif_overlay.visible = !self.exif_overlay.visible;
+                log::debug!("Exif info visible: {}", self.exif_overlay.visible);
+                let mut s = settings::Settings::load();
+                s.exif_visible = self.exif_overlay.visible;
+                s.save();
+                if let Some(menu) = &self.app_menu {
+                    menu.exif_info_item.set_checked(self.exif_overlay.visible);
+                }
+                self.request_redraw();
+                self.update_shared_state();
+            }
             AppCommand::SetCursorPosition { x, y } => {
                 self.last_mouse_pos = (Logical(x), Logical(y));
                 self.update_histogram_hover();

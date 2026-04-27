@@ -6,5 +6,6 @@
 //! - `shader.wgsl` — main image quad shader.
 //! - `overlay.wgsl` — pill/text overlay shader.
 
+pub mod overlay_style;
 pub mod renderer;
 pub mod text;

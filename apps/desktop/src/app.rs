@@ -24,8 +24,8 @@ use crate::render::{renderer, text};
 #[cfg(target_os = "macos")]
 use crate::updater;
 use crate::{
-    TITLE_BAR_HEIGHT, color, decoding, histogram, input, menu, navigation, qa, settings, window,
-    zoom,
+    TITLE_BAR_HEIGHT, color, decoding, exif_overlay, histogram, input, menu, navigation, qa,
+    settings, window, zoom,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -91,6 +91,7 @@ pub(crate) struct App {
     pub(crate) color: color::State,
     pub(crate) navigation: navigation::State,
     pub(crate) histogram: histogram::State,
+    pub(crate) exif_overlay: exif_overlay::State,
     #[cfg(target_os = "macos")]
     pub(crate) thumbnails: crate::thumbnails::State,
 
@@ -176,6 +177,7 @@ impl App {
             color: color::State::from_settings(&initial_settings),
             navigation: navigation::State::from_settings(&initial_settings),
             histogram: histogram::State::from_settings(&initial_settings),
+            exif_overlay: exif_overlay::State::from_settings(&initial_settings),
             #[cfg(target_os = "macos")]
             thumbnails: crate::thumbnails::State::new(),
             title_bar: initial_settings.title_bar,
@@ -1029,6 +1031,22 @@ impl App {
         }
     }
 
+    /// EXIF metadata of the currently displayed image, if any. The cache
+    /// is the source of truth: navigation always insert-then-display, so
+    /// the current image is always cache-resident by the time we render.
+    pub(crate) fn current_exif(&self) -> Option<&decoding::ExifMetadata> {
+        let dir = self.navigation.dir_list.as_ref()?;
+        let entry = self.navigation.image_cache.peek(dir.current_index())?;
+        entry.exif.as_deref()
+    }
+
+    /// True iff the currently displayed image has any EXIF metadata. Used
+    /// by the shared state snapshot so MCP clients can tell why the EXIF
+    /// panel might not be rendering even with `exif_visible == true`.
+    pub(crate) fn current_image_has_exif(&self) -> bool {
+        self.current_exif().is_some()
+    }
+
     /// Recompute the histogram's hover bin from the cached cursor position.
     /// Requests a redraw and writes shared state only when the bin actually
     /// changed — keeps the render-on-demand model intact during idle mouse
@@ -1514,6 +1532,10 @@ impl App {
                 .send_event(AppCommand::ToggleHistogram);
             return;
         }
+        if event.id() == &app_menu.ids.exif_info {
+            let _ = self.event_loop_proxy.send_event(AppCommand::ToggleExifInfo);
+            return;
+        }
 
         if let Some(command) = input::menu_to_command(&event, &app_menu.ids) {
             log::debug!("Menu event: {:?}", event.id());
@@ -1665,6 +1687,25 @@ impl ApplicationHandler<AppCommand> for App {
                 } else {
                     None
                 };
+
+                // EXIF info overlay. Hidden when the user toggled it off OR
+                // when the current image carries no EXIF — even toggled-on,
+                // a wall of "n/a" rows would just be noise.
+                if self.exif_overlay.visible
+                    && let Some(width) = logical_width
+                    && let Some(metadata) = self.current_exif()
+                {
+                    let build = exif_overlay::overlay::build(
+                        metadata,
+                        width,
+                        offset,
+                        self.histogram.visible,
+                    );
+                    standalone_pills.extend(build.pills);
+                    for tb in build.text_blocks {
+                        text_blocks.push(tb);
+                    }
+                }
 
                 let rendered = self.renderer.as_mut().is_some_and(|renderer| {
                     renderer.render(&text_blocks, &standalone_pills, histogram_call, offset)

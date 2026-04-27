@@ -13,16 +13,18 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 /// Returns `None` for keys that don't map to any action.
 /// Takes `Key<&str>` (from `Key::as_ref()`) so callers don't need to clone.
 pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppCommand> {
-    // Bare H toggles the histogram. We deliberately ignore the press if any
-    // modifier is held so Cmd-H (Hide window) and friends keep their native
-    // behavior.
-    if !modifiers.shift_key()
+    // Bare H toggles the histogram and bare E toggles the EXIF info panel.
+    // We deliberately ignore the press if any modifier is held so Cmd-H
+    // (Hide window) and friends keep their native behavior.
+    let bare = !modifiers.shift_key()
         && !modifiers.control_key()
         && !modifiers.alt_key()
-        && !modifiers.super_key()
-        && matches!(key, Key::Character("h") | Key::Character("H"))
-    {
+        && !modifiers.super_key();
+    if bare && matches!(key, Key::Character("h") | Key::Character("H")) {
         return Some(AppCommand::ToggleHistogram);
+    }
+    if bare && matches!(key, Key::Character("e") | Key::Character("E")) {
+        return Some(AppCommand::ToggleExifInfo);
     }
     match key {
         // Navigation (user input → debounced so a wheel spin coalesces)
@@ -71,6 +73,7 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         || id == &ids.icc_color_management
         || id == &ids.color_match_display
         || id == &ids.histogram
+        || id == &ids.exif_info
     {
         // CheckMenuItems auto-toggle on click; we return None and let the caller
         // handle it (it needs the CheckMenuItem ref to read the new state).
@@ -100,6 +103,7 @@ pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
         "0" => Some(AppCommand::FitToWindow),
         "1" => Some(AppCommand::ActualSize),
         "h" | "H" => Some(AppCommand::ToggleHistogram),
+        "e" | "E" => Some(AppCommand::ToggleExifInfo),
         "r" => Some(AppCommand::Refresh),
         _ => {
             log::debug!("QA server: unhandled key '{key_name}'");

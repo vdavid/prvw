@@ -147,6 +147,13 @@ impl ImageCache {
         }
     }
 
+    /// Like `get` but doesn't touch the LRU. Useful for read-only
+    /// inspection (current EXIF metadata, debug snapshots) where bumping
+    /// the access order on every render call would be wrong.
+    pub fn peek(&self, index: usize) -> Option<&DecodedImage> {
+        self.entries.get(&index).map(|e| &e.image)
+    }
+
     /// Insert a decoded image into the cache, evicting LRU entries if over
     /// budget. Returns any entries the LRU logic had to drop so the caller
     /// can log them (the cache doesn't know the current image index, which

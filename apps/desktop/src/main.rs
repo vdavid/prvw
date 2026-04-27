@@ -18,6 +18,7 @@ mod about;
 mod color;
 mod decoding;
 mod diagnostics;
+mod exif_overlay;
 #[cfg(target_os = "macos")]
 mod file_associations;
 mod histogram;

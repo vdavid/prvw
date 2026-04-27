@@ -184,8 +184,9 @@ impl StageTimings {
 }
 
 /// Decode a RAW file through our wide-gamut pipeline and color-manage to
-/// `target_icc`. Returns the developed buffer plus the EXIF orientation
-/// read from rawler's metadata.
+/// `target_icc`. Returns the developed buffer, the EXIF orientation read
+/// from rawler's metadata, and the raw metadata itself so callers can pull
+/// EXIF info from it as a fallback when nom-exif can't parse the file.
 ///
 /// The buffer comes out as:
 /// - `PixelBuffer::Rgba16F` when `flags.hdr_output == true` **and**
@@ -207,7 +208,7 @@ pub(super) fn decode(
     use_relative_colorimetric: bool,
     mut flags: RawPipelineFlags,
     edr_headroom: f32,
-) -> Result<(DecodedImage, u16), String> {
+) -> Result<(DecodedImage, u16, Option<rawler::decoders::RawMetadata>), String> {
     let mut timings = StageTimings::new();
     // Defend against hand-edited settings.json with out-of-range knob
     // values. Production-path calls from the Settings panel are already
@@ -682,9 +683,9 @@ pub(super) fn decode(
     }
     timings.mark("hdr_diag_post");
 
-    let orientation = decoder
-        .raw_metadata(&src, &params)
-        .ok()
+    let raw_metadata = decoder.raw_metadata(&src, &params).ok();
+    let orientation = raw_metadata
+        .as_ref()
         .and_then(|meta| meta.exif.orientation)
         .unwrap_or(1);
 
@@ -745,6 +746,7 @@ pub(super) fn decode(
         return Ok((
             DecodedImage::from_rgba16f(width, height, half_rgba),
             orientation,
+            raw_metadata,
         ));
     }
 
@@ -786,7 +788,11 @@ pub(super) fn decode(
     check_cancelled(cancelled)?;
 
     timings.summary(path);
-    Ok((DecodedImage::from_rgba8(width, height, rgba), orientation))
+    Ok((
+        DecodedImage::from_rgba8(width, height, rgba),
+        orientation,
+        raw_metadata,
+    ))
 }
 
 /// Map rawler's camera-RGB intermediate through white balance + the camera's
@@ -1489,6 +1495,7 @@ mod tests {
         flags: RawPipelineFlags,
     ) -> Result<(DecodedImage, u16), String> {
         decode(path, bytes, cancelled, target_icc, use_rel, flags, 1.0)
+            .map(|(img, orientation, _meta)| (img, orientation))
     }
 
     /// Pull the RGBA8 byte slice out of a `DecodedImage`, panicking for HDR

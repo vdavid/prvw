@@ -6,6 +6,7 @@
 
 use super::{HistogramData, HistogramRect};
 use crate::pixels::Logical;
+use crate::render::overlay_style::{BACKDROP_COLOR, PANEL_MARGIN_RIGHT, PANEL_RADIUS, PANEL_WIDTH};
 use crate::render::renderer::HistogramDrawCall;
 use crate::render::text::{StandalonePill, TextBlock};
 
@@ -20,14 +21,12 @@ pub struct HistogramOverlayBuild<'a> {
     pub plot_rect: HistogramRect,
 }
 
-const PANEL_WIDTH: f32 = 256.0;
-const PANEL_HEIGHT: f32 = 110.0;
-const PANEL_MARGIN_RIGHT: f32 = 7.0;
+/// Total height of the histogram panel, in logical pixels. The EXIF overlay
+/// reads this to anchor its own panel just below when both are visible.
+pub const PANEL_HEIGHT: f32 = 110.0;
 const PANEL_PAD_X: f32 = 10.0;
 const PANEL_PAD_TOP: f32 = 22.0;
 const PANEL_PAD_BOTTOM: f32 = 18.0;
-const PANEL_RADIUS: f32 = 7.0;
-const BACKDROP_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
 const TICK_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.10];
 
 /// Build the histogram overlay for the given window width and content offset.

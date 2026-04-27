@@ -54,6 +54,13 @@ pub struct Settings {
     #[serde(default)]
     pub histogram_visible: bool,
 
+    /// When true, show the EXIF info overlay below the histogram (or in
+    /// its place when the histogram is hidden). Toggled with View → Exif
+    /// info or the bare E key. Hidden anyway when the current image has
+    /// no EXIF data.
+    #[serde(default)]
+    pub exif_visible: bool,
+
     /// Previous default handler for each UTI before Prvw claimed it.
     /// Used to restore associations when the user turns off a file type toggle.
     /// Keys are UTIs (e.g., "public.jpeg"), values are bundle IDs (e.g., "com.apple.Preview").
@@ -93,6 +100,7 @@ impl Default for Settings {
             preload_neighbors: true,
             title_bar: true,
             histogram_visible: false,
+            exif_visible: false,
             previous_handlers: HashMap::new(),
             raw: RawPipelineFlags::default(),
             custom_dcp_dir: None,
@@ -184,6 +192,7 @@ mod tests {
             preload_neighbors: false,
             title_bar: false,
             histogram_visible: true,
+            exif_visible: true,
             previous_handlers: HashMap::from([(
                 "public.jpeg".to_string(),
                 "com.apple.Preview".to_string(),
@@ -198,6 +207,7 @@ mod tests {
         assert!(!loaded.auto_fit_window);
         assert!(loaded.enlarge_small_images);
         assert!(loaded.histogram_visible);
+        assert!(loaded.exif_visible);
         assert!(!loaded.raw.default_tone_curve);
         assert!(!loaded.raw.capture_sharpening);
         assert!(loaded.raw.highlight_recovery); // untouched flag stays true
@@ -244,6 +254,8 @@ mod tests {
         assert!(!loaded.enlarge_small_images);
         // Histogram defaults to off.
         assert!(!loaded.histogram_visible);
+        // EXIF info defaults to off.
+        assert!(!loaded.exif_visible);
         // Missing `raw` → all RAW flags default to true.
         assert!(loaded.raw.is_default());
         assert!(loaded.custom_dcp_dir.is_none());

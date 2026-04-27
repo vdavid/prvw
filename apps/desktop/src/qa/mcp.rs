@@ -308,6 +308,11 @@ fn mcp_tools_list() -> Result<Value, Value> {
                 "inputSchema": { "type": "object", "properties": {} }
             },
             {
+                "name": "exif_info",
+                "description": "Toggle the EXIF info overlay (below the histogram, top-right). The overlay only renders when the current image actually has EXIF metadata; otherwise toggling on is a no-op visually.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
                 "name": "set_cursor_position",
                 "description": "Move the cached cursor position. Used by tests to drive the histogram hover readout without a real mouse.",
                 "inputSchema": {
@@ -586,6 +591,12 @@ fn mcp_tools_call(
             let state_json =
                 send_and_wait(proxy, AppCommand::ToggleHistogram, state, SYNC_TIMEOUT)?;
             let mut content = mcp_text_content("Toggled histogram.");
+            content["state"] = state_json;
+            Ok(content)
+        }
+        "exif_info" => {
+            let state_json = send_and_wait(proxy, AppCommand::ToggleExifInfo, state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content("Toggled exif info.");
             content["state"] = state_json;
             Ok(content)
         }

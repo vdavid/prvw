@@ -486,6 +486,126 @@ fn histogram_hover_bin_updates() {
     );
 }
 
+/// Build a tiny JPEG with a known EXIF segment in a temp dir. Returns the
+/// path. Used by the EXIF-panel integration tests so we don't need a
+/// checked-in binary fixture.
+fn create_jpeg_with_exif(dir: &std::path::Path) -> std::path::PathBuf {
+    use little_exif::exif_tag::ExifTag as LeTag;
+    use little_exif::metadata::Metadata;
+    use little_exif::rational::uR64;
+
+    let path = dir.join("with-exif.jpg");
+    let img = image::RgbImage::from_pixel(8, 8, image::Rgb([180, 90, 60]));
+    img.save(&path).expect("save test JPEG");
+
+    let mut md = Metadata::new();
+    md.set_tag(LeTag::Make("PrvwTest".into()));
+    md.set_tag(LeTag::Model("Camera 9000".into()));
+    md.set_tag(LeTag::FNumber(vec![uR64 {
+        nominator: 28,
+        denominator: 10,
+    }]));
+    md.set_tag(LeTag::ExposureTime(vec![uR64 {
+        nominator: 1,
+        denominator: 250,
+    }]));
+    md.set_tag(LeTag::ISO(vec![400]));
+    md.set_tag(LeTag::FocalLength(vec![uR64 {
+        nominator: 50,
+        denominator: 1,
+    }]));
+    md.set_tag(LeTag::DateTimeOriginal("2024:08:15 12:34:56".into()));
+    md.write_to_file(&path).expect("inject EXIF");
+    path
+}
+
+#[test]
+fn exif_e_toggles_with_exif_jpeg() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = create_jpeg_with_exif(dir.path());
+
+    let app = TestApp::start_with_image(&img_path);
+
+    let s0 = app.get_state();
+    assert_eq!(s0["exif_visible"].as_bool(), Some(false));
+    assert_eq!(
+        s0["exif_present"].as_bool(),
+        Some(true),
+        "JPEG with EXIF should report exif_present=true"
+    );
+
+    app.post("/key", "e");
+    std::thread::sleep(Duration::from_millis(150));
+    let s1 = app.get_state();
+    assert_eq!(s1["exif_visible"].as_bool(), Some(true));
+    assert_eq!(s1["exif_present"].as_bool(), Some(true));
+
+    app.post("/key", "e");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(app.get_state()["exif_visible"].as_bool(), Some(false));
+}
+
+#[test]
+fn exif_e_on_png_marks_not_present_but_no_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("no-exif.png");
+    create_white_image(&img_path, 64, 64);
+
+    let app = TestApp::start_with_image(&img_path);
+
+    app.post("/key", "e");
+    std::thread::sleep(Duration::from_millis(150));
+    let state = app.get_state();
+    assert_eq!(state["exif_visible"].as_bool(), Some(true));
+    assert_eq!(
+        state["exif_present"].as_bool(),
+        Some(false),
+        "PNG has no EXIF, exif_present should be false"
+    );
+
+    // Confirm the app is still alive and rendering by hitting another endpoint.
+    let screenshot = app.get_screenshot();
+    assert!(screenshot.width() > 0 && screenshot.height() > 0);
+}
+
+#[test]
+fn exif_visibility_persists_across_settings_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = create_jpeg_with_exif(dir.path());
+
+    let app = TestApp::start_with_image(&img_path);
+    app.post("/key", "e");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(app.get_state()["exif_visible"].as_bool(), Some(true));
+
+    // Read settings.json from the per-test data dir to confirm the flag landed.
+    // `PRVW_DATA_DIR` causes `data_dir()` to return the dir as-is (no
+    // platform-specific suffix), so settings.json sits directly inside.
+    let settings_path = app._data_dir.path().join("settings.json");
+    let json = std::fs::read_to_string(&settings_path).expect("settings file should exist");
+    assert!(
+        json.contains("\"exif_visible\": true"),
+        "exif_visible should persist to settings.json, got: {json}"
+    );
+}
+
+#[test]
+fn histogram_and_exif_both_visible_independent_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = create_jpeg_with_exif(dir.path());
+
+    let app = TestApp::start_with_image(&img_path);
+    app.post("/key", "h");
+    std::thread::sleep(Duration::from_millis(120));
+    app.post("/key", "e");
+    std::thread::sleep(Duration::from_millis(120));
+
+    let state = app.get_state();
+    assert_eq!(state["histogram_visible"].as_bool(), Some(true));
+    assert_eq!(state["exif_visible"].as_bool(), Some(true));
+    assert_eq!(state["exif_present"].as_bool(), Some(true));
+}
+
 /// Zoom should stay the same when toggling the title bar (image stays same size).
 #[test]
 fn title_bar_toggle_preserves_zoom() {

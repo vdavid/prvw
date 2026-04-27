@@ -92,6 +92,8 @@ pub enum AppCommand {
     SetTitleBar(bool),
     /// Toggle the histogram overlay (View → Histogram, bare H key).
     ToggleHistogram,
+    /// Toggle the EXIF info overlay (View → Exif info, bare E key).
+    ToggleExifInfo,
     /// Update the cached cursor position (used by MCP for hover-readout tests).
     SetCursorPosition { x: f64, y: f64 },
 

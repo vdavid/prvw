@@ -17,6 +17,7 @@ pub struct MenuIds {
     pub fullscreen: MenuId,
     pub refresh: MenuId,
     pub histogram: MenuId,
+    pub exif_info: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
 }
@@ -35,6 +36,7 @@ pub struct AppMenu {
     pub color_match_item: CheckMenuItem,
     pub relative_colorimetric_item: CheckMenuItem,
     pub histogram_item: CheckMenuItem,
+    pub exif_info_item: CheckMenuItem,
 }
 
 /// Build the native menu bar. The caller MUST keep the returned `AppMenu` alive.
@@ -129,6 +131,7 @@ pub fn create_menu_bar() -> AppMenu {
     let fullscreen = MenuItem::new("Fullscreen", true, None);
     let refresh = MenuItem::new("Refresh", true, None);
     let histogram = CheckMenuItem::new("Histogram", true, settings.histogram_visible, None);
+    let exif_info = CheckMenuItem::new("Exif info", true, settings.exif_visible, None);
     view_menu
         .append_items(&[
             &zoom_in,
@@ -144,6 +147,7 @@ pub fn create_menu_bar() -> AppMenu {
             &relative_colorimetric,
             &PredefinedMenuItem::separator(),
             &histogram,
+            &exif_info,
             &PredefinedMenuItem::separator(),
             &fullscreen,
             &PredefinedMenuItem::separator(),
@@ -173,6 +177,7 @@ pub fn create_menu_bar() -> AppMenu {
     let color_match_id = color_match_display.id().clone();
     let relative_colorimetric_id = relative_colorimetric.id().clone();
     let histogram_id = histogram.id().clone();
+    let exif_info_id = exif_info.id().clone();
 
     AppMenu {
         auto_fit_item: auto_fit_window,
@@ -181,6 +186,7 @@ pub fn create_menu_bar() -> AppMenu {
         color_match_item: color_match_display,
         relative_colorimetric_item: relative_colorimetric,
         histogram_item: histogram,
+        exif_info_item: exif_info,
         _menu: menu,
         ids: MenuIds {
             about: about.id().clone(),
@@ -197,6 +203,7 @@ pub fn create_menu_bar() -> AppMenu {
             fullscreen: fullscreen.id().clone(),
             refresh: refresh.id().clone(),
             histogram: histogram_id,
+            exif_info: exif_info_id,
             previous: previous.id().clone(),
             next: next.id().clone(),
         },

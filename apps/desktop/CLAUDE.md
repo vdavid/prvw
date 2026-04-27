@@ -21,8 +21,9 @@ src/
 │   Features:
 ├── about.rs                 About window
 ├── color/                   ICC transform + display profile (macOS) + Color settings panel + color::State
-├── decoding/                Image format decoders (JPEG via zune-jpeg, RAW via rawler, generic via `image`) + `RawPipelineFlags` per-stage toggle struct
+├── decoding/                Image format decoders (JPEG via zune-jpeg, RAW via rawler, generic via `image`) + `RawPipelineFlags` per-stage toggle struct + `ExifMetadata` extraction
 ├── diagnostics.rs           Performance observability (cache/nav/RSS formatter)
+├── exif_overlay/            EXIF info overlay (toggleable read-only metadata panel below the histogram)
 ├── file_associations/       LaunchServices FFI + File associations settings panel
 ├── navigation/              Directory scan + preloader + LRU cache + navigation::State
 ├── onboarding/              Onboarding window + defaults-sentence generator + SVG checkmark renderer

@@ -3,15 +3,16 @@
 Decode image files to RGBA8, extract the embedded ICC profile, apply EXIF orientation, and hand a `DecodedImage` off to
 the renderer.
 
-| File             | Purpose                                                                                                                        |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `mod.rs`         | Public API: `DecodedImage`, `PixelBuffer` (Phase 5 RGBA8/RGBA16F), `load_image` (always-cancellable), `is_supported_extension` |
-| `dispatch.rs`    | `Backend` enum + extension-to-backend mapping                                                                                  |
-| `jpeg.rs`        | Fast JPEG path via `zune-jpeg` (SIMD)                                                                                          |
-| `raw.rs`         | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)                                                     |
-| `dng_opcodes.rs` | DNG `OpcodeList1/2/3` parsing + application (Phase 3.0)                                                                        |
-| `generic.rs`     | Fallback path via the `image` crate (PNG, GIF, WebP, BMP, TIFF)                                                                |
-| `orientation.rs` | EXIF orientation parsing and in-place pixel-buffer rotation                                                                    |
+| File               | Purpose                                                                                                                                                            |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `mod.rs`           | Public API: `DecodedImage`, `PixelBuffer` (Phase 5 RGBA8/RGBA16F), `load_image` (always-cancellable), `is_supported_extension`                                     |
+| `dispatch.rs`      | `Backend` enum + extension-to-backend mapping                                                                                                                      |
+| `jpeg.rs`          | Fast JPEG path via `zune-jpeg` (SIMD)                                                                                                                              |
+| `raw.rs`           | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)                                                                                         |
+| `dng_opcodes.rs`   | DNG `OpcodeList1/2/3` parsing + application (Phase 3.0)                                                                                                            |
+| `generic.rs`       | Fallback path via the `image` crate (PNG, GIF, WebP, BMP, TIFF)                                                                                                    |
+| `orientation.rs`   | EXIF orientation parsing and in-place pixel-buffer rotation                                                                                                        |
+| `exif_metadata.rs` | Curated EXIF subset for the EXIF info overlay (camera, lens, exposure, time, GPS). nom-exif on JPEG/Generic/RAW outer bytes; rawler `RawMetadata` fallback for RAW |
 
 ## Key patterns
 

@@ -44,6 +44,12 @@ pub struct SharedAppState {
     /// Currently hovered histogram bin (0..=255), or `None` when the cursor
     /// isn't over the histogram or the histogram isn't visible.
     pub histogram_hover_bin: Option<u8>,
+    /// Whether the EXIF info overlay is visible (user-toggled). The overlay
+    /// only renders when this **and** `exif_present` are true.
+    pub exif_visible: bool,
+    /// Whether the currently displayed image has any EXIF metadata. False
+    /// for PNG, GIF, BMP, plain WebP, and JPEGs without an EXIF segment.
+    pub exif_present: bool,
     /// Pre-formatted diagnostics text, updated by the main thread.
     pub diagnostics_text: String,
     /// Thumbnail scheduler status, mirrored from `thumbnails::State::status()`.
@@ -110,6 +116,8 @@ impl Default for SharedAppState {
             title_bar: true,
             histogram_visible: false,
             histogram_hover_bin: None,
+            exif_visible: false,
+            exif_present: false,
             diagnostics_text: String::new(),
             thumbnails: ThumbnailsSnapshot::default(),
         }
@@ -132,6 +140,8 @@ impl App {
         state.title_bar = self.title_bar;
         state.histogram_visible = self.histogram.visible;
         state.histogram_hover_bin = self.histogram.hover_bin;
+        state.exif_visible = self.exif_overlay.visible;
+        state.exif_present = self.current_image_has_exif();
 
         if let Some(win) = &self.window {
             let sf = win.scale_factor();

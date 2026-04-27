@@ -27,6 +27,7 @@ both a text confirmation and a `state` field with the current app state as JSON.
 - **fullscreen**: Control fullscreen. Params: `mode` ("on", "off", "toggle").
 - **refresh**: Re-display the current image, re-applying zoom and settings.
 - **histogram**: Toggle the histogram overlay. No params.
+- **exif_info**: Toggle the EXIF info overlay. Renders only when the current image carries EXIF data. No params.
 - **set_cursor_position**: Move the cached cursor (drives histogram hover from tests). Params: `x`, `y` (logical
   pixels).
 

@@ -27,6 +27,7 @@
 
 mod dispatch;
 mod dng_opcodes;
+pub mod exif_metadata;
 mod generic;
 mod jpeg;
 mod orientation;
@@ -41,6 +42,7 @@ use std::time::Instant;
 use dispatch::Backend;
 use orientation::{apply_orientation_bytes, parse_exif_orientation};
 
+pub use exif_metadata::{ExifMetadata, parse_exif_metadata, parse_raw_exif};
 pub use raw_flags::RawPipelineFlags;
 // Range constants are re-exported for the Settings → RAW panel, which is
 // currently macOS-only. Silence the Linux unused-import warning.
@@ -91,16 +93,25 @@ pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
     pub pixels: PixelBuffer,
+    /// Curated subset of the file's EXIF metadata, used by the EXIF info
+    /// overlay. `None` for formats without EXIF (PNG, GIF, WebP without an
+    /// EXIF chunk, BMP) and for files where every interesting field came
+    /// back empty. Boxed so `DecodedImage` (and `PreloadResponse::Ready`,
+    /// which carries it across the channel) doesn't grow by ~360 B per
+    /// instance.
+    pub exif: Option<Box<ExifMetadata>>,
 }
 
 impl DecodedImage {
-    /// Build an RGBA8 image. Kept around so the JPEG / PNG / WebP / etc.
-    /// paths don't have to know the `PixelBuffer` enum exists.
+    /// Build an RGBA8 image with no EXIF attached. Kept around so the JPEG /
+    /// PNG / WebP / etc. paths don't have to know the `PixelBuffer` enum
+    /// exists. Callers that have EXIF should mutate `.exif` after.
     pub fn from_rgba8(width: u32, height: u32, rgba: Vec<u8>) -> Self {
         Self {
             width,
             height,
             pixels: PixelBuffer::Rgba8(rgba),
+            exif: None,
         }
     }
 
@@ -112,6 +123,7 @@ impl DecodedImage {
             width,
             height,
             pixels: PixelBuffer::Rgba16F(half_rgba),
+            exif: None,
         }
     }
 }
@@ -190,16 +202,26 @@ fn decode_with(
     match backend {
         Backend::Jpeg => {
             let orientation = parse_exif_orientation(&bytes, filename);
-            let img = jpeg::decode(path, bytes, target_icc, use_relative_colorimetric)?;
+            let exif = parse_exif_metadata(&bytes).map(Box::new);
+            let mut img = jpeg::decode(path, bytes, target_icc, use_relative_colorimetric)?;
+            img.exif = exif;
             Ok(finalize(img, orientation))
         }
         Backend::Generic => {
             let orientation = parse_exif_orientation(&bytes, filename);
-            let img = generic::decode(path, bytes, target_icc, use_relative_colorimetric)?;
+            let exif = parse_exif_metadata(&bytes).map(Box::new);
+            let mut img = generic::decode(path, bytes, target_icc, use_relative_colorimetric)?;
+            img.exif = exif;
             Ok(finalize(img, orientation))
         }
         Backend::Raw => {
-            let (img, orientation) = raw::decode(
+            // Try nom-exif first on the outer bytes — DNGs and many camera
+            // RAW containers (CR2, NEF) carry a normal EXIF segment
+            // alongside the raw payload, and nom-exif gives us the same
+            // shape we use for JPEGs. Fall back to rawler's already-parsed
+            // metadata for cameras nom-exif doesn't recognise.
+            let exif_via_nom = parse_exif_metadata(&bytes);
+            let (mut img, orientation, raw_metadata) = raw::decode(
                 path,
                 bytes,
                 cancelled,
@@ -208,6 +230,9 @@ fn decode_with(
                 raw_flags,
                 edr_headroom,
             )?;
+            img.exif = exif_via_nom
+                .or_else(|| raw_metadata.as_ref().and_then(parse_raw_exif))
+                .map(Box::new);
             if orientation != 1 {
                 log::debug!("RAW orientation: {orientation} for {filename}");
             }
