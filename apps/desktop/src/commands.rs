@@ -146,6 +146,11 @@ pub enum AppCommand {
     SendKey(String),
     /// Capture a screenshot. The sender receives PNG bytes.
     TakeScreenshot(mpsc::Sender<Vec<u8>>),
+    /// Get the NSWindow `windowNumber` of the main viewer window, for the debug-only
+    /// `screenshot_window` MCP tool that shells out to `screencapture -l`. Sender
+    /// receives 0 if the window doesn't exist yet.
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    GetWindowNumber(mpsc::Sender<u32>),
     /// Synchronization barrier — sends () back to confirm all prior commands were processed.
     Sync(mpsc::Sender<()>),
 

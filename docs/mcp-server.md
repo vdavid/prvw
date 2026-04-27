@@ -43,7 +43,12 @@ both a text confirmation and a `state` field with the current app state as JSON.
 ### Utility
 
 - **key**: Simulate a key press. Params: `key` (web convention name).
-- **screenshot**: Capture current view as base64 PNG.
+- **screenshot**: Capture current view as base64 PNG. Renders through the offscreen wgpu path, so the result has no
+  overlays, no title-bar strip, and no vibrancy.
+- **screenshot_window** (debug builds only): Capture the entire native window as the user sees it, including histogram
+  and EXIF overlays, title bar, vibrancy, and any modal panels. Shells out to
+  `/usr/sbin/screencapture -l <windowNumber>`. Requires macOS Screen Recording permission — the system prompts on first
+  use, and the first call may return a black frame until you grant it. Not registered in release builds.
 
 ## Resources
 

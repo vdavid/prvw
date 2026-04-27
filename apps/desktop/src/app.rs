@@ -1447,6 +1447,38 @@ impl App {
         self.apply_edr_surface_state();
     }
 
+    /// Return the AppKit `NSWindow.windowNumber` of the main viewer window.
+    /// Used by the debug-only `screenshot_window` MCP tool, which shells out to
+    /// `/usr/sbin/screencapture -l <number>` to capture the window as the user sees
+    /// it (overlays, vibrancy, title bar, the lot). Returns `None` if the window
+    /// hasn't been created yet or the number is non-positive.
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    pub(crate) fn main_window_number(&self) -> Option<u32> {
+        use objc2::msg_send;
+        use objc2_app_kit::NSWindow;
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let win = self.window.as_ref()?;
+        let RawWindowHandle::AppKit(handle) = win.window_handle().ok()?.as_raw() else {
+            return None;
+        };
+        // SAFETY: winit gives us a valid `NSView*`. `[NSView window]` returns the
+        // owning NSWindow (or nil if the view is detached). `[NSWindow windowNumber]`
+        // is a non-negative integer for visible windows; anything ≤ 0 means "no
+        // assigned number yet".
+        let ns_view = handle.ns_view.as_ptr() as *const objc2::runtime::AnyObject;
+        let ns_win: *const NSWindow = unsafe { msg_send![ns_view, window] };
+        if ns_win.is_null() {
+            return None;
+        }
+        let number: isize = unsafe { msg_send![ns_win, windowNumber] };
+        if number <= 0 {
+            None
+        } else {
+            Some(number as u32)
+        }
+    }
+
     fn show_settings_dialog(&self) {
         #[cfg(target_os = "macos")]
         {

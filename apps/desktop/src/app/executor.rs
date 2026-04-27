@@ -414,6 +414,11 @@ impl App {
                 };
                 let _ = sender.send(png_bytes);
             }
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            AppCommand::GetWindowNumber(sender) => {
+                let number = self.main_window_number().unwrap_or(0);
+                let _ = sender.send(number);
+            }
             AppCommand::Sync(sender) => {
                 self.update_shared_state();
                 let _ = sender.send(());

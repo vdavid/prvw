@@ -27,6 +27,10 @@ An in-process HTTP server for automated QA: used by E2E tests, agent-driven work
   modules can reach them.
 - **Screenshots via offscreen render target.** A separate wgpu render target + buffer readback + PNG encoding. Stripped
   path (no pills, no title bar viewport). Pixel tests of the live window's appearance need a different approach.
+- **`screenshot_window` (debug builds only).** Sibling MCP tool that shells out to
+  `/usr/sbin/screencapture -l <windowNumber>` to capture the full native window — overlays, title bar, vibrancy, modal
+  panels. Compile-time gated by `#[cfg(all(debug_assertions, target_os = "macos"))]` so release binaries neither
+  register the tool nor link the dispatch arm. Requires Screen Recording permission; macOS prompts on first invocation.
 
 ## Env vars
 

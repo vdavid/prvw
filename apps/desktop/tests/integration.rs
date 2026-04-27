@@ -627,3 +627,80 @@ fn title_bar_toggle_preserves_zoom() {
         "Zoom should not change when toggling title bar: {zoom_on} -> {zoom_off}"
     );
 }
+
+/// Toggling the histogram and EXIF overlays at a very narrow window width must not
+/// crash the renderer. The overlays don't currently clamp their geometry against
+/// `window_width`; this test is the safety net that proves the trivial
+/// render-to-negative-x path is harmless.
+#[test]
+fn narrow_window_overlays_dont_crash() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = create_jpeg_with_exif(dir.path());
+
+    let app = TestApp::start_with_image(&img_path);
+
+    // Disable auto-fit so the next window-geometry change actually sticks.
+    app.post("/auto-fit", "off");
+    std::thread::sleep(Duration::from_millis(120));
+
+    // Squeeze the window down to ~150 logical pixels. The histogram panel itself is
+    // 256 pixels wide, so its layout math will produce a negative x — exactly the
+    // path we want to exercise.
+    let geometry = serde_json::json!({"width": 150, "height": 400});
+    app.post_json("/window-geometry", &geometry);
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Histogram on, EXIF on, navigate, navigate back, then both off. Each step
+    // round-trips through the QA server, so a panic on the main thread would
+    // surface as a connection error here.
+    app.post("/key", "h");
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(app.get_state()["histogram_visible"].as_bool(), Some(true));
+
+    app.post("/key", "e");
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(app.get_state()["exif_visible"].as_bool(), Some(true));
+
+    app.post("/navigate", "next");
+    std::thread::sleep(Duration::from_millis(120));
+    app.post("/navigate", "prev");
+    std::thread::sleep(Duration::from_millis(120));
+
+    app.post("/key", "h");
+    std::thread::sleep(Duration::from_millis(120));
+    app.post("/key", "e");
+    std::thread::sleep(Duration::from_millis(120));
+
+    let final_state = app.get_state();
+    assert_eq!(final_state["histogram_visible"].as_bool(), Some(false));
+    assert_eq!(final_state["exif_visible"].as_bool(), Some(false));
+}
+
+/// `screenshot_window` MCP tool runs end-to-end. Marked `#[ignore]` because the tool
+/// shells out to `/usr/sbin/screencapture -l`, which requires Screen Recording
+/// permission. Headless CI hosts and freshly-cloned dev boxes return a black
+/// (still valid PNG) frame until the user grants it. Run locally with:
+/// `cargo test --test integration screenshot_window_returns_png -- --ignored`.
+#[test]
+#[ignore]
+fn screenshot_window_returns_png() {
+    let app = TestApp::start();
+    let result = mcp_call(&app, "screenshot_window", serde_json::json!({}));
+    let content = result["result"]["content"]
+        .as_array()
+        .expect("screenshot_window should return a content array");
+    let first = &content[0];
+    assert_eq!(first["type"].as_str(), Some("image"));
+    assert_eq!(first["mimeType"].as_str(), Some("image/png"));
+    let b64 = first["data"]
+        .as_str()
+        .expect("data should be a base64 string");
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .expect("data should be valid base64");
+    assert!(!bytes.is_empty(), "PNG bytes should be non-empty");
+    // Decode as PNG to confirm it's a real image, not just bytes.
+    let img = image::load_from_memory(&bytes).expect("should decode as PNG");
+    assert!(img.width() > 0 && img.height() > 0);
+}
