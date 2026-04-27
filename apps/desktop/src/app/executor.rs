@@ -32,6 +32,14 @@ impl App {
             AppCommand::NavigateDebounced(forward) => {
                 self.queue_nav_step(event_loop, if forward { 1 } else { -1 });
             }
+            AppCommand::GoToFirst => {
+                self.flush_pending_nav();
+                self.navigate_to_first();
+            }
+            AppCommand::GoToLast => {
+                self.flush_pending_nav();
+                self.navigate_to_last();
+            }
             AppCommand::ZoomIn => {
                 let old_zoom = self.zoom.view.zoom;
                 self.zoom.view.keyboard_zoom(true);

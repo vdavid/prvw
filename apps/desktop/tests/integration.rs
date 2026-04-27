@@ -913,6 +913,113 @@ fn loop_toggle_off_evicts_wrap_indices() {
 }
 
 #[test]
+fn home_key_jumps_to_first() {
+    let (_dir, first) = create_multi_image_dir(5);
+    let app = TestApp::start_with_image(&first);
+
+    // Walk to a middle image (index 2 of 5).
+    for _ in 0..2 {
+        app.post("/navigate", "next");
+    }
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(3)
+    });
+    assert_eq!(state["index"].as_u64(), Some(3));
+
+    // Press Home — jumps to first.
+    app.post("/key", "Home");
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(1)
+    });
+    assert_eq!(
+        state["index"].as_u64(),
+        Some(1),
+        "Home jumps to first image"
+    );
+}
+
+#[test]
+fn end_key_jumps_to_last() {
+    let (_dir, first) = create_multi_image_dir(5);
+    let app = TestApp::start_with_image(&first);
+    assert_eq!(app.get_state()["index"].as_u64(), Some(1));
+
+    app.post("/key", "End");
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(5)
+    });
+    assert_eq!(state["index"].as_u64(), Some(5), "End jumps to last image");
+    assert_eq!(state["total_files"].as_u64(), Some(5));
+}
+
+#[test]
+fn home_at_first_is_noop() {
+    let (_dir, first) = create_multi_image_dir(5);
+    let app = TestApp::start_with_image(&first);
+    assert_eq!(app.get_state()["index"].as_u64(), Some(1));
+
+    app.post("/key", "Home");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        app.get_state()["index"].as_u64(),
+        Some(1),
+        "Home at first stays at first"
+    );
+}
+
+#[test]
+fn end_at_last_is_noop() {
+    let (_dir, first) = create_multi_image_dir(5);
+    let app = TestApp::start_with_image(&first);
+
+    // Walk to the last image first.
+    app.post("/key", "End");
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(5)
+    });
+    assert_eq!(state["index"].as_u64(), Some(5));
+
+    // End again — should stay.
+    app.post("/key", "End");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        app.get_state()["index"].as_u64(),
+        Some(5),
+        "End at last stays at last"
+    );
+}
+
+#[test]
+fn home_with_loop_on_still_jumps_to_first() {
+    let (_dir, first) = create_multi_image_dir(5);
+    let app = TestApp::start_with_image(&first);
+
+    // Loop on.
+    app.post("/key", "l");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(app.get_state()["loop_navigation"].as_bool(), Some(true));
+
+    // Walk to middle.
+    for _ in 0..2 {
+        app.post("/navigate", "next");
+    }
+    let _ = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(3)
+    });
+
+    // Home jumps to absolute first regardless of loop.
+    app.post("/key", "Home");
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(1)
+    });
+    assert_eq!(
+        state["index"].as_u64(),
+        Some(1),
+        "Home with loop on still jumps to first"
+    );
+}
+
+#[test]
 fn loop_persists_across_settings_reload() {
     let (_dir, first) = create_multi_image_dir(3);
     let app = TestApp::start_with_image(&first);

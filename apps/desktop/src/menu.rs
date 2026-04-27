@@ -20,6 +20,8 @@ pub struct MenuIds {
     pub exif_info: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
+    pub go_to_first: MenuId,
+    pub go_to_last: MenuId,
     pub loop_navigation: MenuId,
 }
 
@@ -161,12 +163,21 @@ pub fn create_menu_bar() -> AppMenu {
     let nav_menu = Submenu::new("Navigate", true);
     let previous = MenuItem::new("Previous      ←", true, None);
     let next = MenuItem::new("Next            →", true, None);
+    let go_to_first = MenuItem::new(
+        "Go to first",
+        true,
+        Some(Accelerator::new(None, Code::Home)),
+    );
+    let go_to_last = MenuItem::new("Go to last", true, Some(Accelerator::new(None, Code::End)));
     let loop_navigation =
         CheckMenuItem::new("Loop navigation", true, settings.loop_navigation, None);
     nav_menu
         .append_items(&[
             &previous,
             &next,
+            &PredefinedMenuItem::separator(),
+            &go_to_first,
+            &go_to_last,
             &PredefinedMenuItem::separator(),
             &loop_navigation,
         ])
@@ -217,6 +228,8 @@ pub fn create_menu_bar() -> AppMenu {
             exif_info: exif_info_id,
             previous: previous.id().clone(),
             next: next.id().clone(),
+            go_to_first: go_to_first.id().clone(),
+            go_to_last: go_to_last.id().clone(),
             loop_navigation: loop_navigation_id,
         },
     }

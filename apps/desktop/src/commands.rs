@@ -52,6 +52,12 @@ pub enum AppCommand {
     /// step on the debounce accumulator — a burst of these within
     /// `navigation::NAV_DEBOUNCE` collapses to a single jump.
     NavigateDebounced(bool),
+    /// Absolute jump to the first image (Home key, Navigate → Go to first).
+    /// No-op when already at index 0 or the directory is empty.
+    GoToFirst,
+    /// Absolute jump to the last image (End key, Navigate → Go to last).
+    /// No-op when already at the last index or the directory is empty.
+    GoToLast,
     /// Open a specific file.
     OpenFile(PathBuf),
 

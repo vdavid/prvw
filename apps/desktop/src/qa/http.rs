@@ -71,6 +71,9 @@ Navigate
   Previous ←   ←/[/Backspace
   Next →        →/]/Space
   ---
+  Go to first   Home
+  Go to last    End
+  ---
   Loop navigation (toggle)   L
 ";
 

@@ -121,6 +121,35 @@ impl DirectoryList {
         (new - old) as i32
     }
 
+    /// Jump to the first image. Returns the net movement (always negative
+    /// or zero), or `0` when already at the first image / the directory is
+    /// empty. Mirrors `go_by`'s "no movement" return convention so callers
+    /// can short-circuit the post-navigation work on a no-op.
+    pub fn go_to_first(&mut self) -> i32 {
+        if self.files.is_empty() || self.current_index == 0 {
+            return 0;
+        }
+        let net = -(self.current_index as i32);
+        self.current_index = 0;
+        net
+    }
+
+    /// Jump to the last image. Returns the net movement (always positive
+    /// or zero), or `0` when already at the last image / the directory is
+    /// empty. Mirrors `go_by`'s "no movement" return convention.
+    pub fn go_to_last(&mut self) -> i32 {
+        if self.files.is_empty() {
+            return 0;
+        }
+        let last = self.files.len() - 1;
+        if self.current_index == last {
+            return 0;
+        }
+        let net = (last as i32) - (self.current_index as i32);
+        self.current_index = last;
+        net
+    }
+
     /// Get the file at a specific index (for preloader lookups).
     pub fn get(&self, index: usize) -> Option<&Path> {
         self.files.get(index).map(|p| p.as_path())
@@ -443,6 +472,46 @@ mod tests {
         sorted.sort();
         assert_eq!(sorted, vec![0, 1, 3, 4]); // 2 (current) excluded
         assert!(!indices.contains(&2), "current index never in preload list");
+    }
+
+    #[test]
+    fn go_to_first_jumps_from_middle() {
+        let dir = create_test_dir();
+        let target = dir.path().join("cherry.gif"); // index 2 of 5
+        let mut list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.current_index(), 2);
+        assert_eq!(list.go_to_first(), -2);
+        assert_eq!(list.current_index(), 0);
+    }
+
+    #[test]
+    fn go_to_first_at_first_is_noop() {
+        let dir = create_test_dir();
+        let target = dir.path().join("apple.jpg"); // index 0
+        let mut list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.current_index(), 0);
+        assert_eq!(list.go_to_first(), 0);
+        assert_eq!(list.current_index(), 0);
+    }
+
+    #[test]
+    fn go_to_last_jumps_from_middle() {
+        let dir = create_test_dir();
+        let target = dir.path().join("cherry.gif"); // index 2 of 5
+        let mut list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.current_index(), 2);
+        assert_eq!(list.go_to_last(), 2);
+        assert_eq!(list.current_index(), 4);
+    }
+
+    #[test]
+    fn go_to_last_at_last_is_noop() {
+        let dir = create_test_dir();
+        let target = dir.path().join("fig.BMP"); // index 4 (last)
+        let mut list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.current_index(), 4);
+        assert_eq!(list.go_to_last(), 0);
+        assert_eq!(list.current_index(), 4);
     }
 
     #[test]

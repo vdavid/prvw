@@ -38,6 +38,8 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
         Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::Space) | Key::Character("]") => {
             Some(AppCommand::NavigateDebounced(true))
         }
+        Key::Named(NamedKey::Home) => Some(AppCommand::GoToFirst),
+        Key::Named(NamedKey::End) => Some(AppCommand::GoToLast),
 
         // Fullscreen
         Key::Named(NamedKey::F11) | Key::Named(NamedKey::Enter) | Key::Character("f") => {
@@ -91,6 +93,10 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         Some(AppCommand::NavigateDebounced(false))
     } else if id == &ids.next {
         Some(AppCommand::NavigateDebounced(true))
+    } else if id == &ids.go_to_first {
+        Some(AppCommand::GoToFirst)
+    } else if id == &ids.go_to_last {
+        Some(AppCommand::GoToLast)
     } else {
         None
     }
@@ -101,6 +107,8 @@ pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
     match key_name {
         "ArrowLeft" | "Backspace" | "[" => Some(AppCommand::Navigate(false)),
         "ArrowRight" | " " | "Space" | "]" => Some(AppCommand::Navigate(true)),
+        "Home" => Some(AppCommand::GoToFirst),
+        "End" => Some(AppCommand::GoToLast),
         "Enter" | "F11" | "f" => Some(AppCommand::ToggleFullscreen),
         "Escape" => Some(AppCommand::Exit),
         "+" | "=" => Some(AppCommand::ZoomIn),

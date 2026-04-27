@@ -860,15 +860,70 @@ impl App {
         // negative net delta even though the user moved "forward". Use the
         // requested delta's sign for the direction hint instead.
         let forward = if loop_on { delta > 0 } else { moved_delta > 0 };
+        self.after_position_change(from_index, Some(forward));
+    }
 
+    /// Absolute jump to the first image. No-op when already at index 0,
+    /// the directory is empty, or no directory is loaded. Mirrors
+    /// `navigate_by`'s post-move flow exactly.
+    pub(crate) fn navigate_to_first(&mut self) {
+        let from_index = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.current_index())
+            .unwrap_or(0);
+        let moved = self
+            .navigation
+            .dir_list
+            .as_mut()
+            .map(|d| d.go_to_first())
+            .unwrap_or(0);
+        if moved == 0 {
+            return;
+        }
+        // Absolute jumps aren't directional — preload both sides equally.
+        self.after_position_change(from_index, None);
+    }
+
+    /// Absolute jump to the last image. No-op when already at the last
+    /// index, the directory is empty, or no directory is loaded.
+    pub(crate) fn navigate_to_last(&mut self) {
+        let from_index = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.current_index())
+            .unwrap_or(0);
+        let moved = self
+            .navigation
+            .dir_list
+            .as_mut()
+            .map(|d| d.go_to_last())
+            .unwrap_or(0);
+        if moved == 0 {
+            return;
+        }
+        self.after_position_change(from_index, None);
+    }
+
+    /// Shared post-move flow used by `navigate_by`, `navigate_to_first`, and
+    /// `navigate_to_last`. Assumes the directory cursor has just moved.
+    /// `forward_hint` drives the preload priority direction. `None` means
+    /// "non-directional jump" (Home / End): preload both sides equally.
+    fn after_position_change(&mut self, from_index: usize, forward_hint: Option<bool>) {
         let nav_start = Instant::now();
-        let direction = if forward { "next" } else { "prev" };
+        let direction = match forward_hint {
+            Some(true) => "next",
+            Some(false) => "prev",
+            None => "jump",
+        };
 
         // Record the travel direction so neighbor priority follows the user.
-        self.navigation.last_direction = if forward {
-            directory::Direction::Forward
-        } else {
-            directory::Direction::Backward
+        self.navigation.last_direction = match forward_hint {
+            Some(true) => directory::Direction::Forward,
+            Some(false) => directory::Direction::Backward,
+            None => directory::Direction::Unknown,
         };
 
         // Extract what we need from dir_list before mutable borrow

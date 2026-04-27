@@ -19,6 +19,8 @@ both a text confirmation and a `state` field with the current app state as JSON.
 - **open**: Open a file by path. Params: `path` (absolute).
 - **loop_navigation**: Toggle loop navigation. When on, Next at the last image wraps to the first and Previous at the
   first wraps to the last. Default off. No params.
+- **key** with `key: "Home"` or `key: "End"`: Absolute jump to the first or last image. No-op when already at the
+  target.
 
 ### View
 
