@@ -23,6 +23,16 @@ APP_NAME=$(basename "$APP_BUNDLE")
 # Remove existing DMG if present
 rm -f "$OUTPUT_DMG"
 
+# Detach any stale Prvw* volumes left over from prior aborted runs or a manually
+# mounted DMG. If they linger, macOS auto-renames our new volume to "Prvw 1" and
+# TCC blocks the self-hosted runner from writing inside it ("Operation not permitted").
+while IFS= read -r vol; do
+    if [[ -n "$vol" ]]; then
+        echo "Detaching stale mount: $vol"
+        hdiutil detach "$vol" -force >/dev/null 2>&1 || true
+    fi
+done < <(mount | awk -F' on ' '/\/Volumes\/Prvw/ { sub(/ \(.*$/, "", $2); print $2 }')
+
 # Try styled DMG with create-dmg (requires Finder, may fail in headless environments)
 if command -v create-dmg &>/dev/null; then
     echo "Creating styled DMG with create-dmg..."

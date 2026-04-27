@@ -14,10 +14,24 @@ Prepare a release based on docs/guides/releasing.md.
    launches), and give the user the `./scripts/release.sh x.x.x` command to run.
 4. **Offer to run the release script** for the user. Wait for confirmation before running.
 5. **Offer to push** with `git push origin main --tags`. Wait for confirmation before pushing.
-6. **After pushing**, start monitoring the CI build:
-   - Remind the user not to close their laptop for ~15 minutes while the self-hosted runner builds.
+6. **After pushing**, confirm the self-hosted runner picked up the build:
+   - Wait ~30 seconds, then run `gh run view <release-run-id> --json jobs` and check the `Build (...)` jobs.
+   - At least one `Build (...)` job should be `in_progress` (the self-hosted runner serializes the three matrix jobs,
+     so the others stay `queued` — that's normal).
+   - **If all three are still `queued` after ~30s, the self-hosted runner is down.** Follow the recovery procedure in
+     [docs/guides/releasing.md § Runner-up sanity check](../../docs/guides/releasing.md#runner-up-sanity-check-during-a-release):
+     `launchctl list | grep prvw` to confirm, then `cd ~/actions-runner-prvw && ./svc.sh start`, falling back to
+     `launchctl bootout` + `bootstrap` if `svc.sh` errors with "Load failed: 5: Input/output error". Re-check after
+     another 30s. The queued jobs pick up automatically once the runner reports in — no need to re-trigger or re-tag.
+7. **Then start monitoring the CI build**:
+   - Remind the user not to close their laptop for ~15-25 minutes while the self-hosted runner builds (three archs
+     sequentially).
    - Poll `gh run view` every few minutes in the background and report progress (which jobs are done, which are still
      running).
    - Report when all jobs complete (success or failure). If a job fails, show the failure details, and advise how to
      fix.
    - Suggest the user to also track the build at https://github.com/vdavid/prvw/actions.
+8. **In parallel, watch the standalone CI run** (the non-release `CI` workflow that fires on the same push):
+   - It's not a blocker for the release. If it goes red, fix it in the background while the release builds — small
+     things like lint regressions are common.
+   - Surface the failure to the user when convenient; don't interrupt release-build progress reporting for it.
