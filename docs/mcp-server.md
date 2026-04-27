@@ -26,6 +26,9 @@ both a text confirmation and a `state` field with the current app state as JSON.
 - **scroll_zoom**: Scroll-wheel zoom at cursor position. Params: `delta` (float), `cursor_x`, `cursor_y` (pixels).
 - **fullscreen**: Control fullscreen. Params: `mode` ("on", "off", "toggle").
 - **refresh**: Re-display the current image, re-applying zoom and settings.
+- **histogram**: Toggle the histogram overlay. No params.
+- **set_cursor_position**: Move the cached cursor (drives histogram hover from tests). Params: `x`, `y` (logical
+  pixels).
 
 ### Window
 

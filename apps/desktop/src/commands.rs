@@ -90,6 +90,10 @@ pub enum AppCommand {
     SetPreloadNeighbors(bool),
     /// Set title bar mode (true = reserve a strip at the top, false = image fills window).
     SetTitleBar(bool),
+    /// Toggle the histogram overlay (View → Histogram, bare H key).
+    ToggleHistogram,
+    /// Update the cached cursor position (used by MCP for hover-readout tests).
+    SetCursorPosition { x: f64, y: f64 },
 
     // ── RAW pipeline (Phase 3.7) ─────────────────────────────────────
     /// Replace the RAW pipeline flags wholesale. Used by the Settings → RAW

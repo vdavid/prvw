@@ -195,6 +195,27 @@ impl App {
                 self.apply_content_offset();
                 self.update_shared_state();
             }
+            AppCommand::ToggleHistogram => {
+                self.histogram.visible = !self.histogram.visible;
+                log::debug!("Histogram visible: {}", self.histogram.visible);
+                let mut s = settings::Settings::load();
+                s.histogram_visible = self.histogram.visible;
+                s.save();
+                if let Some(menu) = &self.app_menu {
+                    menu.histogram_item.set_checked(self.histogram.visible);
+                }
+                if !self.histogram.visible {
+                    self.histogram.hover_bin = None;
+                    self.histogram.last_rect = None;
+                }
+                self.update_histogram_hover();
+                self.request_redraw();
+                self.update_shared_state();
+            }
+            AppCommand::SetCursorPosition { x, y } => {
+                self.last_mouse_pos = (Logical(x), Logical(y));
+                self.update_histogram_hover();
+            }
             AppCommand::SetRawPipelineFlags(flags) => {
                 self.raw_flags = flags;
                 log::info!(

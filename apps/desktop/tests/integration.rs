@@ -389,6 +389,103 @@ fn title_bar_toggle_resizes_window() {
     );
 }
 
+fn mcp_call(app: &TestApp, name: &str, arguments: serde_json::Value) -> serde_json::Value {
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments },
+    });
+    let body = app
+        .client
+        .post(format!("{}/mcp", app.base_url))
+        .json(&req)
+        .send()
+        .expect("MCP request failed")
+        .text()
+        .expect("MCP response read failed");
+    serde_json::from_str(&body).expect("MCP response is JSON")
+}
+
+/// Toggling the histogram via the H key flips `histogram_visible` in shared state.
+#[test]
+fn histogram_h_toggles_visibility() {
+    let app = TestApp::start();
+    assert_eq!(
+        app.get_state()["histogram_visible"].as_bool(),
+        Some(false),
+        "histogram is off by default"
+    );
+
+    app.post("/key", "h");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        app.get_state()["histogram_visible"].as_bool(),
+        Some(true),
+        "H key turns histogram on"
+    );
+
+    app.post("/key", "h");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        app.get_state()["histogram_visible"].as_bool(),
+        Some(false),
+        "H key turns histogram off again"
+    );
+}
+
+/// With the histogram visible, moving the cursor into the plot rect updates
+/// `histogram_hover_bin`. The exact bin depends on layout, so we just assert
+/// it is `Some(_)` when inside and `None` outside.
+#[test]
+fn histogram_hover_bin_updates() {
+    let app = TestApp::start();
+    let _ = mcp_call(&app, "histogram", serde_json::json!({}));
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(app.get_state()["histogram_visible"].as_bool(), Some(true));
+
+    // The histogram panel sits in the top-right. The plot rect lives at
+    // approximately (window_width - 256 - 7 + 10, content_offset_y + 7 + 22)
+    // and is 236 wide × 70 tall. Pick a point ~halfway across.
+    let state = app.get_state();
+    let window_width = state["window_width"].as_u64().unwrap() as f64;
+    let title_bar = if state["title_bar"].as_bool().unwrap_or(true) {
+        32.0
+    } else {
+        0.0
+    };
+    let plot_x = window_width - 256.0 - 7.0 + 10.0;
+    let plot_y = title_bar + 7.0 + 22.0;
+    // Mid-plot.
+    let cursor_x = plot_x + 118.0;
+    let cursor_y = plot_y + 30.0;
+
+    let _ = mcp_call(
+        &app,
+        "set_cursor_position",
+        serde_json::json!({ "x": cursor_x, "y": cursor_y }),
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    let bin = app.get_state()["histogram_hover_bin"].as_u64();
+    assert!(
+        bin.is_some(),
+        "cursor inside the plot rect should produce a hover bin, got state: {}",
+        app.get_state()
+    );
+
+    // Move the cursor far away — hover bin should clear.
+    let _ = mcp_call(
+        &app,
+        "set_cursor_position",
+        serde_json::json!({ "x": 5.0, "y": 5.0 }),
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        app.get_state()["histogram_hover_bin"].is_null(),
+        "cursor outside the plot rect should clear hover bin"
+    );
+}
+
 /// Zoom should stay the same when toggling the title bar (image stays same size).
 #[test]
 fn title_bar_toggle_preserves_zoom() {

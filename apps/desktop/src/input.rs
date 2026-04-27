@@ -12,7 +12,18 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 /// Map a keyboard key press to an `AppCommand`.
 /// Returns `None` for keys that don't map to any action.
 /// Takes `Key<&str>` (from `Key::as_ref()`) so callers don't need to clone.
-pub fn key_to_command(key: Key<&str>, _modifiers: &ModifiersState) -> Option<AppCommand> {
+pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppCommand> {
+    // Bare H toggles the histogram. We deliberately ignore the press if any
+    // modifier is held so Cmd-H (Hide window) and friends keep their native
+    // behavior.
+    if !modifiers.shift_key()
+        && !modifiers.control_key()
+        && !modifiers.alt_key()
+        && !modifiers.super_key()
+        && matches!(key, Key::Character("h") | Key::Character("H"))
+    {
+        return Some(AppCommand::ToggleHistogram);
+    }
     match key {
         // Navigation (user input → debounced so a wheel spin coalesces)
         Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::Backspace) | Key::Character("[") => {
@@ -59,6 +70,7 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         || id == &ids.enlarge_small_images
         || id == &ids.icc_color_management
         || id == &ids.color_match_display
+        || id == &ids.histogram
     {
         // CheckMenuItems auto-toggle on click; we return None and let the caller
         // handle it (it needs the CheckMenuItem ref to read the new state).
@@ -87,6 +99,7 @@ pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
         "-" => Some(AppCommand::ZoomOut),
         "0" => Some(AppCommand::FitToWindow),
         "1" => Some(AppCommand::ActualSize),
+        "h" | "H" => Some(AppCommand::ToggleHistogram),
         "r" => Some(AppCommand::Refresh),
         _ => {
             log::debug!("QA server: unhandled key '{key_name}'");

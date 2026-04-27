@@ -201,6 +201,8 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "enlarge_small_images": s.enlarge_small_images,
         "scroll_to_zoom": s.scroll_to_zoom,
         "title_bar": s.title_bar,
+        "histogram_visible": s.histogram_visible,
+        "histogram_hover_bin": s.histogram_hover_bin,
         "window_x": s.window_x,
         "window_y": s.window_y,
         "window_width": s.window_width,

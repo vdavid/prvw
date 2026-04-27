@@ -1,11 +1,20 @@
-use super::text::{GlyphonRenderer, TextBlock};
+use super::text::{GlyphonRenderer, StandalonePill, TextBlock};
 use crate::decoding::{DecodedImage, PixelBuffer};
+use crate::histogram::HistogramData;
 use crate::pixels::{Logical, Physical};
 use crate::zoom::view::TransformUniform;
 use image::ImageEncoder;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
+
+/// One histogram bar plot to draw on top of the overlay pills. The data is
+/// passed by reference so the renderer can stream the 768 counts into the
+/// storage buffer without taking ownership.
+pub struct HistogramDrawCall<'a> {
+    pub rect: super::text::StandalonePill,
+    pub data: &'a HistogramData,
+}
 
 /// GPU-side uniform for the overlay shader.
 #[repr(C)]
@@ -15,6 +24,19 @@ struct OverlayUniform {
     color: [f32; 4],  // RGBA 0..1
     params: [f32; 4], // corner_radius, screen_w, screen_h, 0
 }
+
+/// GPU-side uniform for the histogram shader (rect + scaling params).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct HistogramUniform {
+    /// (x, y, width, height) in physical pixels.
+    rect: [f32; 4],
+    /// (1 / max_count, screen_w, screen_h, edge_softness_px).
+    params: [f32; 4],
+}
+
+/// Number of u32 entries in the histogram storage buffer (R + G + B = 3 × 256).
+const HISTOGRAM_BIN_COUNT: usize = 256 * 3;
 
 /// Owns all wgpu state: device, queue, surface, pipeline, texture, and uniform buffer.
 pub struct Renderer {
@@ -50,6 +72,12 @@ pub struct Renderer {
     text_renderer: GlyphonRenderer,
     overlay_pipeline: wgpu::RenderPipeline,
     overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
+    histogram_shader: wgpu::ShaderModule,
+    histogram_pipeline_layout: wgpu::PipelineLayout,
+    histogram_pipeline: wgpu::RenderPipeline,
+    histogram_uniform: wgpu::Buffer,
+    histogram_storage: wgpu::Buffer,
+    histogram_bind_group: wgpu::BindGroup,
     scale_factor: f64,
 }
 
@@ -76,6 +104,46 @@ fn build_image_pipeline(
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// Build the histogram pipeline. Uses alpha blending so the bars composite
+/// on top of the backdrop pill cleanly.
+fn build_histogram_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("histogram pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: Default::default(),
@@ -325,7 +393,7 @@ impl Renderer {
             color: [0.0; 4],
             params: [0.0; 4],
         };
-        let overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)> = (0..8)
+        let overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)> = (0..16)
             .map(|i| {
                 let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(&format!("overlay uniform {i}")),
@@ -358,6 +426,84 @@ impl Renderer {
             surface_format,
         );
 
+        // Histogram pipeline (Phase: histogram overlay).
+        let histogram_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("histogram shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("histogram.wgsl").into()),
+        });
+
+        let histogram_uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("histogram uniform"),
+            contents: bytemuck::bytes_of(&HistogramUniform {
+                rect: [0.0; 4],
+                params: [0.0; 4],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let histogram_storage = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("histogram storage"),
+            size: (HISTOGRAM_BIN_COUNT * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let histogram_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("histogram bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let histogram_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("histogram bind group"),
+            layout: &histogram_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: histogram_uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: histogram_storage.as_entire_binding(),
+                },
+            ],
+        });
+
+        let histogram_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("histogram pipeline layout"),
+                bind_group_layouts: &[Some(&histogram_bind_group_layout)],
+                immediate_size: 0,
+            });
+
+        let histogram_pipeline = build_histogram_pipeline(
+            &device,
+            &histogram_shader,
+            &histogram_pipeline_layout,
+            surface_format,
+        );
+
         let text_renderer = GlyphonRenderer::new(&device, &queue, surface_format);
 
         Self {
@@ -380,6 +526,12 @@ impl Renderer {
             text_renderer,
             overlay_pipeline,
             overlay_buffers,
+            histogram_shader,
+            histogram_pipeline_layout,
+            histogram_pipeline,
+            histogram_uniform,
+            histogram_storage,
+            histogram_bind_group,
             scale_factor,
         }
     }
@@ -435,6 +587,12 @@ impl Renderer {
             &self.device,
             &self.overlay_shader,
             &self.overlay_pipeline_layout,
+            target,
+        );
+        self.histogram_pipeline = build_histogram_pipeline(
+            &self.device,
+            &self.histogram_shader,
+            &self.histogram_pipeline_layout,
             target,
         );
         // Rebuild the glyphon renderer — its TextAtlas pins the format at
@@ -555,7 +713,17 @@ impl Renderer {
     /// isn't ready. Pill backgrounds are computed from actual text measurements.
     /// Render the current frame. `content_offset_y` is the area reserved at the top in logical
     /// pixels — the image renders below it while pills/text render across the full surface.
-    pub fn render(&mut self, text_blocks: &[TextBlock], content_offset_y: Logical<f32>) -> bool {
+    ///
+    /// `standalone_pills` are extra rounded rects drawn through the same overlay pool —
+    /// used for non-text backdrops (the histogram panel). `histogram` is an optional
+    /// bar-plot draw call rendered above the pills and below the text.
+    pub fn render(
+        &mut self,
+        text_blocks: &[TextBlock],
+        standalone_pills: &[StandalonePill],
+        histogram: Option<HistogramDrawCall<'_>>,
+        content_offset_y: Logical<f32>,
+    ) -> bool {
         let surface_texture = self.surface.get_current_texture();
         let output = match surface_texture {
             wgpu::CurrentSurfaceTexture::Success(tex)
@@ -584,10 +752,34 @@ impl Renderer {
             Vec::new()
         };
 
-        // Write pill overlay uniforms BEFORE the render pass so they take effect
+        // Write pill overlay uniforms BEFORE the render pass so they take effect.
+        // Standalone pills go in first, then text-measured pills — pill_count is
+        // the total used count for the draw loop below.
         let sf = self.scale_factor as f32;
-        for (i, pill) in measured_pills.iter().enumerate() {
-            if i >= self.overlay_buffers.len() {
+        let mut pill_count = 0usize;
+        for sp in standalone_pills {
+            if pill_count >= self.overlay_buffers.len() {
+                break;
+            }
+            let uniform = OverlayUniform {
+                pos: [sp.x.0 * sf, sp.y.0 * sf, sp.width.0 * sf, sp.height.0 * sf],
+                color: sp.color,
+                params: [
+                    sp.corner_radius.0 * sf,
+                    self.config.width as f32,
+                    self.config.height as f32,
+                    0.0,
+                ],
+            };
+            self.queue.write_buffer(
+                &self.overlay_buffers[pill_count].0,
+                0,
+                bytemuck::bytes_of(&uniform),
+            );
+            pill_count += 1;
+        }
+        for pill in measured_pills.iter() {
+            if pill_count >= self.overlay_buffers.len() {
                 break;
             }
             let uniform = OverlayUniform {
@@ -605,8 +797,43 @@ impl Renderer {
                     0.0,
                 ],
             };
+            self.queue.write_buffer(
+                &self.overlay_buffers[pill_count].0,
+                0,
+                bytemuck::bytes_of(&uniform),
+            );
+            pill_count += 1;
+        }
+
+        // Stream the histogram counts + uniform if a draw call is present.
+        if let Some(draw) = histogram.as_ref() {
+            let mut counts = [0u32; HISTOGRAM_BIN_COUNT];
+            counts[..256].copy_from_slice(&draw.data.r);
+            counts[256..512].copy_from_slice(&draw.data.g);
+            counts[512..768].copy_from_slice(&draw.data.b);
             self.queue
-                .write_buffer(&self.overlay_buffers[i].0, 0, bytemuck::bytes_of(&uniform));
+                .write_buffer(&self.histogram_storage, 0, bytemuck::cast_slice(&counts));
+            let max_recip = if draw.data.max_count == 0 {
+                0.0
+            } else {
+                1.0 / draw.data.max_count as f32
+            };
+            let uniform = HistogramUniform {
+                rect: [
+                    draw.rect.x.0 * sf,
+                    draw.rect.y.0 * sf,
+                    draw.rect.width.0 * sf,
+                    draw.rect.height.0 * sf,
+                ],
+                params: [
+                    max_recip,
+                    self.config.width as f32,
+                    self.config.height as f32,
+                    1.0_f32, // 1px edge softness for AA
+                ],
+            };
+            self.queue
+                .write_buffer(&self.histogram_uniform, 0, bytemuck::bytes_of(&uniform));
         }
 
         let view = output
@@ -652,9 +879,16 @@ impl Renderer {
             }
 
             // Draw pill backgrounds (between image and text), each with its own bind group
-            for i in 0..measured_pills.len().min(self.overlay_buffers.len()) {
+            for i in 0..pill_count {
                 pass.set_pipeline(&self.overlay_pipeline);
                 pass.set_bind_group(0, &self.overlay_buffers[i].1, &[]);
+                pass.draw(0..6, 0..1);
+            }
+
+            // Draw histogram bars (between pills and text).
+            if histogram.is_some() {
+                pass.set_pipeline(&self.histogram_pipeline);
+                pass.set_bind_group(0, &self.histogram_bind_group, &[]);
                 pass.draw(0..6, 0..1);
             }
 

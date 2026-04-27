@@ -39,6 +39,11 @@ pub struct SharedAppState {
     pub scroll_to_zoom: bool,
     /// Whether the title bar area is reserved at the top.
     pub title_bar: bool,
+    /// Whether the histogram overlay is visible.
+    pub histogram_visible: bool,
+    /// Currently hovered histogram bin (0..=255), or `None` when the cursor
+    /// isn't over the histogram or the histogram isn't visible.
+    pub histogram_hover_bin: Option<u8>,
     /// Pre-formatted diagnostics text, updated by the main thread.
     pub diagnostics_text: String,
     /// Thumbnail scheduler status, mirrored from `thumbnails::State::status()`.
@@ -103,6 +108,8 @@ impl Default for SharedAppState {
             enlarge_small_images: false,
             scroll_to_zoom: false,
             title_bar: true,
+            histogram_visible: false,
+            histogram_hover_bin: None,
             diagnostics_text: String::new(),
             thumbnails: ThumbnailsSnapshot::default(),
         }
@@ -123,6 +130,8 @@ impl App {
         state.enlarge_small_images = self.zoom.enlarge;
         state.scroll_to_zoom = self.zoom.scroll_to_zoom;
         state.title_bar = self.title_bar;
+        state.histogram_visible = self.histogram.visible;
+        state.histogram_hover_bin = self.histogram.hover_bin;
 
         if let Some(win) = &self.window {
             let sf = win.scale_factor();

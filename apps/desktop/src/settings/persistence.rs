@@ -49,6 +49,11 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub title_bar: bool,
 
+    /// When true, show the histogram overlay in the top-right corner.
+    /// Toggled with View → Histogram or the bare H key.
+    #[serde(default)]
+    pub histogram_visible: bool,
+
     /// Previous default handler for each UTI before Prvw claimed it.
     /// Used to restore associations when the user turns off a file type toggle.
     /// Keys are UTIs (e.g., "public.jpeg"), values are bundle IDs (e.g., "com.apple.Preview").
@@ -87,6 +92,7 @@ impl Default for Settings {
             scroll_to_zoom: false,
             preload_neighbors: true,
             title_bar: true,
+            histogram_visible: false,
             previous_handlers: HashMap::new(),
             raw: RawPipelineFlags::default(),
             custom_dcp_dir: None,
@@ -177,6 +183,7 @@ mod tests {
             scroll_to_zoom: true,
             preload_neighbors: false,
             title_bar: false,
+            histogram_visible: true,
             previous_handlers: HashMap::from([(
                 "public.jpeg".to_string(),
                 "com.apple.Preview".to_string(),
@@ -190,6 +197,7 @@ mod tests {
         assert!(!loaded.auto_update);
         assert!(!loaded.auto_fit_window);
         assert!(loaded.enlarge_small_images);
+        assert!(loaded.histogram_visible);
         assert!(!loaded.raw.default_tone_curve);
         assert!(!loaded.raw.capture_sharpening);
         assert!(loaded.raw.highlight_recovery); // untouched flag stays true
@@ -234,6 +242,8 @@ mod tests {
         assert!(!loaded.auto_update);
         assert!(loaded.auto_fit_window);
         assert!(!loaded.enlarge_small_images);
+        // Histogram defaults to off.
+        assert!(!loaded.histogram_visible);
         // Missing `raw` → all RAW flags default to true.
         assert!(loaded.raw.is_default());
         assert!(loaded.custom_dcp_dir.is_none());

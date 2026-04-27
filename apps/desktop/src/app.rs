@@ -24,7 +24,8 @@ use crate::render::{renderer, text};
 #[cfg(target_os = "macos")]
 use crate::updater;
 use crate::{
-    TITLE_BAR_HEIGHT, color, decoding, input, menu, navigation, qa, settings, window, zoom,
+    TITLE_BAR_HEIGHT, color, decoding, histogram, input, menu, navigation, qa, settings, window,
+    zoom,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -89,6 +90,7 @@ pub(crate) struct App {
     pub(crate) zoom: zoom::State,
     pub(crate) color: color::State,
     pub(crate) navigation: navigation::State,
+    pub(crate) histogram: histogram::State,
     #[cfg(target_os = "macos")]
     pub(crate) thumbnails: crate::thumbnails::State,
 
@@ -173,6 +175,7 @@ impl App {
             zoom: zoom::State::from_settings(&initial_settings),
             color: color::State::from_settings(&initial_settings),
             navigation: navigation::State::from_settings(&initial_settings),
+            histogram: histogram::State::from_settings(&initial_settings),
             #[cfg(target_os = "macos")]
             thumbnails: crate::thumbnails::State::new(),
             title_bar: initial_settings.title_bar,
@@ -679,15 +682,19 @@ impl App {
             return false;
         };
         self.prepare_display(iw, ih, is_hdr);
-        // Second pass: grab the image reference for upload.
+        // Second pass: grab the image reference for upload + histogram.
         let image = self
             .navigation
             .image_cache
             .get(index)
             .expect("image was present a moment ago");
+        let new_histogram = histogram::compute::compute(&image.pixels);
         if let Some(renderer) = &mut self.renderer {
             renderer.set_image(image);
         }
+        self.histogram.data = Some(new_histogram);
+        self.histogram.hover_bin = None;
+        self.histogram.last_rect = None;
         self.finalize_display();
         true
     }
@@ -760,6 +767,9 @@ impl App {
             renderer.logical_height(),
         );
         renderer.set_image(image);
+        self.histogram.data = Some(histogram::compute::compute(&image.pixels));
+        self.histogram.hover_bin = None;
+        self.histogram.last_rect = None;
         self.apply_initial_zoom();
         self.renderer
             .as_ref()
@@ -1016,6 +1026,32 @@ impl App {
         self.needs_redraw = true;
         if let Some(win) = &self.window {
             win.request_redraw();
+        }
+    }
+
+    /// Recompute the histogram's hover bin from the cached cursor position.
+    /// Requests a redraw and writes shared state only when the bin actually
+    /// changed — keeps the render-on-demand model intact during idle mouse
+    /// motion outside the histogram rect.
+    pub(crate) fn update_histogram_hover(&mut self) {
+        if !self.histogram.visible {
+            if self.histogram.hover_bin.is_some() {
+                self.histogram.hover_bin = None;
+                self.request_redraw();
+                self.update_shared_state();
+            }
+            return;
+        }
+        let new_bin = self.histogram.last_rect.and_then(|rect| {
+            rect.bin_at(
+                Logical(self.last_mouse_pos.0.0 as f32),
+                Logical(self.last_mouse_pos.1.0 as f32),
+            )
+        });
+        if new_bin != self.histogram.hover_bin {
+            self.histogram.hover_bin = new_bin;
+            self.request_redraw();
+            self.update_shared_state();
         }
     }
 
@@ -1470,6 +1506,14 @@ impl App {
                 .send_event(AppCommand::SetRelativeColorimetric(enabled));
             return;
         }
+        if event.id() == &app_menu.ids.histogram {
+            // CheckMenuItem auto-toggles on click. The toggle command
+            // re-syncs the checkmark afterward; we just fire it here.
+            let _ = self
+                .event_loop_proxy
+                .send_event(AppCommand::ToggleHistogram);
+            return;
+        }
 
         if let Some(command) = input::menu_to_command(&event, &app_menu.ids) {
             log::debug!("Menu event: {:?}", event.id());
@@ -1596,18 +1640,40 @@ impl ApplicationHandler<AppCommand> for App {
 
             WindowEvent::RedrawRequested if self.needs_redraw => {
                 log::trace!("Rendering frame");
-                let text_blocks = self.build_text_overlay();
+                let mut text_blocks = self.build_text_overlay();
                 let offset = self.content_offset_y();
-                let rendered = self
-                    .renderer
-                    .as_mut()
-                    .is_some_and(|renderer| renderer.render(&text_blocks, offset));
+
+                // Build the histogram overlay if it's visible and we have data. The
+                // produced `HistogramDrawCall` borrows immutably from `self.histogram.data`
+                // for the duration of the render call.
+                let mut standalone_pills: Vec<crate::render::text::StandalonePill> = Vec::new();
+                let mut new_last_rect: Option<crate::histogram::HistogramRect> = None;
+                let logical_width = self.renderer.as_ref().map(|r| r.logical_width());
+                let histogram_call: Option<crate::render::renderer::HistogramDrawCall<'_>> = if self
+                    .histogram
+                    .visible
+                    && let (Some(width), Some(data)) = (logical_width, self.histogram.data.as_ref())
+                {
+                    let build =
+                        histogram::overlay::build(data, self.histogram.hover_bin, width, offset);
+                    standalone_pills.extend(build.pills);
+                    for tb in build.text_blocks {
+                        text_blocks.push(tb);
+                    }
+                    new_last_rect = Some(build.plot_rect);
+                    Some(build.draw_call)
+                } else {
+                    None
+                };
+
+                let rendered = self.renderer.as_mut().is_some_and(|renderer| {
+                    renderer.render(&text_blocks, &standalone_pills, histogram_call, offset)
+                });
+                self.histogram.last_rect = new_last_rect;
                 if rendered {
                     self.needs_redraw = false;
-                } else {
-                    if let Some(win) = &self.window {
-                        win.request_redraw();
-                    }
+                } else if let Some(win) = &self.window {
+                    win.request_redraw();
                 }
             }
 
@@ -1675,6 +1741,7 @@ impl ApplicationHandler<AppCommand> for App {
                 let logical = (Logical(position.x / sf), Logical(position.y / sf));
                 let prev = self.last_mouse_pos;
                 self.last_mouse_pos = logical;
+                self.update_histogram_hover();
 
                 if self.drag_start.is_some() {
                     let dx = logical.0 - prev.0;

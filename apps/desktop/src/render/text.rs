@@ -53,6 +53,20 @@ pub struct MeasuredPill {
     pub corner_radius: Logical<f32>,
 }
 
+/// A standalone rounded-rectangle pill drawn through the same overlay
+/// pipeline as `MeasuredPill`, but specified directly without text
+/// measurement. Used for backdrops behind non-text overlays (the histogram
+/// panel, axis tick marks, legend swatches).
+#[derive(Clone, Copy, Debug)]
+pub struct StandalonePill {
+    pub x: Logical<f32>,
+    pub y: Logical<f32>,
+    pub width: Logical<f32>,
+    pub height: Logical<f32>,
+    pub corner_radius: Logical<f32>,
+    pub color: [f32; 4],
+}
+
 impl TextBlock {
     /// Create a text block with sensible defaults. Font: 13.5pt, white, not bold, no shadow/pill/truncation.
     pub fn new(text: impl Into<String>, x: Logical<f32>, y: Logical<f32>) -> Self {

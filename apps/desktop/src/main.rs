@@ -20,6 +20,7 @@ mod decoding;
 mod diagnostics;
 #[cfg(target_os = "macos")]
 mod file_associations;
+mod histogram;
 mod navigation;
 #[cfg(target_os = "macos")]
 mod onboarding;

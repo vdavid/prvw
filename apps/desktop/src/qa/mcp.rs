@@ -301,6 +301,23 @@ fn mcp_tools_list() -> Result<Value, Value> {
                 "name": "thumbnails_status",
                 "description": "Report the thumbnail scheduler's state: folder size, in-flight indices, queue length, cached/failed indices, paused flag, parallelism cap.",
                 "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "histogram",
+                "description": "Toggle the histogram overlay (top-right of the window).",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "set_cursor_position",
+                "description": "Move the cached cursor position. Used by tests to drive the histogram hover readout without a real mouse.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "x": { "type": "number", "description": "Cursor X in logical pixels." },
+                        "y": { "type": "number", "description": "Cursor Y in logical pixels." }
+                    },
+                    "required": ["x", "y"]
+                }
             }
         ]
     }))
@@ -562,6 +579,30 @@ fn mcp_tools_call(
         "close_settings" => {
             let state_json = send_and_wait(proxy, AppCommand::CloseSettings, state, SYNC_TIMEOUT)?;
             let mut content = mcp_text_content("Settings window closed.");
+            content["state"] = state_json;
+            Ok(content)
+        }
+        "histogram" => {
+            let state_json =
+                send_and_wait(proxy, AppCommand::ToggleHistogram, state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content("Toggled histogram.");
+            content["state"] = state_json;
+            Ok(content)
+        }
+        "set_cursor_position" => {
+            let x = args["x"]
+                .as_f64()
+                .ok_or_else(|| json_rpc_error(-32602, "x is required"))?;
+            let y = args["y"]
+                .as_f64()
+                .ok_or_else(|| json_rpc_error(-32602, "y is required"))?;
+            let state_json = send_and_wait(
+                proxy,
+                AppCommand::SetCursorPosition { x, y },
+                state,
+                SYNC_TIMEOUT,
+            )?;
+            let mut content = mcp_text_content(&format!("Cursor moved to ({x}, {y})."));
             content["state"] = state_json;
             Ok(content)
         }
