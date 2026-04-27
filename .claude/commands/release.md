@@ -7,6 +7,9 @@ Prepare a release based on docs/guides/releasing.md.
    - Read the file first to match its style.
    - Commits have title + body - read all!
    - You can link multiple commits for changelog items if needed.
+   - **Get commit SHAs via `git log --format='%h' --abbrev=8`** — never extend a 7-char prefix from `git log
+     --oneline` by guessing the next character. The committed changelog convention is 8 chars; let git produce them.
+     The `changelog-links` check (run by the release script) will reject fabricated SHAs and abort the release.
    - **Add a `## [Unreleased]` heading** right after the format preamble (before the first versioned section), then put
      entries under it. The release script replaces this heading with the versioned one. The committed changelog has no
      `[Unreleased]` section between releases - you're creating it fresh each time.

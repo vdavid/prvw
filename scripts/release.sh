@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# Prepare a local release of Prvw: bumps version, finalises CHANGELOG, commits,
+# tags. Pushing the tag triggers `.github/workflows/release.yml`.
+#
+# Operators (humans and AI agents): NEVER tail, head, or filter this script's
+# output. It's already concise and the warnings carry weight — hiding them is
+# how releases break silently. Run it in a terminal that shows everything.
+
 VERSION="${1:-}"
 
 if [[ -z "$VERSION" ]]; then
@@ -41,6 +48,52 @@ if [[ -z "$UNRELEASED_CONTENT" ]]; then
   echo "Add release notes under it before releasing!"
   exit 1
 fi
+
+# Pre-flight sanity (auto-fix where safe). All gates here have bitten a real
+# release at some point — keep them.
+
+# 1) Detach stale Prvw* DMG mounts. A leftover mount makes macOS auto-rename
+#    the new volume to "Prvw 1", and TCC blocks the runner from writing inside
+#    it ("Operation not permitted"). create-dmg.sh has the same guard, but
+#    failing fast here means we don't tag a release that can't ship.
+while IFS= read -r vol; do
+  if [[ -n "$vol" ]]; then
+    echo "Detaching stale mount: $vol"
+    hdiutil detach "$vol" -force >/dev/null 2>&1 || true
+  fi
+done < <(mount | awk -F' on ' '/\/Volumes\/Prvw/ { sub(/ \(.*$/, "", $2); print $2 }')
+
+# 2) Self-hosted GitHub Actions runner up. Without it, jobs sit in `queued`
+#    forever after we push the tag. Auto-fix the LaunchAgent if down. See
+#    docs/guides/releasing.md § Runner-up sanity check for the manual recovery.
+RUNNER_LABEL="actions.runner.vdavid-prvw.Davids-M3-MBP-prvw"
+RUNNER_LINE=$(launchctl list 2>/dev/null | awk -v label="$RUNNER_LABEL" '$3 == label { print; exit }')
+if [[ -z "$RUNNER_LINE" ]]; then
+  echo "Warning: $RUNNER_LABEL LaunchAgent not registered. Skipping runner check."
+elif [[ "$(echo "$RUNNER_LINE" | awk '{ print $1 }')" == "-" ]]; then
+  echo "Runner is down (PID = -). Starting via svc.sh..."
+  if [[ -d "$HOME/actions-runner-prvw" ]]; then
+    (cd "$HOME/actions-runner-prvw" && ./svc.sh start)
+    sleep 2
+    RUNNER_LINE=$(launchctl list 2>/dev/null | awk -v label="$RUNNER_LABEL" '$3 == label { print; exit }')
+    if [[ "$(echo "$RUNNER_LINE" | awk '{ print $1 }')" == "-" ]]; then
+      echo "Error: runner is still down after svc.sh start. See docs/guides/releasing.md § Runner-up sanity check."
+      exit 1
+    fi
+    echo "Runner started: PID $(echo "$RUNNER_LINE" | awk '{ print $1 }')"
+  else
+    echo "Error: $HOME/actions-runner-prvw not found. Cannot auto-fix runner."
+    exit 1
+  fi
+else
+  echo "Runner is up (PID $(echo "$RUNNER_LINE" | awk '{ print $1 }'))."
+fi
+
+# 3) Full check suite. Catches lint, format, and test regressions, plus the
+#    `changelog-links` validator that flags fabricated commit SHAs in the
+#    [Unreleased] section before we tag.
+echo "Running ./scripts/check.sh (full suite)..."
+./scripts/check.sh
 
 echo "Releasing version $VERSION..."
 
