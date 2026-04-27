@@ -690,13 +690,19 @@ impl App {
             .image_cache
             .get(index)
             .expect("image was present a moment ago");
-        let new_histogram = histogram::compute::compute(&image.pixels);
+        // Histogram compute is gated on visibility. Off-by-default users
+        // pay zero cost; toggling it on later computes lazily from the
+        // cached `DecodedImage` (see `ToggleHistogram` arm in `executor.rs`).
+        let new_histogram = if self.histogram.visible {
+            Some(histogram::compute::compute(&image.pixels))
+        } else {
+            None
+        };
         if let Some(renderer) = &mut self.renderer {
             renderer.set_image(image);
         }
-        self.histogram.data = Some(new_histogram);
+        self.histogram.data = new_histogram;
         self.histogram.hover_bin = None;
-        self.histogram.last_rect = None;
         self.finalize_display();
         true
     }
@@ -769,9 +775,13 @@ impl App {
             renderer.logical_height(),
         );
         renderer.set_image(image);
-        self.histogram.data = Some(histogram::compute::compute(&image.pixels));
+        // Lazy compute: skip histogram work when the panel is hidden.
+        self.histogram.data = if self.histogram.visible {
+            Some(histogram::compute::compute(&image.pixels))
+        } else {
+            None
+        };
         self.histogram.hover_bin = None;
-        self.histogram.last_rect = None;
         self.apply_initial_zoom();
         self.renderer
             .as_ref()
@@ -1060,7 +1070,13 @@ impl App {
             }
             return;
         }
-        let new_bin = self.histogram.last_rect.and_then(|rect| {
+        // Compute the rect deterministically from current layout — no
+        // dependency on a prior `Renderer::render` call. This way an MCP
+        // `set_cursor_position` arriving before the first frame still
+        // produces a hover bin.
+        let new_bin = self.renderer.as_ref().and_then(|r| {
+            let rect =
+                histogram::overlay::plot_rect_for(r.logical_width(), self.content_offset_y());
             rect.bin_at(
                 Logical(self.last_mouse_pos.0.0 as f32),
                 Logical(self.last_mouse_pos.1.0 as f32),
@@ -1669,7 +1685,6 @@ impl ApplicationHandler<AppCommand> for App {
                 // produced `HistogramDrawCall` borrows immutably from `self.histogram.data`
                 // for the duration of the render call.
                 let mut standalone_pills: Vec<crate::render::text::StandalonePill> = Vec::new();
-                let mut new_last_rect: Option<crate::histogram::HistogramRect> = None;
                 let logical_width = self.renderer.as_ref().map(|r| r.logical_width());
                 let histogram_call: Option<crate::render::renderer::HistogramDrawCall<'_>> = if self
                     .histogram
@@ -1682,7 +1697,6 @@ impl ApplicationHandler<AppCommand> for App {
                     for tb in build.text_blocks {
                         text_blocks.push(tb);
                     }
-                    new_last_rect = Some(build.plot_rect);
                     Some(build.draw_call)
                 } else {
                     None
@@ -1710,7 +1724,6 @@ impl ApplicationHandler<AppCommand> for App {
                 let rendered = self.renderer.as_mut().is_some_and(|renderer| {
                     renderer.render(&text_blocks, &standalone_pills, histogram_call, offset)
                 });
-                self.histogram.last_rect = new_last_rect;
                 if rendered {
                     self.needs_redraw = false;
                 } else if let Some(win) = &self.window {

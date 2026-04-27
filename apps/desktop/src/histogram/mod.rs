@@ -13,8 +13,10 @@ use crate::settings::Settings;
 
 pub use compute::HistogramData;
 
-/// Cached rect of where the histogram was last drawn, in logical points.
-/// The cursor-moved handler reads this to map mouse position to a bin.
+/// Rect describing where the histogram plot lives, in logical points. The
+/// cursor-moved handler maps mouse positions to bins through this. The rect
+/// is computed deterministically by `overlay::plot_rect_for` so hover works
+/// without depending on a prior render.
 #[derive(Clone, Copy, Debug)]
 pub struct HistogramRect {
     pub x: Logical<f32>,
@@ -43,7 +45,6 @@ pub struct State {
     pub visible: bool,
     pub data: Option<HistogramData>,
     pub hover_bin: Option<u8>,
-    pub last_rect: Option<HistogramRect>,
 }
 
 impl State {
@@ -52,7 +53,6 @@ impl State {
             visible: settings.histogram_visible,
             data: None,
             hover_bin: None,
-            last_rect: None,
         }
     }
 }

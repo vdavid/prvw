@@ -135,6 +135,12 @@ impl App {
         if let Some(renderer) = &mut self.renderer {
             renderer.set_image(&image);
         }
+        // Drop the previous image's histogram so it doesn't render on top
+        // of the new placeholder. The full decode arrives shortly and
+        // recomputes the histogram via `display_from_cache`. Computing one
+        // for the QL thumb is wasted work.
+        self.histogram.data = None;
+        self.histogram.hover_bin = None;
         self.finalize_display();
         self.placeholder_active = true;
         if let Some(requested_at) = self.request_times.get(&index) {

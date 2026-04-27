@@ -25,6 +25,7 @@ src/
 ├── diagnostics.rs           Performance observability (cache/nav/RSS formatter)
 ├── exif_overlay/            EXIF info overlay (toggleable read-only metadata panel below the histogram)
 ├── file_associations/       LaunchServices FFI + File associations settings panel
+├── histogram/               256-bin RGB histogram overlay (toggle via View → Histogram or H key) + histogram::State
 ├── navigation/              Directory scan + preloader + LRU cache + navigation::State
 ├── onboarding/              Onboarding window + defaults-sentence generator + SVG checkmark renderer
 ├── qa/                      Embedded HTTP + MCP server

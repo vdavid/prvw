@@ -33,6 +33,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `diagnostics.rs`     | Performance observability: `NavigationRecord` + `build_text`                                         |
 | `exif_overlay/`      | EXIF info overlay (`Settings::exif_visible` toggle, View → Exif info, bare `E` key)                  |
 | `file_associations/` | LaunchServices FFI + File associations settings panel                                                |
+| `histogram/`         | 256-bin RGB histogram overlay (toggle via View → Histogram or `H` key) + `histogram::State`          |
 | `navigation/`        | Directory scan + background preloader + LRU cache + `navigation::State`                              |
 | `onboarding.rs`      | Onboarding window (first launch without a file)                                                      |
 | `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                  |

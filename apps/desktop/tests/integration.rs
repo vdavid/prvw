@@ -441,7 +441,10 @@ fn histogram_h_toggles_visibility() {
 fn histogram_hover_bin_updates() {
     let app = TestApp::start();
     let _ = mcp_call(&app, "histogram", serde_json::json!({}));
-    std::thread::sleep(Duration::from_millis(150));
+    // No `sleep` here: hover now uses the deterministic `plot_rect_for`
+    // helper, so it works without a prior render. The MCP call already
+    // syncs back through `update_shared_state`, so the state read below
+    // sees `histogram_visible == true` immediately.
     assert_eq!(app.get_state()["histogram_visible"].as_bool(), Some(true));
 
     // The histogram panel sits in the top-right. The plot rect lives at

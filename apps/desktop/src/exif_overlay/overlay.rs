@@ -346,12 +346,11 @@ fn focal_length_line(m: &ExifMetadata) -> Option<String> {
     }
 }
 
+/// Format an EV compensation value with explicit sign. Callers must skip
+/// near-zero values (`abs < 1e-3`) before calling — "0 EV" adds noise
+/// without information, so we don't emit it from here.
 fn format_ev(comp: f64) -> String {
-    if comp.abs() < 1e-3 {
-        "0 EV".to_string()
-    } else {
-        format!("{comp:+.1} EV")
-    }
+    format!("{comp:+.1} EV")
 }
 
 fn format_pixel_size(w: u32, h: u32) -> String {
@@ -436,10 +435,10 @@ mod tests {
     }
 
     #[test]
-    fn ev_formatter_skips_zero() {
-        assert_eq!(format_ev(0.0), "0 EV");
+    fn ev_formatter_signs_nonzero_values() {
         assert_eq!(format_ev(0.3), "+0.3 EV");
         assert_eq!(format_ev(-1.0), "-1.0 EV");
+        assert_eq!(format_ev(2.7), "+2.7 EV");
     }
 
     #[test]

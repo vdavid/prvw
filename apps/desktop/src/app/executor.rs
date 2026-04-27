@@ -204,9 +204,22 @@ impl App {
                 if let Some(menu) = &self.app_menu {
                     menu.histogram_item.set_checked(self.histogram.visible);
                 }
-                if !self.histogram.visible {
+                if self.histogram.visible {
+                    // Lazy compute on first toggle: per-image we skip the
+                    // scan when the panel is hidden, so the data may be
+                    // missing when the user enables it. Compute now from
+                    // the cached `DecodedImage`. If no image is currently
+                    // displayed (rare), leave it as `None` — the next
+                    // display call will fill it in.
+                    if self.histogram.data.is_none()
+                        && let Some(dir) = self.navigation.dir_list.as_ref()
+                        && let Some(image) = self.navigation.image_cache.peek(dir.current_index())
+                    {
+                        self.histogram.data =
+                            Some(crate::histogram::compute::compute(&image.pixels));
+                    }
+                } else {
                     self.histogram.hover_bin = None;
-                    self.histogram.last_rect = None;
                 }
                 self.update_histogram_hover();
                 self.request_redraw();
