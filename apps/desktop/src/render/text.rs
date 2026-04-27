@@ -6,6 +6,7 @@ use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
 };
+use std::sync::{Mutex, OnceLock};
 
 /// A block of text to render at a specific position.
 /// All coordinates and sizes are in **logical points** (not physical pixels).
@@ -130,6 +131,32 @@ fn measure_text_width(buffer: &Buffer) -> f32 {
         let run_w = run.glyphs.last().map(|g| g.x + g.w).unwrap_or(0.0);
         max_w.max(run_w)
     })
+}
+
+/// Shared `FontSystem` for measurement-only callers (overlay layout passes
+/// that need the wrapped line count before the renderer runs). Initialized
+/// lazily on first use, then reused for the process lifetime — `FontSystem`
+/// scans system fonts on construction, which is too expensive to repeat.
+fn measurement_font_system() -> &'static Mutex<FontSystem> {
+    static FONT_SYSTEM: OnceLock<Mutex<FontSystem>> = OnceLock::new();
+    FONT_SYSTEM.get_or_init(|| Mutex::new(FontSystem::new()))
+}
+
+/// Count the visual lines `text` would occupy after shaping at `font_size`
+/// and wrapping to `max_width` in logical points. Returns at least 1 even
+/// for empty input. Used by overlay builders that need a wrap-aware panel
+/// height before the renderer runs.
+pub fn count_wrapped_lines(text: &str, font_size: f32, line_height: f32, max_width: f32) -> usize {
+    let mut fs = measurement_font_system()
+        .lock()
+        .expect("font system poisoned");
+    let metrics = Metrics::new(font_size, line_height);
+    let mut buffer = Buffer::new(&mut fs, metrics);
+    buffer.set_size(&mut fs, Some(max_width), None);
+    let attrs = Attrs::new().family(Family::Name("System Font"));
+    buffer.set_text(&mut fs, text, &attrs, Shaping::Advanced, None);
+    buffer.shape_until_scroll(&mut fs, false);
+    buffer.layout_runs().count().max(1)
 }
 
 /// Owns all glyphon state and provides a simple `render_text` method.

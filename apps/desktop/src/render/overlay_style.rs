@@ -16,7 +16,7 @@ pub const PANEL_RADIUS: f32 = 7.0;
 pub const PANEL_MARGIN_RIGHT: f32 = 7.0;
 
 /// Backdrop fill color (translucent black) for non-text panels.
-pub const BACKDROP_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
+pub const BACKDROP_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.66];
 
 /// Vertical gap between the histogram panel and the EXIF panel when both
 /// are visible, in logical pixels.
