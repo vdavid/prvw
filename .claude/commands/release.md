@@ -29,6 +29,10 @@ Prepare a release based on docs/guides/releasing.md.
 7. **Then start monitoring the CI build**:
    - Remind the user not to close their laptop for ~15-25 minutes while the self-hosted runner builds (three archs
      sequentially).
+   - **Start `caffeinate -i &` to prevent idle sleep**, capture the PID, and `kill` it once the polling loop exits
+     (success OR failure). The build runs on the user's MacBook via the self-hosted runner; if it sleeps, jobs stall.
+     Use `caffeinate -i` (idle-sleep only, screen can still dim) — not `-d`. Don't use `caffeinate -w <pid>` against
+     a backgrounded poll loop unless you've confirmed the PID is the actual long-living process.
    - Poll `gh run view` every few minutes in the background and report progress (which jobs are done, which are still
      running).
    - Report when all jobs complete (success or failure). If a job fails, show the failure details, and advise how to
@@ -38,3 +42,11 @@ Prepare a release based on docs/guides/releasing.md.
    - It's not a blocker for the release. If it goes red, fix it in the background while the release builds — small
      things like lint regressions are common.
    - Surface the failure to the user when convenient; don't interrupt release-build progress reporting for it.
+9. **After the release run succeeds, verify the public surface**:
+   - `gh release view vX.Y.Z --json assets,tagName,publishedAt` — confirm three DMGs are attached
+     (`Prvw_X.Y.Z_aarch64.dmg`, `_x86_64.dmg`, `_universal.dmg`) and sizes look reasonable.
+   - Wait ~30 seconds for the website auto-deploy (the release workflow commits an updated `latest.json` and fires a
+     webhook), then `curl -s https://getprvw.com/latest.json | jq -r .version` and confirm it matches `X.Y.Z`.
+   - If `latest.json` still shows the old version after ~2 minutes, the deploy webhook may have failed silently. Tell
+     the user; the manual fix is to re-trigger the website-deploy workflow via `workflow_dispatch` from the Actions
+     tab. Don't block release success on this — the GitHub Release is what users actually download.
