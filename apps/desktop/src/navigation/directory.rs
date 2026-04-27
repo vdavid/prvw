@@ -96,17 +96,27 @@ impl DirectoryList {
         self.files.len()
     }
 
-    /// Move by a signed delta, clamped to `[0, len - 1]`. Returns the net
-    /// movement (may be smaller than `delta` at list boundaries). Used by
-    /// both single-step navigation (delta = ±1) and the debounced path
-    /// (any coalesced delta).
-    pub fn go_by(&mut self, delta: i32) -> i32 {
+    /// Move by a signed delta. Returns the net movement (may differ from
+    /// `delta` at list boundaries when not wrapping).
+    ///
+    /// - `loop_on = false`: clamped to `[0, len - 1]`. Net movement may be
+    ///   smaller than `delta` at the edges.
+    /// - `loop_on = true`: wraps modulo `len`. Net movement always equals
+    ///   `delta` (modulo the directory size).
+    ///
+    /// Used by both single-step navigation (delta = ±1) and the debounced
+    /// path (any coalesced delta).
+    pub fn go_by(&mut self, delta: i32, loop_on: bool) -> i32 {
         if delta == 0 || self.files.is_empty() {
             return 0;
         }
         let old = self.current_index as i64;
-        let max = self.files.len() as i64 - 1;
-        let new = (old + delta as i64).clamp(0, max);
+        let len = self.files.len() as i64;
+        let new = if loop_on {
+            ((old + delta as i64) % len + len) % len
+        } else {
+            (old + delta as i64).clamp(0, len - 1)
+        };
         self.current_index = new as usize;
         (new - old) as i32
     }
@@ -132,16 +142,44 @@ impl DirectoryList {
     /// - `Direction::Forward`  → `[N+1, N+2, … , N-1, N-2, …]`
     /// - `Direction::Backward` → `[N-1, N-2, … , N+1, N+2, …]`
     /// - `Direction::Unknown`  → interleaved `[N+1, N-1, N+2, N-2, …]`
-    pub fn preload_range(&self, count: usize, direction: Direction) -> Vec<usize> {
+    ///
+    /// When `loop_on` is true, indices wrap around the directory boundary
+    /// so the preload window stays full at the edges. Duplicates (which
+    /// can appear when the directory is smaller than `2*count + 1`) are
+    /// dropped, preserving the priority order of the first occurrence.
+    pub fn preload_range(&self, count: usize, direction: Direction, loop_on: bool) -> Vec<usize> {
         if count == 0 {
             return Vec::new();
         }
         let total = self.files.len();
+        if total == 0 {
+            return Vec::new();
+        }
         let cur = self.current_index;
         let mut indices = Vec::with_capacity(count * 2);
 
-        let ahead = |step: usize| cur.checked_add(step).filter(|&i| i < total);
-        let behind = |step: usize| if cur >= step { Some(cur - step) } else { None };
+        let ahead = |step: usize| -> Option<usize> {
+            let raw = cur.checked_add(step)?;
+            if raw < total {
+                Some(raw)
+            } else if loop_on {
+                Some(raw % total)
+            } else {
+                None
+            }
+        };
+        let behind = |step: usize| -> Option<usize> {
+            if cur >= step {
+                Some(cur - step)
+            } else if loop_on {
+                let total_i = total as isize;
+                let raw = cur as isize - step as isize;
+                let wrapped = ((raw % total_i) + total_i) % total_i;
+                Some(wrapped as usize)
+            } else {
+                None
+            }
+        };
 
         match direction {
             Direction::Forward => {
@@ -180,6 +218,18 @@ impl DirectoryList {
             }
         }
 
+        // Drop duplicates while preserving first-seen priority order, and
+        // also drop the current index (the caller never wants to preload it).
+        let mut seen = vec![false; total];
+        seen[cur] = true;
+        indices.retain(|&i| {
+            if seen[i] {
+                false
+            } else {
+                seen[i] = true;
+                true
+            }
+        });
         indices
     }
 }
@@ -258,14 +308,37 @@ mod tests {
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif"); // index 2 of 5
         let mut list = DirectoryList::from_file(&target).unwrap();
-        assert_eq!(list.go_by(0), 0);
+        assert_eq!(list.go_by(0, false), 0);
         assert_eq!(list.current_index(), 2);
-        assert_eq!(list.go_by(2), 2); // 2 -> 4
+        assert_eq!(list.go_by(2, false), 2); // 2 -> 4
         assert_eq!(list.current_index(), 4);
-        assert_eq!(list.go_by(5), 0); // clamped at end
+        assert_eq!(list.go_by(5, false), 0); // clamped at end
         assert_eq!(list.current_index(), 4);
-        assert_eq!(list.go_by(-10), -4); // clamped at start
+        assert_eq!(list.go_by(-10, false), -4); // clamped at start
         assert_eq!(list.current_index(), 0);
+    }
+
+    #[test]
+    fn go_by_wraps_when_loop_on() {
+        // 5 images, current = 4 (last). Next wraps to 0.
+        let dir = create_test_dir();
+        let target = dir.path().join("fig.BMP");
+        let mut list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.current_index(), 4);
+        let net = list.go_by(1, true);
+        assert_eq!(net, -4, "net movement is -4 when wrapping from 4 to 0");
+        assert_eq!(list.current_index(), 0);
+
+        // Previous from 0 wraps to last.
+        let net = list.go_by(-1, true);
+        assert_eq!(net, 4);
+        assert_eq!(list.current_index(), 4);
+
+        // Big jump wraps modularly.
+        list.go_by(-4, true); // back to 0
+        assert_eq!(list.current_index(), 0);
+        list.go_by(7, true); // 0 + 7 mod 5 = 2
+        assert_eq!(list.current_index(), 2);
     }
 
     #[test]
@@ -276,19 +349,19 @@ mod tests {
         assert_eq!(list.current_index(), 0);
 
         // Can't go before first
-        assert_eq!(list.go_by(-1), 0);
+        assert_eq!(list.go_by(-1, false), 0);
         assert_eq!(list.current_index(), 0);
 
         // Can go forward
-        assert_eq!(list.go_by(1), 1);
+        assert_eq!(list.go_by(1, false), 1);
         assert_eq!(list.current_index(), 1);
 
         // Go to last
-        while list.go_by(1) != 0 {}
+        while list.go_by(1, false) != 0 {}
         assert_eq!(list.current_index(), 4);
 
         // Can't go past last
-        assert_eq!(list.go_by(1), 0);
+        assert_eq!(list.go_by(1, false), 0);
         assert_eq!(list.current_index(), 4);
     }
 
@@ -299,9 +372,12 @@ mod tests {
         let list = DirectoryList::from_file(&target).unwrap();
 
         // At index 0, forward preload should go [1, 2] (nothing before).
-        assert_eq!(list.preload_range(2, Direction::Forward), vec![1, 2]);
-        assert_eq!(list.preload_range(2, Direction::Backward), vec![1, 2]);
-        assert_eq!(list.preload_range(2, Direction::Unknown), vec![1, 2]);
+        assert_eq!(list.preload_range(2, Direction::Forward, false), vec![1, 2]);
+        assert_eq!(
+            list.preload_range(2, Direction::Backward, false),
+            vec![1, 2]
+        );
+        assert_eq!(list.preload_range(2, Direction::Unknown, false), vec![1, 2]);
     }
 
     #[test]
@@ -311,7 +387,10 @@ mod tests {
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
         let list = DirectoryList::from_file(&target).unwrap();
-        assert_eq!(list.preload_range(2, Direction::Forward), vec![3, 4, 1, 0]);
+        assert_eq!(
+            list.preload_range(2, Direction::Forward, false),
+            vec![3, 4, 1, 0]
+        );
     }
 
     #[test]
@@ -320,7 +399,10 @@ mod tests {
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
         let list = DirectoryList::from_file(&target).unwrap();
-        assert_eq!(list.preload_range(2, Direction::Backward), vec![1, 0, 3, 4]);
+        assert_eq!(
+            list.preload_range(2, Direction::Backward, false),
+            vec![1, 0, 3, 4]
+        );
     }
 
     #[test]
@@ -329,7 +411,38 @@ mod tests {
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
         let list = DirectoryList::from_file(&target).unwrap();
-        assert_eq!(list.preload_range(2, Direction::Unknown), vec![3, 1, 4, 0]);
+        assert_eq!(
+            list.preload_range(2, Direction::Unknown, false),
+            vec![3, 1, 4, 0]
+        );
+    }
+
+    #[test]
+    fn preload_range_wraps_when_loop_on() {
+        // 5 images, current = 4 (last), count = 2, forward + loop on:
+        // ahead wraps to [0, 1]; behind = [3, 2].
+        let dir = create_test_dir();
+        let target = dir.path().join("fig.BMP");
+        let list = DirectoryList::from_file(&target).unwrap();
+        assert_eq!(list.current_index(), 4);
+        assert_eq!(
+            list.preload_range(2, Direction::Forward, true),
+            vec![0, 1, 3, 2]
+        );
+    }
+
+    #[test]
+    fn preload_range_dedupes_in_small_directory() {
+        // 5 images, current = 2, count = 5, loop on. Without dedup we'd
+        // see indices repeat (and the current index in the list).
+        let dir = create_test_dir();
+        let target = dir.path().join("cherry.gif");
+        let list = DirectoryList::from_file(&target).unwrap();
+        let indices = list.preload_range(5, Direction::Unknown, true);
+        let mut sorted = indices.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![0, 1, 3, 4]); // 2 (current) excluded
+        assert!(!indices.contains(&2), "current index never in preload list");
     }
 
     #[test]

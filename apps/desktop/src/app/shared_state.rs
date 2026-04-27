@@ -50,6 +50,15 @@ pub struct SharedAppState {
     /// Whether the currently displayed image has any EXIF metadata. False
     /// for PNG, GIF, BMP, plain WebP, and JPEGs without an EXIF segment.
     pub exif_present: bool,
+    /// Whether navigation wraps at the directory boundary (Navigate →
+    /// Loop navigation, bare L key).
+    pub loop_navigation: bool,
+    /// Sorted directory indices currently resident in the image cache.
+    /// Mainly useful for tests and debugging the preload window. Exposed
+    /// in prod builds too because the cost is negligible (a clone of a
+    /// short Vec on every state update) and it's the cheapest way to
+    /// inspect what the preloader has done from the outside.
+    pub cache_indices: Vec<usize>,
     /// Pre-formatted diagnostics text, updated by the main thread.
     pub diagnostics_text: String,
     /// Thumbnail scheduler status, mirrored from `thumbnails::State::status()`.
@@ -118,6 +127,8 @@ impl Default for SharedAppState {
             histogram_hover_bin: None,
             exif_visible: false,
             exif_present: false,
+            loop_navigation: false,
+            cache_indices: Vec::new(),
             diagnostics_text: String::new(),
             thumbnails: ThumbnailsSnapshot::default(),
         }
@@ -142,6 +153,17 @@ impl App {
         state.histogram_hover_bin = self.histogram.hover_bin;
         state.exif_visible = self.exif_overlay.visible;
         state.exif_present = self.current_image_has_exif();
+        state.loop_navigation = self.navigation.loop_navigation;
+        let mut cache_indices: Vec<usize> = self
+            .navigation
+            .image_cache
+            .diagnostics()
+            .entries
+            .into_iter()
+            .map(|e| e.index)
+            .collect();
+        cache_indices.sort_unstable();
+        state.cache_indices = cache_indices;
 
         if let Some(win) = &self.window {
             let sf = win.scale_factor();

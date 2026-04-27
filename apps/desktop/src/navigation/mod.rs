@@ -2,6 +2,7 @@
 
 pub mod directory;
 pub mod preloader;
+pub mod wrap;
 
 use crate::diagnostics::NavigationRecord;
 use crate::settings::Settings;
@@ -76,6 +77,11 @@ pub struct State {
     /// every incoming debounced `Navigate` so a sustained wheel spin
     /// collapses to a single jump at the end.
     pub nav_deadline: Option<Instant>,
+    /// When true, Next at the last image wraps to the first and Previous
+    /// at the first wraps to the last. Drives both navigation steps and
+    /// the preloader's active window. Toggled via Navigate → Loop
+    /// navigation or the bare L key.
+    pub loop_navigation: bool,
 }
 
 impl State {
@@ -91,12 +97,14 @@ impl State {
             last_direction: directory::Direction::Unknown,
             pending_nav_delta: 0,
             nav_deadline: None,
+            loop_navigation: false,
         }
     }
 
     pub fn from_settings(settings: &Settings) -> Self {
         Self {
             preload_neighbors: settings.preload_neighbors,
+            loop_navigation: settings.loop_navigation,
             ..Self::new()
         }
     }

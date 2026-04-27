@@ -313,6 +313,11 @@ fn mcp_tools_list() -> Result<Value, Value> {
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
+            "name": "loop_navigation",
+            "description": "Toggle loop navigation. When on, Next at the last image wraps to the first and Previous at the first wraps to the last. Default off.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
             "name": "set_cursor_position",
             "description": "Move the cached cursor position. Used by tests to drive the histogram hover readout without a real mouse.",
             "inputSchema": {
@@ -614,6 +619,13 @@ fn mcp_tools_call(
             content["state"] = state_json;
             Ok(content)
         }
+        "loop_navigation" => {
+            let state_json =
+                send_and_wait(proxy, AppCommand::ToggleLoopNavigation, state, SYNC_TIMEOUT)?;
+            let mut content = mcp_text_content("Toggled loop navigation.");
+            content["state"] = state_json;
+            Ok(content)
+        }
         "set_cursor_position" => {
             let x = args["x"]
                 .as_f64()
@@ -741,6 +753,7 @@ fn mcp_resources_read(params: &Value, state: &Arc<Mutex<SharedAppState>>) -> Res
                 "title_bar": s.title_bar,
                 "auto_fit_window": s.auto_fit_window,
                 "enlarge_small_images": s.enlarge_small_images,
+                "loop_navigation": s.loop_navigation,
             });
             let text = serde_json::to_string_pretty(&settings_json).unwrap_or_default();
             Ok(json!({

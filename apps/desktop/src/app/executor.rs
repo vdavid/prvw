@@ -237,6 +237,19 @@ impl App {
                 self.request_redraw();
                 self.update_shared_state();
             }
+            AppCommand::ToggleLoopNavigation => {
+                self.navigation.loop_navigation = !self.navigation.loop_navigation;
+                let enabled = self.navigation.loop_navigation;
+                log::info!("Loop navigation: {enabled}");
+                let mut s = settings::Settings::load();
+                s.loop_navigation = enabled;
+                s.save();
+                if let Some(menu) = &self.app_menu {
+                    menu.loop_navigation_item.set_checked(enabled);
+                }
+                self.adjust_preload_window_for_loop();
+                self.update_shared_state();
+            }
             AppCommand::SetCursorPosition { x, y } => {
                 self.last_mouse_pos = (Logical(x), Logical(y));
                 self.update_histogram_hover();

@@ -4,11 +4,12 @@ Scan the parent directory for images, preload adjacent files in the background, 
 (SDR) or 1 GB (HDR, Phase 5). The cache auto-scales when the RAW pipeline's `hdr_output` flag flips or the display's EDR
 headroom crosses the 1.0 boundary, so preload count stays constant as we double per-pixel bytes for RAW RGBA16F.
 
-| File           | Purpose                                                                                                                                                                                                                               |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline }`; `format_offset` + `format_bytes` + `NAV_DEBOUNCE` helpers |
-| `directory.rs` | `DirectoryList`: scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range`; `go_by(delta)`                                                                                            |
-| `preloader.rs` | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction (512 MB / 1 GB budget)                                                                                                                                     |
+| File           | Purpose                                                                                                                                                                                                                                                |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `format_offset` + `format_bytes` + `NAV_DEBOUNCE` helpers |
+| `directory.rs` | `DirectoryList`: scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`                                                                               |
+| `preloader.rs` | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction (512 MB / 1 GB budget)                                                                                                                                                      |
+| `wrap.rs`      | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::adjust_preload_window_for_loop` on toggle and by `navigate_by` for cache `keep` set                                   |
 
 ## State
 
@@ -99,6 +100,24 @@ On a cache-miss navigation the title bar shows "Loading…" and a centered "Load
 placeholder, and `apply_thumbnail_auto_fit` resizes the window to the source dimensions (read via ImageIO, no decode)
 before any pixels paint. The full decode later replaces the placeholder when `PreloadResponse::Ready` arrives. The thumb
 scheduler is paused while `pending_current.is_some()`. See `apps/desktop/src/thumbnails/CLAUDE.md`.
+
+## Loop navigation
+
+Toggled via Navigate → Loop navigation, bare `L` key, or `loop_navigation` MCP tool. Persisted via
+`Settings::loop_navigation`. When on, Next at the last image wraps to the first and Previous at the first wraps to the
+last. The preloader's active window also wraps so wrap-side neighbours stay warm at the edges.
+
+`App::adjust_preload_window_for_loop` runs on every toggle. It computes the new active window with
+`wrap::active_preload_indices`, calls `image_cache.retain_only(&active)` to drop indices that fall out of the window,
+then submits preload tasks for newly-in-window indices via the existing `submit_neighbor_preload` path. Fire-and-forget;
+the user doesn't wait on these decodes.
+
+## Gotcha/Why: shared state on neighbour-only Ready
+
+`poll_preloader` only used to call `update_shared_state` when the arrived index matched `pending_current`. Background
+neighbour decodes (no pending target) inserted into the cache silently, so QA / MCP clients reading
+`prvw://state.cache_indices` saw a stale snapshot. We now flip a `neighbor_arrived` flag in the loop and call
+`update_shared_state` once after the drain when any non-pending Ready landed.
 
 ## Gotchas
 

@@ -676,6 +676,258 @@ fn narrow_window_overlays_dont_crash() {
     assert_eq!(final_state["exif_visible"].as_bool(), Some(false));
 }
 
+/// Build a temporary directory with `n` distinct PNG files. Returns the
+/// directory and the path of the first image so the caller can launch the
+/// app pointing at it.
+fn create_multi_image_dir(n: u32) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = None;
+    for i in 0..n {
+        let path = dir.path().join(format!("img-{i:02}.png"));
+        // Vary the pixel color so each PNG is a distinct decode (avoids
+        // any cache deduping that may key off content).
+        let shade = (i as u8).wrapping_mul(17);
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([shade, shade, shade, 255]));
+        img.save(&path).unwrap();
+        if first.is_none() {
+            first = Some(path);
+        }
+    }
+    (dir, first.unwrap())
+}
+
+/// Wait until `pred(state)` is true or the timeout elapses. Returns the
+/// last observed state. Polls every 50 ms.
+fn wait_for_state<F: Fn(&serde_json::Value) -> bool>(
+    app: &TestApp,
+    timeout: Duration,
+    pred: F,
+) -> serde_json::Value {
+    let start = Instant::now();
+    loop {
+        let state = app.get_state();
+        if pred(&state) {
+            return state;
+        }
+        if start.elapsed() > timeout {
+            return state;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn cache_indices(state: &serde_json::Value) -> Vec<u64> {
+    state["cache_indices"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_u64()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn loop_l_toggles_visibility_in_state() {
+    let (_dir, first) = create_multi_image_dir(5);
+    let app = TestApp::start_with_image(&first);
+
+    assert_eq!(
+        app.get_state()["loop_navigation"].as_bool(),
+        Some(false),
+        "loop navigation defaults to off"
+    );
+
+    app.post("/key", "l");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        app.get_state()["loop_navigation"].as_bool(),
+        Some(true),
+        "L key turns loop navigation on"
+    );
+
+    app.post("/key", "l");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        app.get_state()["loop_navigation"].as_bool(),
+        Some(false),
+        "L key turns loop navigation off again"
+    );
+}
+
+#[test]
+fn loop_navigation_wraps_next_at_last() {
+    let (_dir, first) = create_multi_image_dir(5);
+    let app = TestApp::start_with_image(&first);
+
+    // Turn loop on first.
+    app.post("/key", "l");
+    std::thread::sleep(Duration::from_millis(150));
+
+    // Navigate forward four times to reach the last image (index 4 of 5).
+    for _ in 0..4 {
+        app.post("/navigate", "next");
+    }
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(5) // 1-based index = 5 -> 0-based 4
+    });
+    assert_eq!(state["index"].as_u64(), Some(5));
+    assert_eq!(state["total_files"].as_u64(), Some(5));
+
+    // Next from last wraps to first.
+    app.post("/navigate", "next");
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(1)
+    });
+    assert_eq!(
+        state["index"].as_u64(),
+        Some(1),
+        "next at last wraps to first"
+    );
+
+    // Previous from first wraps to last.
+    app.post("/navigate", "prev");
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(5)
+    });
+    assert_eq!(
+        state["index"].as_u64(),
+        Some(5),
+        "previous at first wraps to last"
+    );
+}
+
+#[test]
+fn loop_off_halts_at_edge() {
+    let (_dir, first) = create_multi_image_dir(5);
+    let app = TestApp::start_with_image(&first);
+    // Loop is off by default. Confirm.
+    assert_eq!(app.get_state()["loop_navigation"].as_bool(), Some(false));
+
+    // Walk to the last image.
+    for _ in 0..4 {
+        app.post("/navigate", "next");
+    }
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(5)
+    });
+    assert_eq!(state["index"].as_u64(), Some(5));
+
+    // Next at the last image with loop off should leave the index unchanged.
+    app.post("/navigate", "next");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        app.get_state()["index"].as_u64(),
+        Some(5),
+        "next at last with loop off halts at last"
+    );
+
+    // Walk back to the first image.
+    for _ in 0..4 {
+        app.post("/navigate", "prev");
+    }
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(1)
+    });
+    assert_eq!(state["index"].as_u64(), Some(1));
+
+    // Previous at the first image with loop off halts.
+    app.post("/navigate", "prev");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        app.get_state()["index"].as_u64(),
+        Some(1),
+        "previous at first with loop off halts at first"
+    );
+}
+
+#[test]
+fn loop_toggle_on_triggers_preload_of_wrap_indices() {
+    let (_dir, first) = create_multi_image_dir(6);
+    let app = TestApp::start_with_image(&first);
+
+    // Walk to the last image (index 5 of 6).
+    for _ in 0..5 {
+        app.post("/navigate", "next");
+    }
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(6)
+    });
+    assert_eq!(state["index"].as_u64(), Some(6));
+
+    // With loop OFF, the cache must not contain wrap-side indices 0 or 1.
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        let idx = cache_indices(s);
+        // Wait for the active window (3, 4, 5) to be in the cache.
+        idx.contains(&5) && !idx.contains(&0) && !idx.contains(&1)
+    });
+    let before = cache_indices(&state);
+    assert!(
+        !before.contains(&0) && !before.contains(&1),
+        "wrap-side indices should not be cached before loop on, got {before:?}"
+    );
+
+    // Toggle loop ON. Wrap-side indices 0 and 1 should now warm.
+    app.post("/key", "l");
+    let state = wait_for_state(&app, Duration::from_secs(5), |s| {
+        let idx = cache_indices(s);
+        idx.contains(&0) && idx.contains(&1)
+    });
+    let after = cache_indices(&state);
+    assert!(
+        after.contains(&0) && after.contains(&1),
+        "wrap-side indices should be cached after loop on, got {after:?}"
+    );
+}
+
+#[test]
+fn loop_toggle_off_evicts_wrap_indices() {
+    let (_dir, first) = create_multi_image_dir(6);
+    let app = TestApp::start_with_image(&first);
+
+    // Loop on first so the wrap-side preloads run.
+    app.post("/key", "l");
+    std::thread::sleep(Duration::from_millis(150));
+
+    // Walk to the last image.
+    for _ in 0..5 {
+        app.post("/navigate", "next");
+    }
+    let state = wait_for_state(&app, Duration::from_secs(5), |s| {
+        let idx = cache_indices(s);
+        s["index"].as_u64() == Some(6) && idx.contains(&0) && idx.contains(&1)
+    });
+    let before = cache_indices(&state);
+    assert!(
+        before.contains(&0) && before.contains(&1),
+        "wrap-side indices should be cached with loop on at last, got {before:?}"
+    );
+
+    // Toggle loop OFF. Wrap-side indices should be dropped from the cache.
+    app.post("/key", "l");
+    let state = wait_for_state(&app, Duration::from_secs(5), |s| {
+        let idx = cache_indices(s);
+        !idx.contains(&0) && !idx.contains(&1)
+    });
+    let after = cache_indices(&state);
+    assert!(
+        !after.contains(&0) && !after.contains(&1),
+        "wrap-side indices should be evicted after loop off, got {after:?}"
+    );
+}
+
+#[test]
+fn loop_persists_across_settings_reload() {
+    let (_dir, first) = create_multi_image_dir(3);
+    let app = TestApp::start_with_image(&first);
+    app.post("/key", "l");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(app.get_state()["loop_navigation"].as_bool(), Some(true));
+
+    let settings_path = app._data_dir.path().join("settings.json");
+    let json = std::fs::read_to_string(&settings_path).expect("settings file should exist");
+    assert!(
+        json.contains("\"loop_navigation\": true"),
+        "loop_navigation should persist to settings.json, got: {json}"
+    );
+}
+
 /// `screenshot_window` MCP tool runs end-to-end. Marked `#[ignore]` because the tool
 /// shells out to `/usr/sbin/screencapture -l`, which requires Screen Recording
 /// permission. Headless CI hosts and freshly-cloned dev boxes return a black

@@ -70,6 +70,8 @@ View
 Navigate
   Previous ←   ←/[/Backspace
   Next →        →/]/Space
+  ---
+  Loop navigation (toggle)   L
 ";
 
 pub(super) fn handle_get_state(

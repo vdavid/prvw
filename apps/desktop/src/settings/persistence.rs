@@ -61,6 +61,13 @@ pub struct Settings {
     #[serde(default)]
     pub exif_visible: bool,
 
+    /// When true, navigation wraps around at the directory boundary:
+    /// Next at the last image jumps to the first, Previous at the first
+    /// jumps to the last. Toggled with Navigate → Loop navigation or the
+    /// bare L key.
+    #[serde(default)]
+    pub loop_navigation: bool,
+
     /// Previous default handler for each UTI before Prvw claimed it.
     /// Used to restore associations when the user turns off a file type toggle.
     /// Keys are UTIs (e.g., "public.jpeg"), values are bundle IDs (e.g., "com.apple.Preview").
@@ -101,6 +108,7 @@ impl Default for Settings {
             title_bar: true,
             histogram_visible: false,
             exif_visible: false,
+            loop_navigation: false,
             previous_handlers: HashMap::new(),
             raw: RawPipelineFlags::default(),
             custom_dcp_dir: None,
@@ -193,6 +201,7 @@ mod tests {
             title_bar: false,
             histogram_visible: true,
             exif_visible: true,
+            loop_navigation: true,
             previous_handlers: HashMap::from([(
                 "public.jpeg".to_string(),
                 "com.apple.Preview".to_string(),
@@ -208,6 +217,7 @@ mod tests {
         assert!(loaded.enlarge_small_images);
         assert!(loaded.histogram_visible);
         assert!(loaded.exif_visible);
+        assert!(loaded.loop_navigation);
         assert!(!loaded.raw.default_tone_curve);
         assert!(!loaded.raw.capture_sharpening);
         assert!(loaded.raw.highlight_recovery); // untouched flag stays true
@@ -256,6 +266,8 @@ mod tests {
         assert!(!loaded.histogram_visible);
         // EXIF info defaults to off.
         assert!(!loaded.exif_visible);
+        // Loop navigation defaults to off.
+        assert!(!loaded.loop_navigation);
         // Missing `raw` → all RAW flags default to true.
         assert!(loaded.raw.is_default());
         assert!(loaded.custom_dcp_dir.is_none());

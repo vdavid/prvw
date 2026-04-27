@@ -17,6 +17,8 @@ both a text confirmation and a `state` field with the current app state as JSON.
 - **navigate**: Navigate to next/prev image. Params: `direction` ("next" or "prev"; also accepts "forward"/"backward" as
   aliases).
 - **open**: Open a file by path. Params: `path` (absolute).
+- **loop_navigation**: Toggle loop navigation. When on, Next at the last image wraps to the first and Previous at the
+  first wraps to the last. Default off. No params.
 
 ### View
 
@@ -52,8 +54,10 @@ both a text confirmation and a `state` field with the current app state as JSON.
 
 ## Resources
 
-- **prvw://state**: Current app state as JSON (file, zoom, pan, fullscreen, window/image geometry, settings, title).
-- **prvw://settings**: Current settings from disk as JSON (auto_update, auto_fit_window, enlarge_small_images).
+- **prvw://state**: Current app state as JSON (file, zoom, pan, fullscreen, window/image geometry, settings, title,
+  `loop_navigation`, `cache_indices` (sorted directory indices currently in the image cache)).
+- **prvw://settings**: Current settings from disk as JSON (auto_update, auto_fit_window, enlarge_small_images,
+  loop_navigation).
 - **prvw://menu**: Menu bar structure.
 - **prvw://diagnostics**: Cache state, navigation timing, memory usage.
 

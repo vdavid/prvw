@@ -94,6 +94,11 @@ pub enum AppCommand {
     ToggleHistogram,
     /// Toggle the EXIF info overlay (View → Exif info, bare E key).
     ToggleExifInfo,
+    /// Toggle loop navigation (Navigate → Loop navigation, bare L key).
+    /// Wraps Next/Previous at the directory boundary when on; halts at
+    /// edges when off. Recomputes the preloader's active window after
+    /// flipping so wrap-side neighbors warm or get evicted to match.
+    ToggleLoopNavigation,
     /// Update the cached cursor position (used by MCP for hover-readout tests).
     SetCursorPosition { x: f64, y: f64 },
 

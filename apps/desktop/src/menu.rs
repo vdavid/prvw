@@ -20,6 +20,7 @@ pub struct MenuIds {
     pub exif_info: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
+    pub loop_navigation: MenuId,
 }
 
 /// The menu bar and its action IDs. The `Menu` must be kept alive for the entire app lifetime,
@@ -37,6 +38,7 @@ pub struct AppMenu {
     pub relative_colorimetric_item: CheckMenuItem,
     pub histogram_item: CheckMenuItem,
     pub exif_info_item: CheckMenuItem,
+    pub loop_navigation_item: CheckMenuItem,
 }
 
 /// Build the native menu bar. The caller MUST keep the returned `AppMenu` alive.
@@ -159,8 +161,15 @@ pub fn create_menu_bar() -> AppMenu {
     let nav_menu = Submenu::new("Navigate", true);
     let previous = MenuItem::new("Previous      ←", true, None);
     let next = MenuItem::new("Next            →", true, None);
+    let loop_navigation =
+        CheckMenuItem::new("Loop navigation", true, settings.loop_navigation, None);
     nav_menu
-        .append_items(&[&previous, &next])
+        .append_items(&[
+            &previous,
+            &next,
+            &PredefinedMenuItem::separator(),
+            &loop_navigation,
+        ])
         .expect("Failed to build navigate menu");
 
     menu.append_items(&[&app_menu, &file_menu, &view_menu, &nav_menu])
@@ -178,6 +187,7 @@ pub fn create_menu_bar() -> AppMenu {
     let relative_colorimetric_id = relative_colorimetric.id().clone();
     let histogram_id = histogram.id().clone();
     let exif_info_id = exif_info.id().clone();
+    let loop_navigation_id = loop_navigation.id().clone();
 
     AppMenu {
         auto_fit_item: auto_fit_window,
@@ -187,6 +197,7 @@ pub fn create_menu_bar() -> AppMenu {
         relative_colorimetric_item: relative_colorimetric,
         histogram_item: histogram,
         exif_info_item: exif_info,
+        loop_navigation_item: loop_navigation,
         _menu: menu,
         ids: MenuIds {
             about: about.id().clone(),
@@ -206,6 +217,7 @@ pub fn create_menu_bar() -> AppMenu {
             exif_info: exif_info_id,
             previous: previous.id().clone(),
             next: next.id().clone(),
+            loop_navigation: loop_navigation_id,
         },
     }
 }

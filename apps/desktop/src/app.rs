@@ -534,7 +534,11 @@ impl App {
             if self.navigation.preload_neighbors {
                 // Startup direction is unknown — warm both sides symmetrically.
                 let to_preload: Vec<(usize, PathBuf)> = dir
-                    .preload_range(preloader::preload_count(), directory::Direction::Unknown)
+                    .preload_range(
+                        preloader::preload_count(),
+                        directory::Direction::Unknown,
+                        self.navigation.loop_navigation,
+                    )
                     .iter()
                     .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
                     .collect();
@@ -841,8 +845,9 @@ impl App {
             .map(|d| d.current_index())
             .unwrap_or(0);
 
+        let loop_on = self.navigation.loop_navigation;
         let moved_delta = if let Some(dir) = &mut self.navigation.dir_list {
-            dir.go_by(delta)
+            dir.go_by(delta, loop_on)
         } else {
             0
         };
@@ -851,7 +856,10 @@ impl App {
             return;
         }
 
-        let forward = moved_delta > 0;
+        // With loop on, wrap-around at the last->first edge produces a
+        // negative net delta even though the user moved "forward". Use the
+        // requested delta's sign for the direction hint instead.
+        let forward = if loop_on { delta > 0 } else { moved_delta > 0 };
 
         let nav_start = Instant::now();
         let direction = if forward { "next" } else { "prev" };
@@ -866,8 +874,11 @@ impl App {
         // Extract what we need from dir_list before mutable borrow
         let (current_path, current_index, total, preload_indices) = {
             let dir = self.navigation.dir_list.as_ref().unwrap();
-            let indices =
-                dir.preload_range(preloader::preload_count(), self.navigation.last_direction);
+            let indices = dir.preload_range(
+                preloader::preload_count(),
+                self.navigation.last_direction,
+                self.navigation.loop_navigation,
+            );
             (
                 dir.current().to_path_buf(),
                 dir.current_index(),
@@ -972,19 +983,58 @@ impl App {
         }
 
         // Drop cache entries outside the hot window. Keeps RAM bounded even
-        // when the LRU budget isn't hit (e.g. lots of small JPEGs). The
-        // window is current ± PRELOAD_AHEAD on both sides regardless of
-        // travel direction — the user can reverse at any time.
-        let count = preloader::preload_count();
-        let keep: Vec<usize> = {
-            let start = current_index.saturating_sub(count);
-            let end = (current_index + count + 1).min(total);
-            (start..end).collect()
-        };
+        // when the LRU budget isn't hit (for example, lots of small JPEGs).
+        // The window is current ± PRELOAD_AHEAD on both sides regardless of
+        // travel direction (the user can reverse at any time). With loop
+        // navigation on, the window wraps so the wrap-side neighbours stay
+        // resident.
+        let keep = navigation::wrap::active_preload_indices(
+            current_index,
+            total,
+            preloader::preload_count(),
+            self.navigation.loop_navigation,
+        );
         let evicted = self.navigation.image_cache.retain_only(&keep);
         self.log_evictions(evicted, "out of window");
 
         self.update_shared_state();
+    }
+
+    /// Recompute the active preload window after the loop-navigation flag
+    /// flips. Drops cache entries that are no longer in the (possibly
+    /// loop-aware) hot window, then queues preloads for newly-in-window
+    /// indices that aren't already cached. Fire-and-forget; the user
+    /// doesn't wait on these decodes.
+    pub(crate) fn adjust_preload_window_for_loop(&mut self) {
+        let Some(dir) = &self.navigation.dir_list else {
+            return;
+        };
+        let total = dir.len();
+        if total == 0 {
+            return;
+        }
+        let current_index = dir.current_index();
+        let active = navigation::wrap::active_preload_indices(
+            current_index,
+            total,
+            preloader::preload_count(),
+            self.navigation.loop_navigation,
+        );
+        let evicted = self.navigation.image_cache.retain_only(&active);
+        self.log_evictions(evicted, "loop toggle");
+
+        if !self.navigation.preload_neighbors {
+            return;
+        }
+        let preload_indices: Vec<usize> = active
+            .iter()
+            .copied()
+            .filter(|&i| i != current_index)
+            .collect();
+        if preload_indices.is_empty() {
+            return;
+        }
+        self.submit_neighbor_preload(current_index, total, &preload_indices);
     }
 
     /// Queue background preload tasks for the neighbors of `index`.
@@ -1191,6 +1241,7 @@ impl App {
             return;
         };
 
+        let mut neighbor_arrived = false;
         for response in responses {
             match response {
                 preloader::PreloadResponse::Ready {
@@ -1209,6 +1260,9 @@ impl App {
                         file_name,
                     );
                     self.log_evictions(evicted, "LRU");
+                    if self.navigation.pending_current != Some(index) {
+                        neighbor_arrived = true;
+                    }
                     if self.navigation.pending_current == Some(index) {
                         self.navigation.pending_current = None;
                         self.display_from_cache(index);
@@ -1250,6 +1304,7 @@ impl App {
                                     dir.preload_range(
                                         preloader::preload_count(),
                                         self.navigation.last_direction,
+                                        self.navigation.loop_navigation,
                                     ),
                                 )
                             } else {
@@ -1293,6 +1348,12 @@ impl App {
                     }
                 }
             }
+        }
+        // Background neighbour preloads insert into the cache without
+        // touching `pending_current`. Mirror the new `cache_indices` into
+        // shared state so the QA server / MCP clients see them.
+        if neighbor_arrived {
+            self.update_shared_state();
         }
     }
 
@@ -1582,6 +1643,12 @@ impl App {
         }
         if event.id() == &app_menu.ids.exif_info {
             let _ = self.event_loop_proxy.send_event(AppCommand::ToggleExifInfo);
+            return;
+        }
+        if event.id() == &app_menu.ids.loop_navigation {
+            let _ = self
+                .event_loop_proxy
+                .send_event(AppCommand::ToggleLoopNavigation);
             return;
         }
 
