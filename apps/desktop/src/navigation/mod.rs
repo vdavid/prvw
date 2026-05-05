@@ -2,7 +2,10 @@
 
 pub mod directory;
 pub mod preloader;
+pub mod sort;
 pub mod wrap;
+
+pub use sort::SortBy;
 
 use crate::diagnostics::NavigationRecord;
 use crate::settings::Settings;

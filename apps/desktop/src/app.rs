@@ -501,9 +501,12 @@ impl App {
 
         // Build the navigation list
         self.navigation.dir_list = if let Some(files) = self.explicit_files.take() {
-            Some(directory::DirectoryList::from_explicit(files))
+            Some(directory::DirectoryList::from_explicit(
+                files,
+                crate::navigation::SortBy::Name,
+            ))
         } else {
-            directory::DirectoryList::from_file(&self.file_path)
+            directory::DirectoryList::from_file(&self.file_path, crate::navigation::SortBy::Name)
         };
 
         // Start preloader thread pool

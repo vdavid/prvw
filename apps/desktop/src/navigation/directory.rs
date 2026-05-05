@@ -1,16 +1,21 @@
 use crate::decoding;
+use crate::navigation::sort::{SortBy, sort_files};
 use std::path::{Path, PathBuf};
 
 /// Tracks the list of image files in a directory and the current position.
 pub struct DirectoryList {
     files: Vec<PathBuf>,
     current_index: usize,
+    // Read by `sort_by()` / `set_sort_by()`; wired into the menu + persisted
+    // setting in Phase 3.
+    #[allow(dead_code)]
+    sort_by: SortBy,
 }
 
 impl DirectoryList {
     /// Scan the parent directory of `file_path` for image files.
     /// Returns None if the parent directory can't be read or contains no images.
-    pub fn from_file(file_path: &Path) -> Option<Self> {
+    pub fn from_file(file_path: &Path, sort_by: SortBy) -> Option<Self> {
         let dir = file_path.parent()?;
         let canonical_target = file_path.canonicalize().ok()?;
 
@@ -25,20 +30,7 @@ impl DirectoryList {
             })
             .collect();
 
-        // Sort case-insensitive by filename
-        files.sort_by(|a, b| {
-            let name_a = a
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_lowercase();
-            let name_b = b
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_lowercase();
-            name_a.cmp(&name_b)
-        });
+        sort_files(&mut files, sort_by);
 
         if files.is_empty() {
             return None;
@@ -65,12 +57,14 @@ impl DirectoryList {
         Some(Self {
             files,
             current_index,
+            sort_by,
         })
     }
 
     /// Create a navigation list from an explicit set of files (multi-select open).
     /// The first file in the list is the initial image.
-    pub fn from_explicit(files: Vec<PathBuf>) -> Self {
+    pub fn from_explicit(mut files: Vec<PathBuf>, sort_by: SortBy) -> Self {
+        sort_files(&mut files, sort_by);
         log::info!("Using explicit file list: {} images", files.len());
         if let Some(first) = files.first() {
             log::debug!(
@@ -81,7 +75,34 @@ impl DirectoryList {
         Self {
             files,
             current_index: 0,
+            sort_by,
         }
+    }
+
+    /// Re-sort by a new column. Preserves the current image by tracking its
+    /// path across the re-sort. Idempotent.
+    #[allow(dead_code)] // Phase 3: wired by the menu/command handler.
+    pub fn set_sort_by(&mut self, sort_by: SortBy) {
+        if self.sort_by == sort_by {
+            return;
+        }
+        if self.files.is_empty() {
+            self.sort_by = sort_by;
+            return;
+        }
+        let current_path = self.files[self.current_index].clone();
+        sort_files(&mut self.files, sort_by);
+        self.current_index = self
+            .files
+            .iter()
+            .position(|p| p == &current_path)
+            .unwrap_or(0);
+        self.sort_by = sort_by;
+    }
+
+    #[allow(dead_code)] // Phase 3: read by the menu builder to mark current.
+    pub fn sort_by(&self) -> SortBy {
+        self.sort_by
     }
 
     pub fn current(&self) -> &Path {
@@ -306,7 +327,7 @@ mod tests {
     fn scans_and_sorts_case_insensitive() {
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
-        let list = DirectoryList::from_file(&target).unwrap();
+        let list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
 
         // Should have 5 image files (not readme.txt), sorted case-insensitive
         assert_eq!(list.len(), 5);
@@ -331,7 +352,7 @@ mod tests {
     fn tracks_current_position() {
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
-        let list = DirectoryList::from_file(&target).unwrap();
+        let list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(
             list.current().file_name().unwrap().to_str().unwrap(),
             "cherry.gif"
@@ -343,7 +364,7 @@ mod tests {
     fn go_by_clamps_and_returns_net_delta() {
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif"); // index 2 of 5
-        let mut list = DirectoryList::from_file(&target).unwrap();
+        let mut list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(list.go_by(0, false), 0);
         assert_eq!(list.current_index(), 2);
         assert_eq!(list.go_by(2, false), 2); // 2 -> 4
@@ -359,7 +380,7 @@ mod tests {
         // 5 images, current = 4 (last). Next wraps to 0.
         let dir = create_test_dir();
         let target = dir.path().join("fig.BMP");
-        let mut list = DirectoryList::from_file(&target).unwrap();
+        let mut list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(list.current_index(), 4);
         let net = list.go_by(1, true);
         assert_eq!(net, -4, "net movement is -4 when wrapping from 4 to 0");
@@ -381,7 +402,7 @@ mod tests {
     fn navigation_at_boundaries() {
         let dir = create_test_dir();
         let target = dir.path().join("apple.jpg");
-        let mut list = DirectoryList::from_file(&target).unwrap();
+        let mut list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(list.current_index(), 0);
 
         // Can't go before first
@@ -405,7 +426,7 @@ mod tests {
     fn preload_range_at_edges() {
         let dir = create_test_dir();
         let target = dir.path().join("apple.jpg");
-        let list = DirectoryList::from_file(&target).unwrap();
+        let list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
 
         // At index 0, forward preload should go [1, 2] (nothing before).
         assert_eq!(list.preload_range(2, Direction::Forward, false), vec![1, 2]);
@@ -422,7 +443,7 @@ mod tests {
         // = [3, 4, 1, 0]. The highest-priority slot (first) goes to N+1.
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
-        let list = DirectoryList::from_file(&target).unwrap();
+        let list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(
             list.preload_range(2, Direction::Forward, false),
             vec![3, 4, 1, 0]
@@ -434,7 +455,7 @@ mod tests {
         // Backward flips the ordering: [N-1, N-2, N+1, N+2] = [1, 0, 3, 4].
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
-        let list = DirectoryList::from_file(&target).unwrap();
+        let list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(
             list.preload_range(2, Direction::Backward, false),
             vec![1, 0, 3, 4]
@@ -446,7 +467,7 @@ mod tests {
         // Unknown interleaves both sides: [N+1, N-1, N+2, N-2] = [3, 1, 4, 0].
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
-        let list = DirectoryList::from_file(&target).unwrap();
+        let list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(
             list.preload_range(2, Direction::Unknown, false),
             vec![3, 1, 4, 0]
@@ -459,7 +480,7 @@ mod tests {
         // ahead wraps to [0, 1]; behind = [3, 2].
         let dir = create_test_dir();
         let target = dir.path().join("fig.BMP");
-        let list = DirectoryList::from_file(&target).unwrap();
+        let list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(list.current_index(), 4);
         assert_eq!(
             list.preload_range(2, Direction::Forward, true),
@@ -473,7 +494,7 @@ mod tests {
         // see indices repeat (and the current index in the list).
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif");
-        let list = DirectoryList::from_file(&target).unwrap();
+        let list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         let indices = list.preload_range(5, Direction::Unknown, true);
         let mut sorted = indices.clone();
         sorted.sort();
@@ -485,7 +506,7 @@ mod tests {
     fn go_to_first_jumps_from_middle() {
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif"); // index 2 of 5
-        let mut list = DirectoryList::from_file(&target).unwrap();
+        let mut list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(list.current_index(), 2);
         assert_eq!(list.go_to_first(), -2);
         assert_eq!(list.current_index(), 0);
@@ -495,7 +516,7 @@ mod tests {
     fn go_to_first_at_first_is_noop() {
         let dir = create_test_dir();
         let target = dir.path().join("apple.jpg"); // index 0
-        let mut list = DirectoryList::from_file(&target).unwrap();
+        let mut list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(list.current_index(), 0);
         assert_eq!(list.go_to_first(), 0);
         assert_eq!(list.current_index(), 0);
@@ -505,7 +526,7 @@ mod tests {
     fn go_to_last_jumps_from_middle() {
         let dir = create_test_dir();
         let target = dir.path().join("cherry.gif"); // index 2 of 5
-        let mut list = DirectoryList::from_file(&target).unwrap();
+        let mut list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(list.current_index(), 2);
         assert_eq!(list.go_to_last(), 2);
         assert_eq!(list.current_index(), 4);
@@ -515,7 +536,7 @@ mod tests {
     fn go_to_last_at_last_is_noop() {
         let dir = create_test_dir();
         let target = dir.path().join("fig.BMP"); // index 4 (last)
-        let mut list = DirectoryList::from_file(&target).unwrap();
+        let mut list = DirectoryList::from_file(&target, SortBy::Name).unwrap();
         assert_eq!(list.current_index(), 4);
         assert_eq!(list.go_to_last(), 0);
         assert_eq!(list.current_index(), 4);
@@ -525,7 +546,7 @@ mod tests {
     fn empty_directory_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("readme.txt"), b"not an image").unwrap();
-        let result = DirectoryList::from_file(&dir.path().join("readme.txt"));
+        let result = DirectoryList::from_file(&dir.path().join("readme.txt"), SortBy::Name);
         assert!(result.is_none());
     }
 }

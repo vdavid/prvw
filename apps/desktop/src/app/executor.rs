@@ -338,7 +338,8 @@ impl App {
                 }
 
                 self.file_path = resolved.clone();
-                self.navigation.dir_list = directory::DirectoryList::from_file(&resolved);
+                self.navigation.dir_list =
+                    directory::DirectoryList::from_file(&resolved, crate::navigation::SortBy::Name);
                 self.display_image(&resolved);
 
                 if let Some(dir) = &self.navigation.dir_list
