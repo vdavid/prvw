@@ -5,6 +5,38 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] - 2026-05-05
+
+### Added
+
+- **View → Sort by → {Name | Date | File type}.** Name (natural alphanumeric, case-insensitive) is the default and fixes
+  the `photo_1, photo_10, photo_11, photo_2` problem — `photo_2` now sorts before `photo_10`. All comparators ascending;
+  Name is the tiebreaker for Date (file mtime) and File type (lowercased extension, empty extension first). Persists
+  across launches. Changing the sort updates the in-memory cache transparently: in-window decoded images stay,
+  out-of-window entries get evicted, missing in-window slots get queued for preload — loop navigation respected. The
+  underlying path-keyed cache (refactor that makes this work) also unblocks a future directory-watcher rescan
+  ([9a80ec3e](https://github.com/vdavid/prvw/commit/9a80ec3e),
+  [bb95700e](https://github.com/vdavid/prvw/commit/bb95700e),
+  [04ca1311](https://github.com/vdavid/prvw/commit/04ca1311)).
+
+### Changed
+
+- **Release script runs full `./scripts/check.sh` before bumping the version**, so lint/format/test regressions and the
+  `changelog-links` validator (fabricated commit SHAs) abort the release before any tag exists. Also auto-detaches stale
+  `/Volumes/Prvw*` mounts and brings the self-hosted runner back up via `svc.sh start` if its LaunchAgent died — both
+  scenarios broke v0.12.0's first attempt ([eb9b4196](https://github.com/vdavid/prvw/commit/eb9b4196)).
+- **Release skill caffeinates the MacBook through the build** (`caffeinate -i`, idle-sleep only) and verifies the GitHub
+  Release assets + `https://getprvw.com/latest.json` after the run succeeds, surfacing webhook deploy failures without
+  blocking release success ([d09d6471](https://github.com/vdavid/prvw/commit/d09d6471)).
+
+### Fixed
+
+- **Flaky integration tests under load.** `histogram_hover_bin_updates` and `narrow_window_overlays_dont_crash` used
+  fixed `sleep(100..200ms)` between an MCP/HTTP command and the state-read assertion; under release-script load (full
+  check suite + nextest parallelism on a busy machine), processing exceeded the sleep budget and the assertion fired on
+  stale state. Both now poll via the existing `wait_for_state` helper. Surfaced during v0.13.0 release prep
+  ([5a567c0e](https://github.com/vdavid/prvw/commit/5a567c0e)).
+
 ## [0.12.0] - 2026-04-27
 
 ### Added
