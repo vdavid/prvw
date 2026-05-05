@@ -105,6 +105,10 @@ pub enum AppCommand {
     /// edges when off. Recomputes the preloader's active window after
     /// flipping so wrap-side neighbors warm or get evicted to match.
     ToggleLoopNavigation,
+    /// Re-sort the directory list (View → Sort by → {Name | Date | File type}).
+    /// The cache survives by path: in-window entries stay, out-of-window
+    /// entries get evicted, missing in-window slots get queued for preload.
+    SetSortBy(crate::navigation::SortBy),
     /// Update the cached cursor position (used by MCP for hover-readout tests).
     SetCursorPosition { x: f64, y: f64 },
 

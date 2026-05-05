@@ -85,6 +85,12 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         // CheckMenuItems auto-toggle on click; we return None and let the caller
         // handle it (it needs the CheckMenuItem ref to read the new state).
         None
+    } else if id == &ids.sort_by_name {
+        Some(AppCommand::SetSortBy(crate::navigation::SortBy::Name))
+    } else if id == &ids.sort_by_date {
+        Some(AppCommand::SetSortBy(crate::navigation::SortBy::Date))
+    } else if id == &ids.sort_by_file_type {
+        Some(AppCommand::SetSortBy(crate::navigation::SortBy::FileType))
     } else if id == &ids.fullscreen {
         Some(AppCommand::ToggleFullscreen)
     } else if id == &ids.refresh {

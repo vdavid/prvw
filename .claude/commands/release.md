@@ -7,9 +7,9 @@ Prepare a release based on docs/guides/releasing.md.
    - Read the file first to match its style.
    - Commits have title + body - read all!
    - You can link multiple commits for changelog items if needed.
-   - **Get commit SHAs via `git log --format='%h' --abbrev=8`** — never extend a 7-char prefix from `git log
-     --oneline` by guessing the next character. The committed changelog convention is 8 chars; let git produce them.
-     The `changelog-links` check (run by the release script) will reject fabricated SHAs and abort the release.
+   - **Get commit SHAs via `git log --format='%h' --abbrev=8`** — never extend a 7-char prefix from `git log --oneline`
+     by guessing the next character. The committed changelog convention is 8 chars; let git produce them. The
+     `changelog-links` check (run by the release script) will reject fabricated SHAs and abort the release.
    - **Add a `## [Unreleased]` heading** right after the format preamble (before the first versioned section), then put
      entries under it. The release script replaces this heading with the versioned one. The committed changelog has no
      `[Unreleased]` section between releases - you're creating it fresh each time.
@@ -19,8 +19,8 @@ Prepare a release based on docs/guides/releasing.md.
 5. **Offer to push** with `git push origin main --tags`. Wait for confirmation before pushing.
 6. **After pushing**, confirm the self-hosted runner picked up the build:
    - Wait ~30 seconds, then run `gh run view <release-run-id> --json jobs` and check the `Build (...)` jobs.
-   - At least one `Build (...)` job should be `in_progress` (the self-hosted runner serializes the three matrix jobs,
-     so the others stay `queued` — that's normal).
+   - At least one `Build (...)` job should be `in_progress` (the self-hosted runner serializes the three matrix jobs, so
+     the others stay `queued` — that's normal).
    - **If all three are still `queued` after ~30s, the self-hosted runner is down.** Follow the recovery procedure in
      [docs/guides/releasing.md § Runner-up sanity check](../../docs/guides/releasing.md#runner-up-sanity-check-during-a-release):
      `launchctl list | grep prvw` to confirm, then `cd ~/actions-runner-prvw && ./svc.sh start`, falling back to
@@ -31,8 +31,8 @@ Prepare a release based on docs/guides/releasing.md.
      sequentially).
    - **Start `caffeinate -i &` to prevent idle sleep**, capture the PID, and `kill` it once the polling loop exits
      (success OR failure). The build runs on the user's MacBook via the self-hosted runner; if it sleeps, jobs stall.
-     Use `caffeinate -i` (idle-sleep only, screen can still dim) — not `-d`. Don't use `caffeinate -w <pid>` against
-     a backgrounded poll loop unless you've confirmed the PID is the actual long-living process.
+     Use `caffeinate -i` (idle-sleep only, screen can still dim) — not `-d`. Don't use `caffeinate -w <pid>` against a
+     backgrounded poll loop unless you've confirmed the PID is the actual long-living process.
    - Poll `gh run view` every few minutes in the background and report progress (which jobs are done, which are still
      running).
    - Report when all jobs complete (success or failure). If a job fails, show the failure details, and advise how to
@@ -48,5 +48,5 @@ Prepare a release based on docs/guides/releasing.md.
    - Wait ~30 seconds for the website auto-deploy (the release workflow commits an updated `latest.json` and fires a
      webhook), then `curl -s https://getprvw.com/latest.json | jq -r .version` and confirm it matches `X.Y.Z`.
    - If `latest.json` still shows the old version after ~2 minutes, the deploy webhook may have failed silently. Tell
-     the user; the manual fix is to re-trigger the website-deploy workflow via `workflow_dispatch` from the Actions
-     tab. Don't block release success on this — the GitHub Release is what users actually download.
+     the user; the manual fix is to re-trigger the website-deploy workflow via `workflow_dispatch` from the Actions tab.
+     Don't block release success on this — the GitHub Release is what users actually download.

@@ -11,35 +11,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 - **RGB histogram overlay.** Toggle via View → Histogram or bare `H`. Top-right of the window, rounded translucent
   backdrop matching the existing pill style, off by default. Hover the histogram for per-bin R/G/B counts. Computed
-  lazily on first toggle and cached per-image; rayon-parallel scan handles 20+ MP buffers in a few ms. Persists
-  across launches ([d811bb32](https://github.com/vdavid/prvw/commit/d811bb32),
+  lazily on first toggle and cached per-image; rayon-parallel scan handles 20+ MP buffers in a few ms. Persists across
+  launches ([d811bb32](https://github.com/vdavid/prvw/commit/d811bb32),
   [a6c833c6](https://github.com/vdavid/prvw/commit/a6c833c6)).
 - **EXIF info overlay.** Toggle via View → Exif info or bare `E`. Below the histogram with a small gap when both
   visible, same width and backdrop. Curated photographer-friendly grouping: camera, exposure triplet
   (`1/250 s  f/2.8  ISO 400`), lens, date taken, image dimensions, software, GPS. Hidden entirely on formats with no
-  EXIF data. Long values wrap and grow the panel while preserving the row pitch. Backed by `nom-exif` for JPEG /
-  Generic and `rawler::RawMetadata::exif` for RAW ([419c6d54](https://github.com/vdavid/prvw/commit/419c6d54),
+  EXIF data. Long values wrap and grow the panel while preserving the row pitch. Backed by `nom-exif` for JPEG / Generic
+  and `rawler::RawMetadata::exif` for RAW ([419c6d54](https://github.com/vdavid/prvw/commit/419c6d54),
   [a6c833c6](https://github.com/vdavid/prvw/commit/a6c833c6),
   [6846416a](https://github.com/vdavid/prvw/commit/6846416a)).
-- **Loop navigation.** Toggle via Navigate → Loop navigation or bare `L`. At the last image Next wraps to the first
-  and vice versa. The preloader is wrap-aware too — toggling on near a directory edge triggers preloads of the
-  wrap-side indices, toggling off evicts them, so the cache always matches the active window. Off by default,
-  persists ([88b37740](https://github.com/vdavid/prvw/commit/88b37740)).
-- **Home / End jump to first / last image.** Navigate menu gains "Go to first" (Home) and "Go to last" (End)
-  entries, with separators grouping the menu by intent. Absolute jumps; loop navigation does not affect them
+- **Loop navigation.** Toggle via Navigate → Loop navigation or bare `L`. At the last image Next wraps to the first and
+  vice versa. The preloader is wrap-aware too — toggling on near a directory edge triggers preloads of the wrap-side
+  indices, toggling off evicts them, so the cache always matches the active window. Off by default, persists
+  ([88b37740](https://github.com/vdavid/prvw/commit/88b37740)).
+- **Home / End jump to first / last image.** Navigate menu gains "Go to first" (Home) and "Go to last" (End) entries,
+  with separators grouping the menu by intent. Absolute jumps; loop navigation does not affect them
   ([1e8c316c](https://github.com/vdavid/prvw/commit/1e8c316c)).
-- **Dev-only `screenshot_window` MCP tool** that captures the entire native window — overlays, vibrancy, modal
-  panels — by shelling out to `/usr/sbin/screencapture -l <windowID>`. Compile-time gated to debug builds; release
-  builds neither register the tool nor link the dispatch arm. Requires Screen Recording permission on first use
+- **Dev-only `screenshot_window` MCP tool** that captures the entire native window — overlays, vibrancy, modal panels —
+  by shelling out to `/usr/sbin/screencapture -l <windowID>`. Compile-time gated to debug builds; release builds neither
+  register the tool nor link the dispatch arm. Requires Screen Recording permission on first use
   ([9954a91d](https://github.com/vdavid/prvw/commit/9954a91d)).
 - Website download buttons now show the file size next to the architecture
   ([b3b17f46](https://github.com/vdavid/prvw/commit/b3b17f46)).
 
 ### Changed
 
-- **Markdown / prose formatting unified across the monorepo via `oxfmt`** (Cmdr's setup). Replaces Prettier; runs
-  from repo root over `docs/`, every `CLAUDE.md`, root markdown, and website source. Auto-fixes locally, checks in
-  CI ([a30c1e5d](https://github.com/vdavid/prvw/commit/a30c1e5d),
+- **Markdown / prose formatting unified across the monorepo via `oxfmt`** (Cmdr's setup). Replaces Prettier; runs from
+  repo root over `docs/`, every `CLAUDE.md`, root markdown, and website source. Auto-fixes locally, checks in CI
+  ([a30c1e5d](https://github.com/vdavid/prvw/commit/a30c1e5d),
   [cdaa80af](https://github.com/vdavid/prvw/commit/cdaa80af),
   [47742664](https://github.com/vdavid/prvw/commit/47742664)).
 - Histogram and EXIF overlay backdrop alpha bumped from 0.55 to 0.66 for legibility against bright images
@@ -49,15 +49,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ### Fixed
 
-- **Stale `prvw://state` snapshot on background preloads.** Found while building loop navigation: `poll_preloader`
-  only updated shared state when a `Ready` matched the pending current index, so neighbor preloads left
-  `cache_indices` (and other fields) stale until the next user action. Now updated on every preload arrival
+- **Stale `prvw://state` snapshot on background preloads.** Found while building loop navigation: `poll_preloader` only
+  updated shared state when a `Ready` matched the pending current index, so neighbor preloads left `cache_indices` (and
+  other fields) stale until the next user action. Now updated on every preload arrival
   ([88b37740](https://github.com/vdavid/prvw/commit/88b37740)).
-- Histogram briefly showed the previous image's curve on cache-miss navigation while the QuickLook thumbnail
-  placeholder was on screen. `display_thumbnail_placeholder` now clears the cached histogram data so the right
-  histogram appears once the full image arrives ([a6c833c6](https://github.com/vdavid/prvw/commit/a6c833c6)).
-- Pricing card on the website was clipping the Download dropdown via `overflow-hidden`; the 1px accent line is now
-  inset within the rounded corners so the parent doesn't have to clip
+- Histogram briefly showed the previous image's curve on cache-miss navigation while the QuickLook thumbnail placeholder
+  was on screen. `display_thumbnail_placeholder` now clears the cached histogram data so the right histogram appears
+  once the full image arrives ([a6c833c6](https://github.com/vdavid/prvw/commit/a6c833c6)).
+- Pricing card on the website was clipping the Download dropdown via `overflow-hidden`; the 1px accent line is now inset
+  within the rounded corners so the parent doesn't have to clip
   ([c1e467ec](https://github.com/vdavid/prvw/commit/c1e467ec)).
 
 ## [0.11.0] - 2026-04-26

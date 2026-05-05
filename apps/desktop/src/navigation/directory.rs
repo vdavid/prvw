@@ -6,9 +6,6 @@ use std::path::{Path, PathBuf};
 pub struct DirectoryList {
     files: Vec<PathBuf>,
     current_index: usize,
-    // Read by `sort_by()` / `set_sort_by()`; wired into the menu + persisted
-    // setting in Phase 3.
-    #[allow(dead_code)]
     sort_by: SortBy,
 }
 
@@ -81,7 +78,6 @@ impl DirectoryList {
 
     /// Re-sort by a new column. Preserves the current image by tracking its
     /// path across the re-sort. Idempotent.
-    #[allow(dead_code)] // Phase 3: wired by the menu/command handler.
     pub fn set_sort_by(&mut self, sort_by: SortBy) {
         if self.sort_by == sort_by {
             return;
@@ -100,7 +96,6 @@ impl DirectoryList {
         self.sort_by = sort_by;
     }
 
-    #[allow(dead_code)] // Phase 3: read by the menu builder to mark current.
     pub fn sort_by(&self) -> SortBy {
         self.sort_by
     }

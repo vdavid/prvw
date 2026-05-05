@@ -68,6 +68,11 @@ pub struct Settings {
     #[serde(default)]
     pub loop_navigation: bool,
 
+    /// Column to sort the directory list by. All comparators are ascending.
+    /// Toggled via View → Sort by → {Name | Date | File type}.
+    #[serde(default)]
+    pub sort_by: crate::navigation::SortBy,
+
     /// Previous default handler for each UTI before Prvw claimed it.
     /// Used to restore associations when the user turns off a file type toggle.
     /// Keys are UTIs (e.g., "public.jpeg"), values are bundle IDs (e.g., "com.apple.Preview").
@@ -109,6 +114,7 @@ impl Default for Settings {
             histogram_visible: false,
             exif_visible: false,
             loop_navigation: false,
+            sort_by: crate::navigation::SortBy::Name,
             previous_handlers: HashMap::new(),
             raw: RawPipelineFlags::default(),
             custom_dcp_dir: None,
@@ -177,6 +183,7 @@ mod tests {
         assert!(settings.color_match_display);
         assert!(!settings.scroll_to_zoom);
         assert!(settings.title_bar);
+        assert_eq!(settings.sort_by, crate::navigation::SortBy::Name);
     }
 
     #[test]
@@ -202,6 +209,7 @@ mod tests {
             histogram_visible: true,
             exif_visible: true,
             loop_navigation: true,
+            sort_by: crate::navigation::SortBy::Date,
             previous_handlers: HashMap::from([(
                 "public.jpeg".to_string(),
                 "com.apple.Preview".to_string(),
@@ -218,6 +226,7 @@ mod tests {
         assert!(loaded.histogram_visible);
         assert!(loaded.exif_visible);
         assert!(loaded.loop_navigation);
+        assert_eq!(loaded.sort_by, crate::navigation::SortBy::Date);
         assert!(!loaded.raw.default_tone_curve);
         assert!(!loaded.raw.capture_sharpening);
         assert!(loaded.raw.highlight_recovery); // untouched flag stays true
@@ -268,6 +277,8 @@ mod tests {
         assert!(!loaded.exif_visible);
         // Loop navigation defaults to off.
         assert!(!loaded.loop_navigation);
+        // Sort defaults to Name.
+        assert_eq!(loaded.sort_by, crate::navigation::SortBy::Name);
         // Missing `raw` → all RAW flags default to true.
         assert!(loaded.raw.is_default());
         assert!(loaded.custom_dcp_dir.is_none());

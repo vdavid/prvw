@@ -11,6 +11,7 @@ use crate::navigation::directory;
 use crate::pixels::{Logical, from_physical_size, to_logical_pos, to_logical_size};
 use crate::settings;
 use crate::window;
+use std::path::Path;
 use winit::event_loop::ActiveEventLoop;
 
 impl App {
@@ -255,8 +256,66 @@ impl App {
                 if let Some(menu) = &self.app_menu {
                     menu.loop_navigation_item.set_checked(enabled);
                 }
-                self.adjust_preload_window_for_loop();
+                self.refresh_preload_window();
                 self.update_shared_state();
+            }
+            AppCommand::SetSortBy(new) => {
+                let Some(dir) = self.navigation.dir_list.as_mut() else {
+                    return;
+                };
+                if dir.sort_by() == new {
+                    return;
+                }
+
+                log::info!("Sort by: {new:?}");
+
+                // Cancel all in-flight preload tasks: their captured slot
+                // index now points at a different file in the new ordering,
+                // which would mis-target `pending_current` matching in
+                // `poll_preloader`.
+                if let Some(p) = self.navigation.preloader.as_mut() {
+                    p.cancel_all();
+                }
+
+                // Stash the path of any cache-miss target the user is staring
+                // at so we can re-prioritize it under its new index.
+                let pending_path = self
+                    .navigation
+                    .pending_current
+                    .and_then(|i| dir.get(i).map(Path::to_path_buf));
+
+                // Re-sort in place; cache stays valid by path.
+                dir.set_sort_by(new);
+
+                // Re-resolve pending_current to its new slot and re-issue the
+                // priority-zero decode under that slot.
+                if let Some(path) = pending_path.as_ref() {
+                    let new_pending = dir.files_ref().iter().position(|p| p == path);
+                    self.navigation.pending_current = new_pending;
+                    if let Some(idx) = new_pending {
+                        let total = dir.len();
+                        if let Some(preloader) = self.navigation.preloader.as_mut() {
+                            preloader.prioritize_target(idx, path.clone(), total);
+                        }
+                    }
+                }
+
+                let mut s = settings::Settings::load();
+                s.sort_by = new;
+                s.save();
+
+                if let Some(menu) = &self.app_menu {
+                    menu.sort_by_name_item
+                        .set_checked(matches!(new, crate::navigation::SortBy::Name));
+                    menu.sort_by_date_item
+                        .set_checked(matches!(new, crate::navigation::SortBy::Date));
+                    menu.sort_by_file_type_item
+                        .set_checked(matches!(new, crate::navigation::SortBy::FileType));
+                }
+
+                self.refresh_preload_window();
+                self.update_shared_state();
+                self.request_redraw();
             }
             AppCommand::SetCursorPosition { x, y } => {
                 self.last_mouse_pos = (Logical(x), Logical(y));
@@ -338,8 +397,13 @@ impl App {
                 }
 
                 self.file_path = resolved.clone();
-                self.navigation.dir_list =
-                    directory::DirectoryList::from_file(&resolved, crate::navigation::SortBy::Name);
+                let sort_by = self
+                    .navigation
+                    .dir_list
+                    .as_ref()
+                    .map(|d| d.sort_by())
+                    .unwrap_or_default();
+                self.navigation.dir_list = directory::DirectoryList::from_file(&resolved, sort_by);
                 self.display_image(&resolved);
 
                 if let Some(dir) = &self.navigation.dir_list

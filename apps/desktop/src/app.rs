@@ -500,13 +500,14 @@ impl App {
         self.app_menu = Some(menu::create_menu_bar());
 
         // Build the navigation list
+        let initial_sort_by = settings::Settings::load().sort_by;
         self.navigation.dir_list = if let Some(files) = self.explicit_files.take() {
             Some(directory::DirectoryList::from_explicit(
                 files,
-                crate::navigation::SortBy::Name,
+                initial_sort_by,
             ))
         } else {
-            directory::DirectoryList::from_file(&self.file_path, crate::navigation::SortBy::Name)
+            directory::DirectoryList::from_file(&self.file_path, initial_sort_by)
         };
 
         // Start preloader thread pool
@@ -1072,12 +1073,12 @@ impl App {
         self.update_shared_state();
     }
 
-    /// Recompute the active preload window after the loop-navigation flag
-    /// flips. Drops cache entries that are no longer in the (possibly
-    /// loop-aware) hot window, then queues preloads for newly-in-window
-    /// indices that aren't already cached. Fire-and-forget; the user
-    /// doesn't wait on these decodes.
-    pub(crate) fn adjust_preload_window_for_loop(&mut self) {
+    /// Recompute the active preload window around the current image after a
+    /// structural re-shuffle (loop-navigation toggle, sort change). Drops
+    /// cache entries that are no longer in the hot window, then queues
+    /// preloads for newly-in-window indices that aren't already cached.
+    /// Fire-and-forget; the user doesn't wait on these decodes.
+    pub(crate) fn refresh_preload_window(&mut self) {
         let Some(dir) = &self.navigation.dir_list else {
             return;
         };

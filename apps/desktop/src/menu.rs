@@ -1,6 +1,8 @@
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
+use crate::navigation::SortBy;
+
 /// Identifiers for custom menu actions.
 pub struct MenuIds {
     pub about: MenuId,
@@ -18,6 +20,9 @@ pub struct MenuIds {
     pub refresh: MenuId,
     pub histogram: MenuId,
     pub exif_info: MenuId,
+    pub sort_by_name: MenuId,
+    pub sort_by_date: MenuId,
+    pub sort_by_file_type: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
     pub go_to_first: MenuId,
@@ -40,6 +45,9 @@ pub struct AppMenu {
     pub relative_colorimetric_item: CheckMenuItem,
     pub histogram_item: CheckMenuItem,
     pub exif_info_item: CheckMenuItem,
+    pub sort_by_name_item: CheckMenuItem,
+    pub sort_by_date_item: CheckMenuItem,
+    pub sort_by_file_type_item: CheckMenuItem,
     pub loop_navigation_item: CheckMenuItem,
 }
 
@@ -136,6 +144,24 @@ pub fn create_menu_bar() -> AppMenu {
     let refresh = MenuItem::new("Refresh", true, None);
     let histogram = CheckMenuItem::new("Histogram", true, settings.histogram_visible, None);
     let exif_info = CheckMenuItem::new("Exif info", true, settings.exif_visible, None);
+
+    // muda has no native radio group, so the handler enforces "exactly one
+    // checked" by re-syncing all three after every SetSortBy.
+    let sort_by_submenu = Submenu::new("Sort by", true);
+    let sort_by_name =
+        CheckMenuItem::new("Name", true, matches!(settings.sort_by, SortBy::Name), None);
+    let sort_by_date =
+        CheckMenuItem::new("Date", true, matches!(settings.sort_by, SortBy::Date), None);
+    let sort_by_file_type = CheckMenuItem::new(
+        "File type",
+        true,
+        matches!(settings.sort_by, SortBy::FileType),
+        None,
+    );
+    sort_by_submenu
+        .append_items(&[&sort_by_name, &sort_by_date, &sort_by_file_type])
+        .expect("Failed to build sort by submenu");
+
     view_menu
         .append_items(&[
             &zoom_in,
@@ -152,6 +178,7 @@ pub fn create_menu_bar() -> AppMenu {
             &PredefinedMenuItem::separator(),
             &histogram,
             &exif_info,
+            &sort_by_submenu,
             &PredefinedMenuItem::separator(),
             &fullscreen,
             &PredefinedMenuItem::separator(),
@@ -198,6 +225,9 @@ pub fn create_menu_bar() -> AppMenu {
     let relative_colorimetric_id = relative_colorimetric.id().clone();
     let histogram_id = histogram.id().clone();
     let exif_info_id = exif_info.id().clone();
+    let sort_by_name_id = sort_by_name.id().clone();
+    let sort_by_date_id = sort_by_date.id().clone();
+    let sort_by_file_type_id = sort_by_file_type.id().clone();
     let loop_navigation_id = loop_navigation.id().clone();
 
     AppMenu {
@@ -208,6 +238,9 @@ pub fn create_menu_bar() -> AppMenu {
         relative_colorimetric_item: relative_colorimetric,
         histogram_item: histogram,
         exif_info_item: exif_info,
+        sort_by_name_item: sort_by_name,
+        sort_by_date_item: sort_by_date,
+        sort_by_file_type_item: sort_by_file_type,
         loop_navigation_item: loop_navigation,
         _menu: menu,
         ids: MenuIds {
@@ -226,6 +259,9 @@ pub fn create_menu_bar() -> AppMenu {
             refresh: refresh.id().clone(),
             histogram: histogram_id,
             exif_info: exif_info_id,
+            sort_by_name: sort_by_name_id,
+            sort_by_date: sort_by_date_id,
+            sort_by_file_type: sort_by_file_type_id,
             previous: previous.id().clone(),
             next: next.id().clone(),
             go_to_first: go_to_first.id().clone(),

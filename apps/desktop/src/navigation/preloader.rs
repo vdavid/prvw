@@ -443,6 +443,23 @@ impl Preloader {
         }
     }
 
+    /// Cancel every in-flight task. Used on a re-sort: the captured
+    /// (slot index, path) tuples baked into queued closures still target
+    /// the same paths, but the slot index now points at a different file
+    /// in the new ordering, so `pending_current` matching in
+    /// `poll_preloader` would mis-target. We re-issue under the new slot
+    /// after the re-sort completes.
+    pub fn cancel_all(&mut self) {
+        let count = self.in_flight.len();
+        for token in self.in_flight.values() {
+            token.store(true, Ordering::Relaxed);
+        }
+        self.in_flight.clear();
+        if count > 0 {
+            log::debug!("Cancelled {count} in-flight tasks (re-sort)");
+        }
+    }
+
     /// Submit background neighbor preloads. Cancels in-flight tasks for
     /// paths NOT in the new list (they're no longer wanted), keeps
     /// the rest alive, queues fresh tasks for paths not yet in flight.

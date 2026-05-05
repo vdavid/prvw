@@ -9,7 +9,8 @@ headroom crosses the 1.0 boundary, so preload count stays constant as we double 
 | `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `format_offset` + `format_bytes` + `NAV_DEBOUNCE` helpers |
 | `directory.rs` | `DirectoryList`: scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`; absolute jumps via `go_to_first()` / `go_to_last()`                          |
 | `preloader.rs` | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction (512 MB / 1 GB budget)                                                                                                                                                      |
-| `wrap.rs`      | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::adjust_preload_window_for_loop` on toggle and by `navigate_by` for cache `keep` set                                   |
+| `wrap.rs`      | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::refresh_preload_window` on loop toggle / sort change and by `navigate_by` for cache `keep` set                        |
+| `sort.rs`      | `SortBy { Name, Date, FileType }` (all ascending) + `sort_files()` comparator. Name uses natural alphanumeric (`photo_2 < photo_10`), case-insensitive. Date and FileType fall back to Name as tiebreaker                                              |
 
 ## State
 
@@ -107,10 +108,24 @@ Toggled via Navigate → Loop navigation, bare `L` key, or `loop_navigation` MCP
 `Settings::loop_navigation`. When on, Next at the last image wraps to the first and Previous at the first wraps to the
 last. The preloader's active window also wraps so wrap-side neighbours stay warm at the edges.
 
-`App::adjust_preload_window_for_loop` runs on every toggle. It computes the new active window with
-`wrap::active_preload_indices`, calls `image_cache.retain_only(&active)` to drop indices that fall out of the window,
-then submits preload tasks for newly-in-window indices via the existing `submit_neighbor_preload` path. Fire-and-forget;
-the user doesn't wait on these decodes.
+`App::refresh_preload_window` (formerly `adjust_preload_window_for_loop`) runs on every loop toggle and sort change. It
+computes the new active window with `wrap::active_preload_indices`, calls `image_cache.retain_only(&active)` to drop
+indices that fall out of the window, then submits preload tasks for newly-in-window indices via the existing
+`submit_neighbor_preload` path. Fire-and-forget; the user doesn't wait on these decodes.
+
+## Sort
+
+Choose Name (default), Date, or File type via View → Sort by. All ascending. Persisted via `Settings::sort_by`. The
+`SetSortBy` handler re-sorts in place via `DirectoryList::set_sort_by`, which preserves the current image by tracking
+its path across the re-sort.
+
+The cache is path-keyed, so it survives a re-sort transparently: in-window entries stay, out-of-window entries get
+evicted, missing in-window slots get queued for preload. `refresh_preload_window` does the eviction + queueing.
+
+Before re-sorting, the handler cancels every in-flight preload task. The closures captured `(slot, path)` tuples — the
+path is stable, but the slot index now points at a different file in the new ordering, which would mis-target
+`pending_current` matching in `poll_preloader`. If a cache-miss target was pending when the user changed the sort, we
+re-issue it under its new slot via `prioritize_target`.
 
 ## Gotcha/Why: shared state on neighbour-only Ready
 
