@@ -24,6 +24,7 @@
 
 use crate::navigation::preloader::{self, CacheDiagnostics};
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// A record of a single navigation event, for performance diagnostics.
@@ -73,6 +74,7 @@ pub fn get_process_rss_mb() -> f64 {
 pub fn build_text(
     cache_diag: &CacheDiagnostics,
     current_index: usize,
+    dir_files: &[PathBuf],
     navigation_history: &VecDeque<NavigationRecord>,
 ) -> String {
     let mut out = String::new();
@@ -91,14 +93,15 @@ pub fn build_text(
     if !cache_diag.entries.is_empty() {
         out.push_str("  images:\n");
         for entry in &cache_diag.entries {
-            let current_marker = if entry.index == current_index {
-                "  ← current"
-            } else {
-                ""
+            let position = dir_files.iter().position(|p| p == &entry.path);
+            let (index_label, current_marker) = match position {
+                Some(idx) if idx == current_index => (format!("[{idx}] "), "  ← current"),
+                Some(idx) => (format!("[{idx}] "), ""),
+                None => (String::new(), ""),
             };
             out.push_str(&format!(
-                "    [{}] {}  {}x{}  {}  decoded in {}ms{}\n",
-                entry.index,
+                "    {}{}  {}x{}  {}  decoded in {}ms{}\n",
+                index_label,
                 entry.file_name,
                 entry.width,
                 entry.height,

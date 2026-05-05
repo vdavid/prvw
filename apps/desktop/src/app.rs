@@ -620,8 +620,9 @@ impl App {
                 if let Some(dir) = &self.navigation.dir_list {
                     let index = dir.current_index();
                     let total = dir.len();
+                    let cache_path = path.to_path_buf();
                     let evicted = self.navigation.image_cache.insert(
-                        index,
+                        cache_path,
                         image,
                         duration,
                         filename.clone(),
@@ -654,17 +655,10 @@ impl App {
         if evicted.is_empty() {
             return;
         }
-        let current_index = self
-            .navigation
-            .dir_list
-            .as_ref()
-            .map(|d| d.current_index())
-            .unwrap_or(0);
         for e in evicted {
             log::debug!(
-                "Evicted {} ({}) from memory - {} freed ({reason})",
+                "Evicted {} from memory - {} freed ({reason})",
                 e.file_name,
-                navigation::format_offset(e.index, current_index),
                 navigation::format_bytes(e.memory_cost),
             );
         }
@@ -676,13 +670,22 @@ impl App {
         if self.renderer.is_none() {
             return false;
         }
+        let Some(path) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .and_then(|d| d.get(index))
+            .map(|p| p.to_path_buf())
+        else {
+            return false;
+        };
         // First pass: inspect the cached image enough to reconfigure the
         // surface (can't hold an `image_cache` borrow while calling
         // `prepare_display`, which needs `&mut self`).
         let Some((iw, ih, is_hdr)) = self
             .navigation
             .image_cache
-            .get(index)
+            .get(&path)
             .map(|img| (img.width, img.height, img.pixels.is_hdr()))
         else {
             return false;
@@ -692,7 +695,7 @@ impl App {
         let image = self
             .navigation
             .image_cache
-            .get(index)
+            .get(&path)
             .expect("image was present a moment ago");
         // Histogram compute is gated on visibility. Off-by-default users
         // pay zero cost; toggling it on later computes lazily from the
@@ -942,7 +945,7 @@ impl App {
             )
         };
 
-        let was_cached = self.navigation.image_cache.contains(current_index);
+        let was_cached = self.navigation.image_cache.contains(&current_path);
         let cached_str = if was_cached { "yes" } else { "no" };
         log::debug!("Navigate {direction}: {from_index} -> {current_index} (cached: {cached_str})");
 
@@ -1043,13 +1046,24 @@ impl App {
         // travel direction (the user can reverse at any time). With loop
         // navigation on, the window wraps so the wrap-side neighbours stay
         // resident.
-        let keep = navigation::wrap::active_preload_indices(
+        let keep_indices = navigation::wrap::active_preload_indices(
             current_index,
             total,
             preloader::preload_count(),
             self.navigation.loop_navigation,
         );
-        let evicted = self.navigation.image_cache.retain_only(&keep);
+        let keep_paths: Vec<PathBuf> = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|dir| {
+                keep_indices
+                    .iter()
+                    .filter_map(|&i| dir.get(i).map(|p| p.to_path_buf()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let evicted = self.navigation.image_cache.retain_only(&keep_paths);
         self.log_evictions(evicted, "out of window");
 
         self.update_shared_state();
@@ -1075,7 +1089,11 @@ impl App {
             preloader::preload_count(),
             self.navigation.loop_navigation,
         );
-        let evicted = self.navigation.image_cache.retain_only(&active);
+        let active_paths: Vec<PathBuf> = active
+            .iter()
+            .filter_map(|&i| dir.get(i).map(|p| p.to_path_buf()))
+            .collect();
+        let evicted = self.navigation.image_cache.retain_only(&active_paths);
         self.log_evictions(evicted, "loop toggle");
 
         if !self.navigation.preload_neighbors {
@@ -1110,12 +1128,11 @@ impl App {
                 if i == current_index {
                     continue;
                 }
-                if self.navigation.image_cache.contains(i) {
+                let Some(p) = dir.get(i) else { continue };
+                if self.navigation.image_cache.contains(p) {
                     continue;
                 }
-                if let Some(p) = dir.get(i) {
-                    tasks.push((i, p.to_path_buf()));
-                }
+                tasks.push((i, p.to_path_buf()));
             }
         }
         if !tasks.is_empty()
@@ -1151,7 +1168,7 @@ impl App {
     /// the current image is always cache-resident by the time we render.
     pub(crate) fn current_exif(&self) -> Option<&decoding::ExifMetadata> {
         let dir = self.navigation.dir_list.as_ref()?;
-        let entry = self.navigation.image_cache.peek(dir.current_index())?;
+        let entry = self.navigation.image_cache.peek(dir.current())?;
         entry.exif.as_deref()
     }
 
@@ -1301,19 +1318,18 @@ impl App {
             match response {
                 preloader::PreloadResponse::Ready {
                     index,
+                    path,
                     image,
                     decode_duration,
                     file_name,
                 } => {
                     if let Some(p) = &mut self.navigation.preloader {
-                        p.mark_complete(index);
+                        p.mark_complete(&path);
                     }
-                    let evicted = self.navigation.image_cache.insert(
-                        index,
-                        image,
-                        decode_duration,
-                        file_name,
-                    );
+                    let evicted =
+                        self.navigation
+                            .image_cache
+                            .insert(path, image, decode_duration, file_name);
                     self.log_evictions(evicted, "LRU");
                     if self.navigation.pending_current != Some(index) {
                         neighbor_arrived = true;
@@ -1378,7 +1394,7 @@ impl App {
                     reason,
                 } => {
                     if let Some(p) = &mut self.navigation.preloader {
-                        p.mark_complete(index);
+                        p.mark_complete(&path);
                     }
                     log::debug!(
                         "Preload response: failed [{index}] {}: {reason}",
@@ -1397,9 +1413,9 @@ impl App {
                         self.on_primary_decode_settled();
                     }
                 }
-                preloader::PreloadResponse::Cancelled { index } => {
+                preloader::PreloadResponse::Cancelled { index: _, path } => {
                     if let Some(p) = &mut self.navigation.preloader {
-                        p.mark_complete(index);
+                        p.mark_complete(&path);
                     }
                 }
             }

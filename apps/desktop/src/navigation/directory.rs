@@ -162,6 +162,13 @@ impl DirectoryList {
         self.files.clone()
     }
 
+    /// Borrow the file list. Used by callers that want to translate paths
+    /// back into directory indices (for example, the cache→indices
+    /// projection in `SharedAppState`) without paying for a clone.
+    pub fn files_ref(&self) -> &[PathBuf] {
+        &self.files
+    }
+
     /// Return indices of files to preload, ordered by priority (most
     /// likely next first). `count` controls how many indices ahead and
     /// behind current to include. The highest-priority index comes first

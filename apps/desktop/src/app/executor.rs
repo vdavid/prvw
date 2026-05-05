@@ -221,7 +221,7 @@ impl App {
                     // display call will fill it in.
                     if self.histogram.data.is_none()
                         && let Some(dir) = self.navigation.dir_list.as_ref()
-                        && let Some(image) = self.navigation.image_cache.peek(dir.current_index())
+                        && let Some(image) = self.navigation.image_cache.peek(dir.current())
                     {
                         self.histogram.data =
                             Some(crate::histogram::compute::compute(&image.pixels));

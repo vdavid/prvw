@@ -154,14 +154,23 @@ impl App {
         state.exif_visible = self.exif_overlay.visible;
         state.exif_present = self.current_image_has_exif();
         state.loop_navigation = self.navigation.loop_navigation;
-        let mut cache_indices: Vec<usize> = self
-            .navigation
-            .image_cache
-            .diagnostics()
-            .entries
-            .into_iter()
-            .map(|e| e.index)
-            .collect();
+        // Cache is keyed by `PathBuf` (path-key refactor). For the QA/MCP
+        // contract we still expose `cache_indices` — translate cached
+        // paths back to directory indices via the current `dir_list`.
+        // Paths not present in the current dir_list (for example, an
+        // image whose containing folder was just rescanned) are dropped.
+        let mut cache_indices: Vec<usize> = if let Some(dir) = self.navigation.dir_list.as_ref() {
+            let files = dir.files_ref();
+            self.navigation
+                .image_cache
+                .diagnostics()
+                .entries
+                .iter()
+                .filter_map(|e| files.iter().position(|p| p == &e.path))
+                .collect()
+        } else {
+            Vec::new()
+        };
         cache_indices.sort_unstable();
         state.cache_indices = cache_indices;
 
@@ -198,9 +207,16 @@ impl App {
         state.image_render_width = rw.0;
         state.image_render_height = rh.0;
 
+        let dir_files: &[std::path::PathBuf] = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.files_ref())
+            .unwrap_or(&[]);
         state.diagnostics_text = crate::diagnostics::build_text(
             &self.navigation.image_cache.diagnostics(),
             state.current_index,
+            dir_files,
             &self.navigation.history,
         );
 

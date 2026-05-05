@@ -1,7 +1,7 @@
 use crate::commands::AppCommand;
 use crate::decoding::{self, DecodedImage, RawPipelineFlags};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
@@ -41,9 +41,12 @@ const PRELOAD_AHEAD: usize = 2;
 
 /// Messages sent from the preloader back to the main thread.
 pub enum PreloadResponse {
-    /// An image was decoded and is ready.
+    /// An image was decoded and is ready. `index` is the navigation slot
+    /// at submission time (used to match `pending_current` for cache-miss
+    /// arrivals); `path` is the cache key the caller inserts under.
     Ready {
         index: usize,
+        path: PathBuf,
         image: DecodedImage,
         decode_duration: Duration,
         file_name: String,
@@ -55,14 +58,20 @@ pub enum PreloadResponse {
         reason: String,
     },
     /// The task was cancelled before completing.
-    Cancelled { index: usize },
+    Cancelled {
+        #[allow(dead_code)]
+        index: usize,
+        path: PathBuf,
+    },
 }
 
-/// LRU cache for decoded images with a memory budget.
+/// LRU cache for decoded images with a memory budget. Keyed by absolute
+/// file path so a future re-sort or directory rescan doesn't invalidate
+/// the cache.
 pub struct ImageCache {
-    entries: HashMap<usize, CacheEntry>,
+    entries: HashMap<PathBuf, CacheEntry>,
     /// Access order: most recently used at the end.
-    access_order: Vec<usize>,
+    access_order: Vec<PathBuf>,
     memory_used: usize,
     memory_budget: usize,
 }
@@ -83,7 +92,7 @@ pub struct CacheDiagnostics {
 
 /// Diagnostics for a single cached image.
 pub struct CacheEntryDiagnostic {
-    pub index: usize,
+    pub path: PathBuf,
     pub file_name: String,
     pub width: u32,
     pub height: u32,
@@ -93,10 +102,8 @@ pub struct CacheEntryDiagnostic {
 
 /// An image that just got removed from the cache. Returned from
 /// `ImageCache::insert` / `retain_only` / `set_hdr_mode` so the caller can
-/// log it with context (relative offset, reason) that the cache doesn't
-/// have.
+/// log it with context (reason) that the cache doesn't have.
 pub struct EvictedEntry {
-    pub index: usize,
     pub file_name: String,
     pub memory_cost: usize,
 }
@@ -132,16 +139,16 @@ impl ImageCache {
         self.memory_budget = new_budget;
         // Evict LRU entries if the new budget doesn't fit the resident set.
         while self.memory_used > self.memory_budget && !self.access_order.is_empty() {
-            let evict = self.access_order[0];
-            self.remove(evict);
+            let evict = self.access_order[0].clone();
+            self.remove(&evict);
         }
     }
 
-    /// Get a cached image by directory index, updating its LRU position.
-    pub fn get(&mut self, index: usize) -> Option<&DecodedImage> {
-        if self.entries.contains_key(&index) {
-            self.touch(index);
-            Some(&self.entries[&index].image)
+    /// Get a cached image by path, updating its LRU position.
+    pub fn get(&mut self, path: &Path) -> Option<&DecodedImage> {
+        if self.entries.contains_key(path) {
+            self.touch(path);
+            Some(&self.entries[path].image)
         } else {
             None
         }
@@ -150,17 +157,17 @@ impl ImageCache {
     /// Like `get` but doesn't touch the LRU. Useful for read-only
     /// inspection (current EXIF metadata, debug snapshots) where bumping
     /// the access order on every render call would be wrong.
-    pub fn peek(&self, index: usize) -> Option<&DecodedImage> {
-        self.entries.get(&index).map(|e| &e.image)
+    pub fn peek(&self, path: &Path) -> Option<&DecodedImage> {
+        self.entries.get(path).map(|e| &e.image)
     }
 
     /// Insert a decoded image into the cache, evicting LRU entries if over
     /// budget. Returns any entries the LRU logic had to drop so the caller
-    /// can log them (the cache doesn't know the current image index, which
-    /// is what makes a log line readable).
+    /// can log them (the cache doesn't know the current image, which is
+    /// what makes a log line readable).
     pub fn insert(
         &mut self,
-        index: usize,
+        path: PathBuf,
         image: DecodedImage,
         decode_duration: Duration,
         file_name: String,
@@ -169,19 +176,22 @@ impl ImageCache {
 
         // If this single image exceeds the budget, don't cache it
         if cost > self.memory_budget {
-            log::warn!("Image at index {index} ({cost} bytes) exceeds cache budget, not caching");
+            log::warn!(
+                "Image {} ({cost} bytes) exceeds cache budget, not caching",
+                path.display()
+            );
             return Vec::new();
         }
 
         // Remove existing entry if present
-        if self.entries.contains_key(&index) {
-            self.remove(index);
+        if self.entries.contains_key(&path) {
+            self.remove(&path);
         }
 
         let mut evicted = Vec::new();
         while self.memory_used + cost > self.memory_budget && !self.access_order.is_empty() {
-            let evict_index = self.access_order[0];
-            if let Some(e) = self.take_evicted(evict_index) {
+            let evict_path = self.access_order[0].clone();
+            if let Some(e) = self.take_evicted(&evict_path) {
                 evicted.push(e);
             } else {
                 // Stale entry in `access_order` — defensive break to avoid a loop.
@@ -189,8 +199,9 @@ impl ImageCache {
             }
         }
 
+        self.access_order.push(path.clone());
         self.entries.insert(
-            index,
+            path,
             CacheEntry {
                 image,
                 decode_duration,
@@ -198,7 +209,6 @@ impl ImageCache {
                 memory_cost: cost,
             },
         );
-        self.access_order.push(index);
         self.memory_used += cost;
         evicted
     }
@@ -208,8 +218,8 @@ impl ImageCache {
         let mut entries: Vec<CacheEntryDiagnostic> = self
             .entries
             .iter()
-            .map(|(&index, entry)| CacheEntryDiagnostic {
-                index,
+            .map(|(path, entry)| CacheEntryDiagnostic {
+                path: path.clone(),
                 file_name: entry.file_name.clone(),
                 width: entry.image.width,
                 height: entry.image.height,
@@ -217,7 +227,7 @@ impl ImageCache {
                 decode_duration: entry.decode_duration,
             })
             .collect();
-        entries.sort_by_key(|e| e.index);
+        entries.sort_by(|a, b| a.file_name.cmp(&b.file_name));
         CacheDiagnostics {
             total_memory: self.memory_used,
             memory_budget: self.memory_budget,
@@ -225,37 +235,36 @@ impl ImageCache {
         }
     }
 
-    pub fn contains(&self, index: usize) -> bool {
-        self.entries.contains_key(&index)
+    pub fn contains(&self, path: &Path) -> bool {
+        self.entries.contains_key(path)
     }
 
     /// Remove entries outside the hot window around the current position.
     /// Called on every navigation so distant images release their RAM
     /// promptly instead of sitting until the LRU budget pushes them out.
     /// Returns the entries that were dropped so the caller can log them.
-    pub fn retain_only(&mut self, keep: &[usize]) -> Vec<EvictedEntry> {
-        let to_remove: Vec<usize> = self
+    pub fn retain_only(&mut self, keep: &[PathBuf]) -> Vec<EvictedEntry> {
+        let to_remove: Vec<PathBuf> = self
             .entries
             .keys()
-            .filter(|k| !keep.contains(k))
-            .copied()
+            .filter(|k| !keep.iter().any(|p| p == *k))
+            .cloned()
             .collect();
         let mut evicted = Vec::with_capacity(to_remove.len());
-        for index in to_remove {
-            if let Some(e) = self.take_evicted(index) {
+        for path in to_remove {
+            if let Some(e) = self.take_evicted(&path) {
                 evicted.push(e);
             }
         }
         evicted
     }
 
-    /// Remove `index` and return its metadata as an `EvictedEntry`.
-    fn take_evicted(&mut self, index: usize) -> Option<EvictedEntry> {
-        let entry = self.entries.remove(&index)?;
+    /// Remove `path` and return its metadata as an `EvictedEntry`.
+    fn take_evicted(&mut self, path: &Path) -> Option<EvictedEntry> {
+        let entry = self.entries.remove(path)?;
         self.memory_used = self.memory_used.saturating_sub(entry.memory_cost);
-        self.access_order.retain(|&i| i != index);
+        self.access_order.retain(|p| p != path);
         Some(EvictedEntry {
-            index,
             file_name: entry.file_name,
             memory_cost: entry.memory_cost,
         })
@@ -272,15 +281,15 @@ impl ImageCache {
         }
     }
 
-    fn touch(&mut self, index: usize) {
-        self.access_order.retain(|&i| i != index);
-        self.access_order.push(index);
+    fn touch(&mut self, path: &Path) {
+        self.access_order.retain(|p| p != path);
+        self.access_order.push(path.to_path_buf());
     }
 
-    fn remove(&mut self, index: usize) {
-        if let Some(entry) = self.entries.remove(&index) {
+    fn remove(&mut self, path: &Path) {
+        if let Some(entry) = self.entries.remove(path) {
             self.memory_used = self.memory_used.saturating_sub(entry.memory_cost);
-            self.access_order.retain(|&i| i != index);
+            self.access_order.retain(|p| p != path);
         }
     }
 
@@ -311,11 +320,12 @@ pub struct Preloader {
     task_tx: mpsc::Sender<Box<dyn FnOnce() + Send + 'static>>,
     response_tx: mpsc::Sender<PreloadResponse>,
     pub response_rx: mpsc::Receiver<PreloadResponse>,
-    /// In-flight cancellation tokens keyed by directory index. When
-    /// `request_preload` runs, indices still in the new task list keep their
-    /// existing token (so a mid-decode task survives), and indices no longer
-    /// in the list have their token flipped (cancelling that decode).
-    in_flight: HashMap<usize, Arc<AtomicBool>>,
+    /// In-flight cancellation tokens keyed by file path. When
+    /// `request_neighbor_preload` runs, paths still in the new task list
+    /// keep their existing token (so a mid-decode task survives), and
+    /// paths no longer in the list have their token flipped (cancelling
+    /// that decode).
+    in_flight: HashMap<PathBuf, Arc<AtomicBool>>,
     /// ICC profile bytes for the current display (target color space for decoding).
     display_icc: Arc<Vec<u8>>,
     /// Whether to use relative colorimetric rendering intent instead of perceptual.
@@ -412,10 +422,10 @@ impl Preloader {
     /// Submit neighbors via [`request_neighbor_preload`] AFTER the
     /// target arrives, so the FIFO channel stays small during rapid
     /// navigation.
-    pub fn prioritize_target(&mut self, target: usize, path: PathBuf, total: usize) {
+    pub fn prioritize_target(&mut self, target_index: usize, path: PathBuf, total: usize) {
         let mut cancelled_count = 0usize;
-        self.in_flight.retain(|index, token| {
-            if *index == target {
+        self.in_flight.retain(|p, token| {
+            if p == &path {
                 true
             } else {
                 token.store(true, Ordering::Relaxed);
@@ -425,17 +435,17 @@ impl Preloader {
         });
         if cancelled_count > 0 {
             log::debug!(
-                "Cancelled {cancelled_count} in-flight tasks to prioritize target {target}"
+                "Cancelled {cancelled_count} in-flight tasks to prioritize target {target_index}"
             );
         }
-        if !self.in_flight.contains_key(&target) {
-            self.queue_task(target, path, target, total);
+        if !self.in_flight.contains_key(&path) {
+            self.queue_task(target_index, path, target_index, total);
         }
     }
 
     /// Submit background neighbor preloads. Cancels in-flight tasks for
-    /// indices NOT in the new list (they're no longer wanted), keeps
-    /// the rest alive, queues fresh tasks for indices not yet in flight.
+    /// paths NOT in the new list (they're no longer wanted), keeps
+    /// the rest alive, queues fresh tasks for paths not yet in flight.
     /// Doesn't cancel-all like [`prioritize_target`] — neighbors are
     /// equal-priority and shouldn't fight each other.
     pub fn request_neighbor_preload(
@@ -444,10 +454,11 @@ impl Preloader {
         current_index: usize,
         total: usize,
     ) {
-        let requested: std::collections::HashSet<usize> = tasks.iter().map(|(i, _)| *i).collect();
+        let requested: std::collections::HashSet<PathBuf> =
+            tasks.iter().map(|(_, p)| p.clone()).collect();
         let mut cancelled_count = 0usize;
-        self.in_flight.retain(|index, token| {
-            if requested.contains(index) || *index == current_index {
+        self.in_flight.retain(|p, token| {
+            if requested.contains(p) {
                 true
             } else {
                 token.store(true, Ordering::Relaxed);
@@ -461,7 +472,7 @@ impl Preloader {
         let indices: Vec<usize> = tasks.iter().map(|(i, _)| *i).collect();
         log::debug!("Preloading neighbors: {indices:?}");
         for (index, path) in tasks.into_iter() {
-            if self.in_flight.contains_key(&index) {
+            if self.in_flight.contains_key(&path) {
                 continue;
             }
             self.queue_task(index, path, current_index, total);
@@ -473,7 +484,7 @@ impl Preloader {
     /// the closure body lives in one place.
     fn queue_task(&mut self, index: usize, path: PathBuf, current_index: usize, total: usize) {
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.in_flight.insert(index, Arc::clone(&cancelled));
+        self.in_flight.insert(path.clone(), Arc::clone(&cancelled));
 
         let offset_label = crate::navigation::format_offset(index, current_index);
         let position_label = format!("{}/{}", index + 1, total);
@@ -533,6 +544,7 @@ impl Preloader {
                     );
                     let _ = tx.send(PreloadResponse::Ready {
                         index,
+                        path,
                         image,
                         decode_duration: duration,
                         file_name,
@@ -540,7 +552,7 @@ impl Preloader {
                 }
                 Err(reason) if reason == "cancelled" => {
                     log::debug!("Cancelled loading {file_name} ({offset_label}, {position_label})");
-                    let _ = tx.send(PreloadResponse::Cancelled { index });
+                    let _ = tx.send(PreloadResponse::Cancelled { index, path });
                 }
                 Err(reason) => {
                     log::warn!(
@@ -568,9 +580,9 @@ impl Preloader {
         }
     }
 
-    /// Clear the in-flight tracking for a completed index.
-    pub fn mark_complete(&mut self, index: usize) {
-        self.in_flight.remove(&index);
+    /// Clear the in-flight tracking for a completed path.
+    pub fn mark_complete(&mut self, path: &Path) {
+        self.in_flight.remove(path);
     }
 
     /// Shut down the preloader. Dropping the `task_tx` closes the channel,
@@ -597,9 +609,13 @@ mod tests {
         DecodedImage::from_rgba16f(width, height, vec![0u16; (width * height * 4) as usize])
     }
 
+    fn test_path(index: usize) -> PathBuf {
+        PathBuf::from(format!("/tmp/test_{index}.png"))
+    }
+
     fn insert_test_image(cache: &mut ImageCache, index: usize, width: u32, height: u32) {
         cache.insert(
-            index,
+            test_path(index),
             make_image(width, height),
             Duration::from_millis(10),
             format!("test_{index}.png"),
@@ -610,8 +626,8 @@ mod tests {
     fn cache_insert_and_get() {
         let mut cache = ImageCache::new();
         insert_test_image(&mut cache, 0, 100, 100);
-        assert!(cache.contains(0));
-        assert!(cache.get(0).is_some());
+        assert!(cache.contains(&test_path(0)));
+        assert!(cache.get(&test_path(0)).is_some());
         assert_eq!(cache.memory_used(), 100 * 100 * 4);
     }
 
@@ -626,10 +642,10 @@ mod tests {
 
         // Should have evicted the oldest (index 0)
         assert_eq!(cache.len(), 3);
-        assert!(!cache.contains(0));
-        assert!(cache.contains(1));
-        assert!(cache.contains(2));
-        assert!(cache.contains(3));
+        assert!(!cache.contains(&test_path(0)));
+        assert!(cache.contains(&test_path(1)));
+        assert!(cache.contains(&test_path(2)));
+        assert!(cache.contains(&test_path(3)));
     }
 
     #[test]
@@ -641,15 +657,15 @@ mod tests {
         insert_test_image(&mut cache, 1, 100, 100);
         insert_test_image(&mut cache, 2, 100, 100);
 
-        // Touch index 0 so it becomes most recently used
-        let _ = cache.get(0);
+        // Touch path 0 so it becomes most recently used
+        let _ = cache.get(&test_path(0));
 
-        // Insert a 4th: should evict index 1 (oldest untouched)
+        // Insert a 4th: should evict path 1 (oldest untouched)
         insert_test_image(&mut cache, 3, 100, 100);
-        assert!(cache.contains(0)); // Was touched, so kept
-        assert!(!cache.contains(1)); // Evicted
-        assert!(cache.contains(2));
-        assert!(cache.contains(3));
+        assert!(cache.contains(&test_path(0))); // Was touched, so kept
+        assert!(!cache.contains(&test_path(1))); // Evicted
+        assert!(cache.contains(&test_path(2)));
+        assert!(cache.contains(&test_path(3)));
     }
 
     #[test]
@@ -658,10 +674,10 @@ mod tests {
         for i in 0..5 {
             insert_test_image(&mut cache, i, 10, 10);
         }
-        cache.retain_only(&[1, 3]);
+        cache.retain_only(&[test_path(1), test_path(3)]);
         assert_eq!(cache.len(), 2);
-        assert!(cache.contains(1));
-        assert!(cache.contains(3));
+        assert!(cache.contains(&test_path(1)));
+        assert!(cache.contains(&test_path(3)));
     }
 
     #[test]
@@ -680,9 +696,10 @@ mod tests {
 
         let diag = cache.diagnostics();
         assert_eq!(diag.entries.len(), 2);
-        assert_eq!(diag.entries[0].index, 2);
+        // Sorted by file_name: test_2.png, test_5.png
+        assert_eq!(diag.entries[0].file_name, "test_2.png");
         assert_eq!(diag.entries[0].width, 320);
-        assert_eq!(diag.entries[1].index, 5);
+        assert_eq!(diag.entries[1].file_name, "test_5.png");
         assert_eq!(diag.total_memory, 320 * 240 * 4 + 640 * 480 * 4);
     }
 
@@ -692,7 +709,7 @@ mod tests {
         // has to see that so it doesn't over-subscribe the cache.
         let mut cache = ImageCache::new();
         cache.insert(
-            0,
+            test_path(0),
             make_hdr_image(100, 100),
             Duration::from_millis(10),
             "hdr_0.arw".to_string(),
@@ -721,7 +738,7 @@ mod tests {
         // Plant 3 × 200 MB HDR images (fits in 1 GB).
         for i in 0..3 {
             cache.insert(
-                i,
+                PathBuf::from(format!("/tmp/hdr_{i}.arw")),
                 make_hdr_image(5000, 5000),
                 Duration::from_millis(10),
                 format!("hdr_{i}.arw"),
@@ -746,6 +763,6 @@ mod tests {
         cache.clear();
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.memory_used(), 0);
-        assert!(!cache.contains(0));
+        assert!(!cache.contains(&test_path(0)));
     }
 }
