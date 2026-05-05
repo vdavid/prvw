@@ -468,12 +468,12 @@ fn histogram_hover_bin_updates() {
         "set_cursor_position",
         serde_json::json!({ "x": cursor_x, "y": cursor_y }),
     );
-    std::thread::sleep(Duration::from_millis(100));
-    let bin = app.get_state()["histogram_hover_bin"].as_u64();
+    let state = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["histogram_hover_bin"].is_u64()
+    });
     assert!(
-        bin.is_some(),
-        "cursor inside the plot rect should produce a hover bin, got state: {}",
-        app.get_state()
+        state["histogram_hover_bin"].is_u64(),
+        "cursor inside the plot rect should produce a hover bin, got state: {state}"
     );
 
     // Move the cursor far away — hover bin should clear.
@@ -482,10 +482,12 @@ fn histogram_hover_bin_updates() {
         "set_cursor_position",
         serde_json::json!({ "x": 5.0, "y": 5.0 }),
     );
-    std::thread::sleep(Duration::from_millis(100));
+    let state = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["histogram_hover_bin"].is_null()
+    });
     assert!(
-        app.get_state()["histogram_hover_bin"].is_null(),
-        "cursor outside the plot rect should clear hover bin"
+        state["histogram_hover_bin"].is_null(),
+        "cursor outside the plot rect should clear hover bin, got state: {state}"
     );
 }
 
@@ -654,24 +656,33 @@ fn narrow_window_overlays_dont_crash() {
     // round-trips through the QA server, so a panic on the main thread would
     // surface as a connection error here.
     app.post("/key", "h");
-    std::thread::sleep(Duration::from_millis(120));
-    assert_eq!(app.get_state()["histogram_visible"].as_bool(), Some(true));
+    let s = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["histogram_visible"].as_bool() == Some(true)
+    });
+    assert_eq!(s["histogram_visible"].as_bool(), Some(true));
 
     app.post("/key", "e");
-    std::thread::sleep(Duration::from_millis(120));
-    assert_eq!(app.get_state()["exif_visible"].as_bool(), Some(true));
+    let s = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["exif_visible"].as_bool() == Some(true)
+    });
+    assert_eq!(s["exif_visible"].as_bool(), Some(true));
 
+    // Navigation is fire-and-forget here — we just want to exercise the code
+    // paths without crashing. The single-image temp dir means /navigate is a
+    // no-op anyway, so there's nothing observable to wait for.
     app.post("/navigate", "next");
-    std::thread::sleep(Duration::from_millis(120));
     app.post("/navigate", "prev");
-    std::thread::sleep(Duration::from_millis(120));
 
     app.post("/key", "h");
-    std::thread::sleep(Duration::from_millis(120));
-    app.post("/key", "e");
-    std::thread::sleep(Duration::from_millis(120));
+    let s = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["histogram_visible"].as_bool() == Some(false)
+    });
+    assert_eq!(s["histogram_visible"].as_bool(), Some(false));
 
-    let final_state = app.get_state();
+    app.post("/key", "e");
+    let final_state = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["exif_visible"].as_bool() == Some(false)
+    });
     assert_eq!(final_state["histogram_visible"].as_bool(), Some(false));
     assert_eq!(final_state["exif_visible"].as_bool(), Some(false));
 }
