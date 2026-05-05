@@ -1,5 +1,9 @@
 [tools]
 go = "1.26"
 node = "25"
-pnpm = "10"
+# `npm:pnpm` backend, not the default `aqua:pnpm/pnpm`: pnpm switched their
+# GitHub release assets from `pnpm-linux-x64.tar.gz` archives to raw binaries
+# (`pnpm-linux-x64`), which the aqua resolver can't find. The npm registry
+# stays consistent.
+"npm:pnpm" = "10"
 # Rust is managed by rustup via rust-toolchain.toml
