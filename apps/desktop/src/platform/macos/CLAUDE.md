@@ -5,6 +5,7 @@ feature.
 
 | File              | Purpose                                                                                                   |
 | ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `clipboard.rs`    | Copy the current image to `NSPasteboard` as a file URL + bitmap (Edit → Copy, ⌘C, right-click)            |
 | `open_handler.rs` | ObjC method injection of `application:openURLs:` into winit's `NSApplicationDelegate`                     |
 | `ui_common.rs`    | Shared AppKit helpers: `FlippedView`, labels, vibrancy, window centering, `as_view` cast, app-icon loader |
 
@@ -15,6 +16,10 @@ The helpers are `pub(crate)` so any feature building an AppKit window can reach 
 - **Never run AppKit modals inside winit's event loop.** Nested run loops segfault on autorelease pool cleanup when an
   Apple Event drains objects from the wrong scope. Run native modals BEFORE `EventLoop::new()` (see `main()`), or defer
   via `EventLoopProxy`.
+  - **Context menus are the exception and are safe inside the loop.** muda's `show_context_menu_for_nsview`
+    (`App::show_image_context_menu`, called from a `MouseInput` Right event) runs NSMenu's own tracking loop, but muda
+    owns the menu's lifetime, so there's no manually-managed `Retained<>` to get drained mid-track. Verified stable
+    under repeated right-clicks. The modal rule is specifically about hand-built `runModalForWindow` sessions, not popups.
 - **`Retained<>` lifetime inside long-lived windows.** Every objc2 `Retained<NSTextField/NSButton/...>` must stay alive
   for the window's lifetime. Store them in a `Vec<Retained<AnyObject>>` that outlives the window. Dropping early =
   segfault in autorelease pool cleanup. No compile-time check.

@@ -7,6 +7,8 @@ use crate::navigation::SortBy;
 pub struct MenuIds {
     pub about: MenuId,
     pub settings: MenuId,
+    pub copy: MenuId,
+    pub context_copy: MenuId,
     pub zoom_in: MenuId,
     pub zoom_out: MenuId,
     pub actual_size: MenuId,
@@ -36,6 +38,9 @@ pub struct MenuIds {
 pub struct AppMenu {
     /// Must stay alive. Dropping this frees the MenuChild backing data.
     pub _menu: Menu,
+    /// Right-click context menu, shown via `ContextMenu::show_context_menu_for_nsview`.
+    /// Kept alive for the same reason as `_menu`: dropping it frees its MenuChild backing.
+    pub context_menu: Menu,
     pub ids: MenuIds,
     /// Kept so we can update the checkmark from outside (e.g., when settings window toggles it).
     pub auto_fit_item: CheckMenuItem,
@@ -81,6 +86,18 @@ pub fn create_menu_bar() -> AppMenu {
     file_menu
         .append_items(&[&PredefinedMenuItem::close_window(None)])
         .expect("Failed to build file menu");
+
+    // Edit menu. Only Copy — Cut/Paste/Select All make no sense in a viewer, and
+    // showing them disabled would look broken.
+    let edit_menu = Submenu::new("Edit", true);
+    let copy = MenuItem::new(
+        "Copy",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)),
+    );
+    edit_menu
+        .append_items(&[&copy])
+        .expect("Failed to build edit menu");
 
     // View menu
     let view_menu = Submenu::new("View", true);
@@ -210,11 +227,19 @@ pub fn create_menu_bar() -> AppMenu {
         ])
         .expect("Failed to build navigate menu");
 
-    menu.append_items(&[&app_menu, &file_menu, &view_menu, &nav_menu])
+    menu.append_items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &nav_menu])
         .expect("Failed to build menu bar");
 
     #[cfg(target_os = "macos")]
     menu.init_for_nsapp();
+
+    // Right-click context menu. A separate menu (not part of the menu bar) with its own
+    // Copy item; both routes funnel to AppCommand::CopyImage via `input::menu_to_command`.
+    let context_menu = Menu::new();
+    let context_copy = MenuItem::new("Copy image", true, None);
+    context_menu
+        .append_items(&[&context_copy])
+        .expect("Failed to build context menu");
 
     log::debug!("Menu bar created");
 
@@ -243,9 +268,12 @@ pub fn create_menu_bar() -> AppMenu {
         sort_by_file_type_item: sort_by_file_type,
         loop_navigation_item: loop_navigation,
         _menu: menu,
+        context_menu,
         ids: MenuIds {
             about: about.id().clone(),
             settings: settings_item.id().clone(),
+            copy: copy.id().clone(),
+            context_copy: context_copy.id().clone(),
             zoom_in: zoom_in.id().clone(),
             zoom_out: zoom_out.id().clone(),
             actual_size: actual_size.id().clone(),

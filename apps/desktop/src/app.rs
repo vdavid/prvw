@@ -1615,6 +1615,36 @@ impl App {
         }
     }
 
+    /// Pop up the right-click context menu (currently just "Copy image") at the cursor.
+    /// No-op when no image is open. The selected item posts a `MenuEvent` picked up by
+    /// `handle_menu_event` on the next `about_to_wait`, same path as the menu bar.
+    #[cfg(target_os = "macos")]
+    fn show_image_context_menu(&self) {
+        use muda::ContextMenu;
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let Some(app_menu) = &self.app_menu else {
+            return;
+        };
+        if self.navigation.dir_list.is_none() {
+            return;
+        }
+        let Some(win) = &self.window else {
+            return;
+        };
+        let Ok(RawWindowHandle::AppKit(handle)) = win.window_handle().map(|h| h.as_raw()) else {
+            return;
+        };
+        let ns_view = handle.ns_view.as_ptr() as *const std::ffi::c_void;
+        // SAFETY: winit gives us a valid `NSView*` for the main window. A `None` position
+        // tells muda to use the current mouse location.
+        unsafe {
+            app_menu
+                .context_menu
+                .show_context_menu_for_nsview(ns_view, None);
+        }
+    }
+
     fn show_settings_dialog(&self) {
         #[cfg(target_os = "macos")]
         {
@@ -2002,6 +2032,15 @@ impl ApplicationHandler<AppCommand> for App {
                     self.drag_start = None;
                 }
             },
+
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                #[cfg(target_os = "macos")]
+                self.show_image_context_menu();
+            }
 
             WindowEvent::ScaleFactorChanged {
                 scale_factor: new_scale,

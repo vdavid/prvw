@@ -346,6 +346,27 @@ impl App {
             AppCommand::DisplayChanged => {
                 self.handle_display_changed();
             }
+            AppCommand::CopyImage => {
+                let current = self
+                    .navigation
+                    .dir_list
+                    .as_ref()
+                    .map(|d| d.current().to_path_buf());
+                match current {
+                    Some(path) => {
+                        #[cfg(target_os = "macos")]
+                        if crate::platform::macos::clipboard::copy_image_file(&path) {
+                            log::info!("Copied image to clipboard: {}", path.display());
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            let _ = path;
+                            log::debug!("Copy image is not supported on this platform");
+                        }
+                    }
+                    None => log::debug!("Copy image: no image open"),
+                }
+            }
             AppCommand::ShowAbout => self.show_about_dialog(),
             AppCommand::ShowSettings => self.show_settings_dialog(),
             AppCommand::ShowSettingsSection(ref _section) => {

@@ -126,6 +126,12 @@ pub enum AppCommand {
     #[cfg(target_os = "macos")]
     DisplayChanged,
 
+    // ── Clipboard ────────────────────────────────────────────────────
+    /// Copy the current image to the system clipboard. Writes the original
+    /// file's URL plus a bitmap to the pasteboard (Edit → Copy, ⌘C, and the
+    /// right-click context menu all map here).
+    CopyImage,
+
     // ── App ──────────────────────────────────────────────────────────
     /// Show the About window.
     ShowAbout,
