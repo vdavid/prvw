@@ -24,6 +24,12 @@ pub const DEFAULT_SECONDS: u32 = 4;
 /// replace this constant (see `CLAUDE.md`).
 pub const CROSSFADE_DURATION: Duration = Duration::from_millis(300);
 
+/// Longest the slideshow will hold on the current image waiting for the next
+/// one to decode before advancing anyway. Comfortably exceeds a worst-case
+/// single huge-image decode (multi-second JPEGs) while bounding the stall if
+/// an image is corrupt or never finishes decoding.
+pub const MAX_HOLD: Duration = Duration::from_secs(20);
+
 /// Clamp a user-chosen seconds value into the supported range.
 pub fn clamp_seconds(seconds: u32) -> u32 {
     seconds.clamp(MIN_SECONDS, MAX_SECONDS)

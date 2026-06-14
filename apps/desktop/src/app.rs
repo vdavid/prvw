@@ -774,6 +774,12 @@ impl App {
             }
             self.request_redraw();
         }
+        // The slideshow dwell starts when an image is actually on screen, not
+        // when it was requested. So a slow decode doesn't eat into (or skip)
+        // the next slide's time — each image gets its full interval once shown.
+        if self.slideshow.running {
+            self.slideshow.next_advance = Some(Instant::now() + self.slideshow.interval());
+        }
         true
     }
 
@@ -1031,6 +1037,50 @@ impl App {
         }
     }
 
+    /// The index the next auto-advance would land on, honoring looping.
+    /// `None` at the last image with looping off (the advance will stop the
+    /// show instead).
+    fn slideshow_next_index(&self) -> Option<usize> {
+        let dir = self.navigation.dir_list.as_ref()?;
+        let total = dir.len();
+        if total == 0 {
+            return None;
+        }
+        let cur = dir.current_index();
+        if cur + 1 < total {
+            Some(cur + 1)
+        } else if self.slideshow.loop_enabled {
+            Some(0)
+        } else {
+            None
+        }
+    }
+
+    /// Whether it's safe to auto-advance right now: the current image is fully
+    /// displayed (not a "Loading…" placeholder) and the next image is already
+    /// decoded. This holds the slideshow on the current image until the switch
+    /// can be instant and clean, even if a large image takes longer than the
+    /// per-image interval to decode. When neighbor preloading is off (a
+    /// benchmark setting), the next-cached requirement is skipped so the
+    /// slideshow can't stall.
+    fn slideshow_ready_to_advance(&self) -> bool {
+        if self.navigation.pending_current.is_some() {
+            return false;
+        }
+        if !self.navigation.preload_neighbors {
+            return true;
+        }
+        match self.slideshow_next_index() {
+            None => true, // at the last image, looping off — the advance stops the show
+            Some(idx) => self
+                .navigation
+                .dir_list
+                .as_ref()
+                .and_then(|dir| dir.get(idx))
+                .is_none_or(|p| self.navigation.image_cache.contains(p)),
+        }
+    }
+
     /// Advance to the next slide. At the last image, wrap to the first when
     /// looping is on, otherwise stop. Reschedules the next advance.
     fn slideshow_advance(&mut self) {
@@ -1119,7 +1169,18 @@ impl App {
         if self.slideshow.running
             && let Some(t) = self.slideshow.next_advance
         {
-            candidates.push(t);
+            if t > Instant::now() {
+                // Normal case: wake at the dwell deadline.
+                candidates.push(t);
+            } else {
+                // Deadline passed but we're holding for readiness (current
+                // still decoding, or next image not cached). A preloader
+                // completion event wakes us earlier to re-check; the grace cap
+                // is the backstop so a corrupt/never-decoding next image can't
+                // stall the show. Either way we avoid busy-spinning on
+                // `WaitUntil(past)`.
+                candidates.push(t + slideshow::MAX_HOLD);
+            }
         }
         if self.slideshow.crossfade.is_some() {
             // ~60 fps while the fade runs.
@@ -2152,10 +2213,16 @@ impl ApplicationHandler<AppCommand> for App {
             self.flush_pending_nav();
         }
 
-        // Slideshow auto-advance: fire when the dwell timer elapses.
+        // Slideshow auto-advance: fire when the dwell timer elapses, but only
+        // once the next image is decoded and the current one is fully shown.
+        // Otherwise hold here; a preloader completion wakes us to re-check, so
+        // the switch is always instant and clean (no "Loading…" flash) even
+        // when a big image decodes slower than the per-image interval.
         if self.slideshow.running
             && let Some(deadline) = self.slideshow.next_advance
             && Instant::now() >= deadline
+            && (self.slideshow_ready_to_advance()
+                || Instant::now() >= deadline + slideshow::MAX_HOLD)
         {
             self.slideshow_advance();
         }

@@ -29,21 +29,17 @@ impl App {
                 // debounced delta first so tests see a deterministic move.
                 self.flush_pending_nav();
                 self.navigate_by(if forward { 1 } else { -1 });
-                self.slideshow_bump_timer();
             }
             AppCommand::NavigateDebounced(forward) => {
                 self.queue_nav_step(event_loop, if forward { 1 } else { -1 });
-                self.slideshow_bump_timer();
             }
             AppCommand::GoToFirst => {
                 self.flush_pending_nav();
                 self.navigate_to_first();
-                self.slideshow_bump_timer();
             }
             AppCommand::GoToLast => {
                 self.flush_pending_nav();
                 self.navigate_to_last();
-                self.slideshow_bump_timer();
             }
             AppCommand::ZoomIn => {
                 let old_zoom = self.zoom.view.zoom;

@@ -20,10 +20,20 @@ navigation logic. When the dwell timer fires, `App::slideshow_advance` reuses th
 The dwell timer rides the same `ControlFlow::WaitUntil` mechanism as the nav debounce. `App::schedule_wakeup` (called at
 the end of `about_to_wait`) picks the earliest of {nav deadline, `next_advance`, next crossfade frame} and sets one
 `WaitUntil`; with nothing pending it falls back to `Wait`. So the app still sleeps between slides — it doesn't spin.
-`about_to_wait` fires `slideshow_advance` once the deadline passes.
 
-Manual navigation while running calls `slideshow_bump_timer` (in the executor's nav arms), pushing `next_advance` out a
-full interval so the slide you just chose gets its full dwell time.
+**The dwell starts when an image is actually displayed, not when it was requested.** `display_from_cache` sets
+`next_advance = now + interval` (when running). So a slow decode never eats into or skips the next slide's time — each
+image gets its full interval once it's on screen. This also means manual navigation resets the dwell for free (it goes
+through the same display path), so there's no separate timer-bump on the nav commands.
+
+**Advance is gated on readiness** (`slideshow_ready_to_advance`): the current image must be fully shown
+(`pending_current.is_none()`, i.e. not a "Loading…" placeholder) AND the next image must already be decoded
+(`image_cache.contains`). If not, `about_to_wait` holds on the current image; a preloader-completion event
+(`PreloaderProgress`) wakes it to re-check, so the switch is always instant and clean even when a big image decodes
+slower than the per-image interval. A `slideshow::MAX_HOLD` (20 s) grace cap bounds the hold so a corrupt or
+never-decoding next image can't stall the show forever. When neighbor preloading is off (benchmark setting), the
+next-cached requirement is skipped. While holding, `schedule_wakeup` waits on `deadline + MAX_HOLD` rather than the
+already-passed deadline, so it never busy-spins on `WaitUntil(past)`.
 
 `[` / `]` (and Slideshow → Increase/Decrease speed) call `adjust_slideshow_speed`, stepping `seconds` by one within
 `MIN_SECONDS..=MAX_SECONDS`. They adjust the setting whether or not a slideshow is running. ⌘S (Slideshow → Start/Stop)
