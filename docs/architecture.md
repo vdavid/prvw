@@ -38,6 +38,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `onboarding.rs`      | Onboarding window (first launch without a file)                                                      |
 | `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                  |
 | `settings/`          | JSON persistence + Settings window shell + General panel                                             |
+| `slideshow/`         | Timer-driven auto-advance (⌘S) + crossfade + Slideshow settings panel + `slideshow::State`           |
 | `updater.rs`         | Auto-update check (GitHub releases)                                                                  |
 | `window.rs`          | Main viewer window: create, fullscreen, auto-fit, title-bar vibrancy                                 |
 | `zoom/`              | `ViewState` + zoom/pan math + Zoom settings panel + `zoom::State`                                    |

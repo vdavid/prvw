@@ -25,7 +25,7 @@ use crate::render::{renderer, text};
 use crate::updater;
 use crate::{
     TITLE_BAR_HEIGHT, color, decoding, exif_overlay, histogram, input, menu, navigation, qa,
-    settings, window, zoom,
+    settings, slideshow, window, zoom,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -96,6 +96,7 @@ pub(crate) struct App {
     pub(crate) navigation: navigation::State,
     pub(crate) histogram: histogram::State,
     pub(crate) exif_overlay: exif_overlay::State,
+    pub(crate) slideshow: slideshow::State,
     #[cfg(target_os = "macos")]
     pub(crate) thumbnails: crate::thumbnails::State,
 
@@ -126,6 +127,11 @@ pub(crate) struct App {
     pub(crate) last_mouse_pos: (Logical<f64>, Logical<f64>),
     pub(crate) last_click_time: Option<Instant>,
     pub(crate) needs_redraw: bool,
+    /// Set by a slideshow auto-advance to request that the next image display
+    /// crossfades from the current one. Consumed (and cleared) by
+    /// `display_from_cache`; cleared on a cache miss so only instant,
+    /// already-cached advances crossfade.
+    pub(crate) pending_crossfade: bool,
     /// Current display scale factor (Retina = 2.0).
     pub(crate) scale_factor: f64,
 
@@ -184,6 +190,7 @@ impl App {
             navigation: navigation::State::from_settings(&initial_settings),
             histogram: histogram::State::from_settings(&initial_settings),
             exif_overlay: exif_overlay::State::from_settings(&initial_settings),
+            slideshow: slideshow::State::from_settings(&initial_settings),
             #[cfg(target_os = "macos")]
             thumbnails: crate::thumbnails::State::new(),
             title_bar: initial_settings.title_bar,
@@ -195,6 +202,7 @@ impl App {
             last_mouse_pos: (Logical(0.0), Logical(0.0)),
             last_click_time: None,
             needs_redraw: false,
+            pending_crossfade: false,
             scale_factor: 2.0,
             shared_state,
             event_loop_proxy,
@@ -690,6 +698,17 @@ impl App {
         else {
             return false;
         };
+        // Decide on a crossfade before `prepare_display` mutates the view: we
+        // need the outgoing image's transform and the pre-resize surface size.
+        let want_crossfade = self.pending_crossfade && self.slideshow.crossfade_enabled;
+        self.pending_crossfade = false;
+        let prev_transform = self.zoom.view.transform();
+        let size_before = self
+            .renderer
+            .as_ref()
+            .map(|r| (r.logical_width().0, r.logical_height().0));
+        let had_image = self.renderer.as_ref().is_some_and(|r| r.has_image());
+
         // First pass: inspect the cached image enough to reconfigure the
         // surface (can't hold an `image_cache` borrow while calling
         // `prepare_display`, which needs `&mut self`).
@@ -702,6 +721,29 @@ impl App {
             return false;
         };
         self.prepare_display(iw, ih, is_hdr);
+
+        // Only crossfade when the surface size is unchanged: a window resize
+        // (auto-fit on a differently-sized image) would render the outgoing
+        // image with a stale transform, so we cut instead. Same-sized
+        // consecutive images — the common case in a folder of camera shots —
+        // crossfade cleanly.
+        let size_after = self
+            .renderer
+            .as_ref()
+            .map(|r| (r.logical_width().0, r.logical_height().0));
+        let do_crossfade = want_crossfade && had_image && size_before == size_after;
+        // This display supersedes any prior in-flight fade (e.g. a manual nav
+        // landing mid-crossfade). Drop it before maybe starting a new one so
+        // the renderer never blends against a stale outgoing texture.
+        self.slideshow.crossfade = None;
+        if let Some(r) = self.renderer.as_mut() {
+            if do_crossfade {
+                r.begin_crossfade(&prev_transform);
+            } else {
+                r.end_crossfade();
+            }
+        }
+
         // Second pass: grab the image reference for upload + histogram.
         let image = self
             .navigation
@@ -722,6 +764,16 @@ impl App {
         self.histogram.data = new_histogram;
         self.histogram.hover_bin = None;
         self.finalize_display();
+        if do_crossfade {
+            // Start the fade with the incoming image fully transparent; the
+            // per-frame ramp lives in `drive_crossfade`.
+            self.slideshow.crossfade = Some(Instant::now());
+            let base = self.zoom.view.transform();
+            if let Some(r) = &self.renderer {
+                r.set_crossfade(&base, 0.0);
+            }
+            self.request_redraw();
+        }
         true
     }
 
@@ -921,6 +973,164 @@ impl App {
         self.after_position_change(from_index, None);
     }
 
+    // ── Slideshow ────────────────────────────────────────────────────
+
+    /// Start or stop the slideshow (Slideshow → Start/Stop, ⌘S).
+    pub(crate) fn toggle_slideshow(&mut self) {
+        if self.slideshow.running {
+            self.stop_slideshow();
+        } else {
+            self.start_slideshow();
+        }
+    }
+
+    pub(crate) fn start_slideshow(&mut self) {
+        self.slideshow.running = true;
+        self.slideshow.next_advance = Some(Instant::now() + self.slideshow.interval());
+        log::info!(
+            "Slideshow started ({}s/image, crossfade={}, loop={})",
+            self.slideshow.seconds,
+            self.slideshow.crossfade_enabled,
+            self.slideshow.loop_enabled
+        );
+        self.set_slideshow_menu_label();
+        self.update_shared_state();
+    }
+
+    pub(crate) fn stop_slideshow(&mut self) {
+        if !self.slideshow.running {
+            return;
+        }
+        self.slideshow.running = false;
+        self.slideshow.next_advance = None;
+        self.pending_crossfade = false;
+        // Let any in-flight crossfade finish naturally; just stop scheduling.
+        log::info!("Slideshow stopped");
+        self.set_slideshow_menu_label();
+        self.update_shared_state();
+    }
+
+    /// Update the Start/Stop menu item's label to match the running state.
+    fn set_slideshow_menu_label(&self) {
+        if let Some(menu) = &self.app_menu {
+            let label = if self.slideshow.running {
+                "Stop slideshow"
+            } else {
+                "Start slideshow"
+            };
+            menu.slideshow_toggle_item.set_text(label);
+        }
+    }
+
+    /// If the slideshow is running, push the next auto-advance out by one full
+    /// interval. Called when the user navigates manually so the slide they
+    /// just chose gets its full dwell time.
+    pub(crate) fn slideshow_bump_timer(&mut self) {
+        if self.slideshow.running {
+            self.slideshow.next_advance = Some(Instant::now() + self.slideshow.interval());
+        }
+    }
+
+    /// Advance to the next slide. At the last image, wrap to the first when
+    /// looping is on, otherwise stop. Reschedules the next advance.
+    fn slideshow_advance(&mut self) {
+        let Some((index, total)) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| (d.current_index(), d.len()))
+        else {
+            self.stop_slideshow();
+            return;
+        };
+
+        if total <= 1 {
+            // Nothing to advance to; keep running and check again next tick.
+            self.slideshow.next_advance = Some(Instant::now() + self.slideshow.interval());
+            return;
+        }
+
+        let at_last = index + 1 >= total;
+        if at_last && !self.slideshow.loop_enabled {
+            self.stop_slideshow();
+            return;
+        }
+
+        self.flush_pending_nav();
+        self.pending_crossfade = self.slideshow.crossfade_enabled;
+        if at_last {
+            self.navigate_to_first();
+        } else {
+            self.navigate_by(1);
+        }
+        self.slideshow.next_advance = Some(Instant::now() + self.slideshow.interval());
+    }
+
+    /// Step the time-per-image one notch (`[` / `]` and the Slideshow menu).
+    /// Persists the new value and, while running, restarts the dwell timer so
+    /// the change takes effect immediately.
+    pub(crate) fn adjust_slideshow_speed(&mut self, faster: bool) {
+        let new_seconds = slideshow::stepped_seconds(self.slideshow.seconds, faster);
+        if new_seconds == self.slideshow.seconds {
+            return;
+        }
+        self.slideshow.seconds = new_seconds;
+        log::info!("Slideshow speed: {new_seconds}s/image");
+        let mut s = settings::Settings::load();
+        s.slideshow_seconds = new_seconds;
+        s.save();
+        self.slideshow_bump_timer();
+        self.update_shared_state();
+    }
+
+    /// Advance the in-flight crossfade by one frame: recompute the fade factor
+    /// from elapsed time, push it to the renderer, and request a redraw. When
+    /// the fade completes, drop the outgoing texture.
+    fn drive_crossfade(&mut self) {
+        let Some(start) = self.slideshow.crossfade else {
+            return;
+        };
+        let progress =
+            (start.elapsed().as_secs_f32() / slideshow::CROSSFADE_DURATION.as_secs_f32()).min(1.0);
+        let base = self.zoom.view.transform();
+        if let Some(r) = &self.renderer {
+            r.set_crossfade(&base, progress);
+        }
+        self.needs_redraw = true;
+        if let Some(win) = &self.window {
+            win.request_redraw();
+        }
+        if progress >= 1.0 {
+            self.slideshow.crossfade = None;
+            if let Some(r) = &mut self.renderer {
+                r.end_crossfade();
+            }
+        }
+    }
+
+    /// Pick the earliest pending wakeup across the nav debounce, the slideshow
+    /// timer, and the crossfade animation, and set winit's control flow
+    /// accordingly. Falls back to `Wait` when nothing is pending.
+    fn schedule_wakeup(&self, event_loop: &ActiveEventLoop) {
+        let mut candidates: Vec<Instant> = Vec::new();
+        if let Some(d) = self.navigation.nav_deadline {
+            candidates.push(d);
+        }
+        if self.slideshow.running
+            && let Some(t) = self.slideshow.next_advance
+        {
+            candidates.push(t);
+        }
+        if self.slideshow.crossfade.is_some() {
+            // ~60 fps while the fade runs.
+            candidates.push(Instant::now() + Duration::from_millis(16));
+        }
+        match candidates.into_iter().min() {
+            Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
+            None => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+
     /// Shared post-move flow used by `navigate_by`, `navigate_to_first`, and
     /// `navigate_to_last`. Assumes the directory cursor has just moved.
     /// `forward_hint` drives the preload priority direction. `None` means
@@ -992,6 +1202,10 @@ impl App {
         } else {
             // Cache miss — show "Loading…" title and mark pending.
             // The render happens in `poll_preloader` when `Ready` arrives.
+            // No crossfade for a miss: the thumbnail placeholder would become
+            // the "outgoing" frame, and an advance that has to wait on a
+            // decode isn't a smooth transition anyway.
+            self.pending_crossfade = false;
             self.navigation.pending_current = Some(current_index);
             if let Some(win) = &self.window {
                 win.set_title(&window::window_title_loading(current_index, total));
@@ -1936,9 +2150,22 @@ impl ApplicationHandler<AppCommand> for App {
             && Instant::now() >= deadline
         {
             self.flush_pending_nav();
-            // Drop back to the default idle mode.
-            event_loop.set_control_flow(ControlFlow::Wait);
         }
+
+        // Slideshow auto-advance: fire when the dwell timer elapses.
+        if self.slideshow.running
+            && let Some(deadline) = self.slideshow.next_advance
+            && Instant::now() >= deadline
+        {
+            self.slideshow_advance();
+        }
+
+        // Crossfade animation: ramp the fade factor each frame until done.
+        self.drive_crossfade();
+
+        // Set the next wakeup from whatever's still pending (nav debounce,
+        // slideshow timer, crossfade frames), or idle.
+        self.schedule_wakeup(event_loop);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {

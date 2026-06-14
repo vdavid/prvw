@@ -30,6 +30,7 @@ src/
 ├── onboarding/              Onboarding window + defaults-sentence generator + SVG checkmark renderer
 ├── qa/                      Embedded HTTP + MCP server
 ├── settings/                JSON persistence + Settings window shell + widgets + General panel + RAW panel (Phase 3.7)
+├── slideshow/               Timer-driven auto-advance + crossfade + Slideshow settings panel + slideshow::State
 ├── thumbnails/              macOS-only: QuickLook-backed thumbnail preload + blurry-placeholder placeholder
 ├── updater.rs               Auto-update
 ├── window.rs                Main viewer window: create, fullscreen, auto-fit, vibrancy

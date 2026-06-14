@@ -29,17 +29,21 @@ impl App {
                 // debounced delta first so tests see a deterministic move.
                 self.flush_pending_nav();
                 self.navigate_by(if forward { 1 } else { -1 });
+                self.slideshow_bump_timer();
             }
             AppCommand::NavigateDebounced(forward) => {
                 self.queue_nav_step(event_loop, if forward { 1 } else { -1 });
+                self.slideshow_bump_timer();
             }
             AppCommand::GoToFirst => {
                 self.flush_pending_nav();
                 self.navigate_to_first();
+                self.slideshow_bump_timer();
             }
             AppCommand::GoToLast => {
                 self.flush_pending_nav();
                 self.navigate_to_last();
+                self.slideshow_bump_timer();
             }
             AppCommand::ZoomIn => {
                 let old_zoom = self.zoom.view.zoom;
@@ -320,6 +324,39 @@ impl App {
             AppCommand::SetCursorPosition { x, y } => {
                 self.last_mouse_pos = (Logical(x), Logical(y));
                 self.update_histogram_hover();
+            }
+            AppCommand::ToggleSlideshow => {
+                self.toggle_slideshow();
+            }
+            AppCommand::IncreaseSlideshowSpeed => {
+                self.adjust_slideshow_speed(true);
+            }
+            AppCommand::DecreaseSlideshowSpeed => {
+                self.adjust_slideshow_speed(false);
+            }
+            AppCommand::SetSlideshowSeconds(seconds) => {
+                let clamped = crate::slideshow::clamp_seconds(seconds);
+                self.slideshow.seconds = clamped;
+                log::debug!("Slideshow seconds set to: {clamped}");
+                let mut s = settings::Settings::load();
+                s.slideshow_seconds = clamped;
+                s.save();
+                self.slideshow_bump_timer();
+                self.update_shared_state();
+            }
+            AppCommand::SetSlideshowCrossfade(enabled) => {
+                self.slideshow.crossfade_enabled = enabled;
+                log::debug!("Slideshow crossfade set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.slideshow_crossfade = enabled;
+                s.save();
+            }
+            AppCommand::SetSlideshowLoop(enabled) => {
+                self.slideshow.loop_enabled = enabled;
+                log::debug!("Slideshow loop set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.slideshow_loop = enabled;
+                s.save();
             }
             AppCommand::SetRawPipelineFlags(flags) => {
                 self.raw_flags = flags;

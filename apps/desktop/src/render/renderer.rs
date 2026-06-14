@@ -38,6 +38,16 @@ struct HistogramUniform {
 /// Number of u32 entries in the histogram storage buffer (R + G + B = 3 × 256).
 const HISTOGRAM_BIN_COUNT: usize = 256 * 3;
 
+/// GPU state for an in-flight slideshow crossfade: the outgoing image's
+/// texture plus a bind group that samples it through `prev_uniform_buffer`
+/// (which holds the outgoing image's transform with fade = 1.0). The incoming
+/// image keeps using the renderer's main `bind_group` / `uniform_buffer`,
+/// whose fade factor ramps 0→1 via `set_crossfade`.
+struct CrossfadeState {
+    prev_texture: wgpu::Texture,
+    prev_bind_group: wgpu::BindGroup,
+}
+
 /// Owns all wgpu state: device, queue, surface, pipeline, texture, and uniform buffer.
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
@@ -68,6 +78,13 @@ pub struct Renderer {
     image_texture: Option<wgpu::Texture>,
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
+    /// Separate transform uniform for the outgoing image during a crossfade.
+    /// Holds the outgoing transform with fade = 1.0 so it draws opaque while
+    /// the incoming image fades in over it.
+    prev_uniform_buffer: wgpu::Buffer,
+    /// In-flight crossfade, if any. `Some` only between `begin_crossfade` and
+    /// `end_crossfade`.
+    crossfade: Option<CrossfadeState>,
     sampler: wgpu::Sampler,
     text_renderer: GlyphonRenderer,
     overlay_pipeline: wgpu::RenderPipeline,
@@ -103,7 +120,12 @@ fn build_image_pipeline(
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: Some(wgpu::BlendState::REPLACE),
+                // Alpha blending (not REPLACE) so the slideshow crossfade can
+                // draw the incoming image at fade < 1.0 over the outgoing one.
+                // For a normal single image the fragment outputs alpha 1.0,
+                // which makes this identical to REPLACE over the transparent
+                // clear.
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: Default::default(),
@@ -308,12 +330,18 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
+        let initial_transform = TransformUniform {
+            col0: [1.0, 0.0, 0.0, 1.0],
+            col1: [0.0, 0.0, 1.0, 0.0], // col1.z = fade = 1.0
+        };
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("transform uniform"),
-            contents: bytemuck::bytes_of(&TransformUniform {
-                col0: [1.0, 0.0, 0.0, 1.0],
-                col1: [0.0, 0.0, 0.0, 0.0],
-            }),
+            contents: bytemuck::bytes_of(&initial_transform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let prev_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("crossfade prev transform uniform"),
+            contents: bytemuck::bytes_of(&initial_transform),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -330,7 +358,9 @@ impl Renderer {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // The vertex stage reads the transform; the fragment stage
+                    // reads the fade factor (col1.z) for the slideshow crossfade.
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -522,6 +552,8 @@ impl Renderer {
             image_texture: None,
             bind_group_layout,
             uniform_buffer,
+            prev_uniform_buffer,
+            crossfade: None,
             sampler,
             text_renderer,
             overlay_pipeline,
@@ -695,6 +727,80 @@ impl Renderer {
     pub fn update_transform(&self, transform: &TransformUniform) {
         self.queue
             .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(transform));
+    }
+
+    /// Whether an image is currently loaded (has a bind group to draw).
+    pub fn has_image(&self) -> bool {
+        self.bind_group.is_some()
+    }
+
+    /// Start a slideshow crossfade. Takes ownership of the currently-displayed
+    /// image's texture (so the upcoming `set_image` won't destroy it) and
+    /// builds a bind group that samples it through `prev_uniform_buffer` with
+    /// the outgoing image's transform at full opacity. Call this *before*
+    /// `set_image` uploads the incoming image. No-op if no image is loaded.
+    ///
+    /// The caller is responsible for only starting a crossfade when the
+    /// surface size is unchanged between the two images — the outgoing
+    /// transform is captured as-is and isn't recomputed for a new size.
+    pub fn begin_crossfade(&mut self, prev_transform: &TransformUniform) {
+        // Drop any crossfade still in flight (its prev texture).
+        if let Some(old) = self.crossfade.take() {
+            old.prev_texture.destroy();
+        }
+        let Some(prev_texture) = self.image_texture.take() else {
+            // No image to fade from — nothing to do.
+            return;
+        };
+
+        // The outgoing image draws opaque: force fade = 1.0 in its transform.
+        let mut opaque = *prev_transform;
+        opaque.col1[2] = 1.0;
+        self.queue
+            .write_buffer(&self.prev_uniform_buffer, 0, bytemuck::bytes_of(&opaque));
+
+        let prev_view = prev_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let prev_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("crossfade prev bind group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.prev_uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&prev_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.crossfade = Some(CrossfadeState {
+            prev_texture,
+            prev_bind_group,
+        });
+    }
+
+    /// Set the crossfade progress (0.0 = outgoing image fully shown, 1.0 =
+    /// incoming image fully shown). `base` is the incoming image's transform;
+    /// only its fade factor is overridden.
+    pub fn set_crossfade(&self, base: &TransformUniform, progress: f32) {
+        let mut t = *base;
+        t.col1[2] = progress.clamp(0.0, 1.0);
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&t));
+    }
+
+    /// Finish the crossfade: drop the outgoing texture. The incoming image's
+    /// fade is left at whatever the last `set_crossfade` wrote (1.0 at the end
+    /// of the animation); the next `update_transform` restores a clean value.
+    pub fn end_crossfade(&mut self) {
+        if let Some(cf) = self.crossfade.take() {
+            cf.prev_texture.destroy();
+        }
     }
 
     /// Handle window resize: update stored dimensions and reconfigure the surface.
@@ -872,6 +978,12 @@ impl Renderer {
                 let sh = self.config.height as f32;
                 pass.set_viewport(0.0, offset_px, sw, (sh - offset_px).max(1.0), 0.0, 1.0);
                 pass.set_pipeline(&self.render_pipeline);
+                // During a crossfade, draw the outgoing image first (opaque),
+                // then the incoming image over it at its current fade factor.
+                if let Some(cf) = &self.crossfade {
+                    pass.set_bind_group(0, &cf.prev_bind_group, &[]);
+                    pass.draw(0..6, 0..1);
+                }
                 pass.set_bind_group(0, bind_group, &[]);
                 pass.draw(0..6, 0..1);
                 // Reset viewport to full surface for pills and text

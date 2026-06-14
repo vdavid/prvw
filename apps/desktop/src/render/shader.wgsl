@@ -9,7 +9,7 @@ struct Transform {
     // Column 2: translate_x, translate_y
     // Packed as vec4 + vec2 for alignment
     col0: vec4<f32>,  // (scale_x, 0, 0, scale_y)
-    col1: vec4<f32>,  // (translate_x, translate_y, 0, 0)
+    col1: vec4<f32>,  // (translate_x, translate_y, fade, 0)
 };
 
 @group(0) @binding(0)
@@ -66,11 +66,17 @@ fn checkerboard(screen_pos: vec2<f32>) -> vec3<f32> {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(t_diffuse, s_diffuse, input.tex_coords);
+    // `fade` is 1.0 in normal rendering. During a slideshow crossfade the
+    // incoming image draws with fade < 1.0 so it alpha-blends over the
+    // outgoing image (drawn first, fade = 1.0).
+    let fade = transform.col1.z;
+    var rgb: vec3<f32>;
     if color.a >= 1.0 {
-        return color;
+        rgb = color.rgb;
+    } else {
+        // Composite image over the checkerboard for transparent regions.
+        let bg = checkerboard(input.position.xy);
+        rgb = color.rgb * color.a + bg * (1.0 - color.a);
     }
-    // Blend image over checkerboard using standard alpha compositing
-    let bg = checkerboard(input.position.xy);
-    let blended = color.rgb * color.a + bg * (1.0 - color.a);
-    return vec4<f32>(blended, 1.0);
+    return vec4<f32>(rgb, fade);
 }

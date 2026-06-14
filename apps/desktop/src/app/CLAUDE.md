@@ -12,7 +12,8 @@ Not a feature. This is the runtime scaffolding every feature plugs into.
 
 App holds three per-feature State structs (`zoom`, `color`, `navigation`) plus truly cross-cutting state:
 
-- **Per-feature state**: `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`. Each feature's
+- **Per-feature state**: `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`,
+  `histogram: histogram::State`, `exif_overlay: exif_overlay::State`, `slideshow: slideshow::State`. Each feature's
   runtime + setting-backed fields live in its own module.
 - **Launch**: `file_path`, `explicit_files`, `waiting_for_file`, `wait_start`.
 - **Handles**: `window`, `renderer`, `app_menu`.

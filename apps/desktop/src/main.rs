@@ -27,6 +27,7 @@ mod navigation;
 mod onboarding;
 mod qa;
 mod settings;
+mod slideshow;
 #[cfg(target_os = "macos")]
 mod thumbnails;
 #[cfg(target_os = "macos")]

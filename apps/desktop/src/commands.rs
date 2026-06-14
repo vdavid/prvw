@@ -112,6 +112,22 @@ pub enum AppCommand {
     /// Update the cached cursor position (used by MCP for hover-readout tests).
     SetCursorPosition { x: f64, y: f64 },
 
+    // ── Slideshow ────────────────────────────────────────────────────
+    /// Start the slideshow if stopped, stop it if running (Slideshow →
+    /// Start/Stop slideshow, ⌘S).
+    ToggleSlideshow,
+    /// Set the time-per-image in seconds (Settings → Slideshow slider).
+    /// Clamped to `slideshow::MIN_SECONDS..=MAX_SECONDS`.
+    SetSlideshowSeconds(u32),
+    /// Enable/disable the crossfade transition (Settings → Slideshow).
+    SetSlideshowCrossfade(bool),
+    /// Enable/disable slideshow looping past the last image (Settings → Slideshow).
+    SetSlideshowLoop(bool),
+    /// Shorten the time-per-image by one second (Slideshow → Increase speed, `]`).
+    IncreaseSlideshowSpeed,
+    /// Lengthen the time-per-image by one second (Slideshow → Decrease speed, `[`).
+    DecreaseSlideshowSpeed,
+
     // ── RAW pipeline (Phase 3.7) ─────────────────────────────────────
     /// Replace the RAW pipeline flags wholesale. Used by the Settings → RAW
     /// panel so a single event carries all stage toggles in one update

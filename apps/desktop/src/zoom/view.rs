@@ -38,7 +38,7 @@ pub struct ViewState {
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TransformUniform {
     pub col0: [f32; 4], // (scale_x, 0, 0, scale_y)
-    pub col1: [f32; 4], // (translate_x, translate_y, 0, 0)
+    pub col1: [f32; 4], // (translate_x, translate_y, fade, 0)
 }
 
 impl ViewState {
@@ -227,8 +227,11 @@ impl ViewState {
         let sy = self.image_height as f32 * self.zoom / eh.0;
 
         TransformUniform {
+            // col1.z is the fade factor (1.0 = fully opaque). The renderer
+            // overrides it during a slideshow crossfade; everywhere else it
+            // stays 1.0.
             col0: [sx, 0.0, 0.0, sy],
-            col1: [self.pan_x, self.pan_y, 0.0, 0.0],
+            col1: [self.pan_x, self.pan_y, 1.0, 0.0],
         }
     }
 

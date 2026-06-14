@@ -17,8 +17,11 @@ features).
 - **Retained-mode UI.** Panels are built once. Section switching uses `setHidden:` to toggle visibility. Dynamic text
   (like "scroll to zoom" description) mutates in place via stored `NSTextField` pointers in `SettingsDelegateIvars`.
 - **Panels live with their feature.** `window.rs` calls `crate::zoom::settings_panel::build`,
-  `crate::color::settings_panel::build`, `crate::file_associations::settings_panel::build`. The panel functions return
-  typed struct (`ZoomPanel`, `ColorPanel`, …) containing the `Retained` widgets the delegate needs to wire up.
+  `crate::color::settings_panel::build`, `crate::slideshow::settings_panel::build`,
+  `crate::file_associations::settings_panel::build`. The panel functions return a typed struct (`ZoomPanel`,
+  `ColorPanel`, …) containing the `Retained` widgets the delegate needs to wire up. The sidebar order is General, Zoom,
+  Color, RAW, Slideshow, File associations (panel indices 0–5); keep `select_panel`, the `selectXxx:` methods, and
+  `switch_settings_section` in sync when adding one.
 - **Cross-panel dependencies** (ICC off disables Color match + Relative colorimetric; Auto-fit on disables Enlarge) are
   handled in `SettingsDelegate` methods by toggling `setEnabled:` via stored `*const NSSwitch` ivars.
 - **Toggles apply immediately** via `AppCommand` through the global event loop proxy. No confirm/apply step. The button

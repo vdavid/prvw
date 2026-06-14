@@ -73,6 +73,23 @@ pub struct Settings {
     #[serde(default)]
     pub sort_by: crate::navigation::SortBy,
 
+    /// Seconds each image stays on screen during a slideshow. Clamped to
+    /// 1..=30 (`slideshow::MIN_SECONDS`..=`slideshow::MAX_SECONDS`). Driven by
+    /// Settings → Slideshow → "Time per image" and the `[` / `]` speed keys.
+    #[serde(default = "default_slideshow_seconds")]
+    pub slideshow_seconds: u32,
+
+    /// When true, slideshow advances cross-fade between images (300 ms)
+    /// instead of cutting. Settings → Slideshow → "Crossfade".
+    #[serde(default = "default_true")]
+    pub slideshow_crossfade: bool,
+
+    /// When true, a slideshow wraps from the last image back to the first
+    /// instead of stopping. Settings → Slideshow → "Loop". Independent of
+    /// `loop_navigation` (which governs manual Next/Previous wrapping).
+    #[serde(default = "default_true")]
+    pub slideshow_loop: bool,
+
     /// Previous default handler for each UTI before Prvw claimed it.
     /// Used to restore associations when the user turns off a file type toggle.
     /// Keys are UTIs (e.g., "public.jpeg"), values are bundle IDs (e.g., "com.apple.Preview").
@@ -99,6 +116,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_slideshow_seconds() -> u32 {
+    crate::slideshow::DEFAULT_SECONDS
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -115,6 +136,9 @@ impl Default for Settings {
             exif_visible: false,
             loop_navigation: false,
             sort_by: crate::navigation::SortBy::Name,
+            slideshow_seconds: crate::slideshow::DEFAULT_SECONDS,
+            slideshow_crossfade: true,
+            slideshow_loop: true,
             previous_handlers: HashMap::new(),
             raw: RawPipelineFlags::default(),
             custom_dcp_dir: None,
@@ -210,6 +234,9 @@ mod tests {
             exif_visible: true,
             loop_navigation: true,
             sort_by: crate::navigation::SortBy::Date,
+            slideshow_seconds: 12,
+            slideshow_crossfade: false,
+            slideshow_loop: false,
             previous_handlers: HashMap::from([(
                 "public.jpeg".to_string(),
                 "com.apple.Preview".to_string(),
@@ -227,6 +254,9 @@ mod tests {
         assert!(loaded.exif_visible);
         assert!(loaded.loop_navigation);
         assert_eq!(loaded.sort_by, crate::navigation::SortBy::Date);
+        assert_eq!(loaded.slideshow_seconds, 12);
+        assert!(!loaded.slideshow_crossfade);
+        assert!(!loaded.slideshow_loop);
         assert!(!loaded.raw.default_tone_curve);
         assert!(!loaded.raw.capture_sharpening);
         assert!(loaded.raw.highlight_recovery); // untouched flag stays true
@@ -279,6 +309,10 @@ mod tests {
         assert!(!loaded.loop_navigation);
         // Sort defaults to Name.
         assert_eq!(loaded.sort_by, crate::navigation::SortBy::Name);
+        // Slideshow defaults: 4 s per image, crossfade on, loop on.
+        assert_eq!(loaded.slideshow_seconds, crate::slideshow::DEFAULT_SECONDS);
+        assert!(loaded.slideshow_crossfade);
+        assert!(loaded.slideshow_loop);
         // Missing `raw` → all RAW flags default to true.
         assert!(loaded.raw.is_default());
         assert!(loaded.custom_dcp_dir.is_none());

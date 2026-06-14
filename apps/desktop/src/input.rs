@@ -31,15 +31,22 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
         return Some(AppCommand::ToggleLoopNavigation);
     }
     match key {
-        // Navigation (user input → debounced so a wheel spin coalesces)
-        Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::Backspace) | Key::Character("[") => {
+        // Navigation (user input → debounced so a wheel spin coalesces).
+        // `;` / `'` sit under the right hand next to the speed keys `[` / `]`.
+        Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::Backspace) | Key::Character(";") => {
             Some(AppCommand::NavigateDebounced(false))
         }
-        Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::Space) | Key::Character("]") => {
+        Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::Space) | Key::Character("'") => {
             Some(AppCommand::NavigateDebounced(true))
         }
         Key::Named(NamedKey::Home) => Some(AppCommand::GoToFirst),
         Key::Named(NamedKey::End) => Some(AppCommand::GoToLast),
+
+        // Slideshow speed: `]` faster (fewer seconds), `[` slower. Always
+        // adjusts the time-per-image setting, whether or not a slideshow is
+        // running.
+        Key::Character("]") => Some(AppCommand::IncreaseSlideshowSpeed),
+        Key::Character("[") => Some(AppCommand::DecreaseSlideshowSpeed),
 
         // Fullscreen
         Key::Named(NamedKey::F11) | Key::Named(NamedKey::Enter) | Key::Character("f") => {
@@ -107,6 +114,12 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         Some(AppCommand::GoToFirst)
     } else if id == &ids.go_to_last {
         Some(AppCommand::GoToLast)
+    } else if id == &ids.slideshow_toggle {
+        Some(AppCommand::ToggleSlideshow)
+    } else if id == &ids.slideshow_increase_speed {
+        Some(AppCommand::IncreaseSlideshowSpeed)
+    } else if id == &ids.slideshow_decrease_speed {
+        Some(AppCommand::DecreaseSlideshowSpeed)
     } else {
         None
     }
@@ -115,8 +128,10 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
 /// Map a QA server key name (web conventions) to an `AppCommand`.
 pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
     match key_name {
-        "ArrowLeft" | "Backspace" | "[" => Some(AppCommand::Navigate(false)),
-        "ArrowRight" | " " | "Space" | "]" => Some(AppCommand::Navigate(true)),
+        "ArrowLeft" | "Backspace" | ";" => Some(AppCommand::Navigate(false)),
+        "ArrowRight" | " " | "Space" | "'" => Some(AppCommand::Navigate(true)),
+        "]" => Some(AppCommand::IncreaseSlideshowSpeed),
+        "[" => Some(AppCommand::DecreaseSlideshowSpeed),
         "Home" => Some(AppCommand::GoToFirst),
         "End" => Some(AppCommand::GoToLast),
         "Enter" | "F11" | "f" => Some(AppCommand::ToggleFullscreen),

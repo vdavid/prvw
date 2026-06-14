@@ -32,6 +32,9 @@ pub struct MenuIds {
     pub go_to_first: MenuId,
     pub go_to_last: MenuId,
     pub loop_navigation: MenuId,
+    pub slideshow_toggle: MenuId,
+    pub slideshow_increase_speed: MenuId,
+    pub slideshow_decrease_speed: MenuId,
 }
 
 /// The menu bar and its action IDs. The `Menu` must be kept alive for the entire app lifetime,
@@ -60,6 +63,9 @@ pub struct AppMenu {
     pub sort_by_date_item: CheckMenuItem,
     pub sort_by_file_type_item: CheckMenuItem,
     pub loop_navigation_item: CheckMenuItem,
+    /// Start/Stop slideshow. Kept so the label can flip between "Start
+    /// slideshow" and "Stop slideshow" when the slideshow toggles.
+    pub slideshow_toggle_item: MenuItem,
 }
 
 /// macOS auto-injects text-editing items into any menu it recognizes as "Edit" (Writing
@@ -271,12 +277,40 @@ pub fn create_menu_bar() -> AppMenu {
         ])
         .expect("Failed to build navigate menu");
 
+    // Slideshow menu
+    let slideshow_menu = Submenu::new("Slideshow", true);
+    let slideshow_toggle = MenuItem::new(
+        "Start slideshow",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyS)),
+    );
+    // `]` / `[` are shown cosmetically (padded into the title, like the
+    // Navigate arrows) rather than as real accelerators: bare-key menu
+    // equivalents are app-global and would hijack typing into Settings text
+    // fields. The bare `]` / `[` keys are handled in `input`.
+    let slideshow_increase_speed = MenuItem::new("Increase speed      ]", true, None);
+    let slideshow_decrease_speed = MenuItem::new("Decrease speed     [", true, None);
+    slideshow_menu
+        .append_items(&[
+            &slideshow_toggle,
+            &PredefinedMenuItem::separator(),
+            &slideshow_increase_speed,
+            &slideshow_decrease_speed,
+        ])
+        .expect("Failed to build slideshow menu");
+
     // Help menu. Left empty on purpose: macOS auto-adds its Spotlight-style "Search" field
     // to any menu titled "Help", which is all we want here.
     let help_menu = Submenu::new("Help", true);
 
     menu.append_items(&[
-        &app_menu, &file_menu, &edit_menu, &view_menu, &nav_menu, &help_menu,
+        &app_menu,
+        &file_menu,
+        &edit_menu,
+        &view_menu,
+        &nav_menu,
+        &slideshow_menu,
+        &help_menu,
     ])
     .expect("Failed to build menu bar");
 
@@ -313,6 +347,9 @@ pub fn create_menu_bar() -> AppMenu {
     let sort_by_date_id = sort_by_date.id().clone();
     let sort_by_file_type_id = sort_by_file_type.id().clone();
     let loop_navigation_id = loop_navigation.id().clone();
+    let slideshow_toggle_id = slideshow_toggle.id().clone();
+    let slideshow_increase_speed_id = slideshow_increase_speed.id().clone();
+    let slideshow_decrease_speed_id = slideshow_decrease_speed.id().clone();
 
     AppMenu {
         auto_fit_item: auto_fit_window,
@@ -326,6 +363,7 @@ pub fn create_menu_bar() -> AppMenu {
         sort_by_date_item: sort_by_date,
         sort_by_file_type_item: sort_by_file_type,
         loop_navigation_item: loop_navigation,
+        slideshow_toggle_item: slideshow_toggle,
         _menu: menu,
         context_menu,
         #[cfg(target_os = "macos")]
@@ -358,6 +396,9 @@ pub fn create_menu_bar() -> AppMenu {
             go_to_first: go_to_first.id().clone(),
             go_to_last: go_to_last.id().clone(),
             loop_navigation: loop_navigation_id,
+            slideshow_toggle: slideshow_toggle_id,
+            slideshow_increase_speed: slideshow_increase_speed_id,
+            slideshow_decrease_speed: slideshow_decrease_speed_id,
         },
     }
 }

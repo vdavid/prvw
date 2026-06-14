@@ -68,13 +68,18 @@ View
   ---
   Refresh
 Navigate
-  Previous ←   ←/[/Backspace
-  Next →        →/]/Space
+  Previous ←   ←/;/Backspace
+  Next →        →/'/Space
   ---
   Go to first   Home
   Go to last    End
   ---
   Loop navigation (toggle)   L
+Slideshow
+  Start/Stop slideshow   Cmd+S
+  ---
+  Increase speed   ]
+  Decrease speed   [
 ";
 
 pub(super) fn handle_get_state(

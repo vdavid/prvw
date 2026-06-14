@@ -1,9 +1,9 @@
 //! Settings window — entry point and `SettingsDelegate`.
 //!
-//! Sidebar + four panels (General, Zoom, Color, File associations). Each panel is
-//! built by its own submodule under `panels/`; this file stitches the pieces together
-//! and owns the delegate that handles section switching plus cross-panel dependencies
-//! (ICC → Color match / Relative colorimetric; Auto-fit → Enlarge).
+//! Sidebar + panels (General, Zoom, Color, RAW, Slideshow, File associations). Each panel
+//! is built by its own submodule under `panels/` or its feature's `settings_panel`; this
+//! file stitches the pieces together and owns the delegate that handles section switching
+//! plus cross-panel dependencies (ICC → Color match / Relative colorimetric; Auto-fit → Enlarge).
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -31,11 +31,13 @@ struct SettingsDelegateIvars {
     zoom_panel: *const NSStackView,
     color_panel: *const NSStackView,
     raw_panel: *const NSStackView,
+    slideshow_panel: *const NSStackView,
     file_assoc_panel: *const NSStackView,
     sidebar_general_btn: *const NSButton,
     sidebar_zoom_btn: *const NSButton,
     sidebar_color_btn: *const NSButton,
     sidebar_raw_btn: *const NSButton,
+    sidebar_slideshow_btn: *const NSButton,
     sidebar_file_assoc_btn: *const NSButton,
 }
 
@@ -177,9 +179,14 @@ define_class!(
             self.select_panel(3);
         }
 
+        #[unsafe(method(selectSlideshow:))]
+        fn select_slideshow(&self, _sender: &AnyObject) {
+            self.select_panel(4);
+        }
+
         #[unsafe(method(selectFileAssoc:))]
         fn select_file_assoc(&self, _sender: &AnyObject) {
-            self.select_panel(4);
+            self.select_panel(5);
         }
     }
 );
@@ -197,6 +204,7 @@ impl SettingsDelegate {
             ivars.zoom_panel,
             ivars.color_panel,
             ivars.raw_panel,
+            ivars.slideshow_panel,
             ivars.file_assoc_panel,
         ];
         let buttons = [
@@ -204,6 +212,7 @@ impl SettingsDelegate {
             ivars.sidebar_zoom_btn,
             ivars.sidebar_color_btn,
             ivars.sidebar_raw_btn,
+            ivars.sidebar_slideshow_btn,
             ivars.sidebar_file_assoc_btn,
         ];
         for (i, &panel) in panels.iter().enumerate() {
@@ -316,6 +325,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     let sidebar_zoom_btn = make_sidebar_button("Zoom");
     let sidebar_color_btn = make_sidebar_button("Color");
     let sidebar_raw_btn = make_sidebar_button("RAW");
+    let sidebar_slideshow_btn = make_sidebar_button("Slideshow");
     let sidebar_file_assoc_btn = make_sidebar_button("File associations");
 
     // General starts selected
@@ -329,6 +339,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_zoom_btn) });
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_color_btn) });
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_raw_btn) });
+    sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_slideshow_btn) });
     sidebar_stack.addArrangedSubview(unsafe { as_view::<NSButton>(&sidebar_file_assoc_btn) });
 
     // ── Build each panel ──────────────────────────────────────────────
@@ -340,6 +351,12 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     let color =
         crate::color::settings_panel::build(&settings, content_max_width, &mut retained_views, mtm);
     let raw = super::panels::raw::build(&settings, content_max_width, &mut retained_views, mtm);
+    let slideshow = crate::slideshow::settings_panel::build(
+        &settings,
+        content_max_width,
+        &mut retained_views,
+        mtm,
+    );
     let file_assoc_panel =
         crate::file_associations::settings_panel::build(&mut retained_views, mtm);
 
@@ -354,11 +371,13 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         zoom_panel: &*zoom.panel as *const NSStackView,
         color_panel: &*color.panel as *const NSStackView,
         raw_panel: &*raw.panel as *const NSStackView,
+        slideshow_panel: &*slideshow.panel as *const NSStackView,
         file_assoc_panel: &*file_assoc_panel as *const NSStackView,
         sidebar_general_btn: &*sidebar_general_btn as *const NSButton,
         sidebar_zoom_btn: &*sidebar_zoom_btn as *const NSButton,
         sidebar_color_btn: &*sidebar_color_btn as *const NSButton,
         sidebar_raw_btn: &*sidebar_raw_btn as *const NSButton,
+        sidebar_slideshow_btn: &*sidebar_slideshow_btn as *const NSButton,
         sidebar_file_assoc_btn: &*sidebar_file_assoc_btn as *const NSButton,
     };
     let delegate = SettingsDelegate::new(mtm, ivars);
@@ -429,6 +448,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
         sidebar_raw_btn.setTarget(Some(&delegate as &AnyObject));
         sidebar_raw_btn.setAction(Some(sel!(selectRaw:)));
+
+        sidebar_slideshow_btn.setTarget(Some(&delegate as &AnyObject));
+        sidebar_slideshow_btn.setAction(Some(sel!(selectSlideshow:)));
 
         sidebar_file_assoc_btn.setTarget(Some(&delegate as &AnyObject));
         sidebar_file_assoc_btn.setAction(Some(sel!(selectFileAssoc:)));
@@ -512,11 +534,14 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
         let _: () = msg_send![&*color.panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         let _: () = msg_send![&*raw.panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         let _: () =
+            msg_send![&*slideshow.panel, setTranslatesAutoresizingMaskIntoConstraints: false];
+        let _: () =
             msg_send![&*file_assoc_panel, setTranslatesAutoresizingMaskIntoConstraints: false];
         content_container.addSubview(as_view::<NSStackView>(&general.panel));
         content_container.addSubview(as_view::<NSStackView>(&zoom.panel));
         content_container.addSubview(as_view::<NSStackView>(&color.panel));
         content_container.addSubview(as_view::<NSStackView>(&raw.panel));
+        content_container.addSubview(as_view::<NSStackView>(&slideshow.panel));
         content_container.addSubview(as_view::<NSStackView>(&file_assoc_panel));
 
         // Horizontal separator above Close button
@@ -668,6 +693,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
             &zoom.panel,
             &color.panel,
             &raw.panel,
+            &slideshow.panel,
             &file_assoc_panel,
         ] {
             let panel_view = as_view::<NSStackView>(panel);
@@ -730,6 +756,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_zoom_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_color_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_raw_btn) });
+    retained_views.push(unsafe { Retained::cast_unchecked(sidebar_slideshow_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_file_assoc_btn) });
     retained_views.push(unsafe { Retained::cast_unchecked(sidebar_stack) });
     retained_views.push(unsafe { Retained::cast_unchecked(general.panel) });
@@ -746,6 +773,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(color.cm_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(color.rc_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(raw.panel) });
+    retained_views.push(unsafe { Retained::cast_unchecked(slideshow.panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(file_assoc_panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(close_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(esc_button) });
@@ -777,7 +805,8 @@ pub fn switch_settings_section(section: &str) {
         "zoom" => 1,
         "color" => 2,
         "raw" => 3,
-        "file associations" | "file_associations" | "fileassociations" => 4,
+        "slideshow" => 4,
+        "file associations" | "file_associations" | "fileassociations" => 5,
         _ => {
             log::warn!("Unknown settings section: {section}");
             return;
@@ -804,7 +833,8 @@ pub fn switch_settings_section(section: &str) {
                             1 => sel!(selectZoom:),
                             2 => sel!(selectColor:),
                             3 => sel!(selectRaw:),
-                            4 => sel!(selectFileAssoc:),
+                            4 => sel!(selectSlideshow:),
+                            5 => sel!(selectFileAssoc:),
                             _ => return,
                         };
                         let _: () = msg_send![delegate, performSelector: sel, withObject: std::ptr::null::<AnyObject>()];
