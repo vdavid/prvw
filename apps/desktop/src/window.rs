@@ -14,9 +14,16 @@
 //! - **Auto-fit resize.** `resize_to_fit_image` computes physical size and returns it
 //!   synchronously — callers can pass it straight to `renderer.resize()` instead of
 //!   waiting for the asynchronous `Resized` event.
-//! - **Title-bar vibrancy.** `NSVisualEffectView` layered under the wgpu Metal layer,
-//!   cfg-gated for macOS. `set_titlebar_vibrancy_visible` toggles based on the
-//!   `title_bar` setting and fullscreen state.
+//! - **Background material.** On macOS 26+ the whole window background is a single
+//!   `NSGlassEffectView` (Liquid Glass) behind the wgpu Metal layer, rounded to the window
+//!   corner radius. The Metal layer is masked to a rounded rect inset by `IMAGE_FRAME_INSET`
+//!   so the glass shows through as a uniform frame around the image (`apply_glass_frame_mask`).
+//!   Older macOS falls back to the legacy `NSVisualEffectView` vibrancy (a dark full-window
+//!   layer plus a title-bar strip toggled by `set_titlebar_vibrancy_visible`).
+//! - **Window corner radius.** `round_window_frame_to_glass` rounds the window's own frame
+//!   view to match the glass so the system's default-radius corner stroke can't peek out.
+//! - **Traffic lights.** Nudged off the rounded corner; re-applied against a stored baseline
+//!   (`offset_traffic_lights`) because macOS resets them on every titlebar relayout.
 //!
 //! ## Gotchas
 //!
@@ -136,8 +143,22 @@ fn configure_macos_window(window: &Window) {
         // dark blurred background around the image, and the title bar one (Titlebar material)
         // sits on top in the title bar area. Order matters: full-window first so it's at
         // the back. Both end up behind the wgpu CAMetalLayer (which uses zPosition).
-        add_image_area_vibrancy(ns_view);
-        add_titlebar_vibrancy(ns_view);
+        add_image_area_background(ns_view);
+        // On Liquid Glass the full-window glass IS the whole background, so the title bar
+        // area is glass too — no separate strip. The legacy path keeps the title bar
+        // vibrancy for a darker strip behind the title text.
+        if !liquid_glass_available() {
+            add_titlebar_vibrancy(ns_view);
+        }
+
+        // Round the window's own frame view to match the glass, so the system's
+        // default-radius corner stroke (drawn on the key window) doesn't peek out past
+        // the rounder glass corners.
+        if liquid_glass_available() {
+            round_window_frame_to_glass(ns_view);
+        }
+        // Nudge the traffic lights inward so they sit comfortably off the rounded edge.
+        offset_traffic_lights(ns_window as *const NSWindow as *const objc2::runtime::AnyObject);
 
         // Test mode: push the window behind everything so a swarm of E2E windows
         // can't sit on top of the developer's work (see `background_window_requested`).
@@ -150,6 +171,96 @@ fn configure_macos_window(window: &Window) {
     log::debug!(
         "Configured macOS window: tabbing disabled, native fullscreen removed, transparent titlebar"
     );
+}
+
+/// Outer corner radius (logical points) of the window's rounded shape on macOS 26+ Liquid
+/// Glass. Matched by eye to the system Quick Look window.
+#[cfg(target_os = "macos")]
+const WINDOW_CORNER_RADIUS: f64 = 29.0;
+
+/// Width (logical points) of the Liquid Glass frame between the window edge and the image.
+/// The image is clipped to a rounded rect inset by this much, leaving the glass visible as
+/// a uniform band around the picture.
+#[cfg(target_os = "macos")]
+const IMAGE_FRAME_INSET: f64 = 5.0;
+
+/// Inner corner radius (logical points) of the image, concentric with the window so the
+/// glass frame stays a uniform width around the curve.
+#[cfg(target_os = "macos")]
+const IMAGE_CORNER_RADIUS: f64 = WINDOW_CORNER_RADIUS - IMAGE_FRAME_INSET;
+
+/// How far (logical points) to nudge the traffic lights from their default spot, so they
+/// don't crowd the rounded window corner: 6 pt inward (right) and 2 pt down. The frame view
+/// uses standard AppKit coordinates (origin bottom-left), so "down" is a negative y delta.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_X_OFFSET: f64 = 6.0;
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHT_Y_OFFSET: f64 = -2.0;
+
+/// True when this macOS build provides `NSGlassEffectView` (macOS 26 Tahoe and later).
+/// Checked at runtime by class lookup so the same binary still runs on macOS 13–25, where
+/// it falls back to the legacy `NSVisualEffectView` vibrancy.
+#[cfg(target_os = "macos")]
+pub fn liquid_glass_available() -> bool {
+    objc2::runtime::AnyClass::get(c"NSGlassEffectView").is_some()
+}
+
+/// Add the background that fills the area around the image. On macOS 26+ this is a real
+/// Liquid Glass surface (vivid wallpaper color pickup + rounded window corners); on older
+/// systems it's the legacy dark vibrancy.
+#[cfg(target_os = "macos")]
+unsafe fn add_image_area_background(ns_view: *const objc2::runtime::AnyObject) {
+    if liquid_glass_available() {
+        unsafe { add_image_area_glass(ns_view) };
+    } else {
+        unsafe { add_image_area_vibrancy(ns_view) };
+    }
+}
+
+/// Add a full-window `NSGlassEffectView` (macOS 26+ Liquid Glass) behind the wgpu layer.
+/// Its `cornerRadius` defines the window's visible rounded shape, and the glass refracts
+/// the desktop behind the window for vivid color pickup in the area around the image.
+#[cfg(target_os = "macos")]
+unsafe fn add_image_area_glass(ns_view: *const objc2::runtime::AnyObject) {
+    use objc2::MainThreadOnly;
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{
+        NSGlassEffectView, NSLayoutAttribute, NSLayoutConstraint, NSLayoutRelation,
+    };
+    use objc2_foundation::{MainThreadMarker, NSRect, NSString};
+
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), NSRect::default());
+    unsafe {
+        glass.setCornerRadius(WINDOW_CORNER_RADIUS);
+        let identifier = NSString::from_str(IMAGE_AREA_VIBRANCY_IDENTIFIER);
+        let _: () = msg_send![&*glass, setIdentifier: &*identifier];
+        let _: () = msg_send![&*glass, setTranslatesAutoresizingMaskIntoConstraints: false];
+
+        let glass_obj: *const AnyObject = &*glass as *const NSGlassEffectView as *const _;
+        let _: () = msg_send![ns_view, addSubview: glass_obj];
+
+        let make_constraint = |attr: NSLayoutAttribute,
+                               parent_attr: NSLayoutAttribute,
+                               constant: f64| {
+            NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+                    &glass, attr, NSLayoutRelation::Equal, Some(&*ns_view), parent_attr, 1.0, constant,
+                )
+        };
+        for c in [
+            make_constraint(NSLayoutAttribute::Top, NSLayoutAttribute::Top, 0.0),
+            make_constraint(NSLayoutAttribute::Bottom, NSLayoutAttribute::Bottom, 0.0),
+            make_constraint(NSLayoutAttribute::Leading, NSLayoutAttribute::Leading, 0.0),
+            make_constraint(
+                NSLayoutAttribute::Trailing,
+                NSLayoutAttribute::Trailing,
+                0.0,
+            ),
+        ] {
+            c.setActive(true);
+        }
+    }
 }
 
 /// Add a full-window NSVisualEffectView with a dark material. This provides the dark
@@ -397,6 +508,87 @@ pub fn push_metal_layer_above_vibrancy(window: &Window) {
     }
 }
 
+/// Clip the wgpu CAMetalLayer to a rounded rect inset from the window edge, so the
+/// full-window Liquid Glass shows through as a uniform frame around the image. The inner
+/// corners are concentric with the window (`IMAGE_CORNER_RADIUS`), and continuous-curved
+/// to match the system squircle. No-op on pre-26 macOS (no glass frame there).
+///
+/// Recreated on every window resize because a CALayer mask does not autoresize with its
+/// host layer.
+#[cfg(target_os = "macos")]
+pub fn apply_glass_frame_mask(window: &Window) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    if !liquid_glass_available() {
+        return;
+    }
+
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let root_layer: *const AnyObject = msg_send![ns_view, layer];
+        if root_layer.is_null() {
+            return;
+        }
+        let metal_layer = find_sublayer_responding_to(root_layer, objc2::sel!(setColorspace:));
+        if metal_layer.is_null() {
+            return;
+        }
+
+        let bounds: NSRect = msg_send![metal_layer, bounds];
+        let inset = IMAGE_FRAME_INSET;
+        let w = (bounds.size.width - 2.0 * inset).max(0.0);
+        let h = (bounds.size.height - 2.0 * inset).max(0.0);
+        let frame = NSRect::new(
+            NSPoint::new(bounds.origin.x + inset, bounds.origin.y + inset),
+            NSSize::new(w, h),
+        );
+
+        let mask: *const AnyObject = msg_send![objc2::class!(CALayer), layer];
+        if mask.is_null() {
+            return;
+        }
+        let _: () = msg_send![mask, setFrame: frame];
+        let _: () = msg_send![mask, setCornerRadius: IMAGE_CORNER_RADIUS];
+        // Match the system squircle. kCACornerCurveContinuous == @"continuous".
+        let continuous = NSString::from_str("continuous");
+        let _: () = msg_send![mask, setCornerCurve: &*continuous];
+        let _: () = msg_send![mask, setMasksToBounds: true];
+        // The mask's alpha clips the host layer; an opaque fill makes the rounded rect the
+        // visible region.
+        unsafe extern "C" {
+            fn CGColorCreateGenericGray(gray: f64, alpha: f64) -> *const core::ffi::c_void;
+            fn CFRelease(cf: *const core::ffi::c_void);
+        }
+        let cg_black = CGColorCreateGenericGray(0.0, 1.0);
+        // Raw objc_msgSend to bypass objc2's encoding check: our CGColorRef is
+        // `*const c_void` (encodes as `^v`) but ObjC expects `^{CGColor=}`. Same trick as
+        // `display_profile::set_colorspace_on_layer`.
+        let sel = objc2::sel!(setBackgroundColor:);
+        let send: unsafe extern "C" fn(
+            *const AnyObject,
+            objc2::runtime::Sel,
+            *const core::ffi::c_void,
+        ) = std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
+        send(mask, sel, cg_black);
+        CFRelease(cg_black);
+        // Crisp rounded corners at Retina: match the host layer's contents scale.
+        let scale: f64 = msg_send![metal_layer, contentsScale];
+        let _: () = msg_send![mask, setContentsScale: scale];
+
+        let _: () = msg_send![metal_layer, setMask: mask];
+    }
+}
+
 #[cfg(target_os = "macos")]
 unsafe fn find_sublayer_responding_to(
     layer: *const objc2::runtime::AnyObject,
@@ -425,6 +617,123 @@ unsafe fn find_sublayer_responding_to(
         }
         std::ptr::null()
     }
+}
+
+/// Round the window's frame view (the content view's superview, an `NSThemeFrame`) to the
+/// same radius and continuous curve as the glass. Without this, macOS strokes the window's
+/// own corner at the system default radius on the key window, which peeks out past the
+/// rounder glass corner as a thin artifact.
+#[cfg(target_os = "macos")]
+unsafe fn round_window_frame_to_glass(content_view: *const objc2::runtime::AnyObject) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
+
+    unsafe {
+        let frame_view: *const AnyObject = msg_send![content_view, superview];
+        if frame_view.is_null() {
+            return;
+        }
+        // Ensure the frame view is layer-backed before reaching for its layer.
+        let _: () = msg_send![frame_view, setWantsLayer: true];
+        let layer: *const AnyObject = msg_send![frame_view, layer];
+        if layer.is_null() {
+            return;
+        }
+        let _: () = msg_send![layer, setCornerRadius: WINDOW_CORNER_RADIUS];
+        let continuous = NSString::from_str("continuous");
+        let _: () = msg_send![layer, setCornerCurve: &*continuous];
+        let _: () = msg_send![layer, setMasksToBounds: true];
+    }
+}
+
+/// The traffic lights' default origins, captured the first time we offset them. macOS
+/// re-lays the buttons out to these defaults whenever the window relayouts, so we re-apply
+/// the offset against this stored baseline (rather than the current frame) to avoid the
+/// offset compounding every time.
+#[cfg(target_os = "macos")]
+static ORIGINAL_TRAFFIC_LIGHT_ORIGIN: std::sync::OnceLock<[(f64, f64); 3]> =
+    std::sync::OnceLock::new();
+
+/// Shift the three traffic lights from their default positions by the traffic-light
+/// offsets. Idempotent: always sets `default + offset`, so calling it repeatedly (on every
+/// redraw) keeps them put instead of creeping further each time.
+#[cfg(target_os = "macos")]
+unsafe fn offset_traffic_lights(ns_window: *const objc2::runtime::AnyObject) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSPoint, NSRect};
+
+    // NSWindowButton: close = 0, miniaturize = 1, zoom = 2.
+    let mut buttons = [std::ptr::null::<AnyObject>(); 3];
+    let mut frames = [NSRect::default(); 3];
+    for kind in 0usize..3 {
+        unsafe {
+            let button: *const AnyObject = msg_send![ns_window, standardWindowButton: kind as u64];
+            if button.is_null() {
+                return;
+            }
+            buttons[kind] = button;
+            frames[kind] = msg_send![button, frame];
+        }
+    }
+    // Skip until the buttons are actually laid out — capturing a zero-size frame as the
+    // baseline would place them wrong forever.
+    if frames[0].size.width <= 0.0 {
+        return;
+    }
+    // Capture the defaults on first sight; the buttons are at their natural spot here. If
+    // they're already offset (a later call after our own move), the stored baseline keeps
+    // us from compounding.
+    let base = ORIGINAL_TRAFFIC_LIGHT_ORIGIN.get_or_init(|| {
+        [
+            (frames[0].origin.x, frames[0].origin.y),
+            (frames[1].origin.x, frames[1].origin.y),
+            (frames[2].origin.x, frames[2].origin.y),
+        ]
+    });
+    for kind in 0usize..3 {
+        unsafe {
+            let origin = NSPoint::new(
+                base[kind].0 + TRAFFIC_LIGHT_X_OFFSET,
+                base[kind].1 + TRAFFIC_LIGHT_Y_OFFSET,
+            );
+            let _: () = msg_send![buttons[kind], setFrameOrigin: origin];
+        }
+    }
+}
+
+/// Re-apply the traffic-light offset (see `offset_traffic_lights`). Called on window resize
+/// because macOS resets the buttons to their default positions when it relayouts.
+#[cfg(target_os = "macos")]
+pub fn reposition_traffic_lights(window: &Window) {
+    use objc2::msg_send;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const objc2::runtime::AnyObject;
+        let ns_window: *const objc2::runtime::AnyObject = msg_send![ns_view, window];
+        if ns_window.is_null() {
+            return;
+        }
+        offset_traffic_lights(ns_window);
+    }
+}
+
+/// Set the native window title, then immediately re-apply the traffic-light offset. macOS
+/// re-lays the standard buttons out to their defaults synchronously when the title changes,
+/// so re-nudging them in the same call (rather than waiting for the next redraw) keeps them
+/// from visibly flashing to the corner on every navigation.
+pub fn set_title_keeping_buttons(window: &Window, title: &str) {
+    window.set_title(title);
+    #[cfg(target_os = "macos")]
+    reposition_traffic_lights(window);
 }
 
 /// Build the window title from a file path (filename only, not the full path).

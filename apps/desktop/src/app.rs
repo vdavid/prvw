@@ -506,6 +506,8 @@ impl App {
             // Push the wgpu Metal layer above the vibrancy views via zPosition so the
             // image renders on top.
             window::push_metal_layer_above_vibrancy(&win);
+            // Clip the image to the inset rounded rect so the Liquid Glass frame shows.
+            window::apply_glass_frame_mask(&win);
             // Set initial appearance for windowed mode (image area vibrancy visible).
             window::set_fullscreen_appearance(&win, window::is_fullscreen(&win));
         }
@@ -542,11 +544,10 @@ impl App {
             let total = dir.len();
 
             if let Some(win) = &self.window {
-                win.set_title(&window::window_title_with_position(
-                    &self.file_path,
-                    current_index,
-                    total,
-                ));
+                window::set_title_keeping_buttons(
+                    win,
+                    &window::window_title_with_position(&self.file_path, current_index, total),
+                );
             }
 
             if self.navigation.preload_neighbors {
@@ -661,7 +662,7 @@ impl App {
             Err(msg) => {
                 log::error!("{msg}");
                 if let Some(win) = &self.window {
-                    win.set_title(&format!("Prvw - {msg}"));
+                    window::set_title_keeping_buttons(win, &format!("Prvw - {msg}"));
                 }
             }
         }
@@ -889,7 +890,10 @@ impl App {
             let target = (dir.current_index() as i64 + self.navigation.pending_nav_delta as i64)
                 .clamp(0, total.saturating_sub(1)) as usize;
             if let Some(path) = dir.get(target) {
-                win.set_title(&window::window_title_with_position(path, target, dir.len()));
+                window::set_title_keeping_buttons(
+                    win,
+                    &window::window_title_with_position(path, target, dir.len()),
+                );
             }
         }
     }
@@ -1245,11 +1249,10 @@ impl App {
             // Cached — render immediately and clear any pending target.
             self.navigation.pending_current = None;
             if let Some(win) = &self.window {
-                win.set_title(&window::window_title_with_position(
-                    &current_path,
-                    current_index,
-                    total,
-                ));
+                window::set_title_keeping_buttons(
+                    win,
+                    &window::window_title_with_position(&current_path, current_index, total),
+                );
             }
             self.display_from_cache(current_index);
             let elapsed = request_start.elapsed().as_millis();
@@ -1269,7 +1272,10 @@ impl App {
             self.pending_crossfade = false;
             self.navigation.pending_current = Some(current_index);
             if let Some(win) = &self.window {
-                win.set_title(&window::window_title_loading(current_index, total));
+                window::set_title_keeping_buttons(
+                    win,
+                    &window::window_title_loading(current_index, total),
+                );
             }
             #[cfg(target_os = "macos")]
             {
@@ -1555,7 +1561,7 @@ impl App {
         let pad_x = Logical(8.0_f32);
         let pad_y = Logical(4.0_f32);
         let radius = Logical(5.0_f32);
-        let title_x = Logical(80.0_f32); // Right of the traffic lights
+        let title_x = Logical(88.0_f32); // Right of the traffic lights (nudged in 8px from the edge)
         let title_y = Logical(3.0_f32); // Aligned with the native title bar text
         let zoom_margin = Logical(7.0_f32); // Equidistant from top and right edge
 
@@ -1566,18 +1572,24 @@ impl App {
         let title_max_render =
             logical_width - title_x - zoom_budget - pad_x * 2.0 - zoom_margin - gap;
 
-        let mut blocks = vec![
-            // Left: filename with position
-            text::TextBlock::new(title, title_x + pad_x, title_y + pad_y)
-                .bold()
-                .max_render_width(title_max_render)
-                .pill(pill_color, pad_x, pad_y, radius),
-            // Right: zoom percentage (right-aligned — grows left for larger values)
-            text::TextBlock::new(zoom_text, zoom_right_edge, title_y + pad_y)
-                .bold()
-                .align_right()
-                .pill(pill_color, pad_x, pad_y, radius),
-        ];
+        // With the title bar on, the info sits in the glass title-bar strip, which gives it
+        // enough contrast on its own — bare text. With the title bar off, the info floats
+        // over the image, so it needs a dark pill behind it to stay readable.
+        let title_block = text::TextBlock::new(title, title_x + pad_x, title_y + pad_y)
+            .bold()
+            .max_render_width(title_max_render);
+        let zoom_block = text::TextBlock::new(zoom_text, zoom_right_edge, title_y + pad_y)
+            .bold()
+            .align_right();
+        let (title_block, zoom_block) = if self.title_bar {
+            (title_block, zoom_block)
+        } else {
+            (
+                title_block.pill(pill_color, pad_x, pad_y, radius),
+                zoom_block.pill(pill_color, pad_x, pad_y, radius),
+            )
+        };
+        let mut blocks = vec![title_block, zoom_block];
 
         // Centered "Loading..." overlay during a pending navigation target.
         // Styled like the title pill but larger — system font, bigger
@@ -1650,11 +1662,14 @@ impl App {
                         if let Some(dir) = &self.navigation.dir_list
                             && let Some(win) = &self.window
                         {
-                            win.set_title(&window::window_title_with_position(
-                                dir.current(),
-                                dir.current_index(),
-                                dir.len(),
-                            ));
+                            window::set_title_keeping_buttons(
+                                win,
+                                &window::window_title_with_position(
+                                    dir.current(),
+                                    dir.current_index(),
+                                    dir.len(),
+                                ),
+                            );
                         }
                         if let Some(requested_at) = self.request_times.remove(&index) {
                             let elapsed = requested_at.elapsed().as_millis();
@@ -1716,7 +1731,7 @@ impl App {
                             path.display()
                         );
                         if let Some(win) = &self.window {
-                            win.set_title(&format!("Prvw - {reason}"));
+                            window::set_title_keeping_buttons(win, &format!("Prvw - {reason}"));
                         }
                         #[cfg(target_os = "macos")]
                         self.on_primary_decode_settled();
@@ -2256,6 +2271,10 @@ impl ApplicationHandler<AppCommand> for App {
                 if let Some(win) = &self.window {
                     window::set_titlebar_vibrancy_visible(win, offset.0 > 0.0);
                     window::set_fullscreen_appearance(win, window::is_fullscreen(win));
+                    // The glass frame mask doesn't autoresize; rebuild it for the new size.
+                    window::apply_glass_frame_mask(win);
+                    // macOS resets the traffic lights to default on relayout; re-nudge them.
+                    window::reposition_traffic_lights(win);
                 }
                 if let Some(renderer) = &mut self.renderer {
                     let (pw, ph) = from_physical_size(size);

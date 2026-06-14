@@ -467,11 +467,14 @@ impl App {
                 if let Some(dir) = &self.navigation.dir_list
                     && let Some(win) = &self.window
                 {
-                    win.set_title(&window::window_title_with_position(
-                        &resolved,
-                        dir.current_index(),
-                        dir.len(),
-                    ));
+                    window::set_title_keeping_buttons(
+                        win,
+                        &window::window_title_with_position(
+                            &resolved,
+                            dir.current_index(),
+                            dir.len(),
+                        ),
+                    );
                 }
 
                 self.update_shared_state();
