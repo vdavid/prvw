@@ -117,7 +117,26 @@ fn main() {
 
     let file_path = resolved_files.first().cloned().unwrap_or_default();
 
-    let event_loop = EventLoop::<AppCommand>::with_user_event()
+    let mut event_loop_builder = EventLoop::<AppCommand>::with_user_event();
+    // Test mode: never let the app become the active application, so a run's swarm of
+    // windows can't steal the developer's keystrokes.
+    //   - activation policy `Prohibited`: the app *cannot* be activated at all. This is
+    //     the robust lever — it defeats every focus path (winit's launch activation, the
+    //     window-activation hack, a settings window's `makeKeyAndOrderFront`) at once,
+    //     because none of them can activate a Prohibited app.
+    //   - `activate_ignoring_other_apps(false)`: also stop winit's launch-time
+    //     `activateIgnoringOtherApps(true)`, belt and suspenders.
+    // Paired with `with_active(false)` + `orderBack:` in `window.rs` (and `order_window_in`
+    // for the AppKit settings/about windows) so the windows also stay visually behind.
+    // See `window::background_window_requested`.
+    #[cfg(target_os = "macos")]
+    if window::background_window_requested() {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        event_loop_builder
+            .with_activation_policy(ActivationPolicy::Prohibited)
+            .with_activate_ignoring_other_apps(false);
+    }
+    let event_loop = event_loop_builder
         .build()
         .expect("Failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);

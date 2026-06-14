@@ -61,6 +61,18 @@ pub(crate) unsafe fn as_view<T>(obj: &T) -> &NSView {
     unsafe { &*(obj as *const T as *const NSView) }
 }
 
+/// Order an AppKit window (About / Settings) onscreen. Normally brings it to the front
+/// and makes it key. In test background mode (`PRVW_BACKGROUND_WINDOW`) it orders the
+/// window to the back without taking focus, so a test run's windows don't steal the
+/// developer's keystrokes. See `crate::window::background_window_requested`.
+pub(crate) fn order_window_in(window: &NSWindow) {
+    if crate::window::background_window_requested() {
+        window.orderBack(None);
+    } else {
+        window.makeKeyAndOrderFront(None);
+    }
+}
+
 /// Check if a window with the given title is already visible. Prevents opening duplicate
 /// About/Settings windows when the user clicks the menu multiple times.
 pub(crate) fn is_window_already_open(title: &str) -> bool {
@@ -78,8 +90,9 @@ pub(crate) fn is_window_already_open(title: &str) -> bool {
                 let win_title: Retained<NSString> = msg_send![win, title];
                 let visible: bool = msg_send![win, isVisible];
                 if visible && win_title.isEqualToString(&target) {
-                    // Bring the existing window to front instead of creating a new one
-                    let _: () = msg_send![win, makeKeyAndOrderFront: std::ptr::null::<AnyObject>()];
+                    // Bring the existing window forward (or to the back in test mode)
+                    // instead of creating a new one.
+                    order_window_in(&*win);
                     return true;
                 }
             }

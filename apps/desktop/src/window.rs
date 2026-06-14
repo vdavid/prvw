@@ -45,13 +45,27 @@ pub const MIN_WINDOW_DIM: f64 = 200.0;
 /// Maximum fraction of the monitor's work area to use when auto-fitting.
 pub const MAX_SCREEN_FRACTION: f64 = 0.9;
 
+/// True when `PRVW_BACKGROUND_WINDOW` is set. The integration test harness sets it
+/// so the app window opens unfocused and ordered to the back: the E2E tests drive the
+/// app entirely through the QA HTTP server (synthetic `AppCommand`s, never OS input),
+/// so a background window passes every test while no longer stealing the developer's
+/// keystrokes when a swarm of test windows pops up during a run. `main()` pairs this
+/// with `ActivationPolicy::Accessory` so the app never forces itself to the foreground.
+pub fn background_window_requested() -> bool {
+    std::env::var_os("PRVW_BACKGROUND_WINDOW").is_some()
+}
+
 /// Create the application window. Must be called in `resumed()`.
 pub fn create_window(event_loop: &ActiveEventLoop, file_path: &Path) -> Arc<Window> {
     let title = window_title_for_path(file_path);
 
-    let attrs = WindowAttributes::default()
+    let mut attrs = WindowAttributes::default()
         .with_title(title)
         .with_inner_size(LogicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT));
+    if background_window_requested() {
+        // Don't take focus on creation (see `background_window_requested`).
+        attrs = attrs.with_active(false);
+    }
 
     let window = event_loop
         .create_window(attrs)
@@ -124,6 +138,13 @@ fn configure_macos_window(window: &Window) {
         // the back. Both end up behind the wgpu CAMetalLayer (which uses zPosition).
         add_image_area_vibrancy(ns_view);
         add_titlebar_vibrancy(ns_view);
+
+        // Test mode: push the window behind everything so a swarm of E2E windows
+        // can't sit on top of the developer's work (see `background_window_requested`).
+        if background_window_requested() {
+            let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+            let _: () = msg_send![ns_window, orderBack: nil];
+        }
     }
 
     log::debug!(

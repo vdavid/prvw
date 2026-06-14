@@ -17,7 +17,7 @@ use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSSt
 
 use crate::platform::macos::ui_common::{
     FlippedView, add_vibrancy_background, as_view, center_window, is_window_already_open,
-    make_close_button, make_escape_button,
+    make_close_button, make_escape_button, order_window_in,
 };
 
 // ─── Delegate ─────────────────────────────────────────────────────────────
@@ -760,7 +760,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     };
     center_window(&window, parent);
 
-    window.makeKeyAndOrderFront(None);
+    order_window_in(&window);
 
     // FIXME: same leak as `show_about_window` — see the FIXME there for details.
     std::mem::forget(retained_views);

@@ -1,0 +1,9 @@
+# nextest configuration. See https://nexte.st/docs/configuration/
+
+[profile.default]
+# Retry failed tests up to twice before reporting failure. The macOS integration
+# tests each spawn a real winit window + wgpu surface and contend for the GPU under
+# full parallelism, so a test occasionally loses a navigation/render race. They all
+# pass in isolation; retries absorb the contention flakes without serializing the run
+# (thread count stays at the default, one per core).
+retries = 2

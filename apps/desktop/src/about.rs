@@ -13,7 +13,7 @@
 use crate::platform::macos::ui_common::{
     add_vibrancy_background, as_view, center_window, is_window_already_open, load_app_icon,
     make_bold_label, make_close_button, make_escape_button, make_label, make_link,
-    make_vertical_stack,
+    make_vertical_stack, order_window_in,
 };
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -239,7 +239,7 @@ pub fn show_window(parent_ns_window: *const NSWindow) {
     };
     center_window(&window, parent);
 
-    window.makeKeyAndOrderFront(None);
+    order_window_in(&window);
 
     // FIXME: leaks ~a few KB per window open. Each call to `show_about_window` leaks the
     // Retained<> wrappers and the window itself. The deduplication guard above prevents

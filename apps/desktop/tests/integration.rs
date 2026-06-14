@@ -40,6 +40,10 @@ impl TestApp {
             .arg(image_path)
             .env("PRVW_QA_PORT", port.to_string())
             .env("PRVW_DATA_DIR", data_dir.path())
+            // Open the window unfocused and behind everything so a run's swarm of test
+            // windows doesn't grab the developer's keystrokes. Tests drive the app via
+            // the QA HTTP server, not OS input, so this changes nothing they observe.
+            .env("PRVW_BACKGROUND_WINDOW", "1")
             .spawn()
             .expect("Failed to start prvw");
 
