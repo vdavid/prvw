@@ -11,6 +11,8 @@
 //! for toggle and 1-second polling callbacks, and returns just the outer `NSStackView`
 //! for the Settings window to slot in. All `Retained` handles go into `retained_views`.
 
+use std::cell::Cell;
+
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -40,6 +42,15 @@ const TAG_RAW_MASTER: isize = 1001;
 const SWITCH_ALPHA_MIXED: f64 = 0.55;
 const SWITCH_ALPHA_FULL: f64 = 1.0;
 
+/// Delay (seconds) between a toggle click and applying its LaunchServices change.
+///
+/// Setting a default handler can raise a system prompt, whose nested run loop freezes
+/// our window mid-frame. If that happens while `NSSwitch` is still running its ~0.2s
+/// click animation, the knob's in-flight slide is left with a stale target and parks
+/// outside the track. Deferring the change (and the `refresh_all` that re-applies state)
+/// past the animation lets the knob settle first, so the prompt never interrupts it.
+const APPLY_DELAY_SECONDS: f64 = 0.3;
+
 /// Which group a master row covers, for status-copy selection.
 #[derive(Copy, Clone)]
 enum Section {
@@ -56,6 +67,10 @@ struct FileAssocDelegateIvars {
     standard_master: MasterRowPtrs,
     /// "Set all RAW formats" row widgets.
     raw_master: MasterRowPtrs,
+    /// True between a toggle click and its deferred apply. While set, the 1-second poll
+    /// skips its refresh so it can't revert the just-clicked switch to the old system
+    /// state before the deferred LaunchServices change lands.
+    apply_pending: Cell<bool>,
 }
 
 #[derive(Copy, Clone)]
@@ -81,48 +96,88 @@ define_class!(
     unsafe impl NSObjectProtocol for FileAssocDelegate {}
 
     impl FileAssocDelegate {
-        /// Per-UTI toggle click. Tag in `[0..TOTAL_COUNT)` selects which UTI.
+        /// Per-UTI toggle click. The switch has already flipped to its new visual state;
+        /// we defer the actual LaunchServices change to [`applyToggleFileAssoc:`] so the
+        /// system prompt it can raise doesn't freeze the knob mid-animation. See
+        /// [`APPLY_DELAY_SECONDS`].
         #[unsafe(method(toggleFileAssoc:))]
         fn toggle_file_assoc(&self, sender: &NSSwitch) {
+            self.ivars().apply_pending.set(true);
+            unsafe {
+                let _: () = msg_send![
+                    self,
+                    performSelector: sel!(applyToggleFileAssoc:),
+                    withObject: sender,
+                    afterDelay: APPLY_DELAY_SECONDS,
+                ];
+            }
+        }
+
+        /// Deferred body of a per-UTI toggle. Tag in `[0..TOTAL_COUNT)` selects which UTI.
+        #[unsafe(method(applyToggleFileAssoc:))]
+        fn apply_toggle_file_assoc(&self, sender: &NSSwitch) {
             let tag: isize = unsafe { msg_send![sender, tag] };
             let idx = tag as usize;
-            if idx >= TOTAL_COUNT {
-                return;
-            }
-            let uti = combined_entry(idx).uti;
-            if sender.state() == NSControlStateValueOn {
-                file_associations::set_prvw_as_handler(uti);
-            } else {
-                file_associations::restore_handler(uti);
-            }
-            self.refresh_all();
-        }
-
-        /// Master toggle click. Tag selects which section.
-        #[unsafe(method(toggleSetAll:))]
-        fn toggle_set_all(&self, sender: &NSSwitch) {
-            let tag: isize = unsafe { msg_send![sender, tag] };
-            let (group, state) = match tag {
-                TAG_STANDARD_MASTER => (SUPPORTED_STANDARD_UTIS, section_state(SUPPORTED_STANDARD_UTIS)),
-                TAG_RAW_MASTER => (SUPPORTED_RAW_UTIS, section_state(SUPPORTED_RAW_UTIS)),
-                _ => return,
-            };
-            // macOS Finder convention: mixed click promotes to all-on, not all-off.
-            // So Off/Mixed → all on; All → all off.
-            let turn_on = !matches!(state, GroupState::All);
-            for entry in group {
-                if turn_on {
-                    file_associations::set_prvw_as_handler(entry.uti);
+            if idx < TOTAL_COUNT {
+                let uti = combined_entry(idx).uti;
+                if sender.state() == NSControlStateValueOn {
+                    file_associations::set_prvw_as_handler(uti);
                 } else {
-                    file_associations::restore_handler(entry.uti);
+                    file_associations::restore_handler(uti);
                 }
             }
+            self.ivars().apply_pending.set(false);
             self.refresh_all();
         }
 
-        /// Called by NSTimer every 1 second to poll file association state.
+        /// Master toggle click. Deferred like the per-UTI click; see [`toggleFileAssoc:`].
+        #[unsafe(method(toggleSetAll:))]
+        fn toggle_set_all(&self, sender: &NSSwitch) {
+            self.ivars().apply_pending.set(true);
+            unsafe {
+                let _: () = msg_send![
+                    self,
+                    performSelector: sel!(applyToggleSetAll:),
+                    withObject: sender,
+                    afterDelay: APPLY_DELAY_SECONDS,
+                ];
+            }
+        }
+
+        /// Deferred body of a master toggle. Tag selects which section.
+        #[unsafe(method(applyToggleSetAll:))]
+        fn apply_toggle_set_all(&self, sender: &NSSwitch) {
+            let tag: isize = unsafe { msg_send![sender, tag] };
+            let group_and_state = match tag {
+                TAG_STANDARD_MASTER => {
+                    Some((SUPPORTED_STANDARD_UTIS, section_state(SUPPORTED_STANDARD_UTIS)))
+                }
+                TAG_RAW_MASTER => Some((SUPPORTED_RAW_UTIS, section_state(SUPPORTED_RAW_UTIS))),
+                _ => None,
+            };
+            if let Some((group, state)) = group_and_state {
+                // macOS Finder convention: mixed click promotes to all-on, not all-off.
+                // So Off/Mixed → all on; All → all off.
+                let turn_on = !matches!(state, GroupState::All);
+                for entry in group {
+                    if turn_on {
+                        file_associations::set_prvw_as_handler(entry.uti);
+                    } else {
+                        file_associations::restore_handler(entry.uti);
+                    }
+                }
+            }
+            self.ivars().apply_pending.set(false);
+            self.refresh_all();
+        }
+
+        /// Called by NSTimer every 1 second to poll file association state. Skips while a
+        /// toggle's deferred apply is in flight so it can't revert the just-clicked switch.
         #[unsafe(method(pollFileAssoc:))]
         fn poll_file_assoc(&self, _timer: &AnyObject) {
+            if self.ivars().apply_pending.get() {
+                return;
+            }
             self.refresh_all();
         }
     }
@@ -531,6 +586,7 @@ pub(crate) fn build(
             secondary: &*raw_master.secondary as *const NSTextField,
             section: Section::Raw,
         },
+        apply_pending: Cell::new(false),
     };
     let delegate = FileAssocDelegate::new(mtm, ivars);
 

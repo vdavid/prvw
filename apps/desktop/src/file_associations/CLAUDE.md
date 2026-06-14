@@ -48,6 +48,16 @@ Click behavior on a master switch follows macOS Finder's "Select all" convention
 A 1-second `NSTimer` polls via `is_prvw_default` because the OS doesn't notify us when handlers change elsewhere
 (another viewer, Get Info → "Open With…" → Change All).
 
+## Deferred toggle apply
+
+A toggle click does **not** change the handler synchronously. Setting a default handler can raise a system prompt, and
+its nested run loop freezes our window mid-frame; if that lands while `NSSwitch` is still running its ~0.2s click
+animation, the knob's slide is left with a stale target and parks outside the track. So the click handlers
+(`toggleFileAssoc:`, `toggleSetAll:`) only schedule the real work — the `LSSetDefaultRoleHandlerForContentType` call
+plus `refresh_all` — for `APPLY_DELAY_SECONDS` later via `performSelector:withObject:afterDelay:`. The `apply_pending`
+flag makes the 1-second poll skip its refresh in the meantime, so a tick can't revert the just-clicked switch to the old
+system state before the deferred change lands.
+
 ## Approach
 
 Direct CoreServices FFI via `objc2-core-services`:
