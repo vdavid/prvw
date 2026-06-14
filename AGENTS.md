@@ -32,6 +32,10 @@ These are general principles for the whole project. We live these:
    abstractions, but no copy-paste either.
 3. **Invest in tooling.** We have check runners, linters, CI. Tooling must be fast so we use it, and strict so it
    doesn't allow us to make mistakes.
+4. **Name internals after the UI.** When a feature or action has a user-facing name, its internal identifiers (command
+   ids, file/function/type names, settings keys, menu handlers) use the same vocabulary. If the View menu says "Sort by
+   date", the code says `sort_by_date`, not `order_by_mtime`. A mismatch forces every reader to keep a mental
+   translation table, and it rots as the label drifts. Rename internals when you rename the UI.
 
 ## File structure
 
@@ -97,6 +101,21 @@ Always use the checker script for compilation, linting, formatting, and tests. I
   creates a nested run loop that segfaults on autorelease pool cleanup. Run native modals BEFORE `EventLoop::new()`
   instead (see onboarding in `main()`).
 
+## Worktrees
+
+Solo workflow: branch off **local** `main`, work under `.claude/worktrees/`, fast-forward back, then delete the
+worktree + branch. A fresh worktree needs these gitignored bits copied in (git won't carry them):
+
+- **`build/` for integration tests:** `cp -Rc apps/desktop/build <worktree>/apps/desktop/build`. The integration tests
+  load `build/icon.png` as their fixture image; without it `app_starts_and_loads_image` (and the tests that navigate
+  from it) panic on a missing file. Tiny and instant on APFS (`-c` clones).
+- **`target/` (optional, big speedup):** `cp -Rc target <worktree>/target` from the repo root (the workspace target is
+  at the root, not per-app). Deps are fingerprinted on version/features/rustc/profile, so only workspace members
+  rebuild.
+
+The integration-test windows open unfocused and behind everything (the harness sets `PRVW_BACKGROUND_WINDOW`), so a run
+won't grab your keystrokes. See `window::background_window_requested`.
+
 ## Workflow
 
 - **Always read** [style-guide.md](docs/style-guide.md) before touching code. Especially sentence case!
@@ -105,6 +124,8 @@ Always use the checker script for compilation, linting, formatting, and tests. I
   catches formatting, linting, and test failures that CI will reject. Run all checks, not just `--rust`. Non-CI mode
   auto-formats; CI mode only checks. Don't skip this. Never `tail`, `head`, or truncate the checker output. Its output
   is already concise.
-- **Don't commit unless explicitly asked.** Make changes, verify they work, then wait for the user to say "commit".
+- **Commit at will once work is verified.** When a change is done and the checks pass, commit it without waiting to be
+  asked. Group related changes into focused commits with good messages (see `.claude/rules/git-conventions.md`). Don't
+  push, though: pushing stays gated on an explicit request (see the `push-cadence` user rule).
 
 Happy coding! :)
