@@ -92,7 +92,7 @@
             </array>
             <key>LSItemContentTypes</key>
             <array>
-                <string>public.webp</string>
+                <string>org.webmproject.webp</string>
             </array>
             <key>LSHandlerRank</key>
             <string>Default</string>

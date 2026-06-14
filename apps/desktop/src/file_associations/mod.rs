@@ -51,7 +51,11 @@ pub const SUPPORTED_UTIS: &[UtiEntry] = &[
         detail: "*.gif",
     },
     UtiEntry {
-        uti: "public.webp",
+        // macOS resolves .webp files to `org.webmproject.webp` (the system-declared type
+        // since macOS 11), NOT `public.webp`. Registering `public.webp` sets a handler
+        // pref for a phantom type that no real file resolves to, so the association never
+        // takes effect. Verify with `mdls -name kMDItemContentType some.webp`.
+        uti: "org.webmproject.webp",
         label: "WebP",
         detail: "*.webp",
     },
@@ -273,7 +277,7 @@ mod tests {
             "public.jpeg",
             "public.png",
             "com.compuserve.gif",
-            "public.webp",
+            "org.webmproject.webp",
             "com.microsoft.bmp",
             "public.tiff",
         ];

@@ -71,6 +71,10 @@ onboarding flow will get a dedicated revamp later.
 
 ## Gotchas
 
+- **Use the system-declared UTI, not the `public.*` guess.** macOS resolves `.webp` to `org.webmproject.webp` (the
+  system type since macOS 11), not `public.webp`. Setting a handler for a phantom UTI no real file resolves to silently
+  no-ops — the pref is written but nothing opens with Prvw. Before adding a format, confirm its real UTI with
+  `mdls -name kMDItemContentType sample.ext` rather than assuming a `public.*` name exists.
 - **OSStatus != 0 is non-fatal.** Logged as a warning. The OS occasionally rejects handler changes during sign-in /
   login-item transitions.
 - **Polling timer** in the settings panel checks every 1 second because the OS doesn't notify us when handlers change
