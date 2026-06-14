@@ -18,11 +18,16 @@ pub(super) fn decode(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
 ) -> Result<DecodedImage, String> {
-    let options = zune_core::options::DecoderOptions::new_fast();
+    // Decode straight to RGBA: zune fills the alpha (255) inline during its
+    // SIMD color-convert, so we skip a separate full-image RGB→RGBA pass (and
+    // the second framebuffer it needed). zune also handles CMYK / grayscale →
+    // RGBA, which a hand-rolled 3-channel repack would mishandle.
+    let options = zune_core::options::DecoderOptions::new_fast()
+        .jpeg_set_out_colorspace(zune_core::colorspace::ColorSpace::RGBA);
     let cursor = std::io::Cursor::new(bytes);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(cursor, options);
 
-    let rgb = decoder
+    let mut rgba = decoder
         .decode()
         .map_err(|e| format!("Couldn't decode JPEG {}: {e}", path.display()))?;
 
@@ -34,16 +39,6 @@ pub(super) fn decode(
 
     let width = info.width as u32;
     let height = info.height as u32;
-    let pixel_count = (width as usize) * (height as usize);
-
-    // Convert RGB -> RGBA (add alpha = 255)
-    let mut rgba = Vec::with_capacity(pixel_count * 4);
-    for chunk in rgb.chunks_exact(3) {
-        rgba.push(chunk[0]);
-        rgba.push(chunk[1]);
-        rgba.push(chunk[2]);
-        rgba.push(255);
-    }
 
     let source_icc = icc_profile
         .as_deref()

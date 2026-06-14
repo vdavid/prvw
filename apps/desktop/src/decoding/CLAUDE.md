@@ -53,6 +53,12 @@ the renderer.
   `from_decoder()`. Reversing won't compile.
 - **`zune-jpeg` in debug builds is unusably slow.** `apps/desktop/Cargo.toml` sets
   `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this. Without it, cold startup on a 20 MP photo takes seconds.
+  The same override is set for **`moxcms`** (the per-pixel ICC color transform) for the same reason (~1s on a 24 MP
+  photo in unoptimized debug). Both optimize only the dependency; our own crate stays opt-0 and debuggable.
+- **JPEG decodes straight to RGBA.** `jpeg.rs` sets `jpeg_set_out_colorspace(ColorSpace::RGBA)` so zune emits RGBA in
+  one SIMD color-convert pass — no separate RGB→RGBA repack (which doubled peak memory with a second framebuffer) and no
+  3-channel assumption (zune handles CMYK / grayscale → RGBA). The generic backend already delegates the same way via
+  `image`'s `to_rgba8()`.
 - **Unknown EXIF orientation values get logged and ignored.** The spec defines 1–8; cameras occasionally write garbage.
   We pass the buffer through unchanged rather than guess.
 - **`nom-exif` decodes date/time tags into typed variants, never `Text`.** `DateTimeOriginal` / `CreateDate` /
