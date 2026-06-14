@@ -1562,7 +1562,7 @@ impl App {
         let pad_y = Logical(4.0_f32);
         let radius = Logical(5.0_f32);
         let title_x = Logical(88.0_f32); // Right of the traffic lights (nudged in 8px from the edge)
-        let title_y = Logical(3.0_f32); // Aligned with the native title bar text
+        let title_y = Logical(6.0_f32); // Sits in the title-bar strip, a touch below the top
         let zoom_margin = Logical(7.0_f32); // Equidistant from top and right edge
 
         // The zoom pill is right-aligned: x = the right edge of the pill.
@@ -1575,10 +1575,18 @@ impl App {
         // With the title bar on, the info sits in the glass title-bar strip, which gives it
         // enough contrast on its own — bare text. With the title bar off, the info floats
         // over the image, so it needs a dark pill behind it to stay readable.
+        // Right-aligned text sits `pad_x` further right when there's no pill (the pill
+        // padding is what insets it). Anchor the no-pill case in by `pad_x` too so the zoom
+        // value stays in the exact same spot whether or not the backdrop is shown.
+        let zoom_anchor = if self.title_bar {
+            zoom_right_edge - pad_x
+        } else {
+            zoom_right_edge
+        };
         let title_block = text::TextBlock::new(title, title_x + pad_x, title_y + pad_y)
             .bold()
             .max_render_width(title_max_render);
-        let zoom_block = text::TextBlock::new(zoom_text, zoom_right_edge, title_y + pad_y)
+        let zoom_block = text::TextBlock::new(zoom_text, zoom_anchor, title_y + pad_y)
             .bold()
             .align_right();
         let (title_block, zoom_block) = if self.title_bar {
@@ -2301,6 +2309,10 @@ impl ApplicationHandler<AppCommand> for App {
                 log::trace!("Rendering frame");
                 let mut text_blocks = self.build_text_overlay();
                 let offset = self.content_offset_y();
+                // The histogram and EXIF overlays anchor to a fixed top inset (the title-bar
+                // height) rather than the content offset, so they stay put when the title bar
+                // is off instead of riding up over the zoom readout.
+                let overlay_offset = Logical(TITLE_BAR_HEIGHT);
 
                 // Build the histogram overlay if it's visible and we have data. The
                 // produced `HistogramDrawCall` borrows immutably from `self.histogram.data`
@@ -2312,8 +2324,12 @@ impl ApplicationHandler<AppCommand> for App {
                     .visible
                     && let (Some(width), Some(data)) = (logical_width, self.histogram.data.as_ref())
                 {
-                    let build =
-                        histogram::overlay::build(data, self.histogram.hover_bin, width, offset);
+                    let build = histogram::overlay::build(
+                        data,
+                        self.histogram.hover_bin,
+                        width,
+                        overlay_offset,
+                    );
                     standalone_pills.extend(build.pills);
                     for tb in build.text_blocks {
                         text_blocks.push(tb);
@@ -2333,7 +2349,7 @@ impl ApplicationHandler<AppCommand> for App {
                     let build = exif_overlay::overlay::build(
                         metadata,
                         width,
-                        offset,
+                        overlay_offset,
                         self.histogram.visible,
                     );
                     standalone_pills.extend(build.pills);

@@ -204,13 +204,15 @@ pub fn create_menu_bar() -> AppMenu {
             Code::KeyR,
         )),
     );
-    // "F" is shown cosmetically (padded into the title, like the Navigate arrows) rather
-    // than as a real accelerator: a bare-letter menu key equivalent is app-global and would
-    // hijack typing "f" into the Settings text fields. The bare-F key is handled in `input`.
+    // Bare-letter shortcuts (F, H, E) are shown cosmetically — padded into the title, like
+    // the Navigate arrows — rather than as real accelerators: a bare-letter menu key
+    // equivalent is app-global and would hijack typing those letters into the Settings text
+    // fields. The bare keys themselves are handled in `input`.
     let fullscreen = MenuItem::new("Fullscreen        F", true, None);
     let refresh = MenuItem::new("Refresh", true, None);
-    let histogram = CheckMenuItem::new("Histogram", true, settings.histogram_visible, None);
-    let exif_info = CheckMenuItem::new("Exif info", true, settings.exif_visible, None);
+    let histogram =
+        CheckMenuItem::new("Histogram        H", true, settings.histogram_visible, None);
+    let exif_info = CheckMenuItem::new("Exif info        E", true, settings.exif_visible, None);
 
     // muda has no native radio group, so the handler enforces "exactly one
     // checked" by re-syncing all three after every SetSortBy.

@@ -10,10 +10,10 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, class, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSBezelStyle, NSButton, NSCursor, NSFont, NSImage, NSLayoutAttribute,
-    NSStackView, NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions,
-    NSUserInterfaceLayoutOrientation, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView, NSWindow,
+    NSApplication, NSBezelStyle, NSButton, NSCursor, NSFont, NSGlassEffectView, NSImage,
+    NSLayoutAttribute, NSStackView, NSTextAlignment, NSTextField, NSTrackingArea,
+    NSTrackingAreaOptions, NSUserInterfaceLayoutOrientation, NSView, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
 };
 use objc2_foundation::{
     NSBundle, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString, NSURL,
@@ -267,8 +267,10 @@ pub(crate) fn make_vertical_stack(
     stack
 }
 
-/// Add an NSVisualEffectView as background for frosted glass appearance.
-/// Must be called after window creation but before adding other content.
+/// Add a background view for the frosted-glass appearance, filling the content view. On
+/// macOS 26+ this is a real Liquid Glass surface so the panels match the main viewer; older
+/// macOS falls back to the dark `HUDWindow` vibrancy. Must be called after window creation
+/// but before adding other content.
 pub(crate) fn add_vibrancy_background(
     window: &NSWindow,
     mtm: MainThreadMarker,
@@ -280,28 +282,32 @@ pub(crate) fn add_vibrancy_background(
             return;
         }
         let content_view_ref = &*content_view;
-
         let bounds: NSRect = msg_send![content_view_ref, bounds];
-        let effect_view = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), bounds);
-        effect_view.setMaterial(NSVisualEffectMaterial::HUDWindow);
-        effect_view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-        effect_view.setState(NSVisualEffectState::Active);
 
-        // Pin to fill using autoresizing mask (simpler than Auto Layout for a background)
-        let _: () = msg_send![
-            &*effect_view,
-            setTranslatesAutoresizingMaskIntoConstraints: true
-        ];
+        // The background view, either Liquid Glass or legacy vibrancy. Both fill the content
+        // view via the autoresizing mask and sit behind all other subviews.
+        let background: Retained<NSView> = if crate::window::liquid_glass_available() {
+            let glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), bounds);
+            Retained::cast_unchecked(glass)
+        } else {
+            let effect_view =
+                NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), bounds);
+            effect_view.setMaterial(NSVisualEffectMaterial::HUDWindow);
+            effect_view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+            effect_view.setState(NSVisualEffectState::Active);
+            Retained::cast_unchecked(effect_view)
+        };
+
+        // Pin to fill using autoresizing mask (simpler than Auto Layout for a background).
+        let _: () = msg_send![&*background, setTranslatesAutoresizingMaskIntoConstraints: true];
         // NSViewWidthSizable | NSViewHeightSizable = 2 | 16 = 18
-        let _: () = msg_send![&*effect_view, setAutoresizingMask: 18u64];
+        let _: () = msg_send![&*background, setAutoresizingMask: 18u64];
 
-        // Add as subview positioned below (behind) all existing subviews
-        let effect_ref = as_view::<NSVisualEffectView>(&effect_view);
-        // NSWindowBelow = -1: places effect_view behind all siblings
-        let _: () = msg_send![content_view_ref, addSubview: effect_ref,
+        // NSWindowBelow = -1: place it behind all existing siblings.
+        let _: () = msg_send![content_view_ref, addSubview: &*background,
             positioned: -1i64, relativeTo: std::ptr::null::<NSView>()];
 
-        retained_views.push(Retained::cast_unchecked(effect_view));
+        retained_views.push(Retained::cast_unchecked(background));
     }
 }
 
