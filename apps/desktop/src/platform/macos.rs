@@ -6,5 +6,6 @@
 //! these via `crate::platform::macos::{display_profile, native_ui, ...}`.
 
 pub mod clipboard;
+pub mod menu_cleanup;
 pub mod open_handler;
 pub mod ui_common;

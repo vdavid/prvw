@@ -41,6 +41,10 @@ pub struct AppMenu {
     /// Right-click context menu, shown via `ContextMenu::show_context_menu_for_nsview`.
     /// Kept alive for the same reason as `_menu`: dropping it frees its MenuChild backing.
     pub context_menu: Menu,
+    /// Menu delegates that strip AppKit's auto-injected items. AppKit holds delegates
+    /// weakly, so these must live for the app's lifetime.
+    #[cfg(target_os = "macos")]
+    pub _menu_pruners: Vec<objc2::rc::Retained<objc2::runtime::AnyObject>>,
     pub ids: MenuIds,
     /// Kept so we can update the checkmark from outside (e.g., when settings window toggles it).
     pub auto_fit_item: CheckMenuItem,
@@ -56,8 +60,34 @@ pub struct AppMenu {
     pub loop_navigation_item: CheckMenuItem,
 }
 
+/// macOS auto-injects text-editing items into any menu it recognizes as "Edit" (Writing
+/// Tools, AutoFill, Start Dictation, Emoji & Symbols). Prvw is a viewer with no text input,
+/// so none of them belong. Two of them are suppressed by user defaults that AppKit reads
+/// when building the menu; the rest (no public toggle as of macOS 15) are stripped after.
+#[cfg(target_os = "macos")]
+fn suppress_auto_edit_menu_items() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSString;
+
+    // SAFETY: standard NSUserDefaults calls on the main thread.
+    unsafe {
+        let defaults: *mut AnyObject = msg_send![class!(NSUserDefaults), standardUserDefaults];
+        for key in [
+            "NSDisabledDictationMenuItem",
+            "NSDisabledCharacterPaletteMenuItem",
+        ] {
+            let k = NSString::from_str(key);
+            let _: () = msg_send![defaults, setBool: true, forKey: &*k];
+        }
+    }
+}
+
 /// Build the native menu bar. The caller MUST keep the returned `AppMenu` alive.
 pub fn create_menu_bar() -> AppMenu {
+    #[cfg(target_os = "macos")]
+    suppress_auto_edit_menu_items();
+
     let menu = Menu::new();
 
     // App menu (macOS puts the first menu under the app name)
@@ -91,7 +121,7 @@ pub fn create_menu_bar() -> AppMenu {
     // showing them disabled would look broken.
     let edit_menu = Submenu::new("Edit", true);
     let copy = MenuItem::new(
-        "Copy",
+        "Copy image",
         true,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)),
     );
@@ -157,7 +187,10 @@ pub fn create_menu_bar() -> AppMenu {
             Code::KeyR,
         )),
     );
-    let fullscreen = MenuItem::new("Fullscreen", true, None);
+    // "F" is shown cosmetically (padded into the title, like the Navigate arrows) rather
+    // than as a real accelerator: a bare-letter menu key equivalent is app-global and would
+    // hijack typing "f" into the Settings text fields. The bare-F key is handled in `input`.
+    let fullscreen = MenuItem::new("Fullscreen        F", true, None);
     let refresh = MenuItem::new("Refresh", true, None);
     let histogram = CheckMenuItem::new("Histogram", true, settings.histogram_visible, None);
     let exif_info = CheckMenuItem::new("Exif info", true, settings.exif_visible, None);
@@ -227,11 +260,24 @@ pub fn create_menu_bar() -> AppMenu {
         ])
         .expect("Failed to build navigate menu");
 
-    menu.append_items(&[&app_menu, &file_menu, &edit_menu, &view_menu, &nav_menu])
-        .expect("Failed to build menu bar");
+    // Help menu. Left empty on purpose: macOS auto-adds its Spotlight-style "Search" field
+    // to any menu titled "Help", which is all we want here.
+    let help_menu = Submenu::new("Help", true);
+
+    menu.append_items(&[
+        &app_menu, &file_menu, &edit_menu, &view_menu, &nav_menu, &help_menu,
+    ])
+    .expect("Failed to build menu bar");
 
     #[cfg(target_os = "macos")]
-    menu.init_for_nsapp();
+    let menu_pruners;
+    #[cfg(target_os = "macos")]
+    {
+        menu.init_for_nsapp();
+        // Strip AppKit's auto-injected items (Edit: Writing Tools/AutoFill/etc.; View:
+        // Enter Full Screen) before each open. Must run after `init_for_nsapp`.
+        menu_pruners = crate::platform::macos::menu_cleanup::install();
+    }
 
     // Right-click context menu. A separate menu (not part of the menu bar) with its own
     // Copy item; both routes funnel to AppCommand::CopyImage via `input::menu_to_command`.
@@ -269,6 +315,8 @@ pub fn create_menu_bar() -> AppMenu {
         loop_navigation_item: loop_navigation,
         _menu: menu,
         context_menu,
+        #[cfg(target_os = "macos")]
+        _menu_pruners: menu_pruners,
         ids: MenuIds {
             about: about.id().clone(),
             settings: settings_item.id().clone(),
