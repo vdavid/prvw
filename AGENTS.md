@@ -103,7 +103,8 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 
 ## Worktrees
 
-Solo workflow: branch off **local** `main`, work under `.claude/worktrees/`, fast-forward back, then delete the
+Solo workflow: branch off **local** `main`, work under `.claude/worktrees/`. To land: rebase onto current local `main`
+(it usually has advanced — unpushed commits land there directly), fast-forward `main` to the branch, then delete the
 worktree + branch. A fresh worktree needs these gitignored bits copied in (git won't carry them):
 
 - **`build/` for integration tests:** `cp -Rc apps/desktop/build <worktree>/apps/desktop/build`. The integration tests
