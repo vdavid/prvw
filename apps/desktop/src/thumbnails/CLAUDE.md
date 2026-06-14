@@ -4,13 +4,13 @@ Background-generate thumbnails for every file in the current folder so navigatin
 preload window shows a blurry placeholder instantly instead of a blank screen. Relies on macOS's system-wide QuickLook
 thumbnail cache (`quicklookd`), shared with Finder, Preview, and every other Mac app — no disk storage of our own.
 
-| File              | Purpose                                                                               |
-| ----------------- | ------------------------------------------------------------------------------------- |
-| `mod.rs`          | `State { scheduler, cache, dim_prefetcher, paths, requests }` + public API + eviction |
-| `scheduler.rs`    | Pure state machine: priority-ordered queue, windowing, parallelism cap, pause/resume  |
-| `metadata.rs`     | Three-tier dim+orientation reader (image crate / image+nom-exif / ImageIO)            |
-| `dim_prefetch.rs` | 16-thread parallel pool that pre-warms `(width, height)` for window indices           |
-| `quicklook.rs`    | QL submission worker thread + `Retained<...>` lifecycle + `CGImage → RGBA8` blit      |
+| File              | Purpose                                                                                                          |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `mod.rs`          | `State { scheduler, cache, dim_prefetcher, paths, current, requests }` + API + RAM-scaled byte budget + eviction |
+| `scheduler.rs`    | Pure state machine: priority-ordered queue, windowing, parallelism cap, pause/resume                             |
+| `metadata.rs`     | Three-tier dim+orientation reader (image crate / image+nom-exif / ImageIO)                                       |
+| `dim_prefetch.rs` | 16-thread parallel pool that pre-warms `(width, height)` for window indices                                      |
+| `quicklook.rs`    | QL submission worker thread + `Retained<...>` lifecycle + `CGImage → RGBA8` blit                                 |
 
 ## Flow
 
@@ -52,27 +52,34 @@ While a primary decode is pending (`navigation.pending_current.is_some()`), the 
 compete for I/O or shared system CPU. Resumed on decode completion (success or failure). Already-in-flight requests keep
 running — cancellation has I/O cost and `quicklookd` is usually near-done.
 
-## Windowed scheduling + cache eviction (10k folders)
+## RAM-scaled byte budget + windowed scheduling (10k folders)
 
-Two constants govern memory and CPU footprint for large folders:
+Memory and CPU footprint for large folders are governed by a single **RAM-proportional byte budget**, with the
+generation window derived from it so the two never fight.
 
-- `scheduler::WINDOW_RADIUS` (50): the scheduler only enqueues thumbnail jobs for indices in `current ± WINDOW_RADIUS`.
-  Reseeded on every `set_current`. For a 10k-image folder we'd otherwise queue 10 000 jobs at startup — ~24 min at
-  quicklookd's ~7/sec serving rate — for thumbs the user mostly never looks at. Now ~100 around the user populates in
-  ~14 seconds.
+- **`thumbnail_budget_bytes()`** (`mod.rs`): `clamp(physical_RAM / 128, 64 MB, 1 GB)`. 64 GB → 512 MB, 16 GB → 128 MB, 8
+  GB → 64 MB (floor). A byte budget (not a fixed thumbnail count) so it self-adjusts to thumbnail size and display DPI.
+  Physical RAM comes from `platform::total_physical_ram_bytes()` (`sysctl hw.memsize`), queried once.
 
-- `RETENTION_RADIUS` (200): thumbnails outside this distance from `current` are evicted from the in-memory cache on
-  `set_current`. Caps RAM at ~1.2 GB peak (~400 thumbs × 3 MB RGBA8) for huge folders no matter how much the user
-  navigates. Eviction also drops the index from the scheduler's `cached` set via `uncache(idx)` so re-entering that area
-  re-enqueues the thumb.
+- **Eviction (`evict_to_budget`)**: on `set_current` _and_ on each thumb's arrival (`mark_ready`), evict
+  farthest-from-`current` first until total bytes ≤ budget. Distance-based, so we always keep the thumbs nearest where
+  the user is — never a stale trail from where they _were_. Each eviction also drops the index from the scheduler's
+  `cached` set (`uncache`) and the dim cache, so re-entering an area re-enqueues it.
 
-Larger than `WINDOW_RADIUS` so a small nav doesn't immediately re-evict thumbs we just generated; the gap is "navigation
-slack" before paying to regenerate.
+- **`scheduler::WINDOW_RADIUS` (50)** is now the _cap_ on the generation radius, not a fixed value. The effective radius
+  is `generation_radius() = min(50, budget / (2 × ~4 MB))`, injected via `Scheduler::with_window_radius`. This keeps
+  generation ≤ retention: we never ask quicklookd to produce thumbs the byte budget would evict on arrival (which would
+  churn it nonstop on small-RAM machines). 64 GB → radius 50; 16 GB → ~16; 8 GB → ~8. The dim-prefetch window uses the
+  same effective radius via `scheduler.window_radius()`.
 
-Trade-off: a far jump (#5000 → #100) blanks the new neighborhood of thumbs (we never generated them) and evicts the old
-(now > RETENTION*RADIUS away). New neighborhood populates over ~14 seconds. Going \_back* is fast — quicklookd's
-persistent disk cache survives our in-RAM eviction, so subsequent visits hit cached thumbs at ~150 ms each instead of
-~840 ms first-gen.
+Trade-off: a far jump (#5000 → #100) blanks the new neighborhood (never generated) and evicts the old (now farthest).
+The new neighborhood repopulates over a few seconds. Going _back_ is fast — quicklookd's persistent disk cache survives
+our in-RAM eviction, so revisits hit cached thumbs at ~150 ms each instead of ~840 ms first-gen.
+
+The pure math (`budget_for_ram`, `generation_radius_for_budget`) and the distance-based eviction policy are unit-tested
+in `mod.rs`. `State::memory_bytes()` exposes the resident total for the diagnostics overlay (`process_memory` line
+breaks out image cache vs. thumbnails so the gap to RSS — GPU texture, decode buffers, allocator retention — is
+visible).
 
 ## QL submission threading (option A)
 
@@ -95,8 +102,8 @@ worker side means we never need to share retained ObjC pointers across threads.
 ## Dimension prefetcher (16-thread pool)
 
 `dim_prefetch::DimPrefetcher` runs 16 worker threads (named `prvw-dim-N`, 2 MB stack each ≈ 32 MB total) that read pixel
-dimensions for every index in `current ± WINDOW_RADIUS` in parallel. Results land in an
-`Arc<Mutex<HashMap<usize, Dimensions>>>` that the main thread reads when a placeholder needs to display.
+dimensions for every index in the generation window (`current ± scheduler.window_radius()`) in parallel. Results land in
+an `Arc<Mutex<HashMap<usize, Dimensions>>>` that the main thread reads when a placeholder needs to display.
 
 **Why:** without this, each first-time placeholder display paid the cost of one synchronous ImageIO file-header read on
 the main thread — 200 ms – 1.3 s per file on slow SMB shares. With the prefetcher, every nav finds dims pre-cached and

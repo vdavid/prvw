@@ -42,14 +42,46 @@ pub use scheduler::{RequestId, Status};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-/// Distance from `current` beyond which cached thumbnails are evicted
-/// from RAM. Slightly larger than `scheduler::WINDOW_RADIUS` so a small
-/// nav doesn't immediately evict thumbs we just generated. For 10 000
-/// images at ~3 MB per RGBA8 thumb (1024 × 768), this caps the cache at
-/// ~1.2 GB peak. Matches `scheduler::WINDOW_RADIUS` × 4 — gives the user
-/// a couple of nav jumps' worth of headroom before evicting.
-pub const RETENTION_RADIUS: usize = 200;
+/// Rough size of one cached thumbnail (~1024² RGBA8). Used only to derive the
+/// generation radius from the byte budget; real eviction uses exact
+/// `rgba.len()` per thumb (they're aspect-fit, so most are a bit smaller).
+const EST_THUMB_BYTES: usize = 1024 * 1024 * 4;
+
+/// Floor and ceiling for the RAM-scaled thumbnail cache budget. The floor
+/// keeps a small machine usable (a handful of neighbor placeholders); the
+/// ceiling stops a 256 GB Mac Pro from spending 2 GB on thumbnails.
+const MIN_THUMBNAIL_BUDGET: usize = 64 * 1024 * 1024;
+const MAX_THUMBNAIL_BUDGET: usize = 1024 * 1024 * 1024;
+
+/// RAM-proportional thumbnail cache budget: 1/128 of physical RAM, clamped to
+/// `[MIN, MAX]`. 64 GB → 512 MB, 16 GB → 128 MB, 8 GB → 64 MB (floor). Bytes,
+/// not a fixed thumbnail count, so it self-adjusts to thumbnail size and
+/// display DPI. Queried once (RAM doesn't change at runtime).
+pub fn thumbnail_budget_bytes() -> usize {
+    static BUDGET: OnceLock<usize> = OnceLock::new();
+    *BUDGET.get_or_init(|| budget_for_ram(crate::platform::total_physical_ram_bytes() as usize))
+}
+
+/// Pure budget math, split out for testing without depending on host RAM.
+fn budget_for_ram(ram_bytes: usize) -> usize {
+    (ram_bytes / 128).clamp(MIN_THUMBNAIL_BUDGET, MAX_THUMBNAIL_BUDGET)
+}
+
+/// Generation radius derived from the budget, capped at
+/// [`scheduler::WINDOW_RADIUS`]. We never generate more than the byte-budgeted
+/// cache will retain — otherwise quicklookd would churn producing thumbs we
+/// evict on arrival. At the 512 MB budget this lands at the full 50; at a
+/// 128 MB budget (~16 GB machine) it's ~16; at the 64 MB floor it's ~8.
+pub fn generation_radius() -> usize {
+    generation_radius_for_budget(thumbnail_budget_bytes())
+}
+
+/// Pure generation-radius math, split out for testing.
+fn generation_radius_for_budget(budget: usize) -> usize {
+    (budget / (2 * EST_THUMB_BYTES)).clamp(2, scheduler::WINDOW_RADIUS)
+}
 
 /// A ready thumbnail stored in the cache. Just the pixels — source
 /// dimensions are read lazily via `State::source_dimensions(index)` at
@@ -75,6 +107,10 @@ pub struct State {
     /// Folder paths, kept so the app loop can look up paths by index
     /// when draining the scheduler.
     pub paths: Vec<PathBuf>,
+    /// Current navigation index. Tracked here (mirrors the scheduler's) so
+    /// byte-budget eviction can measure distance-from-current when a thumb
+    /// arrives, not just on `set_current`.
+    current: usize,
     /// Monotonic counter bumped on every `set_folder`. Completion blocks
     /// capture the value at submit-time; the main thread drops completions
     /// whose generation no longer matches, so a thumb for a stale folder
@@ -92,10 +128,12 @@ impl State {
             .map(|n| (n.get() / 2).max(1))
             .unwrap_or(4);
         Self {
-            scheduler: scheduler::Scheduler::new(max_parallel),
+            scheduler: scheduler::Scheduler::new(max_parallel)
+                .with_window_radius(generation_radius()),
             cache: HashMap::new(),
             dim_prefetcher: dim_prefetch::DimPrefetcher::new(),
             paths: Vec::new(),
+            current: 0,
             folder_generation: 0,
             #[cfg(target_os = "macos")]
             requests: quicklook::RequestTable::new(),
@@ -117,22 +155,24 @@ impl State {
         self.dim_prefetcher.reset();
         let len = paths.len();
         self.paths = paths;
+        self.current = current;
         self.folder_generation = self.folder_generation.wrapping_add(1);
         self.scheduler.set_folder(len, current);
         self.enqueue_dim_prefetch_window(current);
     }
 
     pub fn set_current(&mut self, current: usize) {
+        self.current = current;
         self.scheduler.set_current(current);
-        self.evict_distant_thumbs(current);
+        self.evict_to_budget(current, thumbnail_budget_bytes());
         self.enqueue_dim_prefetch_window(current);
     }
 
-    /// Push pixel-dimension prefetch jobs for every index in
-    /// `current ± WINDOW_RADIUS` not already cached. The 16-thread
+    /// Push pixel-dimension prefetch jobs for every index in the generation
+    /// window (`current ± window_radius`) not already cached. The 16-thread
     /// worker pool drains these in parallel.
     fn enqueue_dim_prefetch_window(&self, current: usize) {
-        let radius = scheduler::WINDOW_RADIUS as isize;
+        let radius = self.scheduler.window_radius() as isize;
         let cur = current as isize;
         let len = self.paths.len() as isize;
         let lo = (cur - radius).max(0);
@@ -148,36 +188,50 @@ impl State {
         }
     }
 
-    /// Drop cached thumbnails whose distance from `current` exceeds
-    /// [`RETENTION_RADIUS`]. Keeps RAM bounded for big folders. Also
-    /// removes the corresponding entries from the scheduler's `cached`
-    /// set so that re-visiting that area later re-enqueues them.
-    fn evict_distant_thumbs(&mut self, current: usize) {
-        let cur = current as isize;
-        let radius = RETENTION_RADIUS as isize;
-        let evicted: Vec<usize> = self
-            .cache
-            .keys()
-            .copied()
-            .filter(|&i| (i as isize - cur).unsigned_abs() as isize > radius)
-            .collect();
-        if evicted.is_empty() {
+    /// Total bytes held by cached thumbnails. For diagnostics / RSS
+    /// attribution.
+    pub fn memory_bytes(&self) -> usize {
+        self.cache.values().map(|t| t.rgba.len()).sum()
+    }
+
+    /// Evict cached thumbnails, farthest-from-`current` first, until total
+    /// bytes fit within `budget`. Keeps the thumbnails most likely to be
+    /// navigated to (nearest the current image) — so we never pin a stale
+    /// trail from where the user *was*. Also drops each evicted index from
+    /// the scheduler's `cached` set so re-entering that area re-enqueues it,
+    /// and from the dim cache. `budget` is a parameter (not read inline) so
+    /// tests can exercise the policy without depending on the host's RAM.
+    fn evict_to_budget(&mut self, current: usize, budget: usize) {
+        let mut total = self.memory_bytes();
+        if total <= budget {
             return;
         }
-        for i in &evicted {
-            self.cache.remove(i);
-            // Tell the scheduler we no longer have them cached, so they
-            // become eligible to be re-queued if the user navigates back.
-            self.scheduler.uncache(*i);
+        let cur = current as isize;
+        // Farthest from current first.
+        let mut by_distance: Vec<usize> = self.cache.keys().copied().collect();
+        by_distance.sort_by_key(|&i| std::cmp::Reverse((i as isize - cur).unsigned_abs()));
+
+        let mut evicted: Vec<usize> = Vec::new();
+        for i in by_distance {
+            if total <= budget {
+                break;
+            }
+            if let Some(thumb) = self.cache.remove(&i) {
+                total -= thumb.rgba.len();
+                // Let the scheduler re-queue it if the user navigates back.
+                self.scheduler.uncache(i);
+                evicted.push(i);
+            }
         }
-        // Drop dim cache for evicted indices too — distant images don't
-        // need their dims warm.
-        self.dim_prefetcher.invalidate(&evicted);
-        log::debug!(
-            "Evicted {} thumb(s) outside retention radius {} of current {current}",
-            evicted.len(),
-            RETENTION_RADIUS
-        );
+        if !evicted.is_empty() {
+            self.dim_prefetcher.invalidate(&evicted);
+            log::debug!(
+                "Evicted {} thumb(s) to fit {} KB budget around current {current} ({} KB resident)",
+                evicted.len(),
+                budget / 1024,
+                total / 1024,
+            );
+        }
     }
 
     pub fn pause(&mut self) {
@@ -239,6 +293,10 @@ impl State {
             },
         );
         self.scheduler.mark_ready(index);
+        // A fresh insert can push us over budget between navigations (thumbs
+        // stream in over seconds), so enforce the byte budget on arrival too,
+        // not only on `set_current`.
+        self.evict_to_budget(self.current, thumbnail_budget_bytes());
     }
 
     pub fn mark_failed(&mut self, index: usize, _request_id: RequestId) {
@@ -259,5 +317,85 @@ impl State {
 impl Default for State {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MB: usize = 1024 * 1024;
+    const GB: usize = 1024 * MB;
+
+    #[test]
+    fn budget_scales_with_ram_and_clamps() {
+        // The headline cases from the design: 1/128 of RAM, clamped.
+        assert_eq!(budget_for_ram(64 * GB), 512 * MB);
+        assert_eq!(budget_for_ram(16 * GB), 128 * MB);
+        assert_eq!(budget_for_ram(8 * GB), 64 * MB); // floor (also exactly 8 GB / 128)
+        assert_eq!(budget_for_ram(4 * GB), MIN_THUMBNAIL_BUDGET); // below floor → clamped up
+        assert_eq!(budget_for_ram(256 * GB), MAX_THUMBNAIL_BUDGET); // above ceiling → clamped down
+    }
+
+    #[test]
+    fn generation_radius_tracks_budget_and_is_capped() {
+        // Big budget → full window; small budget → proportionally fewer thumbs,
+        // so we never generate more than we'll retain.
+        assert_eq!(
+            generation_radius_for_budget(512 * MB),
+            scheduler::WINDOW_RADIUS
+        );
+        assert_eq!(generation_radius_for_budget(128 * MB), 16);
+        assert_eq!(generation_radius_for_budget(64 * MB), 8);
+        // Never below the immediate-neighbor floor.
+        assert!(generation_radius_for_budget(0) >= 2);
+        // Never above the cap.
+        assert!(generation_radius_for_budget(usize::MAX) <= scheduler::WINDOW_RADIUS);
+    }
+
+    fn insert_thumb(state: &mut State, index: usize, bytes: usize) {
+        state.cache.insert(
+            index,
+            Thumbnail {
+                width: 1,
+                height: 1,
+                rgba: vec![0u8; bytes],
+            },
+        );
+    }
+
+    #[test]
+    fn evict_to_budget_keeps_nearest_to_current() {
+        let mut state = State::new();
+        // 10 thumbs of 10 MB each (100 MB total) at indices 0..=9.
+        for i in 0..10 {
+            insert_thumb(&mut state, i, 10 * MB);
+        }
+        // Budget for 3 thumbs, current at index 5. Nearest are 4, 5, 6.
+        state.evict_to_budget(5, 30 * MB);
+
+        assert!(state.memory_bytes() <= 30 * MB, "must fit budget");
+        assert_eq!(state.cache.len(), 3, "keeps exactly what fits");
+        for keep in [4, 5, 6] {
+            assert!(
+                state.cache.contains_key(&keep),
+                "should keep {keep} (near current)"
+            );
+        }
+        for drop in [0, 1, 2, 3, 7, 8, 9] {
+            assert!(
+                !state.cache.contains_key(&drop),
+                "should drop {drop} (far from current)"
+            );
+        }
+    }
+
+    #[test]
+    fn evict_to_budget_noop_when_under() {
+        let mut state = State::new();
+        insert_thumb(&mut state, 0, 10 * MB);
+        insert_thumb(&mut state, 1, 10 * MB);
+        state.evict_to_budget(0, 512 * MB);
+        assert_eq!(state.cache.len(), 2, "nothing evicted when under budget");
     }
 }

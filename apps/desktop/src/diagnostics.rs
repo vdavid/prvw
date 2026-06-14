@@ -76,6 +76,7 @@ pub fn build_text(
     current_index: usize,
     dir_files: &[PathBuf],
     navigation_history: &VecDeque<NavigationRecord>,
+    thumbnail_bytes: usize,
 ) -> String {
     let mut out = String::new();
 
@@ -139,12 +140,15 @@ pub fn build_text(
         }
     }
 
-    // Process memory via ps
+    // Process memory via ps. Break out the two pixel caches so the gap to
+    // RSS (GPU texture, in-flight decode buffers, allocator retention) is
+    // visible at a glance.
     let process_memory = get_process_rss_mb();
     out.push_str(&format!(
-        "\nprocess_memory: {:.1} MB (cache: {})\n",
+        "\nprocess_memory: {:.1} MB (image cache: {}, thumbnails: {})\n",
         process_memory,
-        format_bytes(cache_diag.total_memory)
+        format_bytes(cache_diag.total_memory),
+        format_bytes(thumbnail_bytes)
     ));
 
     out

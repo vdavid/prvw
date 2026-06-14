@@ -218,6 +218,7 @@ impl App {
             state.current_index,
             dir_files,
             &self.navigation.history,
+            self.thumbnails.memory_bytes(),
         );
 
         #[cfg(target_os = "macos")]

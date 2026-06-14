@@ -33,11 +33,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// (matches `navigation::preloader::PRELOAD_AHEAD`).
 const PRELOAD_HALF: usize = 2;
 
-/// How far around `current` we generate thumbnails. Indices farther out
-/// are not enqueued — they'd cost quicklookd time without giving the
-/// user a placeholder where they're likely to navigate. Reseeded on every
-/// `set_current`. ~50 means ~100 thumbs total, ~14 sec to populate at
-/// quicklookd's ~7/sec serving rate.
+/// Upper bound on how far around `current` we generate thumbnails. The
+/// effective radius is set per-`Scheduler` via [`Scheduler::with_window_radius`]
+/// and never exceeds this — `thumbnails::generation_radius` derives it from the
+/// RAM-scaled cache budget so we never generate more than we'll retain. ~50
+/// means ~100 thumbs, ~14 sec to populate at quicklookd's ~7/sec serving rate.
 pub const WINDOW_RADIUS: usize = 50;
 
 /// Opaque handle a caller can use to cancel a specific request. Monotonic.
@@ -51,6 +51,9 @@ pub struct Scheduler {
     cached: HashSet<usize>,
     failed: HashSet<usize>,
     max_parallel: usize,
+    /// Effective generation radius, ≤ [`WINDOW_RADIUS`]. Set via
+    /// [`Scheduler::with_window_radius`]; defaults to the cap.
+    window_radius: usize,
     paused: bool,
     next_request_id: RequestId,
 }
@@ -77,9 +80,24 @@ impl Scheduler {
             cached: HashSet::new(),
             failed: HashSet::new(),
             max_parallel: max_parallel.max(1),
+            window_radius: WINDOW_RADIUS,
             paused: false,
             next_request_id: 1,
         }
+    }
+
+    /// Set the generation radius (clamped to `[PRELOAD_HALF, WINDOW_RADIUS]`).
+    /// `thumbnails::State` derives this from the RAM-scaled cache budget so we
+    /// never enqueue thumbnails the byte-budgeted cache would immediately evict.
+    pub fn with_window_radius(mut self, radius: usize) -> Self {
+        self.window_radius = radius.clamp(PRELOAD_HALF, WINDOW_RADIUS);
+        self
+    }
+
+    /// The effective generation radius. Used by `thumbnails::State` to size the
+    /// dimension-prefetch window to match.
+    pub fn window_radius(&self) -> usize {
+        self.window_radius
     }
 
     /// Reset for a new folder. Clears cache/queue; caller cancels in-flight
@@ -195,10 +213,10 @@ impl Scheduler {
         let cur = self.current as isize;
         let len = self.folder_len as isize;
         let half = PRELOAD_HALF as isize;
-        // Cap the outer distance at the smaller of the folder bound and
-        // WINDOW_RADIUS. For folders smaller than the radius this
+        // Cap the outer distance at the smaller of the folder bound and the
+        // effective window radius. For folders smaller than the radius this
         // collapses to "all indices" — same shape as before windowing.
-        let max_dist = (len - 1).min(WINDOW_RADIUS as isize).max(0);
+        let max_dist = (len - 1).min(self.window_radius as isize).max(0);
 
         let push = |queue: &mut VecDeque<usize>, idx: isize| {
             if idx >= 0 && idx < len {
