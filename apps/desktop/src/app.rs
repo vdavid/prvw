@@ -85,6 +85,10 @@ pub(crate) struct App {
     pub(crate) window: Option<Arc<Window>>,
     pub(crate) renderer: Option<renderer::Renderer>,
     pub(crate) app_menu: Option<menu::AppMenu>,
+    /// Keeps the active print operation alive while its window-modal sheet runs (the call
+    /// returns immediately; the sheet is async). Replaced on the next print, dropped at exit.
+    #[cfg(target_os = "macos")]
+    _active_print: Option<objc2::rc::Retained<objc2_app_kit::NSPrintOperation>>,
 
     // ── Per-feature state ───────────────────────────────────────────
     pub(crate) zoom: zoom::State,
@@ -173,6 +177,8 @@ impl App {
             window: None,
             renderer: None,
             app_menu: None,
+            #[cfg(target_os = "macos")]
+            _active_print: None,
             zoom: zoom::State::from_settings(&initial_settings),
             color: color::State::from_settings(&initial_settings),
             navigation: navigation::State::from_settings(&initial_settings),
@@ -1686,6 +1692,48 @@ impl App {
             }
 
             crate::about::show_window(parent_ptr);
+        }
+    }
+
+    /// Print the current image via the system print sheet. Mirrors the NSWindow-pointer
+    /// extraction used by the About/Settings dialogs, then hands off to the print module.
+    #[cfg(target_os = "macos")]
+    fn print_current_image(&mut self) {
+        use objc2::msg_send;
+        use objc2_app_kit::NSWindow;
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let Some(path) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.current().to_path_buf())
+        else {
+            log::debug!("Print: no image open");
+            return;
+        };
+
+        let mut parent_ptr: *const NSWindow = std::ptr::null();
+        if let Some(win) = &self.window
+            && let Ok(RawWindowHandle::AppKit(handle)) = win.window_handle().map(|h| h.as_raw())
+        {
+            let ns_view = handle.ns_view.as_ptr() as *const objc2::runtime::AnyObject;
+            let ns_win: *const NSWindow = unsafe { msg_send![ns_view, window] };
+            if !ns_win.is_null() {
+                parent_ptr = ns_win;
+            }
+        }
+
+        if parent_ptr.is_null() {
+            log::warn!("Print: no viewer window to attach the print sheet to");
+            return;
+        }
+
+        // SAFETY: parent_ptr is a valid, live NSWindow* for the duration of this call.
+        let parent_window = unsafe { &*parent_ptr };
+        self._active_print = crate::platform::macos::print::print_image_file(&path, parent_window);
+        if self._active_print.is_some() {
+            log::info!("Printing image: {}", path.display());
         }
     }
 

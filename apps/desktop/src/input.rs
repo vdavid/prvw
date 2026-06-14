@@ -68,6 +68,8 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         Some(AppCommand::ShowSettings)
     } else if id == &ids.copy || id == &ids.context_copy {
         Some(AppCommand::CopyImage)
+    } else if id == &ids.print || id == &ids.context_print {
+        Some(AppCommand::Print)
     } else if id == &ids.zoom_in {
         Some(AppCommand::ZoomIn)
     } else if id == &ids.zoom_out {

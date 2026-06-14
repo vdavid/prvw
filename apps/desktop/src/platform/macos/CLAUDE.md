@@ -3,14 +3,34 @@
 Feature-owned macOS code lives in the feature. This module only holds the glue that doesn't belong to any single
 feature.
 
-| File              | Purpose                                                                                                   |
-| ----------------- | --------------------------------------------------------------------------------------------------------- |
-| `clipboard.rs`    | Copy the current image to `NSPasteboard` as a file URL + bitmap (Edit → Copy, ⌘C, right-click)            |
-| `menu_cleanup.rs` | `NSMenuDelegate` that strips AppKit's auto-injected Edit/View items (Writing Tools, Enter Full Screen, …) |
-| `open_handler.rs` | ObjC method injection of `application:openURLs:` into winit's `NSApplicationDelegate`                     |
-| `ui_common.rs`    | Shared AppKit helpers: `FlippedView`, labels, vibrancy, window centering, `as_view` cast, app-icon loader |
+| File              | Purpose                                                                                                        |
+| ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| `clipboard.rs`    | Copy the current image to `NSPasteboard` as a file URL + bitmap (Edit → Copy, ⌘C, right-click)                 |
+| `menu_cleanup.rs` | `NSMenuDelegate` that strips AppKit's auto-injected Edit/View items (Writing Tools, Enter Full Screen, …)      |
+| `open_handler.rs` | ObjC method injection of `application:openURLs:` into winit's `NSApplicationDelegate`                          |
+| `print.rs`        | Print the current image via the system print sheet (File → Print, ⌘P, right-click)                             |
+| `ui_common.rs`    | Shared AppKit helpers: `FlippedView`, labels, vibrancy, window centering, `as_view` cast, image + icon loaders |
 
 The helpers are `pub(crate)` so any feature building an AppKit window can reach them without duplicating.
+
+## Copy + Print share an image loader
+
+`ui_common::load_image_from_path` is the single source both `clipboard.rs` and `print.rs` use to get an `NSImage`. It
+loads from the **original file on disk** (ImageIO-decoded, color-managed by the file's embedded ICC profile via
+ColorSync), never Prvw's in-memory decode — that buffer is already transformed to the display profile (and may be HDR
+half-float), so reusing it would shift colors once another app or the printer re-interprets it. Known tradeoff: RAW
+files get macOS's ImageIO rendering, not Prvw's own RAW pipeline output, so a copied/printed RAW won't match the screen.
+
+## Decision: Print runs as a window-modal sheet, not `runOperation`
+
+**Decision:** `print.rs` calls `runOperationModalForWindow:delegate:didRunSelector:contextInfo:` (an async sheet on the
+viewer window), not the app-modal `runOperation`.
+
+**Why:** `runOperation` spins a nested run loop — exactly the segfault pattern the modal rule below forbids inside
+winit's event loop (Print is dispatched from a menu event, i.e. a winit callback). The sheet is driven by the existing
+run loop instead. The sheet returns immediately, so `App._active_print` holds the `NSPrintOperation` alive (replaced on
+the next print) for the sheet's duration. The print view is sized to one page's printable area and draws the image
+aspect-fit; `aspect_fit_rect` is the pure, unit-tested core.
 
 ## Gotchas (cross-cutting)
 

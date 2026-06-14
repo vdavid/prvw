@@ -4,9 +4,11 @@
 //! app-icon loader. Siblings inside `native_ui::{about, onboarding, settings}` import
 //! these via `use crate::platform::macos::ui_common::*`.
 
+use std::path::Path;
+
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AnyThread, MainThreadMarker, MainThreadOnly, class, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSBezelStyle, NSButton, NSCursor, NSFont, NSImage, NSLayoutAttribute,
     NSStackView, NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions,
@@ -335,6 +337,27 @@ pub(crate) fn center_window(window: &NSWindow, parent: Option<&NSWindow>) {
                 window.center();
             }
         },
+    }
+}
+
+/// Load an image file into an `NSImage`, color-managed by its embedded ICC profile.
+/// Returns `None` if the file is missing or unreadable.
+///
+/// Shared by Copy (`clipboard`) and Print: both hand other subsystems an ImageIO-decoded
+/// bitmap straight from the original file rather than Prvw's in-memory decode. That buffer
+/// is already transformed to the display profile (and may be HDR half-float), so reusing it
+/// would shift colors once ColorSync re-interprets it for the pasteboard or the printer.
+pub(crate) fn load_image_from_path(path: &Path) -> Option<Retained<NSImage>> {
+    let path_str = path.to_string_lossy();
+    // SAFETY: standard AppKit calls. Invoked on the winit main thread (command executor).
+    unsafe {
+        let ns_path = NSString::from_str(&path_str);
+        let url: Retained<NSURL> = msg_send![class!(NSURL), fileURLWithPath: &*ns_path];
+        let image = NSImage::initWithContentsOfURL(NSImage::alloc(), &url);
+        if image.is_none() {
+            log::warn!("Couldn't load image data from {path_str}");
+        }
+        image
     }
 }
 

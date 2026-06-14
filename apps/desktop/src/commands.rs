@@ -132,6 +132,12 @@ pub enum AppCommand {
     /// right-click context menu all map here).
     CopyImage,
 
+    // ── Print ────────────────────────────────────────────────────────
+    /// Print the current image via the system print dialog (File → Print,
+    /// ⌘P, and the right-click context menu all map here). Loads the original
+    /// file and presents an `NSPrintOperation` sheet on the viewer window.
+    Print,
+
     // ── App ──────────────────────────────────────────────────────────
     /// Show the About window.
     ShowAbout,

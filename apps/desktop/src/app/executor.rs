@@ -367,6 +367,10 @@ impl App {
                     None => log::debug!("Copy image: no image open"),
                 }
             }
+            AppCommand::Print => {
+                #[cfg(target_os = "macos")]
+                self.print_current_image();
+            }
             AppCommand::ShowAbout => self.show_about_dialog(),
             AppCommand::ShowSettings => self.show_settings_dialog(),
             AppCommand::ShowSettingsSection(ref _section) => {

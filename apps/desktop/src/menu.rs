@@ -9,6 +9,8 @@ pub struct MenuIds {
     pub settings: MenuId,
     pub copy: MenuId,
     pub context_copy: MenuId,
+    pub print: MenuId,
+    pub context_print: MenuId,
     pub zoom_in: MenuId,
     pub zoom_out: MenuId,
     pub actual_size: MenuId,
@@ -113,8 +115,17 @@ pub fn create_menu_bar() -> AppMenu {
 
     // File menu
     let file_menu = Submenu::new("File", true);
+    let print = MenuItem::new(
+        "Print\u{2026}",
+        true,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyP)),
+    );
     file_menu
-        .append_items(&[&PredefinedMenuItem::close_window(None)])
+        .append_items(&[
+            &print,
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::close_window(None),
+        ])
         .expect("Failed to build file menu");
 
     // Edit menu. Only Copy — Cut/Paste/Select All make no sense in a viewer, and
@@ -280,11 +291,13 @@ pub fn create_menu_bar() -> AppMenu {
     }
 
     // Right-click context menu. A separate menu (not part of the menu bar) with its own
-    // Copy item; both routes funnel to AppCommand::CopyImage via `input::menu_to_command`.
+    // Copy and Print items; both routes funnel to the same commands via
+    // `input::menu_to_command`.
     let context_menu = Menu::new();
     let context_copy = MenuItem::new("Copy image", true, None);
+    let context_print = MenuItem::new("Print\u{2026}", true, None);
     context_menu
-        .append_items(&[&context_copy])
+        .append_items(&[&context_copy, &context_print])
         .expect("Failed to build context menu");
 
     log::debug!("Menu bar created");
@@ -322,6 +335,8 @@ pub fn create_menu_bar() -> AppMenu {
             settings: settings_item.id().clone(),
             copy: copy.id().clone(),
             context_copy: context_copy.id().clone(),
+            print: print.id().clone(),
+            context_print: context_print.id().clone(),
             zoom_in: zoom_in.id().clone(),
             zoom_out: zoom_out.id().clone(),
             actual_size: actual_size.id().clone(),

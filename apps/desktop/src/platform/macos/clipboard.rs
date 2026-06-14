@@ -12,9 +12,11 @@ use std::path::Path;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{AnyThread, class, msg_send};
-use objc2_app_kit::{NSImage, NSPasteboard};
+use objc2::{class, msg_send};
+use objc2_app_kit::NSPasteboard;
 use objc2_foundation::{NSArray, NSString, NSURL};
+
+use super::ui_common::load_image_from_path;
 
 /// Copy the image at `path` to the general pasteboard as a file URL plus a bitmap.
 /// Returns `false` if the image data couldn't be loaded (missing/unreadable file) or the
@@ -28,18 +30,17 @@ pub(crate) fn copy_image_file(path: &Path) -> bool {
 /// `copy_image_file` so tests can target a scratch pasteboard instead of the user's
 /// real clipboard.
 fn write_image_to_pasteboard(pasteboard: &NSPasteboard, path: &Path) -> bool {
+    // `NSImage` loaded from the file provides the TIFF representation for bitmap consumers,
+    // color-managed by its embedded ICC profile (see `load_image_from_path`).
+    let Some(image) = load_image_from_path(path) else {
+        return false;
+    };
     let path_str = path.to_string_lossy();
     // SAFETY: standard AppKit pasteboard calls. Invoked from the command executor, which
     // runs on the winit main thread. Every object stays alive for the `writeObjects` call.
     unsafe {
         let ns_path = NSString::from_str(&path_str);
         let url: Retained<NSURL> = msg_send![class!(NSURL), fileURLWithPath: &*ns_path];
-
-        // `NSImage` loaded from the URL provides the TIFF representation for bitmap consumers.
-        let Some(image) = NSImage::initWithContentsOfURL(NSImage::alloc(), &url) else {
-            log::warn!("Copy image: couldn't load image data from {path_str}");
-            return false;
-        };
 
         // Order matters: file-URL first so Finder and friends prefer pasting the file;
         // bitmap second for apps that only take pixels.

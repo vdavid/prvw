@@ -8,4 +8,5 @@
 pub mod clipboard;
 pub mod menu_cleanup;
 pub mod open_handler;
+pub mod print;
 pub mod ui_common;
