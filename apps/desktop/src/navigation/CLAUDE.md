@@ -102,6 +102,18 @@ placeholder, and `apply_thumbnail_auto_fit` resizes the window to the source dim
 before any pixels paint. The full decode later replaces the placeholder when `PreloadResponse::Ready` arrives. The thumb
 scheduler is paused while `pending_current.is_some()`. See `apps/desktop/src/thumbnails/CLAUDE.md`.
 
+## RAW quick preview
+
+RAW develops are slow (~450 ms for 20 MP), so a cache-miss to a RAW would otherwise sit on the "Loading…" pill until the
+develop finishes. To fill that gap, the priority-target task (`queue_task` with `wants_preview = true`, set only by
+`prioritize_target`) extracts the camera's **embedded JPEG preview** via `decoding::decode_raw_preview` *before* running
+the develop, and ships it as `PreloadResponse::Preview`. `poll_preloader` shows it via `App::display_preview_placeholder`
+— but only while `pending_current` still matches (a newer nav drops it). It's deliberately downscaled (~1024 px long
+edge) so it reads as a soft placeholder, not a finished image: the camera's JPEG look differs from our develop, and the
+softness makes the sharp `Ready` swap read as snapping into focus rather than a confusing change. Not cached — purely
+transient. RAW-only (JPEG/generic decode fast enough not to need it). Neighbors never request a preview (they're never
+displayed yet). Covers cache-miss navigation; the synchronous first-launch path (`display_image`) doesn't use it yet.
+
 ## Loop navigation
 
 Toggled via Navigate → Loop navigation, bare `L` key, or `loop_navigation` MCP tool. Persisted via

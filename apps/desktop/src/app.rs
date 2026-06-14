@@ -1425,6 +1425,36 @@ impl App {
         .collect()
     }
 
+    /// Show a RAW's embedded-JPEG preview as a soft placeholder while the full
+    /// develop runs. Like `display_thumbnail_placeholder`, but uses the
+    /// passed-in preview (higher-res than the QL thumb, and available without
+    /// quicklookd, so it covers the first-visit / no-thumb case). Source dims
+    /// drive window/zoom — already set by `apply_thumbnail_auto_fit` on the
+    /// cache-miss, so the resize is a no-op. The full decode replaces this when
+    /// `Ready` arrives; the "Loading…" overlay stays up meanwhile (it's gated
+    /// on `pending_current`), signalling the soft image isn't final.
+    fn display_preview_placeholder(&mut self, index: usize, image: decoding::DecodedImage) {
+        if self.renderer.is_none() {
+            return;
+        }
+        let dims = self
+            .thumbnails
+            .source_dimensions(index)
+            .map(|d| (d.width, d.height));
+        let (sw, sh) = dims
+            .or(self.navigation.current_image_size)
+            .unwrap_or((image.width, image.height));
+        self.prepare_display(sw, sh, false);
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_image(&image);
+        }
+        // Drop the previous image's histogram; the full decode recomputes it.
+        self.histogram.data = None;
+        self.histogram.hover_bin = None;
+        self.finalize_display();
+        self.placeholder_active = true;
+    }
+
     /// Queue background preload tasks for the neighbors of `index`.
     /// Skips indices already in the image cache. Called both from a
     /// cache-hit nav (immediately) and from `poll_preloader` after a
@@ -1780,6 +1810,19 @@ impl App {
                             "Dropped salvaged decode [{index}] {} (in_window={in_window}, already_cached={already_cached})",
                             path.display()
                         );
+                    }
+                }
+                preloader::PreloadResponse::Preview { index, path, image } => {
+                    // RAW embedded-JPEG preview: show it as a soft placeholder
+                    // only while we're still waiting on THIS target's full
+                    // develop. If a newer nav moved on (index no longer
+                    // pending), or the full image already landed, drop it.
+                    if self.navigation.pending_current == Some(index) {
+                        log::debug!(
+                            "Showing RAW preview placeholder [{index}] {}",
+                            path.display()
+                        );
+                        self.display_preview_placeholder(index, image);
                     }
                 }
             }

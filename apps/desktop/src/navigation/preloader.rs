@@ -76,6 +76,15 @@ pub enum PreloadResponse {
         decode_duration: Duration,
         file_name: String,
     },
+    /// A RAW file's embedded JPEG preview, extracted before the (slow) full
+    /// develop. Sent only for the priority target so the main thread can show
+    /// it as a soft placeholder instantly, then swap in the full develop when
+    /// `Ready` arrives. Not cached — purely a transient placeholder.
+    Preview {
+        index: usize,
+        path: PathBuf,
+        image: DecodedImage,
+    },
 }
 
 /// LRU cache for decoded images with a memory budget. Keyed by absolute
@@ -452,7 +461,8 @@ impl Preloader {
             );
         }
         if !self.in_flight.contains_key(&path) {
-            self.queue_task(target_index, path, target_index, total);
+            // This is the user-visible target — request the quick preview.
+            self.queue_task(target_index, path, target_index, total, true);
         }
     }
 
@@ -505,14 +515,22 @@ impl Preloader {
             if self.in_flight.contains_key(&path) {
                 continue;
             }
-            self.queue_task(index, path, current_index, total);
+            // Neighbors are background warm-ups, never displayed yet — no preview.
+            self.queue_task(index, path, current_index, total, false);
         }
     }
 
     /// Build the task closure and queue it on the worker channel. Both
     /// `prioritize_target` and `request_neighbor_preload` use this so
     /// the closure body lives in one place.
-    fn queue_task(&mut self, index: usize, path: PathBuf, current_index: usize, total: usize) {
+    fn queue_task(
+        &mut self,
+        index: usize,
+        path: PathBuf,
+        current_index: usize,
+        total: usize,
+        wants_preview: bool,
+    ) {
         let cancelled = Arc::new(AtomicBool::new(false));
         self.in_flight.insert(path.clone(), Arc::clone(&cancelled));
 
@@ -532,6 +550,29 @@ impl Preloader {
                 .to_string_lossy()
                 .to_string();
             log::debug!("Initiated loading {file_name} ({offset_label}, {position_label})");
+            // Quick preview (priority target only): for a RAW, extract the
+            // camera's embedded JPEG and show it as a soft placeholder before
+            // the ~450 ms develop runs, so a cache-miss isn't a blank wait. Skip
+            // if already cancelled (a newer nav superseded us). Only RAW needs
+            // this — JPEG/generic decode in tens of ms.
+            if wants_preview && !cancelled.load(Ordering::Relaxed) {
+                let ext = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or_default();
+                if decoding::is_raw_extension(ext)
+                    && let Some(preview) =
+                        decoding::decode_raw_preview(&path, &display_icc, use_relative_colorimetric)
+                    && !cancelled.load(Ordering::Relaxed)
+                {
+                    let _ = tx.send(PreloadResponse::Preview {
+                        index,
+                        path: path.clone(),
+                        image: preview,
+                    });
+                    let _ = event_proxy.send_event(AppCommand::PreloaderProgress);
+                }
+            }
             // Test affordance: when `PRVW_THUMB_HOLD_MS` is set, delay
             // the decode by N ms so the thumbnail placeholder stays
             // visible long enough to inspect via MCP or take a

@@ -36,6 +36,7 @@ mod jpeg;
 mod orientation;
 mod raw;
 mod raw_flags;
+mod raw_preview;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -200,6 +201,25 @@ pub fn load_image(
 /// Check if a file extension is a supported image format.
 pub fn is_supported_extension(ext: &str) -> bool {
     dispatch::is_supported_extension(ext)
+}
+
+/// Whether a file extension is a camera RAW format (gate for the quick-preview
+/// path — only RAW decodes are slow enough to need it).
+pub fn is_raw_extension(ext: &str) -> bool {
+    dispatch::is_raw_extension(ext)
+}
+
+/// Extract the camera's embedded JPEG preview from a RAW file as a soft,
+/// downscaled, orientation-corrected placeholder — see [`raw_preview`]. Returns
+/// `None` for non-RAW files or RAWs without an embedded preview. Fast (no RAW
+/// develop); the preloader shows this instantly on a cache-miss while the full
+/// develop runs.
+pub fn decode_raw_preview(
+    path: &Path,
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
+) -> Option<DecodedImage> {
+    raw_preview::decode_raw_preview(path, target_icc, use_relative_colorimetric)
 }
 
 /// Dispatch to the chosen backend. JPEG and Generic parse EXIF orientation from the

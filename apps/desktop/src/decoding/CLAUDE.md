@@ -9,6 +9,7 @@ the renderer.
 | `dispatch.rs`      | `Backend` enum + extension-to-backend mapping                                                                                                                      |
 | `jpeg.rs`          | Fast JPEG path via `zune-jpeg` (SIMD)                                                                                                                              |
 | `raw.rs`           | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)                                                                                         |
+| `raw_preview.rs`   | Fast embedded-JPEG preview extraction (`decode_raw_preview`): no develop, downscaled + oriented soft placeholder shown on RAW cache-miss while the develop runs    |
 | `dng_opcodes.rs`   | DNG `OpcodeList1/2/3` parsing + application (Phase 3.0)                                                                                                            |
 | `generic.rs`       | Fallback path via the `image` crate (PNG, GIF, WebP, BMP, TIFF)                                                                                                    |
 | `orientation.rs`   | EXIF orientation parsing and in-place pixel-buffer rotation                                                                                                        |
