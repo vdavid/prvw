@@ -21,13 +21,22 @@ the renderer.
   module, and match it in `mod::decode_with`.
 - **Cancellation.** `load_image` takes an `AtomicBool`, checked between each RAW pipeline stage and at every 64 KB
   file-read chunk. Returns `Err("cancelled")` when the flag flips. Worst-case cancel latency inside RAW decode is one
-  stage (≈ 80 ms on the `lens` stage; see the stage budget table). JPEG and generic decodes don't check internally, so
-  cancel there waits for the whole decode to finish.
-- **Abandonable file read.** `read_file_cancellable` reads on a detached `std::thread` and polls the result through a
-  `mpsc::sync_channel` with 10 ms timeouts. When cancellation fires, the caller drops the receiver and returns
-  immediately. The IO thread finishes its `read()` on its own and discards its result when the send fails. Critical for
-  slow / wedged network shares: `std::fs::File::read` has no timeout, so the old in-thread flag check did nothing until
-  the kernel unblocked the syscall. Now the caller is never blocked.
+  stage (≈ 80 ms on the `lens` stage; see the stage budget table). JPEG and generic decodes are a single opaque library
+  call we can't checkpoint, so they run on an abandonable thread instead (see below) — cancel frees the caller within
+  ~10 ms regardless of how far the decode has progressed.
+- **Abandonable file read + decode.** Two helpers share the same shape: run the blocking work on a detached
+  `std::thread` and poll the result through a `mpsc::sync_channel` with 10 ms timeouts; when cancellation fires, the
+  caller drops the receiver and returns `Err("cancelled")` immediately, while the worker thread finishes on its own and
+  discards its result when the send fails.
+  - `read_file_cancellable` covers the file read. Critical for slow / wedged network shares: `std::fs::File::read` has
+    no timeout, so an in-thread flag check does nothing until the kernel unblocks the syscall. The caller is never
+    blocked.
+  - `run_decode_cancellable` wraps the JPEG and generic decodes (RAW self-cancels between stages, so it stays inline).
+    Trade-off: an abandoned decode burns CPU to completion (bounded; only on cancellation of a large in-flight decode),
+    in exchange for the serial preload worker never blocking on a huge image the user has already navigated past — for
+    example an 80 MP JPEG, which would otherwise stall the next image's decode by hundreds of ms. Like the preloader's
+    worker, it's a plain OS thread (not a rayon worker), so internal `par_iter` falls back to the global pool instead of
+    collapsing onto a single-thread pool.
 - **ICC profile first, pixels second.** See the gotcha below.
 
 ## Gotchas

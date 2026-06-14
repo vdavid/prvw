@@ -11,10 +11,13 @@
 //! - **`image` crate for everything else non-RAW** — mature, covers the rest.
 //! - **`rawler` for RAW** — runs its built-in develop pipeline (demosaic, white balance,
 //!   color matrix, sRGB gamma) in one call, parallelised via rayon.
-//! - **Cancellation.** `load_image` takes an `AtomicBool` — checked at format
-//!   entry and between decode stages. The preloader uses this so navigating away aborts
-//!   in-flight work before it finishes a wasted decode. Callers that don't need
-//!   cancellation (startup, settings refresh) pass a fresh `&AtomicBool::new(false)`.
+//! - **Cancellation.** `load_image` takes an `AtomicBool`. The RAW path checks
+//!   it between pipeline stages; JPEG and generic decodes (single opaque library
+//!   calls) run on an abandonable thread via `run_decode_cancellable`, which
+//!   frees the caller within ~10 ms of the flag flipping. The preloader uses
+//!   this so navigating away aborts in-flight work instead of blocking the
+//!   serial worker. Callers that don't need cancellation (startup, settings
+//!   refresh) pass a fresh `&AtomicBool::new(false)`.
 //!
 //! ## Public API
 //!
@@ -134,9 +137,11 @@ impl DecodedImage {
 /// orientation correction automatically. Images without an embedded ICC
 /// profile are assumed sRGB and transformed to `target_icc`.
 ///
-/// `cancelled` is the cancellation flag, checked while reading the file
-/// (every 64 KB) and between decode stages. Pass `&AtomicBool::new(false)`
-/// if you don't need cancellation.
+/// `cancelled` is the cancellation flag. It frees the caller promptly while
+/// reading the file (every 64 KB), between RAW pipeline stages, and — for the
+/// opaque JPEG / generic decodes — within ~10 ms via the abandonable
+/// `run_decode_cancellable`. Pass `&AtomicBool::new(false)` if you don't need
+/// cancellation.
 ///
 /// `edr_headroom` is the peak-white headroom the display can show (use
 /// [`crate::color::display_profile::current_edr_headroom`] on macOS). `1.0`
@@ -203,16 +208,30 @@ fn decode_with(
         Backend::Jpeg => {
             let orientation = parse_exif_orientation(&bytes, filename);
             let exif = parse_exif_metadata(&bytes).map(Box::new);
-            let mut img = jpeg::decode(path, bytes, target_icc, use_relative_colorimetric)?;
-            img.exif = exif;
-            Ok(finalize(img, orientation))
+            // The zune-jpeg decode is a single opaque call we can't checkpoint
+            // internally, so run it on an abandonable thread instead — see
+            // `run_decode_cancellable`. Owned clones (cheap: a few-KB ICC + a
+            // path) let the closure be `'static`.
+            let owned_path = path.to_path_buf();
+            let owned_icc = target_icc.to_vec();
+            run_decode_cancellable(cancelled, move || {
+                let mut img =
+                    jpeg::decode(&owned_path, bytes, &owned_icc, use_relative_colorimetric)?;
+                img.exif = exif;
+                Ok(finalize(img, orientation))
+            })
         }
         Backend::Generic => {
             let orientation = parse_exif_orientation(&bytes, filename);
             let exif = parse_exif_metadata(&bytes).map(Box::new);
-            let mut img = generic::decode(path, bytes, target_icc, use_relative_colorimetric)?;
-            img.exif = exif;
-            Ok(finalize(img, orientation))
+            let owned_path = path.to_path_buf();
+            let owned_icc = target_icc.to_vec();
+            run_decode_cancellable(cancelled, move || {
+                let mut img =
+                    generic::decode(&owned_path, bytes, &owned_icc, use_relative_colorimetric)?;
+                img.exif = exif;
+                Ok(finalize(img, orientation))
+            })
         }
         Backend::Raw => {
             // Try nom-exif first on the outer bytes — DNGs and many camera
@@ -334,6 +353,65 @@ fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>,
     }
 }
 
+/// Run a decode closure on a detached `std::thread`, abandoning it if
+/// `cancelled` flips before it finishes. Mirrors [`read_file_cancellable`]:
+/// the caller polls a `sync_channel` with 10 ms timeouts, so a navigation
+/// that cancels mid-decode frees the serial preload worker within ~10 ms
+/// instead of waiting out the whole decode. The detached thread runs to
+/// completion on its own and silently discards its result when the send
+/// fails (the receiver was dropped).
+///
+/// Used for the JPEG and generic (`image` crate) backends, whose decode is a
+/// single opaque library call we can't checkpoint internally — unlike the RAW
+/// path, which checks `cancelled` between its own pipeline stages and so stops
+/// early without wasting CPU. The trade-off here: an abandoned decode burns
+/// CPU to completion (bounded, and only on cancellation of a large in-flight
+/// decode), in exchange for the worker never blocking on a huge image the user
+/// has already navigated past.
+///
+/// Like the preloader's own worker, the decode runs on a plain OS thread, not
+/// a rayon worker, so any internal `par_iter` falls back to the global pool
+/// (every core) rather than collapsing onto a single-thread pool.
+///
+/// When `cancelled` is `None` (callers that never cancel), the closure runs
+/// inline with no thread or channel overhead.
+fn run_decode_cancellable<F>(
+    cancelled: Option<&AtomicBool>,
+    decode: F,
+) -> Result<DecodedImage, String>
+where
+    F: FnOnce() -> Result<DecodedImage, String> + Send + 'static,
+{
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let Some(cancelled) = cancelled else {
+        return decode();
+    };
+
+    let (tx, rx) = mpsc::sync_channel::<Result<DecodedImage, String>>(1);
+    std::thread::Builder::new()
+        .name("prvw-decode".into())
+        .spawn(move || {
+            // Send fails if the caller already abandoned us — drop the result.
+            let _ = tx.send(decode());
+        })
+        .map_err(|e| format!("spawn decode thread: {e}"))?;
+
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        match rx.recv_timeout(Duration::from_millis(10)) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("decode thread exited without a result".into());
+            }
+        }
+    }
+}
+
 /// Shared success/failure logging for both entry points.
 fn log_result(
     result: &Result<DecodedImage, String>,
@@ -386,6 +464,66 @@ fn format_decoded_size(bytes: usize) -> String {
 mod tests {
     use super::*;
     use crate::color;
+    use std::time::Duration;
+
+    /// `run_decode_cancellable` must free the caller within ~10 ms of the
+    /// cancel flag flipping, even though the decode closure runs much longer.
+    /// This is the JPEG/generic equivalent of the RAW path's inter-stage
+    /// cancellation: the serial preload worker can't afford to block on a
+    /// large in-flight decode when the user has already navigated away.
+    #[test]
+    fn decode_cancellable_returns_promptly_on_cancel() {
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        // A decode that takes far longer than our cancel deadline.
+        let slow = || {
+            std::thread::sleep(Duration::from_secs(1));
+            Ok(DecodedImage::from_rgba8(1, 1, vec![0, 0, 0, 255]))
+        };
+
+        // Flip the flag shortly after we start waiting on the decode.
+        let flipper = {
+            let cancelled = Arc::clone(&cancelled);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                cancelled.store(true, Ordering::Relaxed);
+            })
+        };
+
+        let start = Instant::now();
+        let result = run_decode_cancellable(Some(&cancelled), slow);
+        let elapsed = start.elapsed();
+        flipper.join().unwrap();
+
+        assert_eq!(
+            result.err().as_deref(),
+            Some("cancelled"),
+            "a cancelled decode must report \"cancelled\""
+        );
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "caller should be freed promptly after cancel, took {elapsed:?}"
+        );
+    }
+
+    /// The happy path: with no cancellation, the decoded image comes back
+    /// intact through the abandonable-thread plumbing.
+    #[test]
+    fn decode_cancellable_returns_image_when_not_cancelled() {
+        let cancelled = AtomicBool::new(false);
+        let result = run_decode_cancellable(Some(&cancelled), || {
+            Ok(DecodedImage::from_rgba8(
+                2,
+                1,
+                vec![1, 2, 3, 255, 4, 5, 6, 255],
+            ))
+        });
+        let img = result.expect("decode should succeed");
+        assert_eq!((img.width, img.height), (2, 1));
+    }
 
     /// Phase 6.1 smoke perf: time the full `load_image` path with and
     /// without chroma denoise. Run manually:
