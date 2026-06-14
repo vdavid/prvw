@@ -39,6 +39,11 @@ the renderer.
   `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this. Without it, cold startup on a 20 MP photo takes seconds.
 - **Unknown EXIF orientation values get logged and ignored.** The spec defines 1–8; cameras occasionally write garbage.
   We pass the buffer through unchanged rather than guess.
+- **`nom-exif` decodes date/time tags into typed variants, never `Text`.** `DateTimeOriginal` / `CreateDate` /
+  `ModifyDate` come back as `EntryValue::Time` (with offset) or `EntryValue::NaiveDateTime` (without), so the generic
+  `text()` extractor returns `None` for them. Use `date_text()` in `exif_metadata.rs`, which handles both typed variants
+  (plus a `Text` fallback). Matching only `Text` silently drops the date on every JPEG/HEIC/WebP — caught by the
+  mandatory date assertion in `metadata_round_trip_via_little_exif`.
 - **RAW orientation lives on the decoder's metadata, not `RawImage`.** Rawler hard-codes `RawImage.orientation` to
   `Normal`; the real EXIF value is on `decoder.raw_metadata(...).exif.orientation`. `raw.rs` reads it there and hands it
   back to the dispatcher so `apply_orientation` can rotate the developed buffer. Because of this, the RAW backend is the

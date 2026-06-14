@@ -136,8 +136,7 @@ pub fn parse_exif_metadata(bytes: &[u8]) -> Option<ExifMetadata> {
             .get(ExifTag::DateTimeOriginal)
             .or_else(|| exif.get(ExifTag::CreateDate))
             .or_else(|| exif.get(ExifTag::ModifyDate))
-            .and_then(text)
-            .map(normalize_exif_date),
+            .and_then(date_text),
         gps_latitude,
         gps_longitude,
         gps_altitude,
@@ -232,6 +231,22 @@ fn text(v: &EntryValue) -> Option<String> {
 
 fn nonempty(s: String) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
+}
+
+/// Extract an EXIF date/time tag as a normalized `YYYY-MM-DD HH:MM:SS`
+/// string. `nom-exif` decodes `DateTimeOriginal` / `CreateDate` /
+/// `ModifyDate` into typed `Time` / `NaiveDateTime` variants, never `Text`,
+/// so `text()` would silently drop the date on every JPEG / HEIC / WebP.
+/// We handle both typed variants (dropping any timezone offset to show the
+/// camera's wall-clock time) and keep a `Text` fallback for the rare
+/// encoder that writes the date as a raw string.
+fn date_text(v: &EntryValue) -> Option<String> {
+    match v {
+        EntryValue::Time(dt) => Some(dt.naive_local().format("%Y-%m-%d %H:%M:%S").to_string()),
+        EntryValue::NaiveDateTime(dt) => Some(dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+        EntryValue::Text(s) => nonempty(s.trim().to_string()).map(normalize_exif_date),
+        _ => None,
+    }
 }
 
 fn value_to_u32(v: &EntryValue) -> Option<u32> {
@@ -420,6 +435,44 @@ mod tests {
     }
 
     #[test]
+    fn date_text_from_naive_datetime() {
+        // `nom-exif` decodes a date tag with no offset into `NaiveDateTime`.
+        use chrono::NaiveDate;
+        let dt = NaiveDate::from_ymd_opt(2024, 8, 15)
+            .unwrap()
+            .and_hms_opt(12, 34, 56)
+            .unwrap();
+        assert_eq!(
+            date_text(&EntryValue::NaiveDateTime(dt)).as_deref(),
+            Some("2024-08-15 12:34:56")
+        );
+    }
+
+    #[test]
+    fn date_text_from_time_strips_offset() {
+        // With an OffsetTime tag present, `nom-exif` decodes into `Time`. We
+        // show the wall-clock time the camera recorded, dropping the offset.
+        use chrono::{FixedOffset, TimeZone};
+        let dt = FixedOffset::east_opt(8 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2023, 7, 9, 20, 36, 33)
+            .unwrap();
+        assert_eq!(
+            date_text(&EntryValue::Time(dt)).as_deref(),
+            Some("2023-07-09 20:36:33")
+        );
+    }
+
+    #[test]
+    fn date_text_from_text_normalizes_colons() {
+        // Rare, but some encoders write the date as a raw EXIF string.
+        assert_eq!(
+            date_text(&EntryValue::Text("2024:08:15 12:34:56".to_string())).as_deref(),
+            Some("2024-08-15 12:34:56")
+        );
+    }
+
+    #[test]
     fn date_normalises_colons_to_dashes() {
         assert_eq!(
             normalize_exif_date("2024:08:15 12:34:56".to_string()),
@@ -488,14 +541,11 @@ mod tests {
         assert_eq!(parsed.exposure_time.as_deref(), Some("1/250 s"));
         assert_eq!(parsed.iso, Some(400));
         assert!((parsed.focal_length_mm.unwrap() - 50.0).abs() < 0.01);
-        // `little_exif` writes DateTimeOriginal under the EXIF subdir, but
-        // the byte layout it produces isn't always discoverable by
-        // `nom-exif`'s default scan. We don't want to over-fit the test
-        // to a specific writer's quirks — the date formatter has its own
-        // unit tests above. If it does come through, verify the format.
-        if let Some(date) = parsed.date_taken.as_deref() {
-            assert_eq!(date, "2024-08-15 12:34:56");
-        }
+        // The date must come through. `nom-exif` decodes `DateTimeOriginal`
+        // into a typed `NaiveDateTime`, not `Text`, so this guards against
+        // the regression where the extractor only matched `Text` and
+        // silently dropped every JPEG/HEIC date.
+        assert_eq!(parsed.date_taken.as_deref(), Some("2024-08-15 12:34:56"));
     }
 
     #[test]
