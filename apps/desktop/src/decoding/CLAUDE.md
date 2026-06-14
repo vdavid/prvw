@@ -37,6 +37,13 @@ the renderer.
     example an 80 MP JPEG, which would otherwise stall the next image's decode by hundreds of ms. Like the preloader's
     worker, it's a plain OS thread (not a rayon worker), so internal `par_iter` falls back to the global pool instead of
     collapsing onto a single-thread pool.
+    - **Salvage.** The abandoned decode isn't pure waste: it recovers a value via `SendError` (the caller dropped the
+      receiver, so `send` hands the result back) and, if the caller passed a `SalvageSink`, calls it with the finished
+      image on the decode thread. The sink is preloader-agnostic — the decode layer just hands the image back; the
+      receiver decides whether to keep it. The preloader gates on the cache window (see `navigation/CLAUDE.md`), turning
+      would-be waste into a speculative prefetch when the image is still wanted. Best-effort: a tiny race (decode
+      finishes the same instant cancel fires, so `send` succeeds into the buffer before the caller drops `rx`) drops one
+      salvageable image rather than salvaging it. Harmless.
 - **ICC profile first, pixels second.** See the gotcha below.
 
 ## Gotchas

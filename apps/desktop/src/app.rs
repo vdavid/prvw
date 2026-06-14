@@ -619,6 +619,7 @@ impl App {
             self.color.relative_col,
             self.raw_flags,
             self.edr_headroom,
+            None, // Synchronous path — never cancelled, so nothing to salvage.
         );
 
         match result {
@@ -1120,6 +1121,29 @@ impl App {
         self.submit_neighbor_preload(current_index, total, &preload_indices);
     }
 
+    /// Paths currently inside the hot preload window (current ± `PRELOAD_AHEAD`,
+    /// wrap-aware). Used by `poll_preloader` to decide whether a salvaged decode
+    /// is still worth keeping. Empty when no directory is loaded. Mirrors the
+    /// keep-set logic in `after_position_change` / `refresh_preload_window`.
+    fn current_window_keep_paths(&self) -> Vec<PathBuf> {
+        let Some(dir) = &self.navigation.dir_list else {
+            return Vec::new();
+        };
+        let total = dir.len();
+        if total == 0 {
+            return Vec::new();
+        }
+        navigation::wrap::active_preload_indices(
+            dir.current_index(),
+            total,
+            preloader::preload_count(),
+            self.navigation.loop_navigation,
+        )
+        .iter()
+        .filter_map(|&i| dir.get(i).map(|p| p.to_path_buf()))
+        .collect()
+    }
+
     /// Queue background preload tasks for the neighbors of `index`.
     /// Skips indices already in the image cache. Called both from a
     /// cache-hit nav (immediately) and from `poll_preloader` after a
@@ -1426,6 +1450,38 @@ impl App {
                 preloader::PreloadResponse::Cancelled { index: _, path } => {
                     if let Some(p) = &mut self.navigation.preloader {
                         p.mark_complete(&path);
+                    }
+                }
+                preloader::PreloadResponse::Salvaged {
+                    index,
+                    path,
+                    image,
+                    decode_duration,
+                    file_name,
+                } => {
+                    // A cancelled JPEG/generic decode finished anyway. Keep it
+                    // only if it's still in the hot window and not already
+                    // cached; otherwise the respect-resources policy says drop
+                    // it rather than let an out-of-window image squat in RAM.
+                    // Deliberately not used to satisfy `pending_current`: the
+                    // prioritized fresh decode owns the user-visible target.
+                    let in_window = self.current_window_keep_paths().iter().any(|p| p == &path);
+                    let already_cached = self.navigation.image_cache.contains(&path);
+                    if in_window && !already_cached {
+                        log::debug!("Salvaged decode [{index}] {} into cache", path.display());
+                        let evicted = self.navigation.image_cache.insert(
+                            path,
+                            image,
+                            decode_duration,
+                            file_name,
+                        );
+                        self.log_evictions(evicted, "LRU");
+                        neighbor_arrived = true;
+                    } else {
+                        log::debug!(
+                            "Dropped salvaged decode [{index}] {} (in_window={in_window}, already_cached={already_cached})",
+                            path.display()
+                        );
                     }
                 }
             }

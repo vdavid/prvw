@@ -131,6 +131,13 @@ impl DecodedImage {
     }
 }
 
+/// Sink for a decode that completed *after* its caller abandoned it on
+/// cancellation. Called once, on the detached decode thread, with the finished
+/// image — see [`run_decode_cancellable`]. Preloader-agnostic by design: the
+/// decoding layer just hands back the recovered image; the receiver decides
+/// whether to keep it (the preloader gates on the cache window) or drop it.
+pub type SalvageSink = Box<dyn FnOnce(DecodedImage) + Send>;
+
 /// Decode an image file to a `DecodedImage`, color-managed to the given
 /// target ICC profile. JPEGs use zune-jpeg (SIMD-accelerated). RAW files use
 /// rawler. Everything else goes through the `image` crate. Applies EXIF
@@ -142,6 +149,10 @@ impl DecodedImage {
 /// opaque JPEG / generic decodes — within ~10 ms via the abandonable
 /// `run_decode_cancellable`. Pass `&AtomicBool::new(false)` if you don't need
 /// cancellation.
+///
+/// `salvage` (JPEG / generic only) recovers a decode that finishes *after*
+/// cancellation instead of discarding it — see [`run_decode_cancellable`] and
+/// [`SalvageSink`]. Pass `None` if you don't want the recovered image.
 ///
 /// `edr_headroom` is the peak-white headroom the display can show (use
 /// [`crate::color::display_profile::current_edr_headroom`] on macOS). `1.0`
@@ -155,6 +166,7 @@ pub fn load_image(
     use_relative_colorimetric: bool,
     raw_flags: RawPipelineFlags,
     edr_headroom: f32,
+    salvage: Option<SalvageSink>,
 ) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -178,6 +190,7 @@ pub fn load_image(
         use_relative_colorimetric,
         raw_flags,
         edr_headroom,
+        salvage,
     );
 
     log_result(&result, ext, backend, path, start);
@@ -203,6 +216,7 @@ fn decode_with(
     use_relative_colorimetric: bool,
     raw_flags: RawPipelineFlags,
     edr_headroom: f32,
+    salvage: Option<SalvageSink>,
 ) -> Result<DecodedImage, String> {
     match backend {
         Backend::Jpeg => {
@@ -214,7 +228,7 @@ fn decode_with(
             // path) let the closure be `'static`.
             let owned_path = path.to_path_buf();
             let owned_icc = target_icc.to_vec();
-            run_decode_cancellable(cancelled, move || {
+            run_decode_cancellable(cancelled, salvage, move || {
                 let mut img =
                     jpeg::decode(&owned_path, bytes, &owned_icc, use_relative_colorimetric)?;
                 img.exif = exif;
@@ -226,7 +240,7 @@ fn decode_with(
             let exif = parse_exif_metadata(&bytes).map(Box::new);
             let owned_path = path.to_path_buf();
             let owned_icc = target_icc.to_vec();
-            run_decode_cancellable(cancelled, move || {
+            run_decode_cancellable(cancelled, salvage, move || {
                 let mut img =
                     generic::decode(&owned_path, bytes, &owned_icc, use_relative_colorimetric)?;
                 img.exif = exif;
@@ -357,9 +371,7 @@ fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>,
 /// `cancelled` flips before it finishes. Mirrors [`read_file_cancellable`]:
 /// the caller polls a `sync_channel` with 10 ms timeouts, so a navigation
 /// that cancels mid-decode frees the serial preload worker within ~10 ms
-/// instead of waiting out the whole decode. The detached thread runs to
-/// completion on its own and silently discards its result when the send
-/// fails (the receiver was dropped).
+/// instead of waiting out the whole decode.
 ///
 /// Used for the JPEG and generic (`image` crate) backends, whose decode is a
 /// single opaque library call we can't checkpoint internally — unlike the RAW
@@ -369,14 +381,23 @@ fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>,
 /// decode), in exchange for the worker never blocking on a huge image the user
 /// has already navigated past.
 ///
+/// **Salvage.** When the caller has abandoned us but the decode still finishes
+/// successfully, the result isn't automatically wasted: if a `salvage` sink was
+/// provided, the finished image is handed to it (otherwise it's dropped). The
+/// preloader uses this to recover a completed decode into the LRU cache *if*
+/// the image is still inside the hot navigation window — turning would-be waste
+/// into a speculative prefetch. The sink runs on the detached decode thread, so
+/// it must be `Send`; the main thread makes the in-window decision.
+///
 /// Like the preloader's own worker, the decode runs on a plain OS thread, not
 /// a rayon worker, so any internal `par_iter` falls back to the global pool
 /// (every core) rather than collapsing onto a single-thread pool.
 ///
 /// When `cancelled` is `None` (callers that never cancel), the closure runs
-/// inline with no thread or channel overhead.
+/// inline with no thread or channel overhead and `salvage` is unused.
 fn run_decode_cancellable<F>(
     cancelled: Option<&AtomicBool>,
+    salvage: Option<SalvageSink>,
     decode: F,
 ) -> Result<DecodedImage, String>
 where
@@ -393,8 +414,16 @@ where
     std::thread::Builder::new()
         .name("prvw-decode".into())
         .spawn(move || {
-            // Send fails if the caller already abandoned us — drop the result.
-            let _ = tx.send(decode());
+            let result = decode();
+            // `send` hands the result to a still-waiting caller. If it fails,
+            // the caller already gave up (cancelled) and dropped the receiver
+            // — `SendError` hands us our value back. Salvage a successful
+            // decode rather than waste it; let failures and errors go.
+            if let Err(mpsc::SendError(result)) = tx.send(result)
+                && let (Ok(image), Some(sink)) = (result, salvage)
+            {
+                sink(image);
+            }
         })
         .map_err(|e| format!("spawn decode thread: {e}"))?;
 
@@ -494,7 +523,7 @@ mod tests {
         };
 
         let start = Instant::now();
-        let result = run_decode_cancellable(Some(&cancelled), slow);
+        let result = run_decode_cancellable(Some(&cancelled), None, slow);
         let elapsed = start.elapsed();
         flipper.join().unwrap();
 
@@ -509,12 +538,79 @@ mod tests {
         );
     }
 
+    /// A decode that finishes *after* the caller abandoned it must be handed to
+    /// the salvage sink rather than discarded, so the preloader can recover it
+    /// into the cache window instead of wasting the work.
+    #[test]
+    fn decode_cancellable_salvages_abandoned_result() {
+        use std::sync::Arc;
+        use std::sync::mpsc;
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (salvage_tx, salvage_rx) = mpsc::channel::<DecodedImage>();
+        let sink: SalvageSink = Box::new(move |img| {
+            let _ = salvage_tx.send(img);
+        });
+
+        // Decode finishes well after the cancel deadline, so the caller will
+        // have already returned "cancelled" and dropped its receiver.
+        let slow = || {
+            std::thread::sleep(Duration::from_millis(120));
+            Ok(DecodedImage::from_rgba8(7, 3, vec![9u8; 7 * 3 * 4]))
+        };
+
+        let flipper = {
+            let cancelled = Arc::clone(&cancelled);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                cancelled.store(true, Ordering::Relaxed);
+            })
+        };
+
+        let result = run_decode_cancellable(Some(&cancelled), Some(sink), slow);
+        flipper.join().unwrap();
+        assert_eq!(
+            result.err().as_deref(),
+            Some("cancelled"),
+            "the caller still sees \"cancelled\" — salvage is out-of-band"
+        );
+
+        // The abandoned decode should arrive on the salvage channel once it
+        // completes (give it generous slack over the 120 ms decode).
+        let salvaged = salvage_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("abandoned decode should be salvaged, not dropped");
+        assert_eq!((salvaged.width, salvaged.height), (7, 3));
+    }
+
+    /// When the decode is *not* abandoned, the sink must never fire — the image
+    /// goes back to the caller as the normal result.
+    #[test]
+    fn decode_cancellable_does_not_salvage_on_success() {
+        use std::sync::mpsc;
+
+        let cancelled = AtomicBool::new(false);
+        let (salvage_tx, salvage_rx) = mpsc::channel::<DecodedImage>();
+        let sink: SalvageSink = Box::new(move |img| {
+            let _ = salvage_tx.send(img);
+        });
+
+        let result = run_decode_cancellable(Some(&cancelled), Some(sink), || {
+            Ok(DecodedImage::from_rgba8(1, 1, vec![0, 0, 0, 255]))
+        });
+        assert!(result.is_ok(), "uncancelled decode returns its image");
+        assert!(
+            salvage_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "sink must not fire when the decode wasn't abandoned"
+        );
+    }
+
     /// The happy path: with no cancellation, the decoded image comes back
     /// intact through the abandonable-thread plumbing.
     #[test]
     fn decode_cancellable_returns_image_when_not_cancelled() {
         let cancelled = AtomicBool::new(false);
-        let result = run_decode_cancellable(Some(&cancelled), || {
+        let result = run_decode_cancellable(Some(&cancelled), None, || {
             Ok(DecodedImage::from_rgba8(
                 2,
                 1,
@@ -554,20 +650,20 @@ mod tests {
 
             let noop = AtomicBool::new(false);
             // One warm-up pass each.
-            let _ = load_image(path, &noop, &target, false, flags_off, 1.0);
-            let _ = load_image(path, &noop, &target, false, flags_on, 1.0);
+            let _ = load_image(path, &noop, &target, false, flags_off, 1.0, None);
+            let _ = load_image(path, &noop, &target, false, flags_on, 1.0, None);
 
             let iters = 3;
             let mut off_ms: u128 = 0;
             for _ in 0..iters {
                 let t = Instant::now();
-                let _ = load_image(path, &noop, &target, false, flags_off, 1.0).unwrap();
+                let _ = load_image(path, &noop, &target, false, flags_off, 1.0, None).unwrap();
                 off_ms += t.elapsed().as_millis();
             }
             let mut on_ms: u128 = 0;
             for _ in 0..iters {
                 let t = Instant::now();
-                let _ = load_image(path, &noop, &target, false, flags_on, 1.0).unwrap();
+                let _ = load_image(path, &noop, &target, false, flags_on, 1.0, None).unwrap();
                 on_ms += t.elapsed().as_millis();
             }
             println!(
@@ -594,6 +690,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0, // SDR headroom — keep the fixture path RGBA8 for golden diffs
+            None,
         )
         .expect("decode failed");
         assert_eq!((img.width, img.height), (5456, 3632));
@@ -613,6 +710,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0, // SDR headroom — keep the fixture path RGBA8 for golden diffs
+            None,
         )
         .expect("decode failed");
         assert_eq!((img.width, img.height), (3000, 3990));
@@ -644,6 +742,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0,
+            None,
         )
         .expect("synthetic DNG should decode");
         assert_eq!(

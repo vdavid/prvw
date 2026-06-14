@@ -134,6 +134,17 @@ neighbour decodes (no pending target) inserted into the cache silently, so QA / 
 `prvw://state.cache_indices` saw a stale snapshot. We now flip a `neighbor_arrived` flag in the loop and call
 `update_shared_state` once after the drain when any non-pending Ready landed.
 
+## Salvaged decodes (cancelled-but-completed)
+
+A cancelled JPEG/generic decode runs to completion on its detached thread (see `decoding::run_decode_cancellable` — we
+can't safely kill it mid-flight). Rather than discard that finished image, the preloader builds a `SalvageSink` per task
+that ships it back as `PreloadResponse::Salvaged`. `poll_preloader` then keeps it **only if** the path is still in the
+hot window (`current_window_keep_paths`, the same `active_preload_indices` set used for eviction) **and** not already
+cached; otherwise it drops it, honoring the respect-resources policy (no out-of-window image squatting in RAM). Salvaged
+images are deliberately not used to satisfy `pending_current` — the prioritized fresh decode owns the user-visible
+target; salvage only warms the cache. A kept salvage flips `neighbor_arrived` so shared state reflects the new
+`cache_indices`.
+
 ## Gotchas
 
 - **`zune-jpeg` in debug builds.** Its SIMD is painfully slow without optimizations. `Cargo.toml` sets

@@ -63,6 +63,19 @@ pub enum PreloadResponse {
         index: usize,
         path: PathBuf,
     },
+    /// A JPEG / generic decode that was cancelled mid-flight but finished
+    /// anyway (see `decoding::run_decode_cancellable`). The image is offered
+    /// back so the main thread can recover it into the cache *if* it's still
+    /// inside the hot navigation window, instead of wasting the work. The
+    /// main thread drops it otherwise — out-of-window images don't get to
+    /// squat in RAM.
+    Salvaged {
+        index: usize,
+        path: PathBuf,
+        image: DecodedImage,
+        decode_duration: Duration,
+        file_name: String,
+    },
 }
 
 /// LRU cache for decoded images with a memory budget. Keyed by absolute
@@ -545,6 +558,37 @@ impl Preloader {
                 }
             }
             let start = Instant::now();
+            // Salvage sink: if this decode is cancelled mid-flight but the
+            // detached decode thread finishes anyway, hand the image back as
+            // `Salvaged` so the main thread can recover it into the cache
+            // window. Runs on that decode thread, so it captures its own
+            // clones. Fires only on the abandoned-then-completed path; a
+            // normal completion drops it unused. JPEG/generic only — RAW
+            // ignores it (it self-cancels between stages and never abandons).
+            let salvage_sink: decoding::SalvageSink = {
+                let tx = tx.clone();
+                let event_proxy = event_proxy.clone();
+                let path = path.clone();
+                let file_name = file_name.clone();
+                let offset_label = offset_label.clone();
+                let position_label = position_label.clone();
+                Box::new(move |image| {
+                    let duration = start.elapsed();
+                    log::debug!(
+                        "Salvaged {file_name} ({offset_label}, {position_label}) after cancellation in {}ms",
+                        duration.as_millis()
+                    );
+                    let _ = tx.send(PreloadResponse::Salvaged {
+                        index,
+                        path,
+                        image,
+                        decode_duration: duration,
+                        file_name,
+                    });
+                    // Same wake rationale as the other responses below.
+                    let _ = event_proxy.send_event(AppCommand::PreloaderProgress);
+                })
+            };
             match decoding::load_image(
                 &path,
                 &cancelled,
@@ -552,6 +596,7 @@ impl Preloader {
                 use_relative_colorimetric,
                 raw_flags,
                 edr_headroom,
+                Some(salvage_sink),
             ) {
                 Ok(image) => {
                     let duration = start.elapsed();
