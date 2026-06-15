@@ -3669,7 +3669,7 @@ dependencies = [
 
 [[package]]
 name = "prvw"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "alphanumeric-sort",
  "base64",

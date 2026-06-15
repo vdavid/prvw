@@ -5,6 +5,46 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.1] - 2026-06-15
+
+Window-chrome polish: the traffic lights stay put, the title bar fits on one line and zooms on double-click, and zoom
+respects your settings in fullscreen.
+
+### Changed
+
+- Double-click the title bar to zoom the window (fill the screen / restore) like a native macOS app, instead of toggling
+  the image fit ([68bb58bc](https://github.com/vdavid/prvw/commit/68bb58bc))
+
+### Fixed
+
+- Keep the traffic-light buttons put across resizes, fullscreen, title changes, and navigation instead of snapping back
+  to the corner, and place them correctly from the very first frame
+  ([2bd58a7e](https://github.com/vdavid/prvw/commit/2bd58a7e),
+  [68bb58bc](https://github.com/vdavid/prvw/commit/68bb58bc))
+- Keep the title bar text on a single ellipsized line at every window width, instead of wrapping to two lines in a band
+  of widths ([ef26fe7c](https://github.com/vdavid/prvw/commit/ef26fe7c))
+- Re-fit the zoom when you turn on "Auto-fit window" on a zoomed-in image, so it no longer overflows the resized window
+  ([5d9f06c3](https://github.com/vdavid/prvw/commit/5d9f06c3))
+- Respect "Enlarge small images" in fullscreen, and stop disabling the toggle when auto-fit is on
+  ([c742b845](https://github.com/vdavid/prvw/commit/c742b845))
+
+### Non-app
+
+- Fix the website deploy silently failing on pnpm 11: the server-side Docker build choked on ignored build scripts,
+  leaving getprvw.com stuck on the old version ([d627b9a0](https://github.com/vdavid/prvw/commit/d627b9a0),
+  [71b8af3a](https://github.com/vdavid/prvw/commit/71b8af3a))
+- Finish the pnpm 11 migration so local dev, CI, and the deploy build all run the same pinned version
+  ([bd432d7d](https://github.com/vdavid/prvw/commit/bd432d7d))
+- Restore the non-macOS (Linux CI) build broken by the RAW-preview and thumbnail RAM-cap work, and clear the remaining
+  dead-code errors it exposed ([ad008aa3](https://github.com/vdavid/prvw/commit/ad008aa3),
+  [dabbc466](https://github.com/vdavid/prvw/commit/dabbc466))
+- Force a clean install in the release checks so fresh-install failures surface locally, not just in CI
+  ([cb6365f7](https://github.com/vdavid/prvw/commit/cb6365f7))
+- Port release troubleshooting from Cmdr's guide: keep the Mac awake, create-dmg TCC degradation, and `latest.json`
+  recovery ([0ba51dd7](https://github.com/vdavid/prvw/commit/0ba51dd7))
+- The release agent pushes without asking when the release finishes clean
+  ([453ece75](https://github.com/vdavid/prvw/commit/453ece75))
+
 ## [0.14.0] - 2026-06-15
 
 A slideshow, Copy and Print, and instant previews the moment you open a RAW. The viewer also picks up a Liquid Glass
