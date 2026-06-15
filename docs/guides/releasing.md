@@ -11,7 +11,7 @@ How to release a new version of Prvw. Use the `/release` command to start.
 - Self-hosted runner tagged `[self-hosted, macOS, ARM64]` running on David's M3 MacBook Pro (see
   [Self-hosted runner](#self-hosted-runner) below)
 - `CHANGELOG.md` `[Unreleased]` section populated per [docs/guides/changelog.md](changelog.md) (entries concise +
-  commit-linked, validated by the `changelog-commit-links` check)
+  commit-linked, validated by the `changelog-links` check)
 
 ## What the release does
 
@@ -29,6 +29,27 @@ The single self-hosted runner builds the three architectures sequentially. As of
 ~7 minutes 30 seconds (compile + sign + notarise + staple), so the three together come in around **22 - 23 minutes**
 before the final `Release` job creates the GitHub Release. The app keeps growing — RAW pipeline, LensFun database,
 bundled DCPs — so this number trends up over time. Re-measure when it feels off, don't trust older estimates here.
+
+## Keep the Mac awake during the build
+
+The self-hosted runner lives on David's MacBook. If the Mac idle-sleeps during the ~22-minute build, GitHub Actions
+drops the runner connection and every in-flight job fails with
+`The self-hosted runner lost communication with the server`. Holding the Mac awake is the `/release` agent's job —
+`scripts/release.sh` does not do it.
+
+Arm a dedicated, long-lived `caffeinate -i` right after pushing the tag, and `kill` it once the build finishes (success
+or failure):
+
+```bash
+caffeinate -i &        # idle-sleep only; the display can still dim. NOT -d.
+CAFFEINATE_PID=$!
+# ... monitor the build ...
+kill "$CAFFEINATE_PID" # once the Release run is `completed`
+```
+
+Use `-i` (idle only), not `-d` — there's no reason to keep the display lit. **Don't be fooled by short-lived
+`caffeinate -i -t <seconds>` processes** that the Claude Code harness spawns per tool call: they expire mid-build, so a
+plain `pgrep caffeinate` hit doesn't mean the build is covered. Arm your own untimed one and track its PID.
 
 ## Self-hosted runner
 
@@ -97,5 +118,40 @@ Use "Re-run failed jobs" (not "Re-run all jobs") to avoid rebuilding architectur
 
 ### Release job failed but builds succeeded
 
-The release job downloads DMGs from artifacts and creates a GitHub Release. If it fails, re-run it. The build artifacts
-are retained by GitHub Actions and will be re-downloaded.
+The Release job downloads the three DMGs from artifacts, creates the GitHub Release, commits the regenerated
+`latest.json` to `main` (via `git pull --rebase origin main`), and fires the website-deploy webhook. The build artifacts
+are retained by GitHub Actions, so re-running the job is safe:
+
+- **Push race:** another commit landed on `main` between the job's checkout and its push. Re-running handles this — it
+  rebases first. If the rebase itself conflicts (someone else edited `latest.json`), resolve it manually.
+- **Webhook failed but `latest.json` is already on `main`:** the GitHub Release is live and users can download, but
+  `getprvw.com/latest.json` is stale, so the in-app updater won't see the new version. Re-trigger the website-deploy
+  workflow via `workflow_dispatch` from the Actions tab, or push any commit to `main`. This doesn't block release
+  success — the GitHub Release is what users actually download.
+
+### Release ships an unstyled DMG (or stalls in the DMG step)
+
+`scripts/create-dmg.sh` styles the DMG with `create-dmg`, which drives Finder through `osascript`, and falls back to a
+plain `hdiutil` DMG when Finder isn't reachable. On the self-hosted runner the bundled `node` / `osascript` is a TCC
+client macOS may not have authorized; the first "control Finder" prompt blocks (and times out if no one clicks Allow),
+after which create-dmg degrades to the unstyled fallback. If releases start shipping unstyled DMGs, trigger the prompt
+once while you're at the keyboard and click Allow:
+
+```bash
+NODE=~/actions-runner-prvw/externals/node20/bin/node
+"$NODE" -e "require('child_process').execFileSync('/usr/bin/osascript', ['-e', 'tell application \"Finder\" to return name of startup disk'], { stdio: 'inherit' })"
+```
+
+From then on, every `osascript` call from that runner-node path is authorized until the runner auto-updates and changes
+the node path.
+
+### `create-dmg` fails fast on a leftover `/Volumes/Prvw` mount
+
+Both `scripts/release.sh` and `scripts/create-dmg.sh` detach stale `/Volumes/Prvw*` mounts before building, so this is
+normally self-healing. If you mount a release DMG between the detach and the build, the DMG step can fail fast on the
+name clash. Detach manually and re-run the failed jobs:
+
+```bash
+hdiutil detach /Volumes/Prvw -force      # or "Prvw 1", etc.
+gh run rerun <release-run-id> --failed
+```
