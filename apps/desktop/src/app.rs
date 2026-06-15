@@ -127,6 +127,14 @@ pub(crate) struct App {
     pub(crate) last_mouse_pos: (Logical<f64>, Logical<f64>),
     pub(crate) last_click_time: Option<Instant>,
     pub(crate) needs_redraw: bool,
+    /// macOS: `false` until the traffic lights have been nudged into place for the first
+    /// time. At startup the standard window buttons get their real frames only after the
+    /// window is first displayed, so the offset applied during window setup bails out (the
+    /// buttons still have zero-size frames). The first paint retries until it sticks, then
+    /// sets this so we stop retrying. Window resizes re-nudge separately (macOS resets the
+    /// buttons on relayout).
+    #[cfg(target_os = "macos")]
+    pub(crate) traffic_lights_positioned: bool,
     /// Set by a slideshow auto-advance to request that the next image display
     /// crossfades from the current one. Consumed (and cleared) by
     /// `display_from_cache`; cleared on a cache miss so only instant,
@@ -202,6 +210,8 @@ impl App {
             last_mouse_pos: (Logical(0.0), Logical(0.0)),
             last_click_time: None,
             needs_redraw: false,
+            #[cfg(target_os = "macos")]
+            traffic_lights_positioned: false,
             pending_crossfade: false,
             scale_factor: 2.0,
             shared_state,
@@ -228,6 +238,15 @@ impl App {
         } else {
             Logical(0.0)
         }
+    }
+
+    /// True when the pointer sits over the title bar strip — the top inset reserved when the
+    /// title bar is on (and we're not fullscreen). Used to route a double-click there to the
+    /// native window zoom instead of the image's fit toggle.
+    #[cfg(target_os = "macos")]
+    fn pointer_in_title_bar(&self) -> bool {
+        let strip = self.content_offset_y().0 as f64;
+        strip > 0.0 && self.last_mouse_pos.1.0 < strip
     }
 
     /// Apply the current content offset to the view state, resize the window if auto-fit
@@ -2439,6 +2458,20 @@ impl ApplicationHandler<AppCommand> for App {
 
             WindowEvent::RedrawRequested if self.needs_redraw => {
                 log::trace!("Rendering frame");
+
+                // Nudge the traffic lights into place on the first paint. At startup the
+                // buttons aren't laid out yet when the window is configured, so the offset
+                // bails out; by the first frame they have real frames, so this catches them
+                // in time and the very first frame shows them correctly placed (no flicker).
+                // Retry on each paint until it sticks; once positioned, resize re-nudges.
+                #[cfg(target_os = "macos")]
+                if !self.traffic_lights_positioned
+                    && let Some(win) = &self.window
+                    && window::reposition_traffic_lights(win)
+                {
+                    self.traffic_lights_positioned = true;
+                }
+
                 let mut text_blocks = self.build_text_overlay();
                 let offset = self.content_offset_y();
                 // The histogram and EXIF overlays anchor to a fixed top inset (the title-bar
@@ -2585,6 +2618,18 @@ impl ApplicationHandler<AppCommand> for App {
                     if let Some(last) = self.last_click_time
                         && now.duration_since(last).as_millis() < 400
                     {
+                        // A double-click on the title bar zooms the window like any native
+                        // macOS app (our content view covers the title bar, so AppKit never
+                        // sees it — we forward it). Anywhere on the image toggles the fit.
+                        #[cfg(target_os = "macos")]
+                        if self.pointer_in_title_bar() {
+                            if let Some(win) = &self.window {
+                                window::zoom_window(win);
+                            }
+                        } else {
+                            self.execute_command(event_loop, AppCommand::ToggleFit);
+                        }
+                        #[cfg(not(target_os = "macos"))]
                         self.execute_command(event_loop, AppCommand::ToggleFit);
                         self.last_click_time = None;
                         self.drag_start = None;

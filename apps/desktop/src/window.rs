@@ -23,12 +23,20 @@
 //! - **Window corner radius.** `round_window_frame_to_glass` rounds the window's own frame
 //!   view to match the glass so the system's default-radius corner stroke can't peek out.
 //! - **Traffic lights.** Nudged off the rounded corner; re-applied against a stored baseline
-//!   (`offset_traffic_lights`) because macOS resets them on every titlebar relayout.
+//!   (`offset_traffic_lights`) because macOS resets them on every titlebar relayout. The first
+//!   paint retries the nudge until it sticks (the buttons aren't laid out at window-setup time).
+//! - **Title-bar double-click.** Forwarded to the native window `zoom:` (`zoom_window`) so the
+//!   title bar fills/restores the screen like any macOS app. Our content view covers the title
+//!   bar, so AppKit never sees the click — `app.rs` routes title-bar double-clicks here.
 //!
 //! ## Gotchas
 //!
 //! - **`request_inner_size` is async on macOS.** After calling it, `inner_size()` still
 //!   returns the OLD value. That's why `resize_to_fit_image` returns the computed size.
+//! - **Traffic lights aren't laid out at window-setup time.** macOS gives the standard window
+//!   buttons their real frames only after the window is first displayed, so the offset applied
+//!   during `configure_macos_window` (and the initial title set) bails out on zero-size frames.
+//!   The first `RedrawRequested` retries via `reposition_traffic_lights` until it succeeds.
 //! - **Fullscreen appearance hand-off.** Toggling fullscreen triggers a `Resized` event
 //!   which calls `set_fullscreen_appearance` to swap the background (vibrancy → solid
 //!   black in fullscreen).
@@ -658,8 +666,14 @@ static ORIGINAL_TRAFFIC_LIGHT_ORIGIN: std::sync::OnceLock<[(f64, f64); 3]> =
 /// Shift the three traffic lights from their default positions by the traffic-light
 /// offsets. Idempotent: always sets `default + offset`, so calling it repeatedly (on every
 /// redraw) keeps them put instead of creeping further each time.
+///
+/// Returns `true` once the offset is actually applied. Returns `false` while the buttons
+/// aren't laid out yet (frame width 0) — at startup the buttons get their real frames only
+/// after the window is first displayed, so the first calls (during window setup and the
+/// initial title set) bail out here. The caller retries on the first paint (see the
+/// `traffic_lights_positioned` flag in `app.rs`) to nudge them in time for the first frame.
 #[cfg(target_os = "macos")]
-unsafe fn offset_traffic_lights(ns_window: *const objc2::runtime::AnyObject) {
+unsafe fn offset_traffic_lights(ns_window: *const objc2::runtime::AnyObject) -> bool {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
     use objc2_foundation::{NSPoint, NSRect};
@@ -671,7 +685,7 @@ unsafe fn offset_traffic_lights(ns_window: *const objc2::runtime::AnyObject) {
         unsafe {
             let button: *const AnyObject = msg_send![ns_window, standardWindowButton: kind as u64];
             if button.is_null() {
-                return;
+                return false;
             }
             buttons[kind] = button;
             frames[kind] = msg_send![button, frame];
@@ -680,7 +694,7 @@ unsafe fn offset_traffic_lights(ns_window: *const objc2::runtime::AnyObject) {
     // Skip until the buttons are actually laid out — capturing a zero-size frame as the
     // baseline would place them wrong forever.
     if frames[0].size.width <= 0.0 {
-        return;
+        return false;
     }
     // Capture the defaults on first sight; the buttons are at their natural spot here. If
     // they're already offset (a later call after our own move), the stored baseline keeps
@@ -701,19 +715,46 @@ unsafe fn offset_traffic_lights(ns_window: *const objc2::runtime::AnyObject) {
             let _: () = msg_send![buttons[kind], setFrameOrigin: origin];
         }
     }
+    true
 }
 
 /// Re-apply the traffic-light offset (see `offset_traffic_lights`). Called on window resize
-/// because macOS resets the buttons to their default positions when it relayouts.
+/// because macOS resets the buttons to their default positions when it relayouts, and on the
+/// first paint to nudge them once the buttons are laid out. Returns `true` once the offset is
+/// actually applied (the buttons are laid out).
 #[cfg(target_os = "macos")]
-pub fn reposition_traffic_lights(window: &Window) {
+pub fn reposition_traffic_lights(window: &Window) -> bool {
     use objc2::msg_send;
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
-        return;
+        return false;
     };
     let RawWindowHandle::AppKit(handle) = handle else {
+        return false;
+    };
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const objc2::runtime::AnyObject;
+        let ns_window: *const objc2::runtime::AnyObject = msg_send![ns_view, window];
+        if ns_window.is_null() {
+            return false;
+        }
+        offset_traffic_lights(ns_window)
+    }
+}
+
+/// Toggle the window's standard "zoom" — the green-button / title-bar-double-click behavior
+/// that fills the screen (or restores the previous size). We intercept the title-bar
+/// double-click ourselves, because the transparent full-size-content-view window puts our
+/// `winit` content view over the whole window (title bar included), so AppKit never sees the
+/// double-click. Forwarding it to `zoom:` makes the title bar behave like any native macOS
+/// app's.
+#[cfg(target_os = "macos")]
+pub fn zoom_window(window: &Window) {
+    use objc2::msg_send;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(RawWindowHandle::AppKit(handle)) = window.window_handle().map(|h| h.as_raw()) else {
         return;
     };
     unsafe {
@@ -722,7 +763,8 @@ pub fn reposition_traffic_lights(window: &Window) {
         if ns_window.is_null() {
             return;
         }
-        offset_traffic_lights(ns_window);
+        let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+        let _: () = msg_send![ns_window, zoom: nil];
     }
 }
 
