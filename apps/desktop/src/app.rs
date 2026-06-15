@@ -1513,6 +1513,11 @@ impl App {
     /// cache-miss, so the resize is a no-op. The full decode replaces this when
     /// `Ready` arrives; the "Loading…" overlay stays up meanwhile (it's gated
     /// on `pending_current`), signalling the soft image isn't final.
+    ///
+    /// macOS-only: the soft-placeholder path reads QuickLook-backed thumbnail
+    /// state (`thumbnails` source dims, `placeholder_active`), both gated to
+    /// macOS. RAW preview decode itself is cross-platform, but its display isn't.
+    #[cfg(target_os = "macos")]
     fn display_preview_placeholder(&mut self, index: usize, image: decoding::DecodedImage) {
         if self.renderer.is_none() {
             return;
@@ -1897,6 +1902,8 @@ impl App {
                     // only while we're still waiting on THIS target's full
                     // develop. If a newer nav moved on (index no longer
                     // pending), or the full image already landed, drop it.
+                    // macOS-only display (see `display_preview_placeholder`).
+                    #[cfg(target_os = "macos")]
                     if self.navigation.pending_current == Some(index) {
                         log::debug!(
                             "Showing RAW preview placeholder [{index}] {}",
@@ -1904,6 +1911,8 @@ impl App {
                         );
                         self.display_preview_placeholder(index, image);
                     }
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = (index, path, image);
                 }
             }
         }

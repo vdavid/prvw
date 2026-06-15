@@ -213,12 +213,17 @@ impl App {
             .as_ref()
             .map(|d| d.files_ref())
             .unwrap_or(&[]);
+        // Thumbnails are QuickLook-backed (macOS-only); other platforms report 0.
+        #[cfg(target_os = "macos")]
+        let thumbnail_bytes = self.thumbnails.memory_bytes();
+        #[cfg(not(target_os = "macos"))]
+        let thumbnail_bytes = 0;
         state.diagnostics_text = crate::diagnostics::build_text(
             &self.navigation.image_cache.diagnostics(),
             state.current_index,
             dir_files,
             &self.navigation.history,
-            self.thumbnails.memory_bytes(),
+            thumbnail_bytes,
         );
 
         #[cfg(target_os = "macos")]

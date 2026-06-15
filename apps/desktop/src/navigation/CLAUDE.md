@@ -112,7 +112,9 @@ the develop, and ships it as `PreloadResponse::Preview`. `poll_preloader` shows 
 deliberately downscaled (~1024 px long edge) so it reads as a soft placeholder, not a finished image: the camera's JPEG
 look differs from our develop, and the softness makes the sharp `Ready` swap read as snapping into focus rather than a
 confusing change. Not cached — purely transient. RAW-only (JPEG/generic decode fast enough not to need it). Neighbors
-never request a preview (they're never displayed yet).
+never request a preview (they're never displayed yet). The `Preview` decode is cross-platform, but the _display_
+(`display_preview_placeholder`) is `#[cfg(target_os = "macos")]` — it reads the QuickLook-backed `thumbnails` state, so
+non-macOS builds drop the `Preview` arm.
 
 **Initial launch uses the same path for RAW.** `App::display_initial_image` (called from `initialize_viewer`) gates on
 `decoding::is_raw_extension`: a RAW launch mirrors the cache-miss nav flow (set `pending_current`, size the window from
