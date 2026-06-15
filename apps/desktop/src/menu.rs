@@ -170,11 +170,10 @@ pub fn create_menu_bar() -> AppMenu {
     let settings = crate::settings::Settings::load();
     let auto_fit_window =
         CheckMenuItem::new("Auto-fit window", true, settings.auto_fit_window, None);
-    // Disabled when auto-fit is on (irrelevant — window matches image anyway)
-    let enlarge_enabled = !settings.auto_fit_window;
+    // Always enabled: even with auto-fit on, this governs fullscreen (where auto-fit is inert).
     let enlarge_small_images = CheckMenuItem::new(
         "Enlarge small images",
-        enlarge_enabled,
+        true,
         settings.enlarge_small_images,
         None,
     );

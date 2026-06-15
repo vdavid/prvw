@@ -23,7 +23,6 @@ use crate::platform::macos::ui_common::{
 // ─── Delegate ─────────────────────────────────────────────────────────────
 
 struct SettingsDelegateIvars {
-    enlarge_toggle: *const NSSwitch,
     color_match_toggle: *const NSSwitch,
     relative_col_toggle: *const NSSwitch,
     scroll_to_zoom_desc: *const NSTextField,
@@ -71,12 +70,6 @@ define_class!(
             let on = sender.state() == NSControlStateValueOn;
             log::debug!("Auto-fit window toggled via settings: {on}");
             crate::commands::send_command(crate::commands::AppCommand::SetAutoFitWindow(on));
-            unsafe {
-                let enlarge = self.ivars().enlarge_toggle;
-                if !enlarge.is_null() {
-                    let _: () = msg_send![enlarge, setEnabled: !on];
-                }
-            }
         }
 
         #[unsafe(method(toggleEnlargeSmallImages:))]
@@ -363,7 +356,6 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     // ── Create the main settings delegate with refs to panel widgets ──
 
     let ivars = SettingsDelegateIvars {
-        enlarge_toggle: &*zoom.enlarge_toggle as *const NSSwitch,
         color_match_toggle: &*color.cm_toggle as *const NSSwitch,
         relative_col_toggle: &*color.rc_toggle as *const NSSwitch,
         scroll_to_zoom_desc: &*general.scroll_to_zoom_desc as *const NSTextField,

@@ -40,7 +40,6 @@ pub(crate) fn build(
         content_max_width,
         mtm,
     );
-    enlarge_toggle.setEnabled(!settings.auto_fit_window);
 
     let auto_fit_desc_ref = unsafe { as_view::<NSTextField>(&auto_fit_desc) };
     let enlarge_desc_ref = unsafe { as_view::<NSTextField>(&enlarge_desc) };

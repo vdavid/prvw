@@ -22,8 +22,9 @@ features).
   `ColorPanel`, …) containing the `Retained` widgets the delegate needs to wire up. The sidebar order is General, Zoom,
   Color, RAW, Slideshow, File associations (panel indices 0–5); keep `select_panel`, the `selectXxx:` methods, and
   `switch_settings_section` in sync when adding one.
-- **Cross-panel dependencies** (ICC off disables Color match + Relative colorimetric; Auto-fit on disables Enlarge) are
-  handled in `SettingsDelegate` methods by toggling `setEnabled:` via stored `*const NSSwitch` ivars.
+- **Cross-panel dependencies** (ICC off disables Color match + Relative colorimetric) are handled in `SettingsDelegate`
+  methods by toggling `setEnabled:` via stored `*const NSSwitch` ivars. Note: "Enlarge small images" is intentionally
+  NOT disabled by "Auto-fit window" — auto-fit is inert in fullscreen, where enlarge still governs small images.
 - **Toggles apply immediately** via `AppCommand` through the global event loop proxy. No confirm/apply step. The button
   is "Close".
 

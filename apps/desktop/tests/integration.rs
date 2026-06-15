@@ -223,6 +223,52 @@ fn auto_fit_toggle() {
 }
 
 #[test]
+fn fullscreen_respects_enlarge_setting_even_with_auto_fit_on() {
+    // Auto-fit can't resize the window in fullscreen (the window is the whole screen), so it's
+    // inert there and the fit/enlarge rules govern instead. A small image with "Enlarge small
+    // images" OFF must stay at actual size in fullscreen, NOT be blown up — and toggling
+    // enlarge while in fullscreen must take effect immediately.
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("small.png");
+    create_white_image(&img_path, 64, 64);
+    let app = TestApp::start_with_image(&img_path);
+
+    app.post("/auto-fit", "on");
+    app.post("/fullscreen", "on");
+    let s = wait_for_state(&app, Duration::from_secs(5), |s| {
+        s["fullscreen"].as_bool() == Some(true)
+    });
+    assert_eq!(
+        s["fullscreen"].as_bool(),
+        Some(true),
+        "fullscreen should engage in the test harness"
+    );
+
+    // Enlarge OFF in fullscreen: the small image must stay at actual size (~100%), not be
+    // force-fit by auto-fit. (Pre-fix, auto-fit overrode this and kept it enlarged.)
+    app.post("/enlarge-small", "off");
+    let s = wait_for_state(&app, Duration::from_secs(2), |s| {
+        (s["zoom"].as_f64().unwrap_or(0.0) - 1.0).abs() < 0.05
+    });
+    let zoom_no_enlarge = s["zoom"].as_f64().unwrap();
+    assert!(
+        (zoom_no_enlarge - 1.0).abs() < 0.05,
+        "small image must stay at 100% in fullscreen when enlarge is off, got {zoom_no_enlarge}"
+    );
+
+    // Toggling enlarge ON while in fullscreen must take effect and scale the image up.
+    app.post("/enlarge-small", "on");
+    let s = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["zoom"].as_f64().unwrap_or(0.0) > 1.5
+    });
+    let zoom_enlarged = s["zoom"].as_f64().unwrap();
+    assert!(
+        zoom_enlarged > 1.5,
+        "enlarge on in fullscreen should scale the small image up, got {zoom_enlarged}"
+    );
+}
+
+#[test]
 fn enabling_auto_fit_refits_zoom_to_resized_window() {
     // With auto-fit off, the window can be a very different size than the image's auto-fit
     // target. Enabling auto-fit resizes the window AND must re-fit zoom against the NEW

@@ -29,6 +29,14 @@ content area (< 1.0 for large images, > 1.0 for small ones). `min_zoom` is the f
 On image load, `App::apply_initial_zoom` picks the starting zoom and floor based on the three settings (`auto_fit`,
 `enlarge`, `min_zoom`) and the image vs window sizes. See the full matrix in `apps/desktop/CLAUDE.md`.
 
+**Auto-fit is inert in fullscreen.** Auto-fit works by resizing the window to the image, which is impossible in
+fullscreen (the window is the whole screen). So the zoom decision uses `App::effective_auto_fit()` (=
+`auto_fit && !fullscreen`), not `auto_fit` directly — otherwise a small image in fullscreen would be force-fit
+(enlarged) regardless of the `enlarge` setting. A fullscreen transition re-runs `apply_initial_zoom` (detected via
+`was_fullscreen` in the `Resized` handler, since the macOS toggle is async) so the fit/enlarge rules re-apply for the
+new viewport mode. This is also why the "Enlarge small images" menu/settings toggle stays enabled when auto-fit is on:
+it still governs fullscreen.
+
 ## Transform
 
 Zoom and pan become a 2D affine transform in the vertex shader via `TransformUniform` (a uniform buffer write). No

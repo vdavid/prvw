@@ -110,8 +110,6 @@ impl App {
                 s.save();
                 if let Some(menu) = &self.app_menu {
                     menu.auto_fit_item.set_checked(enabled);
-                    // "Enlarge small images" is irrelevant when auto-fit is on
-                    menu.enlarge_small_item.set_enabled(!enabled);
                 }
                 if enabled
                     && let (Some(win), Some((iw, ih))) =

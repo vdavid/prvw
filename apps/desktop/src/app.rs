@@ -134,6 +134,11 @@ pub(crate) struct App {
     pub(crate) pending_crossfade: bool,
     /// Current display scale factor (Retina = 2.0).
     pub(crate) scale_factor: f64,
+    /// Fullscreen state at the last `Resized` event. A fullscreen toggle is async on macOS
+    /// (animated), so the reliable signal that the transition settled is the resulting
+    /// `Resized`. Comparing against this lets us re-decide the zoom (fit vs actual size) once
+    /// per transition without disturbing manual window resizes.
+    pub(crate) was_fullscreen: bool,
 
     // ── Cross-thread ────────────────────────────────────────────────
     pub(crate) shared_state: Arc<Mutex<SharedAppState>>,
@@ -204,6 +209,7 @@ impl App {
             needs_redraw: false,
             pending_crossfade: false,
             scale_factor: 2.0,
+            was_fullscreen: false,
             shared_state,
             event_loop_proxy,
             _qa_handle: None,
@@ -219,15 +225,27 @@ impl App {
 
     /// Compute the content offset based on the title_bar setting and fullscreen state.
     fn content_offset_y(&self) -> Logical<f32> {
-        let is_fullscreen = self
-            .window
-            .as_ref()
-            .is_some_and(|w| window::is_fullscreen(w));
-        if self.title_bar && !is_fullscreen {
+        if self.title_bar && !self.is_fullscreen() {
             Logical(TITLE_BAR_HEIGHT)
         } else {
             Logical(0.0)
         }
+    }
+
+    /// True when the window is currently fullscreen.
+    fn is_fullscreen(&self) -> bool {
+        self.window
+            .as_ref()
+            .is_some_and(|w| window::is_fullscreen(w))
+    }
+
+    /// Whether auto-fit actually governs the layout right now. Auto-fit resizes the window to
+    /// the image, which is impossible in fullscreen (the window is the whole screen), so it's
+    /// inert there — the zoom decision falls back to the fit/enlarge rules instead. Without
+    /// this, a small image in fullscreen would be force-fit (enlarged) regardless of the
+    /// "Enlarge small images" setting.
+    fn effective_auto_fit(&self) -> bool {
+        self.zoom.auto_fit && !self.is_fullscreen()
     }
 
     /// True when the pointer sits over the title bar strip — the top inset reserved when the
@@ -274,7 +292,7 @@ impl App {
     /// Called on image load, window resize, and setting changes. Does NOT change the
     /// current zoom level (only reclamps if it's below the new floor).
     fn update_min_zoom(&mut self) {
-        if self.zoom.auto_fit {
+        if self.effective_auto_fit() {
             // With auto-fit, the window tracks zoom. The floor is the zoom that would
             // make the window hit the minimum size (200px logical per axis).
             if let Some((iw, ih)) = self.navigation.current_image_size {
@@ -463,7 +481,7 @@ impl App {
         let fit = self.zoom.view.fit_zoom();
         let is_small = fit > 1.0;
 
-        if is_small && !self.zoom.enlarge && !self.zoom.auto_fit {
+        if is_small && !self.zoom.enlarge && !self.effective_auto_fit() {
             self.zoom.view.actual_size(); // show at native pixel size
         } else {
             self.zoom.view.fit_to_window(); // fill the window
@@ -2440,8 +2458,18 @@ impl ApplicationHandler<AppCommand> for App {
                         );
                     }
                 }
-                // Recalculate zoom floor — image-to-window ratio changed
-                self.update_min_zoom();
+                // On a fullscreen transition, re-decide the zoom (fit vs actual size) for the
+                // new viewport mode: entering fullscreen drops auto-fit's grip, so the
+                // fit/enlarge rules apply afresh. A plain manual resize keeps the user's zoom
+                // and only re-clamps the floor.
+                let now_fullscreen = self.is_fullscreen();
+                if now_fullscreen != self.was_fullscreen {
+                    self.was_fullscreen = now_fullscreen;
+                    self.apply_initial_zoom();
+                } else {
+                    // Recalculate zoom floor — image-to-window ratio changed
+                    self.update_min_zoom();
+                }
                 if let Some(renderer) = &self.renderer {
                     renderer.update_transform(&self.zoom.view.transform());
                 }
