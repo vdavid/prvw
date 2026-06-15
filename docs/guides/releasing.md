@@ -129,6 +129,26 @@ are retained by GitHub Actions, so re-running the job is safe:
   workflow via `workflow_dispatch` from the Actions tab, or push any commit to `main`. This doesn't block release
   success — the GitHub Release is what users actually download.
 
+### Website shows the old version even though the deploy step "succeeded"
+
+The deploy is a server-side build: the `Trigger website deploy` step POSTs a signed payload to
+`https://getprvw.com/hooks/deploy-website`, an `adnanh/webhook` systemd service on Hetzner
+(`deploy-prvw-webhook.service`, port 9001) that **returns 2xx on receipt and then runs `docker build` asynchronously**.
+So a green GitHub step only means the webhook was accepted — the actual site build can still fail silently afterward.
+
+Confirm by checking the served file against the origin: a stale `last-modified` header
+(`curl -sI https://getprvw.com/latest.json`) pointing at the previous release's date, with `cf-cache-status: DYNAMIC`,
+means it's the origin serving an old file, not a CDN cache. Then read the build log on the server:
+
+```bash
+ssh hetzner "journalctl -u deploy-prvw-webhook.service --no-pager -n 60"
+```
+
+A failed `docker build` here is what keeps the site on the old version. One cause already hit and fixed: pnpm 11 turns
+"ignored build scripts" into a hard `pnpm install` error, so `apps/website/Dockerfile` installs with `--ignore-scripts`
+(see `apps/website/CLAUDE.md`). Fix the build, push to `main`, and the next webhook (or
+`gh workflow run ci.yml --ref main`) redeploys.
+
 ### Release ships an unstyled DMG (or stalls in the DMG step)
 
 `scripts/create-dmg.sh` styles the DMG with `create-dmg`, which drives Finder through `osascript`, and falls back to a

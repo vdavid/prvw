@@ -135,6 +135,14 @@ you add analytics tooling, preserve this property. The tracking script URL and w
 
 ## Gotchas
 
+- **The Docker deploy build runs pnpm 11 and `--ignore-scripts`; don't drop the flag.** Corepack honors the root
+  `package.json` `packageManager` field (pnpm 11) over the `Dockerfile`'s `corepack prepare`, so the deploy image always
+  builds with pnpm 11 even though local dev (mise) uses pnpm 10. pnpm 11 turns "ignored build scripts" into a hard
+  install error, so `pnpm install` without `--ignore-scripts` fails on `esbuild` / `sharp` and the webhook deploy dies
+  after returning 2xx (the site silently stays on the old version). esbuild and sharp ship prebuilt binaries, so
+  skipping their postinstall scripts doesn't change the build output. A build-script allowlist (`onlyBuiltDependencies`)
+  did _not_ reliably suppress the error in testing; `--ignore-scripts` is the proven lever. See
+  `docs/guides/releasing.md`.
 - The `@ts-expect-error` in `astro.config.mjs` is for a Vite version mismatch between Astro and Tailwind. Doesn't affect
   the build.
 - `site` must be set in `astro.config.mjs` for OG image URLs to work.
