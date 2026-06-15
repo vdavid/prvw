@@ -16,7 +16,10 @@ Prepare a release based on docs/guides/releasing.md.
 3. Based on the changes, advise what the next version should be (patch: bug fixes, minor: new features, major: major
    launches), and give the user the `./scripts/release.sh x.x.x` command to run.
 4. **Offer to run the release script** for the user. Wait for confirmation before running.
-5. **Offer to push** with `git push origin main --tags`. Wait for confirmation before pushing.
+5. **Push** with `git push origin main --tags`. If the release script finished cleanly — all checks green, the release
+   commit and tag created, and the working tree clean — push without asking. The push is part of the release flow the
+   user already authorized by running the script. Only pause to confirm if something is off: checks were skipped or
+   force-passed, the working tree has unexpected changes, or the script reported a problem.
 6. **After pushing**, confirm the self-hosted runner picked up the build:
    - Wait ~30 seconds, then run `gh run view <release-run-id> --json jobs` and check the `Build (...)` jobs.
    - At least one `Build (...)` job should be `in_progress` (the self-hosted runner serializes the three matrix jobs, so
