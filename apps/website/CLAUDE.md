@@ -135,14 +135,17 @@ you add analytics tooling, preserve this property. The tracking script URL and w
 
 ## Gotchas
 
-- **The Docker deploy build runs pnpm 11 and `--ignore-scripts`; don't drop the flag.** Corepack honors the root
-  `package.json` `packageManager` field (pnpm 11) over the `Dockerfile`'s `corepack prepare`, so the deploy image always
-  builds with pnpm 11 even though local dev (mise) uses pnpm 10. pnpm 11 turns "ignored build scripts" into a hard
-  install error, so `pnpm install` without `--ignore-scripts` fails on `esbuild` / `sharp` and the webhook deploy dies
-  after returning 2xx (the site silently stays on the old version). esbuild and sharp ship prebuilt binaries, so
-  skipping their postinstall scripts doesn't change the build output. A build-script allowlist (`onlyBuiltDependencies`)
-  did _not_ reliably suppress the error in testing; `--ignore-scripts` is the proven lever. See
-  `docs/guides/releasing.md`.
+- **Every `pnpm install` here uses `--ignore-scripts`; don't drop it.** Recent pnpm (10.16+ and all of 11.x) turns
+  un-approved dependency build scripts into a hard install error (`ERR_PNPM_IGNORED_BUILDS`), not the old warning. The
+  only deps that trip it are `esbuild` and `sharp`, which ship prebuilt binaries and don't need their postinstall
+  scripts for the Astro build (verified: identical `dist/`). A build-script allowlist (`onlyBuiltDependencies`, in
+  either `package.json` or `pnpm-workspace.yaml`) did _not_ reliably suppress the error in testing — `--ignore-scripts`
+  is the proven lever, and it's applied at all three install sites: `.github/workflows/ci.yml` (the `Website` job),
+  `apps/website/Dockerfile` (the deploy build), and `scripts/check/checks/common.go` (the check runner). Miss one and it
+  fails there only: a fresh CI install reddens the `Website` job (which gates `deploy-website`), and the Docker build
+  fails _after_ the webhook returns 2xx, so the site silently stays on the old version. It hides locally because
+  `check.sh` skips the install when `node_modules` already exists. The deploy image runs pnpm 11 specifically (corepack
+  honors the root `packageManager` field over the `Dockerfile`'s `corepack prepare`). See `docs/guides/releasing.md`.
 - The `@ts-expect-error` in `astro.config.mjs` is for a Vite version mismatch between Astro and Tailwind. Doesn't affect
   the build.
 - `site` must be set in `astro.config.mjs` for OG image URLs to work.

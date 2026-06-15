@@ -146,7 +146,11 @@ jobs:
             ${{ runner.os }}-pnpm-
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # --ignore-scripts: recent pnpm (10.16+, 11.x) turns un-approved dependency
+        # build scripts into a hard install error (ERR_PNPM_IGNORED_BUILDS). esbuild
+        # and sharp ship prebuilt binaries and don't need their postinstall scripts
+        # for the Astro build, so we skip them. See apps/website/CLAUDE.md.
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build check tool
         run: go build -o check .

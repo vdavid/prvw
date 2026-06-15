@@ -240,7 +240,11 @@ func EnsurePnpmDependencies(ctx *CheckContext) (skipped bool, err error) {
 		}
 	}
 
-	args := []string{"install"}
+	// --ignore-scripts: recent pnpm (10.16+, 11.x) errors out on un-approved
+	// dependency build scripts (ERR_PNPM_IGNORED_BUILDS). esbuild and sharp ship
+	// prebuilt binaries and don't need their postinstall scripts, so skip them.
+	// See apps/website/CLAUDE.md.
+	args := []string{"install", "--ignore-scripts"}
 	if ctx.CI {
 		args = append(args, "--frozen-lockfile")
 	}
