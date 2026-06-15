@@ -1468,7 +1468,11 @@ fn skip_unknown_opcode(label: &str, opcode: &Opcode, path: &Path) {
             path.display()
         );
     } else {
-        log::warn!(
+        // INFO, not WARN: an unimplemented opcode is a known limitation, not an
+        // actionable problem — we deliberately best-effort the decode rather
+        // than refuse the file (e.g. iPhone DNG `FixVignetteRadial`). Nothing
+        // for the user to do, so don't cry wolf at WARN.
+        log::info!(
             "{label}: not implemented (mandatory, best-effort decode) for {}",
             path.display()
         );

@@ -61,6 +61,11 @@ fn main() {
         .filter_module("wgpu_hal", log::LevelFilter::Warn)
         .filter_module("naga", log::LevelFilter::Warn)
         .filter_module("muda", log::LevelFilter::Warn)
+        // rawler emits best-effort WARNs the user can't act on: "Decoder has no
+        // preview image support" (our quick-preview probes every RAW for one),
+        // lens-DB match misses, and TIFF-parse noise on exotic files. Show only
+        // errors. Our own `decoding::*` logs are a different target, unaffected.
+        .filter_module("rawler", log::LevelFilter::Error)
         .format(|buf, record| {
             use std::io::Write;
             let now = chrono::Local::now();
