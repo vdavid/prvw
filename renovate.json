@@ -2,6 +2,10 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "schedule": ["before 6am on Monday"],
+  "minimumReleaseAge": "14 days",
+  "vulnerabilityAlerts": {
+    "minimumReleaseAge": "3 days"
+  },
   "packageRules": [
     {
       "description": "Non-major updates: group and auto-merge weekly",
