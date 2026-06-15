@@ -1562,7 +1562,7 @@ impl App {
         let pad_y = Logical(4.0_f32);
         let radius = Logical(5.0_f32);
         let title_x = Logical(88.0_f32); // Right of the traffic lights (nudged in 8px from the edge)
-        let title_y = Logical(6.0_f32); // Sits in the title-bar strip, a touch below the top
+        let title_y = Logical(4.0_f32); // Sits in the title-bar strip, a touch below the top
         let zoom_margin = Logical(7.0_f32); // Equidistant from top and right edge
 
         // The zoom pill is right-aligned: x = the right edge of the pill.
