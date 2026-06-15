@@ -526,29 +526,41 @@ impl App {
             directory::DirectoryList::from_file(&self.file_path, initial_sort_by)
         };
 
-        // Start preloader thread pool
-        let mut preloader = preloader::Preloader::start(
+        // Start preloader thread pool and store it before displaying the
+        // initial image, so the async RAW-launch path (see
+        // `display_initial_image`) can submit its priority-0 target through
+        // `self.navigation.preloader` and `poll_preloader` can drain it.
+        self.navigation.preloader = Some(preloader::Preloader::start(
             self.color.display_icc.clone(),
             self.color.relative_col,
             self.raw_flags,
             self.edr_headroom,
             self.event_loop_proxy.clone(),
-        );
+        ));
 
-        // Load and display the initial image
+        // Seed the thumbnail scheduler with the full folder so every image
+        // will get a thumb in priority order (indices outside the preload
+        // window first). Done BEFORE the initial display so the async RAW path
+        // can read source dimensions (via `source_dimensions`'s synchronous
+        // fallback over `self.thumbnails.paths`) for the pre-paint auto-fit.
+        // The scheduler is paused below, after the display sets
+        // `pending_current` on the async path.
+        #[cfg(target_os = "macos")]
+        if let Some(dir) = &self.navigation.dir_list {
+            let paths = dir.files();
+            let current = dir.current_index();
+            self.thumbnails.set_folder(paths, current);
+        }
+
+        // Load and display the initial image. RAW launches take the async
+        // quick-preview path (mirrors cache-miss navigation); everything else
+        // stays on the synchronous decode (fast enough not to need it).
         let initial_path = self.file_path.clone();
-        self.display_image(&initial_path);
+        self.display_initial_image(&initial_path);
 
         if let Some(dir) = &self.navigation.dir_list {
             let current_index = dir.current_index();
             let total = dir.len();
-
-            if let Some(win) = &self.window {
-                window::set_title_keeping_buttons(
-                    win,
-                    &window::window_title_with_position(&self.file_path, current_index, total),
-                );
-            }
 
             if self.navigation.preload_neighbors {
                 // Startup direction is unknown — warm both sides symmetrically.
@@ -562,7 +574,9 @@ impl App {
                     .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
                     .collect();
 
-                if !to_preload.is_empty() {
+                if !to_preload.is_empty()
+                    && let Some(preloader) = &mut self.navigation.preloader
+                {
                     preloader.request_neighbor_preload(to_preload, current_index, total);
                 }
             } else {
@@ -570,21 +584,15 @@ impl App {
             }
         }
 
-        self.navigation.preloader = Some(preloader);
-
-        // Seed the thumbnail scheduler with the full folder so every image
-        // will get a thumb in priority order (indices outside the preload
-        // window first). Pause while the initial primary decode is running.
+        // Pause the thumbnail scheduler while the initial primary decode is
+        // running (the async RAW path leaves `pending_current` set). The full
+        // decode's arrival in `poll_preloader` resumes it.
         #[cfg(target_os = "macos")]
-        if let Some(dir) = &self.navigation.dir_list {
-            let paths = dir.files();
-            let current = dir.current_index();
-            self.thumbnails.set_folder(paths, current);
-            if self.navigation.pending_current.is_some() {
-                self.thumbnails.pause();
-            }
-            self.pump_thumbnail_requests();
+        if self.navigation.pending_current.is_some() {
+            self.thumbnails.pause();
         }
+        #[cfg(target_os = "macos")]
+        self.pump_thumbnail_requests();
 
         self.update_shared_state();
 
@@ -601,6 +609,78 @@ impl App {
             updater::check_and_update();
         }
 
+        self.request_redraw();
+    }
+
+    /// Display the initial (launch) image. RAW files take the async
+    /// quick-preview path so the window paints the camera's embedded JPEG
+    /// preview instantly (then snaps to the full develop when it lands),
+    /// instead of blocking the main thread on the ~450 ms RAW develop and
+    /// leaving the user on a blank window. Everything else (JPEG, PNG, …)
+    /// keeps the synchronous `display_image` decode — those finish in tens of
+    /// ms, so an async path would only add a needless "Loading…" flash.
+    ///
+    /// Mirrors the cache-miss navigation flow (`after_position_change`): set
+    /// `pending_current`, size the window from ImageIO dims (no decode), show
+    /// the "Loading…" title, and let the preloader's prioritized target ship a
+    /// `Preview` then a `Ready` that `poll_preloader` displays.
+    fn display_initial_image(&mut self, path: &Path) {
+        let is_raw = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(crate::decoding::is_raw_extension)
+            .unwrap_or(false);
+
+        let Some((index, total)) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| (d.current_index(), d.len()))
+        else {
+            // No directory (shouldn't happen — set up just above), but keep the
+            // app working with a direct synchronous decode.
+            self.display_image(path);
+            return;
+        };
+
+        if !is_raw {
+            // Non-RAW: unchanged synchronous decode, then the final title.
+            self.display_image(path);
+            if let Some(win) = &self.window {
+                window::set_title_keeping_buttons(
+                    win,
+                    &window::window_title_with_position(path, index, total),
+                );
+            }
+            return;
+        }
+
+        // RAW: async quick-preview path.
+        log::info!("Initial RAW image — using async quick-preview path");
+        self.navigation.pending_current = Some(index);
+        self.request_times.insert(index, Instant::now());
+
+        // Size the window from ImageIO dims (metadata-only, no decode) so it's
+        // correct before any pixels paint. macOS-only — that's where
+        // `source_dimensions` is available. On other platforms the window
+        // simply keeps its initial size until the full develop lands.
+        #[cfg(target_os = "macos")]
+        {
+            self.on_primary_decode_started();
+            self.apply_thumbnail_auto_fit(index);
+        }
+
+        if let Some(win) = &self.window {
+            window::set_title_keeping_buttons(win, &window::window_title_loading(index, total));
+        }
+
+        if let Some(preloader) = &mut self.navigation.preloader {
+            preloader.prioritize_target(index, path.to_path_buf(), total);
+        }
+
+        // The window/surface exist, but nothing has painted yet. Request a
+        // redraw so the "Loading…" overlay shows immediately, before the first
+        // `Preview`/`Ready` arrives.
         self.request_redraw();
     }
 

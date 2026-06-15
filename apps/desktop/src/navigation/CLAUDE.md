@@ -112,8 +112,16 @@ the develop, and ships it as `PreloadResponse::Preview`. `poll_preloader` shows 
 deliberately downscaled (~1024 px long edge) so it reads as a soft placeholder, not a finished image: the camera's JPEG
 look differs from our develop, and the softness makes the sharp `Ready` swap read as snapping into focus rather than a
 confusing change. Not cached — purely transient. RAW-only (JPEG/generic decode fast enough not to need it). Neighbors
-never request a preview (they're never displayed yet). Covers cache-miss navigation; the synchronous first-launch path
-(`display_image`) doesn't use it yet.
+never request a preview (they're never displayed yet).
+
+**Initial launch uses the same path for RAW.** `App::display_initial_image` (called from `initialize_viewer`) gates on
+`decoding::is_raw_extension`: a RAW launch mirrors the cache-miss nav flow (set `pending_current`, size the window from
+ImageIO dims via `apply_thumbnail_auto_fit`, show "Loading…", call `prioritize_target`) so the embedded preview paints
+instantly instead of blocking the main thread on the ~450 ms develop. Non-RAW launches keep the synchronous
+`display_image` decode unchanged (tens of ms — an async path would only add a needless "Loading…" flash). This requires
+two ordering points in `initialize_viewer`: the preloader is stored into `navigation.preloader` and the thumbnail folder
+is seeded BEFORE the initial display, and the thumbnail scheduler is paused AFTER it (so the RAW path's
+`pending_current` gates the pause).
 
 ## Loop navigation
 
