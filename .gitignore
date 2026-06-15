@@ -44,3 +44,6 @@ _ignored/
 
 # Claude Code runtime state
 .claude/scheduled_tasks.lock
+
+# CodeGraph local index (SQLite db + watcher state, per-checkout)
+.codegraph/
