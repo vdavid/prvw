@@ -26,7 +26,10 @@
 //!   RGBA16F (RAW output when HDR is active and the display can display it).
 //! - [`load_image`] — decode a file to `DecodedImage`, color-managed to a target
 //!   ICC profile, with EXIF orientation applied. Always cancellable.
-//! - [`is_supported_extension`] — format gate used by the directory scanner.
+//! - [`decode_raw_preview`] — fast embedded-JPEG preview for a RAW (no develop),
+//!   shown as a soft placeholder on a cache-miss while the full decode runs.
+//! - [`is_supported_extension`] / [`is_raw_extension`] — format gates used by the
+//!   directory scanner and the quick-preview path.
 
 mod dispatch;
 mod dng_opcodes;
