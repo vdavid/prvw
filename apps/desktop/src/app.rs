@@ -127,14 +127,6 @@ pub(crate) struct App {
     pub(crate) last_mouse_pos: (Logical<f64>, Logical<f64>),
     pub(crate) last_click_time: Option<Instant>,
     pub(crate) needs_redraw: bool,
-    /// macOS: `false` until the traffic lights have been nudged into place for the first
-    /// time. At startup the standard window buttons get their real frames only after the
-    /// window is first displayed, so the offset applied during window setup bails out (the
-    /// buttons still have zero-size frames). The first paint retries until it sticks, then
-    /// sets this so we stop retrying. Window resizes re-nudge separately (macOS resets the
-    /// buttons on relayout).
-    #[cfg(target_os = "macos")]
-    pub(crate) traffic_lights_positioned: bool,
     /// Set by a slideshow auto-advance to request that the next image display
     /// crossfades from the current one. Consumed (and cleared) by
     /// `display_from_cache`; cleared on a cache miss so only instant,
@@ -210,8 +202,6 @@ impl App {
             last_mouse_pos: (Logical(0.0), Logical(0.0)),
             last_click_time: None,
             needs_redraw: false,
-            #[cfg(target_os = "macos")]
-            traffic_lights_positioned: false,
             pending_crossfade: false,
             scale_factor: 2.0,
             shared_state,
@@ -520,6 +510,9 @@ impl App {
                 display_profile::set_layer_colorspace(&win, &self.color.display_icc);
             }
             display_profile::register_screen_change_observer(&win);
+            // Keep the traffic lights nudged across relayouts (resize, fullscreen) without a
+            // frame of flicker — re-applies the offset synchronously when macOS resets them.
+            window::register_traffic_light_keeper(&win);
             // Allow the title bar area to show vibrancy through the transparent clear.
             display_profile::set_metal_layer_transparent(&win);
             // Push the wgpu Metal layer above the vibrancy views via zPosition so the
@@ -2432,8 +2425,8 @@ impl ApplicationHandler<AppCommand> for App {
                     window::set_fullscreen_appearance(win, window::is_fullscreen(win));
                     // The glass frame mask doesn't autoresize; rebuild it for the new size.
                     window::apply_glass_frame_mask(win);
-                    // macOS resets the traffic lights to default on relayout; re-nudge them.
-                    window::reposition_traffic_lights(win);
+                    // The traffic lights stay nudged across the relayout via the swizzled
+                    // frame setters (see `window::register_traffic_light_keeper`).
                 }
                 if let Some(renderer) = &mut self.renderer {
                     let (pw, ph) = from_physical_size(size);
@@ -2458,20 +2451,6 @@ impl ApplicationHandler<AppCommand> for App {
 
             WindowEvent::RedrawRequested if self.needs_redraw => {
                 log::trace!("Rendering frame");
-
-                // Nudge the traffic lights into place on the first paint. At startup the
-                // buttons aren't laid out yet when the window is configured, so the offset
-                // bails out; by the first frame they have real frames, so this catches them
-                // in time and the very first frame shows them correctly placed (no flicker).
-                // Retry on each paint until it sticks; once positioned, resize re-nudges.
-                #[cfg(target_os = "macos")]
-                if !self.traffic_lights_positioned
-                    && let Some(win) = &self.window
-                    && window::reposition_traffic_lights(win)
-                {
-                    self.traffic_lights_positioned = true;
-                }
-
                 let mut text_blocks = self.build_text_overlay();
                 let offset = self.content_offset_y();
                 // The histogram and EXIF overlays anchor to a fixed top inset (the title-bar
