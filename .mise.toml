@@ -5,5 +5,11 @@ node = "25"
 # GitHub release assets from `pnpm-linux-x64.tar.gz` archives to raw binaries
 # (`pnpm-linux-x64`), which the aqua resolver can't find. The npm registry
 # stays consistent.
-"npm:pnpm" = "10"
+#
+# Pin the exact version, kept in sync with `packageManager` in the root
+# `package.json` (and `corepack prepare` in `apps/website/Dockerfile`). A
+# floating `"11"` would drift to a newer 11.x than `packageManager`, and pnpm
+# refuses to run when its version doesn't match that field. Bump all three
+# together.
+"npm:pnpm" = "11.1.2"
 # Rust is managed by rustup via rust-toolchain.toml

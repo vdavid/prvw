@@ -2,12 +2,6 @@
   "name": "prvw",
   "private": true,
   "packageManager": "pnpm@11.1.2",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "sharp"
-    ]
-  },
   "scripts": {
     "preinstall": "npx only-allow pnpm",
     "dev:website": "pnpm --filter @prvw/website dev",
