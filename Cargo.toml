@@ -1,3 +1,14 @@
 [workspace]
 members = ["apps/desktop"]
 resolver = "3"
+
+# Profile overrides MUST live at the workspace root — Cargo ignores `[profile.*]`
+# in member manifests (it warns and drops them). Both crates below are unusably
+# slow to *run* in an unoptimized debug build: zune-jpeg's SIMD JPEG decode, and
+# moxcms's per-pixel ICC transform (~1 s on a 24 MP photo). Optimize just these
+# two dependencies in dev; our own crate stays opt-0 and fully debuggable.
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.moxcms]
+opt-level = 3

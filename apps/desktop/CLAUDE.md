@@ -68,8 +68,8 @@ See `platform/macos/CLAUDE.md` for the full list. Short version:
 - **`Retained<>` outlives the window.** Store every objc2 `Retained<...>` in a `Vec` that outlives the window. No
   compile-time check.
 - **Finder file opens need ObjC method injection** into winit's delegate. See `platform/macos/open_handler.rs`.
-- **`zune-jpeg` in debug builds.** SIMD unusably slow without optimizations. `Cargo.toml` sets
-  `[profile.dev.package.zune-jpeg] opt-level = 3`.
+- **`zune-jpeg` in debug builds.** SIMD unusably slow without optimizations. The **workspace-root** `Cargo.toml` sets
+  `[profile.dev.package.zune-jpeg] opt-level = 3` (Cargo ignores `[profile.*]` in member manifests).
 
 ## Running
 

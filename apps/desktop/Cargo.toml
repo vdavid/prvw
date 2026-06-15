@@ -115,15 +115,8 @@ objc2-image-io = { version = "0.3", default-features = false, features = [
 ] }
 block2 = "0.6"
 
-[profile.dev.package.zune-jpeg]
-opt-level = 3
-
-# moxcms runs the per-pixel ICC color transform. Like zune-jpeg, its
-# unoptimized debug build is painfully slow on large images (~1s on a 24 MP
-# photo), so optimize just this dependency in dev. Our own crate stays opt-0
-# and fully debuggable.
-[profile.dev.package.moxcms]
-opt-level = 3
+# NOTE: dev-profile opt-level overrides for zune-jpeg and moxcms live in the
+# workspace-root Cargo.toml — Cargo ignores `[profile.*]` in member manifests.
 
 [build-dependencies]
 zstd = "0.13.3"

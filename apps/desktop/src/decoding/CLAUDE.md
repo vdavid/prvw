@@ -52,10 +52,12 @@ the renderer.
 - **ICC extraction ordering (`generic.rs`).** `ImageReader::into_decoder()` returns `impl ImageDecoder`. `icc_profile()`
   takes `&mut self`, and `DynamicImage::from_decoder()` consumes the decoder. So call `icc_profile()` first, then
   `from_decoder()`. Reversing won't compile.
-- **`zune-jpeg` in debug builds is unusably slow.** `apps/desktop/Cargo.toml` sets
-  `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this. Without it, cold startup on a 20 MP photo takes seconds.
-  The same override is set for **`moxcms`** (the per-pixel ICC color transform) for the same reason (~1s on a 24 MP
-  photo in unoptimized debug). Both optimize only the dependency; our own crate stays opt-0 and debuggable.
+- **`zune-jpeg` in debug builds is unusably slow.** The **workspace-root** `Cargo.toml` sets
+  `[profile.dev.package.zune-jpeg] opt-level = 3` to fix this — it must be at the root, not `apps/desktop/Cargo.toml`,
+  because Cargo ignores `[profile.*]` in member manifests (it warns and drops them). Without it, cold startup on a 20 MP
+  photo takes seconds. The same override is set for **`moxcms`** (the per-pixel ICC color transform) for the same reason
+  (~1s on a 24 MP photo in unoptimized debug). Both optimize only the dependency; our own crate stays opt-0 and
+  debuggable.
 - **JPEG decodes straight to RGBA.** `jpeg.rs` sets `jpeg_set_out_colorspace(ColorSpace::RGBA)` so zune emits RGBA in
   one SIMD color-convert pass — no separate RGB→RGBA repack (which doubled peak memory with a second framebuffer) and no
   3-channel assumption (zune handles CMYK / grayscale → RGBA). The generic backend already delegates the same way via
