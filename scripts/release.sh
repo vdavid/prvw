@@ -89,7 +89,16 @@ else
   echo "Runner is up (PID $(echo "$RUNNER_LINE" | awk '{ print $1 }'))."
 fi
 
-# 3) Full check suite. Catches lint, format, and test regressions, plus the
+# 3) Clean node_modules so the check suite installs from scratch. A warm
+#    node_modules hides install-config breakage: `./scripts/check.sh` skips the
+#    pnpm install when the lockfile is unchanged, so a fresh-install failure
+#    (e.g. pnpm's ERR_PNPM_IGNORED_BUILDS, which only fires on a clean install)
+#    would otherwise sail through local checks and only surface in CI or the
+#    website deploy. The full suite below repopulates node_modules.
+echo "Removing node_modules to force a clean install in the checks..."
+rm -rf node_modules apps/*/node_modules
+
+# 4) Full check suite. Catches lint, format, and test regressions, plus the
 #    `changelog-links` validator that flags fabricated commit SHAs in the
 #    [Unreleased] section before we tag.
 echo "Running ./scripts/check.sh (full suite)..."
