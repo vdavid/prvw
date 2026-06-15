@@ -69,6 +69,15 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 - **Logging**: Use `RUST_LOG=debug` or target specific modules with `RUST_LOG=prvw::render::renderer=debug`.
 - **GPU issues**: `wgpu` logs adapter/device info at `info` level. Check `RUST_LOG=wgpu=info` for GPU backend details.
 
+## Code intelligence
+
+This repo carries a CodeGraph index (`.codegraph/`, gitignored). How to use the tools is covered at user level; the
+prvw-specific point: unlike a Tauri app, prvw has no IPC barrier, so the call graph (`codegraph_callers` /
+`codegraph_callees` / `codegraph_impact`) resolves direct Rust→Rust edges with few blind spots — trustworthy enough to
+lean on for "what breaks if I change this". The edges it still can't see are macros, trait-object dynamic dispatch, and
+the `objc2`/AppKit `msg_send!` boundary (ObjC selectors are string-dispatched, so menu/responder wiring is invisible).
+Verify a "no callers" against those before treating a symbol as dead.
+
 ## Where to put instructions
 
 - **User-generic preferences** (for example, "never use git stash") -> `~/.claude/CLAUDE.md`. These apply across all
