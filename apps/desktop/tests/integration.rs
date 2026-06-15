@@ -223,6 +223,39 @@ fn auto_fit_toggle() {
 }
 
 #[test]
+fn enabling_auto_fit_refits_zoom_to_resized_window() {
+    // With auto-fit off, the window can be a very different size than the image's auto-fit
+    // target. Enabling auto-fit resizes the window AND must re-fit zoom against the NEW
+    // window size — not the stale (pre-resize) one. Pre-fix, zoom was fit against the stale
+    // (larger) window, so after the window shrank the image stayed zoomed in and overflowed.
+    let app = TestApp::start();
+    app.post("/auto-fit", "off");
+    // Force a window much larger than the 1024x1024 fixture's natural fit, then zoom in so
+    // we're clearly above fit. (Auto-fit off means neither step resizes the window.)
+    app.post_json(
+        "/window-geometry",
+        &serde_json::json!({"width": 1400, "height": 1400}),
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    app.post("/zoom-in", "");
+    app.post("/zoom-in", "");
+
+    app.post("/auto-fit", "on");
+    std::thread::sleep(Duration::from_millis(200));
+    let s = app.get_state();
+    let win_w = s["window_width"].as_f64().unwrap();
+    let win_h = s["window_height"].as_f64().unwrap();
+    let rw = s["image_render_width"].as_f64().unwrap();
+    let rh = s["image_render_height"].as_f64().unwrap();
+    // Auto-fit promises the image fits within the window. A small slack absorbs rounding.
+    assert!(
+        rw <= win_w + 2.0 && rh <= win_h + 2.0,
+        "image should fit the window after enabling auto-fit, not overflow it: \
+         render {rw}x{rh}, window {win_w}x{win_h}"
+    );
+}
+
+#[test]
 fn title_bar_toggle() {
     let app = TestApp::start();
     let before = app.get_state()["title_bar"].as_bool().unwrap();

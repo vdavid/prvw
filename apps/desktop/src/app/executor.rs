@@ -116,8 +116,22 @@ impl App {
                 if enabled
                     && let (Some(win), Some((iw, ih))) =
                         (&self.window, self.navigation.current_image_size)
+                    && let Some(size) =
+                        window::resize_to_fit_image(win, iw, ih, self.content_offset_y())
                 {
-                    window::resize_to_fit_image(win, iw, ih, self.content_offset_y());
+                    // Push the new window size into the view BEFORE re-fitting zoom. The OS
+                    // resize is async, so `apply_initial_zoom` would otherwise fit against the
+                    // stale (larger) window and leave the image at its old, inflated zoom.
+                    let (pw, ph) = from_physical_size(size);
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.resize(pw, ph);
+                        self.zoom.view.update_dimensions(
+                            iw,
+                            ih,
+                            renderer.logical_width(),
+                            renderer.logical_height(),
+                        );
+                    }
                 }
                 // Re-apply zoom: auto-fit changes whether min_zoom can go below 1.0
                 self.apply_initial_zoom();
