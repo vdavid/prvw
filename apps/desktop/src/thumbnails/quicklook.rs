@@ -245,13 +245,22 @@ fn worker_submit(
     unsafe {
         let ns_path = NSString::from_str(path_str);
         let url: Retained<NSURL> = NSURL::fileURLWithPath(&ns_path);
+        // Request rendered content only (`Thumbnail` + `LowQualityThumbnail`),
+        // never `Icon`. `All` would let quicklookd fall back to the generic
+        // file-type icon (the gray "DNG"/"RAF" document stamp) for files it
+        // can't render — we'd then show that junk icon as the placeholder.
+        // Excluding `Icon` means such files return an error instead (→ our
+        // `ThumbnailFailed` path, no placeholder), leaving the "Loading…" pill
+        // (and, for RAW, our embedded-JPEG preview) to cover the gap.
+        let representation_types = QLThumbnailGenerationRequestRepresentationTypes::Thumbnail
+            | QLThumbnailGenerationRequestRepresentationTypes::LowQualityThumbnail;
         let request =
             QLThumbnailGenerationRequest::initWithFileAtURL_size_scale_representationTypes(
                 QLThumbnailGenerationRequest::alloc(),
                 &url,
                 size,
                 scale,
-                QLThumbnailGenerationRequestRepresentationTypes::All,
+                representation_types,
             );
         entries.insert(request_id, request.clone());
 
