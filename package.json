@@ -1,7 +1,7 @@
 {
   "name": "prvw",
   "private": true,
-  "packageManager": "pnpm@10.11.0",
+  "packageManager": "pnpm@11.1.2",
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
@@ -16,5 +16,8 @@
   },
   "devDependencies": {
     "oxfmt": "^0.46.0"
+  },
+  "engines": {
+    "pnpm": ">=11"
   }
 }
