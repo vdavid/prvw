@@ -6,18 +6,23 @@
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+#[cfg(target_os = "macos")]
 use std::sync::OnceLock;
 
 /// Total physical RAM in bytes, queried once and cached. Used to size
 /// RAM-proportional cache budgets (see `thumbnails`) so a small machine
 /// stays frugal and a big one gets headroom. Falls back to a conservative
-/// 8 GB assumption if the query fails, keeping budgets sane on an
-/// unexpected platform or error.
+/// 8 GB assumption if the `sysctl` query fails.
+///
+/// macOS-only: its sole consumer is the QuickLook-backed `thumbnails` cache,
+/// which is itself macOS-only.
+#[cfg(target_os = "macos")]
 pub fn total_physical_ram_bytes() -> u64 {
     static RAM: OnceLock<u64> = OnceLock::new();
     *RAM.get_or_init(query_total_physical_ram_bytes)
 }
 
+#[cfg(target_os = "macos")]
 const RAM_FALLBACK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 #[cfg(target_os = "macos")]
@@ -42,9 +47,4 @@ fn query_total_physical_ram_bytes() -> u64 {
         log::warn!("sysctl hw.memsize failed (rc={rc}); assuming {RAM_FALLBACK_BYTES} bytes");
         RAM_FALLBACK_BYTES
     }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn query_total_physical_ram_bytes() -> u64 {
-    RAM_FALLBACK_BYTES
 }

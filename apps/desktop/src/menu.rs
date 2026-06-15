@@ -45,6 +45,9 @@ pub struct AppMenu {
     pub _menu: Menu,
     /// Right-click context menu, shown via `ContextMenu::show_context_menu_for_nsview`.
     /// Kept alive for the same reason as `_menu`: dropping it frees its MenuChild backing.
+    /// The container is only read by the macOS-gated show path (the item IDs are
+    /// dispatched cross-platform via `MenuIds`), so it's dead code off macOS.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub context_menu: Menu,
     /// Menu delegates that strip AppKit's auto-injected items. AppKit holds delegates
     /// weakly, so these must live for the app's lifetime.
