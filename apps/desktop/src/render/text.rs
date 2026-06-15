@@ -238,6 +238,17 @@ impl GlyphonRenderer {
         attrs: &Attrs,
         max_render_width: Option<f32>,
     ) -> String {
+        // A render-width cap means the block is single-line and middle-truncated to fit.
+        // Such a block must NEVER wrap, so lay it out unbounded (no wrap width) before
+        // measuring. The caller sizes the buffer's wrap width to the distance to the screen
+        // edge, which is wider than this cap (it reserves room for the zoom pill); leaving
+        // that wrap width active makes glyphon break the title onto two lines whose longest
+        // line still fits the cap, so truncation never triggers — a band of window widths
+        // showed the title wrapped instead of ellipsized.
+        if max_render_width.is_some() {
+            buffer.set_size(font_system, None, None);
+        }
+
         buffer.set_text(font_system, text, attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(font_system, false);
 
@@ -469,5 +480,71 @@ impl GlyphonRenderer {
     /// Trim the atlas after each frame to free unused glyphs.
     pub fn trim(&mut self) {
         self.atlas.trim();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A render-width-capped block (like the title) must stay on a single line and
+    /// middle-truncate, even when the buffer's wrap width is set wider than the cap (as the
+    /// overlay layout does — it reserves room for the zoom pill). Pre-fix, the wider wrap
+    /// width let glyphon break the title onto two lines for a band of window widths.
+    #[test]
+    fn render_capped_text_never_wraps() {
+        let mut fs = FontSystem::new();
+        let metrics = Metrics::new(13.5, 18.5);
+        let mut buffer = Buffer::new(&mut fs, metrics);
+        // Simulate the overlay sizing the buffer to a finite wrap width. Pre-fix, glyphon
+        // wrapped at this width; when the wrapped lines fit under the cap, truncation never
+        // fired and the title rendered on two lines. Using cap == wrap width is the clean,
+        // font-independent way to land in that band: every wrapped line is <= the cap, so the
+        // only way to stay single-line is for the fix to disable wrapping.
+        let wrap_width = 150.0;
+        buffer.set_size(&mut fs, Some(wrap_width), Some(40.0));
+        let attrs = Attrs::new()
+            .family(Family::Name("System Font"))
+            .weight(Weight::BOLD);
+
+        let text = "6 / 39 \u{2013} 2026-04-17_at_12.58.27_125827@2x.png";
+        let cap = wrap_width;
+
+        let out =
+            GlyphonRenderer::shape_and_truncate(&mut fs, &mut buffer, text, &attrs, Some(cap));
+
+        assert_eq!(
+            buffer.layout_runs().count(),
+            1,
+            "render-capped title must stay on one line, never wrap"
+        );
+        assert!(
+            out.contains('\u{2026}'),
+            "an over-long title should be middle-truncated with an ellipsis, got {out:?}"
+        );
+        assert!(
+            measure_text_width(&buffer) <= cap + 1.0,
+            "the truncated title must fit within the cap"
+        );
+    }
+
+    /// Without a render-width cap, wrapping still works (multi-line blocks like overlays
+    /// rely on the buffer's wrap width).
+    #[test]
+    fn uncapped_text_still_wraps() {
+        let mut fs = FontSystem::new();
+        let metrics = Metrics::new(13.5, 18.5);
+        let mut buffer = Buffer::new(&mut fs, metrics);
+        buffer.set_size(&mut fs, Some(120.0), Some(200.0));
+        let attrs = Attrs::new().family(Family::Name("System Font"));
+
+        let text = "The quick brown fox jumps over the lazy dog repeatedly all day long";
+        let out = GlyphonRenderer::shape_and_truncate(&mut fs, &mut buffer, text, &attrs, None);
+
+        assert_eq!(out, text, "no cap means no truncation");
+        assert!(
+            buffer.layout_runs().count() > 1,
+            "uncapped long text should still wrap to multiple lines"
+        );
     }
 }
