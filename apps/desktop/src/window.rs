@@ -831,6 +831,34 @@ pub fn push_metal_layer_above_vibrancy(window: &Window) {
 /// `find_sublayer_responding_to(setColorspace:)` walk as `push_metal_layer_above_vibrancy` to
 /// locate the Metal layer.
 #[cfg(target_os = "macos")]
+/// Make winit's content view the window's first responder again.
+///
+/// Browse mode hosts a live `NSOutlineView`; while it's up the outline view (or some descendant)
+/// holds first responder, so AppKit's responder chain — not winit — owns key events. When we leave
+/// browse mode the hidden outline view can still hold the responder, and then winit never sees the
+/// next key (Enter would do nothing). Restoring the content view as first responder on the way back
+/// to image mode hands the keyboard back to winit, so image-mode keys (Enter → `ToggleBrowseMode`)
+/// work again. (Menu items keep working regardless — muda events don't use the responder chain.)
+#[cfg(target_os = "macos")]
+pub fn restore_content_view_first_responder(window: &Window) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(RawWindowHandle::AppKit(handle)) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let ns_window: *const AnyObject = msg_send![ns_view, window];
+        if ns_window.is_null() {
+            return;
+        }
+        let accepted: bool = msg_send![ns_window, makeFirstResponder: ns_view];
+        log::debug!("Restored content view as first responder (accepted={accepted})");
+    }
+}
+
 pub fn set_metal_layer_hidden(window: &Window, hidden: bool) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;

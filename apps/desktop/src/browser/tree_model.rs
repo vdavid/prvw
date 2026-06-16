@@ -4,14 +4,120 @@
 //! holds the platform-free decisions it leans on so they're unit-testable without AppKit:
 //!
 //! - [`child_directories`]: a node's child folders — directories only, dot-folders and
-//!   unreadable entries skipped, sorted case-insensitively by name. Computed lazily per node
-//!   (never a whole-tree walk).
+//!   unreadable entries skipped, sorted case-insensitively by name. Runs on the background
+//!   scanner thread (never the main thread — slow filesystems would freeze the UI).
 //! - [`enumerate_roots`]: the source-list roots — the home folder plus every mounted volume.
 //! - [`count_supported_images`]: how many decodable images a folder holds (reuses
 //!   `decoding::is_supported_extension`), logged when a folder is selected.
 //! - [`next_selectable_row`]: the Up/Down arrow-key target row in a flat list of visible rows.
+//! - [`ChildCache`]: the per-path load-state machine (`NotLoaded` → `InFlight` → `Loaded`) the
+//!   data source serves children from. The data source NEVER reads a directory inline; it only
+//!   ever consults this cache and lets the background scanner fill it.
+//! - [`scan_overdue`]: the "has a scan the user is waiting on been pending longer than the
+//!   loading-overlay delay?" predicate, kept pure so it's unit-testable without a clock.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// How long a directory scan must stay pending before the tree pane shows its "Loading…" overlay.
+/// Fast local dirs finish well under this, so the overlay never flashes for them; only a genuinely
+/// slow scan (a stale SMB share) outlives the delay and reveals the overlay. See [`scan_overdue`].
+pub const LOADING_OVERLAY_DELAY: Duration = Duration::from_secs(1);
+
+/// The load state of one tree node's child directories. The `NSOutlineView` data source serves
+/// children straight from here and never touches the disk itself: a slow filesystem read on the
+/// main thread would freeze winit's event loop (the whole app). A miss enqueues a background scan
+/// and shows nothing yet; the scanner posts the result back and flips the entry to `Loaded`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildState {
+    /// A background scan is running for this path; children aren't known yet. Treated as "no
+    /// children, but assume expandable" so the disclosure triangle still shows.
+    InFlight,
+    /// The scan finished; these are the child directories (possibly empty for a leaf folder).
+    Loaded(Vec<PathBuf>),
+}
+
+/// Per-path child-directory cache with an explicit load-state machine, plus the in-flight start
+/// times the loading-overlay timer reads. Lives in the data source (`outline.rs`); split out here
+/// so the state transitions are unit-testable without AppKit.
+///
+/// State machine per path: absent (`NotLoaded`) → [`ChildState::InFlight`] (via [`begin_scan`])
+/// → [`ChildState::Loaded`] (via [`complete_scan`]). A path is scanned at most once: `begin_scan`
+/// returns `false` if the path is already in flight or loaded, so the data source won't enqueue
+/// duplicate scans no matter how often the outline view re-queries it during layout.
+///
+/// [`begin_scan`]: ChildCache::begin_scan
+/// [`complete_scan`]: ChildCache::complete_scan
+#[derive(Debug, Default)]
+pub struct ChildCache {
+    states: HashMap<PathBuf, ChildState>,
+    /// When each in-flight scan started, so the overlay timer knows if one is overdue. Cleared
+    /// for a path when its scan completes.
+    started: HashMap<PathBuf, Instant>,
+}
+
+impl ChildCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The current load state of `path`, or `None` if it hasn't been scanned yet (`NotLoaded`).
+    /// Test-only inspector: production code reads through [`loaded`](Self::loaded) (and treats a
+    /// miss/in-flight identically — assume expandable, serve no children).
+    #[cfg(test)]
+    #[must_use]
+    pub fn state(&self, path: &Path) -> Option<&ChildState> {
+        self.states.get(path)
+    }
+
+    /// Loaded children for `path`, or `None` if not yet `Loaded` (absent or in flight).
+    #[must_use]
+    pub fn loaded(&self, path: &Path) -> Option<&[PathBuf]> {
+        match self.states.get(path) {
+            Some(ChildState::Loaded(children)) => Some(children),
+            _ => None,
+        }
+    }
+
+    /// Try to start a scan for `path`. Marks it [`ChildState::InFlight`] and returns `true` when
+    /// the caller should enqueue a background scan. Returns `false` (and does nothing) when a scan
+    /// is already in flight or the path is already loaded — so the same path is scanned only once.
+    /// `now` is the scan's start time, recorded for the overlay timer.
+    pub fn begin_scan(&mut self, path: &Path, now: Instant) -> bool {
+        if self.states.contains_key(path) {
+            return false;
+        }
+        self.states.insert(path.to_path_buf(), ChildState::InFlight);
+        self.started.insert(path.to_path_buf(), now);
+        true
+    }
+
+    /// Record a finished scan: store the children and flip the path to [`ChildState::Loaded`].
+    /// Clears its in-flight start time so it no longer counts toward the overlay timer.
+    pub fn complete_scan(&mut self, path: &Path, children: Vec<PathBuf>) {
+        self.states
+            .insert(path.to_path_buf(), ChildState::Loaded(children));
+        self.started.remove(path);
+    }
+
+    /// The earliest start time among all still-in-flight scans, or `None` if none are pending.
+    /// `about_to_wait` feeds this to [`scan_overdue`] to decide whether to show the overlay and
+    /// when to schedule the next wakeup.
+    #[must_use]
+    pub fn earliest_in_flight(&self) -> Option<Instant> {
+        self.started.values().copied().min()
+    }
+}
+
+/// Whether a scan that started at `earliest` is overdue as of `now` — i.e. has been pending at
+/// least [`LOADING_OVERLAY_DELAY`], so the tree pane should show its "Loading…" overlay. `None`
+/// means no scan is in flight, so the overlay stays hidden.
+#[must_use]
+pub fn scan_overdue(earliest: Option<Instant>, now: Instant) -> bool {
+    earliest.is_some_and(|start| now.duration_since(start) >= LOADING_OVERLAY_DELAY)
+}
 
 /// A source-list root: the home folder or a mounted volume. `name` is the row's display label
 /// (the volume's localized name, or "Home" for the home folder); `path` is what gets listed
@@ -373,5 +479,84 @@ mod tests {
     fn next_selectable_row_empty_list_is_none() {
         assert_eq!(next_selectable_row(None, 0, 1), None);
         assert_eq!(next_selectable_row(Some(0), 0, 1), None);
+    }
+
+    // ── ChildCache state machine ──
+
+    #[test]
+    fn child_cache_miss_then_in_flight_then_loaded() {
+        let mut cache = ChildCache::new();
+        let path = Path::new("/Volumes/Slow/folder");
+        let t0 = Instant::now();
+
+        // Miss: nothing known yet.
+        assert_eq!(cache.state(path), None);
+        assert_eq!(cache.loaded(path), None);
+
+        // First begin_scan starts it and asks the caller to enqueue a scan.
+        assert!(cache.begin_scan(path, t0));
+        assert_eq!(cache.state(path), Some(&ChildState::InFlight));
+        // In flight: not loaded yet, so no children to serve.
+        assert_eq!(cache.loaded(path), None);
+
+        // A second begin_scan while in flight is a no-op — never scan the same path twice.
+        assert!(!cache.begin_scan(path, t0 + Duration::from_millis(5)));
+
+        // Completion stores children and flips to Loaded.
+        let children = vec![PathBuf::from("/Volumes/Slow/folder/a")];
+        cache.complete_scan(path, children.clone());
+        assert_eq!(
+            cache.state(path),
+            Some(&ChildState::Loaded(children.clone()))
+        );
+        assert_eq!(cache.loaded(path), Some(children.as_slice()));
+
+        // begin_scan on an already-loaded path is also a no-op.
+        assert!(!cache.begin_scan(path, t0 + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn child_cache_tracks_earliest_in_flight_and_clears_on_complete() {
+        let mut cache = ChildCache::new();
+        let a = Path::new("/a");
+        let b = Path::new("/b");
+        let t0 = Instant::now();
+
+        assert_eq!(cache.earliest_in_flight(), None);
+        cache.begin_scan(a, t0);
+        cache.begin_scan(b, t0 + Duration::from_millis(100));
+        // The oldest still-pending scan wins.
+        assert_eq!(cache.earliest_in_flight(), Some(t0));
+
+        // Completing the oldest leaves the younger one as the new earliest.
+        cache.complete_scan(a, Vec::new());
+        assert_eq!(
+            cache.earliest_in_flight(),
+            Some(t0 + Duration::from_millis(100))
+        );
+
+        // Completing the last clears it entirely.
+        cache.complete_scan(b, Vec::new());
+        assert_eq!(cache.earliest_in_flight(), None);
+    }
+
+    #[test]
+    fn scan_overdue_only_past_the_delay() {
+        let t0 = Instant::now();
+        // No scan in flight → never overdue.
+        assert!(!scan_overdue(None, t0));
+        // Just started → not overdue.
+        assert!(!scan_overdue(Some(t0), t0));
+        // Just under the threshold → not overdue.
+        assert!(!scan_overdue(
+            Some(t0),
+            t0 + LOADING_OVERLAY_DELAY - Duration::from_millis(1)
+        ));
+        // At/past the threshold → overdue, show the overlay.
+        assert!(scan_overdue(Some(t0), t0 + LOADING_OVERLAY_DELAY));
+        assert!(scan_overdue(
+            Some(t0),
+            t0 + LOADING_OVERLAY_DELAY + Duration::from_secs(5)
+        ));
     }
 }

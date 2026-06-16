@@ -373,6 +373,13 @@ impl App {
             AppCommand::BrowseExpandTreeSelection(expand) => {
                 self.browser.expand_tree_selection(expand);
             }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseTreeChildrenLoaded { path, children } => {
+                // A background tree scan finished. Store its children and reload the node so the
+                // outline view shows them (the data source never reads directories on the main
+                // thread — see `browser::outline`). Refreshing the overlay happens inside.
+                self.browser.tree_children_loaded(&path, children);
+            }
             AppCommand::ToggleSlideshow => {
                 self.toggle_slideshow();
             }

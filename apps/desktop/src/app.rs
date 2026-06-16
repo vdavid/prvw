@@ -1346,6 +1346,13 @@ impl App {
             // ~60 fps while the fade runs.
             candidates.push(Instant::now() + Duration::from_millis(16));
         }
+        // Browse-mode loading overlay: if a tree scan is in flight, wake at its 1s deadline so
+        // `about_to_wait` can reveal the "Loading…" overlay (fast scans finish before then and
+        // never schedule a wakeup that matters). macOS-only — the tree is AppKit.
+        #[cfg(target_os = "macos")]
+        if let Some(earliest) = self.browser.earliest_in_flight_scan() {
+            candidates.push(earliest + crate::browser::tree_model::LOADING_OVERLAY_DELAY);
+        }
         match candidates.into_iter().min() {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -2468,8 +2475,13 @@ impl ApplicationHandler<AppCommand> for App {
         // Crossfade animation: ramp the fade factor each frame until done.
         self.drive_crossfade();
 
+        // Browse-mode tree loading overlay: reveal it once a scan has been pending past the 1s
+        // delay, hide it when scans finish. No-op outside browse mode / off macOS.
+        #[cfg(target_os = "macos")]
+        self.browser.refresh_loading_overlay();
+
         // Set the next wakeup from whatever's still pending (nav debounce,
-        // slideshow timer, crossfade frames), or idle.
+        // slideshow timer, crossfade frames, tree-scan overlay), or idle.
         self.schedule_wakeup(event_loop);
     }
 

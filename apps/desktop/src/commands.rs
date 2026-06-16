@@ -140,6 +140,16 @@ pub enum AppCommand {
     /// `true` = expand, `false` = collapse. Browse-mode only, tree pane focused.
     #[cfg(target_os = "macos")]
     BrowseExpandTreeSelection(bool),
+    /// A background scan of `path`'s child directories finished. The data source NEVER reads a
+    /// directory on the main thread (a slow SMB share would freeze the whole app), so children
+    /// arrive here: the executor stores them in the tree's child cache and tells the outline view
+    /// to re-query that node (`reloadItem:reloadChildren:`). Posted by the tree scanner thread via
+    /// the global `EventLoopProxy`. `children` is already filtered to subdirectories and sorted.
+    #[cfg(target_os = "macos")]
+    BrowseTreeChildrenLoaded {
+        path: PathBuf,
+        children: Vec<PathBuf>,
+    },
 
     // ── Slideshow ────────────────────────────────────────────────────
     /// Start the slideshow if stopped, stop it if running (Slideshow →

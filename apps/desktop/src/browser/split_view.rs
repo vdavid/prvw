@@ -33,6 +33,7 @@
 //! segfaults the autorelease pool.
 
 use std::cell::Cell;
+use std::time::Instant;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -109,6 +110,9 @@ pub struct BrowseSplitView {
     grid_pane: Retained<NSView>,
     /// The folder tree the app drives for keyboard navigation.
     tree: BrowseTree,
+    /// Translucent "Loading…" overlay covering the tree pane. Hidden by default; shown when a
+    /// directory scan the user is waiting on outlives `LOADING_OVERLAY_DELAY` (slow SMB share).
+    loading_overlay: Retained<NSView>,
 }
 
 // SAFETY: All fields are AppKit objects only ever touched on the main thread (App runs the winit
@@ -168,6 +172,28 @@ impl BrowseSplitView {
     /// Collapse the selected tree row (Left arrow).
     pub fn collapse_tree_selection(&self) {
         self.tree.collapse_selected();
+    }
+
+    /// Apply a completed background directory scan: store the children and reload that tree node.
+    /// Then refresh the loading overlay (it may now hide if no scan is left pending).
+    pub fn tree_children_loaded(&self, path: &std::path::Path, children: Vec<std::path::PathBuf>) {
+        self.tree.children_loaded(path, children);
+        self.refresh_loading_overlay();
+    }
+
+    /// The earliest still-in-flight tree scan start time, for the loading-overlay timer.
+    pub fn earliest_in_flight_scan(&self) -> Option<std::time::Instant> {
+        self.tree.earliest_in_flight_scan()
+    }
+
+    /// Show or hide the tree-pane "Loading…" overlay based on whether a scan is overdue (pending
+    /// longer than `tree_model::LOADING_OVERLAY_DELAY`). Idempotent — safe to call every wakeup.
+    pub fn refresh_loading_overlay(&self) {
+        let overdue =
+            super::tree_model::scan_overdue(self.earliest_in_flight_scan(), Instant::now());
+        unsafe {
+            let _: () = msg_send![&*self.loading_overlay, setHidden: !overdue];
+        }
     }
 }
 
@@ -251,6 +277,29 @@ unsafe fn build(mtm: MainThreadMarker, ns_view: *const AnyObject) -> BrowseSplit
             0.0,
         );
 
+        // ── Loading overlay: translucent "Loading…" over the tree pane, hidden by default ─
+        // Shown only when a scan the user is waiting on outlives `LOADING_OVERLAY_DELAY` (a slow
+        // SMB share). Sits above the scroll view in the tree pane, pinned to all edges, so it
+        // covers the rows while a scan is in flight. The 1s delay (driven by the wakeup timer in
+        // `app.rs`) keeps it from flashing for fast local dirs.
+        let loading_overlay = FlippedView::new_as_nsview(mtm);
+        let _: () = msg_send![&*loading_overlay, setWantsLayer: true];
+        let _: () =
+            msg_send![&*loading_overlay, setTranslatesAutoresizingMaskIntoConstraints: false];
+        let _: () = msg_send![&*loading_overlay, setHidden: true];
+        if let Some(overlay_layer) = loading_overlay.layer() {
+            // A near-opaque window-background fill so the rows underneath read as "busy".
+            let bg = NSColor::windowBackgroundColor().colorWithAlphaComponent(0.8);
+            set_layer_background(&*overlay_layer as *const _ as *const AnyObject, &bg);
+        }
+        let loading_label = make_label("Loading…", 13.0, mtm);
+        loading_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        let _: () = msg_send![&*loading_label, setTranslatesAutoresizingMaskIntoConstraints: false];
+        loading_overlay.addSubview(as_view::<objc2_app_kit::NSTextField>(&loading_label));
+        center_in(&loading_label, &loading_overlay);
+        tree_pane.addSubview(&loading_overlay);
+        pin_edges(&loading_overlay, &tree_pane, 0.0);
+
         // ── Right pane: centered "(grid)" stub (a later phase wires NSCollectionView) ─
         let grid_pane = FlippedView::new_as_nsview(mtm);
         let _: () = msg_send![&*grid_pane, setWantsLayer: true];
@@ -288,6 +337,7 @@ unsafe fn build(mtm: MainThreadMarker, ns_view: *const AnyObject) -> BrowseSplit
             tree_pane,
             grid_pane,
             tree,
+            loading_overlay,
         }
     }
 }
@@ -376,11 +426,19 @@ unsafe fn set_pane_focus(pane: &NSView, focused: bool) {
     } else {
         NSColor::clearColor()
     };
-    // The typed `CGColor()` gives a real CGColorRef. Set it on the layer with a raw
-    // `objc_msgSend`: `msg_send![layer, setBackgroundColor: cg]` mis-encodes the CGColorRef as
-    // `@` (ObjC object) instead of `^{CGColor=}` and panics — the same trap `settings::window`
-    // works around. `CALayer::setBackgroundColor` is also unavailable here (it's gated behind
-    // a `objc2-quartz-core` feature we don't pull in), so the raw send is the route.
+    unsafe { set_layer_background(&*layer as *const _ as *const AnyObject, &color) };
+}
+
+/// Set a layer's `backgroundColor` from an `NSColor`, given the layer as a raw `AnyObject` pointer.
+/// SAFETY: `layer` is a live `CALayer` on the main thread.
+///
+/// The typed `CGColor()` gives a real CGColorRef. Set it with a raw `objc_msgSend`:
+/// `msg_send![layer, setBackgroundColor: cg]` mis-encodes the CGColorRef as `@` (ObjC object)
+/// instead of `^{CGColor=}` and panics — the same trap `settings::window` works around.
+/// `CALayer::setBackgroundColor` is also unavailable here (gated behind an `objc2-quartz-core`
+/// feature we don't pull in), so the raw send is the route. Taking a raw pointer keeps this free
+/// of the (unimported) `CALayer` type name.
+unsafe fn set_layer_background(layer: *const AnyObject, color: &NSColor) {
     unsafe {
         let cg_color = color.CGColor();
         let cg_ptr: *const std::ffi::c_void = Retained::as_ptr(&cg_color).cast();
@@ -389,10 +447,6 @@ unsafe fn set_pane_focus(pane: &NSView, focused: bool) {
             objc2::runtime::Sel,
             *const std::ffi::c_void,
         ) = std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
-        set_bg(
-            &*layer as *const _ as *const AnyObject,
-            objc2::sel!(setBackgroundColor:),
-            cg_ptr,
-        );
+        set_bg(layer, objc2::sel!(setBackgroundColor:), cg_ptr);
     }
 }

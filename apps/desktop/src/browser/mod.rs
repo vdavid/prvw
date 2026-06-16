@@ -28,7 +28,7 @@
 mod outline;
 #[cfg(target_os = "macos")]
 mod split_view;
-mod tree_model;
+pub(crate) mod tree_model;
 
 #[cfg(target_os = "macos")]
 pub use tree_model::count_supported_images;
@@ -208,6 +208,36 @@ impl State {
         }
     }
 
+    /// Apply a completed background directory scan to the tree: store the children and reload that
+    /// node so the outline view shows them. No-op if the split view isn't built (browse never
+    /// entered). Also refreshes the loading overlay.
+    #[cfg(target_os = "macos")]
+    pub fn tree_children_loaded(&self, path: &std::path::Path, children: Vec<std::path::PathBuf>) {
+        if let Some(split) = &self.split_view {
+            split.tree_children_loaded(path, children);
+        }
+    }
+
+    /// The earliest still-in-flight tree-scan start time, or `None` if no scan is pending (or the
+    /// split view isn't built). The event loop uses this to schedule the loading-overlay timer.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn earliest_in_flight_scan(&self) -> Option<std::time::Instant> {
+        self.split_view
+            .as_ref()
+            .and_then(split_view::BrowseSplitView::earliest_in_flight_scan)
+    }
+
+    /// Show or hide the tree-pane loading overlay based on whether a scan is overdue. Called every
+    /// `about_to_wait` so the overlay appears ~1 s into a slow scan and hides when it completes.
+    /// No-op if the split view isn't built.
+    #[cfg(target_os = "macos")]
+    pub fn refresh_loading_overlay(&self) {
+        if let Some(split) = &self.split_view {
+            split.refresh_loading_overlay();
+        }
+    }
+
     /// Enter image mode: hide the split view (if built) and unhide the Metal layer. No-op off
     /// macOS.
     #[cfg(target_os = "macos")]
@@ -216,6 +246,10 @@ impl State {
             split.set_hidden(window, true);
         }
         crate::window::set_metal_layer_hidden(window, false);
+        // Hand the keyboard back to winit: the hidden outline view may still hold first responder,
+        // which would swallow image-mode keys (Enter does nothing). Without this, Enter→browse only
+        // works once — see `window::restore_content_view_first_responder`.
+        crate::window::restore_content_view_first_responder(window);
         log::info!("Entered image mode");
     }
 }

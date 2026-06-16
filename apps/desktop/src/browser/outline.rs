@@ -27,6 +27,18 @@
 //! home folder first, then each mounted volume as a top-level row. Simpler, identity-stable, and
 //! reads cleanly. Grouped rows can come back in the styling phase if wanted.
 //!
+//! ## Children load asynchronously — the data source never touches the disk
+//!
+//! Reading a directory on the main thread freezes winit's event loop (the whole app) whenever the
+//! filesystem is slow — a stale SMB mount can block for ~10 s. So the data source serves children
+//! **only from an in-memory cache** ([`tree_model::ChildCache`]) and never calls `read_dir` inline.
+//! On a cache miss it marks the path in flight, enqueues a scan on a background [`TreeScanner`]
+//! thread (`std::thread` + `mpsc`, the same pattern as `navigation::preloader` — no tokio), and
+//! reports zero children for now. The scanner reads the directory off-thread and posts the result
+//! back via `AppCommand::BrowseTreeChildrenLoaded`; the executor stores it in the cache and calls
+//! `reloadItem:reloadChildren:` so the outline view re-queries the node. `isItemExpandable:`
+//! assumes every directory is expandable (no disk read) until a scan proves it empty.
+//!
 //! ## Keyboard is app-driven, not the responder chain
 //!
 //! winit keeps the keyboard even with the outline view up (see `docs/specs/image-browser.md` →
@@ -37,6 +49,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Instant;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
@@ -47,7 +61,54 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSNotification, NSString};
 
-use super::tree_model;
+use super::tree_model::{self, ChildCache};
+
+// ─── Background scanner: directory I/O off the main thread ─────────────────
+
+/// A background directory scanner. Owns a single `std::thread` (the same pattern as
+/// `navigation::preloader`: an OS thread + an `mpsc` channel, no tokio) that reads directories so
+/// the main thread never blocks on a slow filesystem. Each request is a path; the worker computes
+/// its child directories and posts them back to the main thread via the global `EventLoopProxy`
+/// as `AppCommand::BrowseTreeChildrenLoaded`.
+struct TreeScanner {
+    request_tx: mpsc::Sender<PathBuf>,
+}
+
+impl TreeScanner {
+    /// Spawn the scanner worker. It runs until the `Sender` (held by the data source, alive for
+    /// the window's life) drops, closing the channel and ending the loop.
+    fn start() -> Self {
+        let (request_tx, request_rx) = mpsc::channel::<PathBuf>();
+        std::thread::Builder::new()
+            .name("prvw-tree-scan".into())
+            .spawn(move || {
+                while let Ok(path) = request_rx.recv() {
+                    let children = tree_model::child_directories(&path);
+                    log::debug!(
+                        "Tree scan done: {} ({} subdir(s))",
+                        path.display(),
+                        children.len()
+                    );
+                    // Post back to the main thread. `send_command` uses the global proxy set in
+                    // `resumed()`; if it's gone the app is shutting down and we just drop the work.
+                    crate::commands::send_command(
+                        crate::commands::AppCommand::BrowseTreeChildrenLoaded { path, children },
+                    );
+                }
+                log::debug!("Tree scanner worker exiting");
+            })
+            .expect("Failed to spawn tree scanner worker thread");
+        log::info!("Tree scanner started (dedicated OS thread)");
+        TreeScanner { request_tx }
+    }
+
+    /// Enqueue a directory scan. Fire-and-forget; the result comes back as an `AppCommand`.
+    fn scan(&self, path: PathBuf) {
+        if self.request_tx.send(path).is_err() {
+            log::warn!("Tree scanner worker is gone — dropping scan request");
+        }
+    }
+}
 
 // ─── NodeObject: the per-path item, pointer-identity stable ────────────────
 
@@ -84,17 +145,21 @@ impl NodeObject {
 
 // ─── Data source + delegate ────────────────────────────────────────────────
 
-/// Ivars for [`TreeDataSource`]: the roots, the node-identity cache, and the lazily-built
-/// child-directory cache. All `RefCell` because AppKit calls the data source re-entrantly on
-/// the main thread; no cross-thread sharing happens.
+/// Ivars for [`TreeDataSource`]: the roots, the node-identity cache, the async child-load state
+/// machine, and the background scanner. All `RefCell` because AppKit calls the data source
+/// re-entrantly on the main thread; no cross-thread sharing happens (the scanner talks back via
+/// the global `EventLoopProxy`, not by sharing these).
 struct TreeDataSourceIvars {
     /// Top-level rows (home + volumes), in display order. Built once at construction.
     roots: Vec<tree_model::Root>,
     /// Path → node, so the same path always maps to the same `NodeObject` pointer.
     nodes: RefCell<HashMap<PathBuf, Retained<NodeObject>>>,
-    /// Path → its child directories, computed on first `child:ofItem:` for that path. Avoids
-    /// re-reading the directory on every outline-view query (it queries a lot during layout).
-    children: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    /// Per-path child-directory load state (`NotLoaded` → `InFlight` → `Loaded`). The data source
+    /// serves children only from here and NEVER reads a directory inline — a slow filesystem on
+    /// the main thread would freeze the app. A miss enqueues a background scan via `scanner`.
+    children: RefCell<ChildCache>,
+    /// Background directory scanner (its own OS thread). Kept alive for the data source's life.
+    scanner: TreeScanner,
 }
 
 define_class!(
@@ -122,7 +187,10 @@ define_class!(
                 return self.ivars().roots.len() as isize;
             }
             let node = unsafe { &*(item as *const NodeObject) };
-            self.children_of(node.path()).len() as isize
+            // Serve from cache only; a miss enqueues a background scan and reports 0 for now. The
+            // `reloadItem:reloadChildren:` after the scan completes re-queries us with the count.
+            self.loaded_or_request(node.path())
+                .map_or(0, |c| c.len() as isize)
         }
 
         /// The `index`-th child of `item` (or root). Returns a stable `NodeObject` pointer.
@@ -140,7 +208,10 @@ define_class!(
                     .map(|r| r.path.clone())
             } else {
                 let node = unsafe { &*(item as *const NodeObject) };
-                self.children_of(node.path()).get(index as usize).cloned()
+                // Loaded by the time AppKit asks for a specific child (it only asks for indices
+                // `number_of_children` reported, and that's non-zero only once loaded).
+                self.loaded_children(node.path())
+                    .and_then(|c| c.get(index as usize).cloned())
             };
             match child_path {
                 // `node_for_path` returns a cached `Retained`; we hand AppKit a borrowed pointer.
@@ -150,7 +221,11 @@ define_class!(
             }
         }
 
-        /// Expandable iff the node has at least one child directory.
+        /// Expandable without reading the disk. Every directory is assumed expandable until a
+        /// scan proves otherwise — reading the dir here to count children would block the main
+        /// thread on slow filesystems (the freeze we're avoiding). A disclosure triangle that
+        /// opens to nothing on a truly-empty dir is fine. Once the scan has loaded, we report the
+        /// real answer (so an empty folder loses its triangle on the reload).
         #[unsafe(method(outlineView:isItemExpandable:))]
         fn is_item_expandable(
             &self,
@@ -161,7 +236,13 @@ define_class!(
                 return objc2::runtime::Bool::YES;
             }
             let node = unsafe { &*(item as *const NodeObject) };
-            objc2::runtime::Bool::new(!self.children_of(node.path()).is_empty())
+            // Derive from cache when present; assume expandable (YES) on a miss/in-flight so the
+            // triangle shows. No disk read on any path.
+            let expandable = match self.loaded_children(node.path()) {
+                Some(children) => !children.is_empty(),
+                None => true,
+            };
+            objc2::runtime::Bool::new(expandable)
         }
 
         /// The cell view for a row: a folder icon + the folder's display name.
@@ -209,7 +290,8 @@ impl TreeDataSource {
         let ivars = TreeDataSourceIvars {
             roots,
             nodes: RefCell::new(HashMap::new()),
-            children: RefCell::new(HashMap::new()),
+            children: RefCell::new(ChildCache::new()),
+            scanner: TreeScanner::start(),
         };
         let this = mtm.alloc().set_ivars(ivars);
         unsafe { msg_send![super(this), init] }
@@ -228,17 +310,51 @@ impl TreeDataSource {
             .clone()
     }
 
-    /// The child directories of `path`, computed once and cached.
-    fn children_of(&self, path: &Path) -> Vec<PathBuf> {
-        if let Some(cached) = self.ivars().children.borrow().get(path) {
-            return cached.clone();
+    /// The loaded child directories of `path`, or `None` if a scan hasn't finished yet (a miss or
+    /// still in flight). Read-only — never reads the disk and never starts a scan.
+    fn loaded_children(&self, path: &Path) -> Option<Vec<PathBuf>> {
+        self.ivars()
+            .children
+            .borrow()
+            .loaded(path)
+            .map(<[PathBuf]>::to_vec)
+    }
+
+    /// Like [`loaded_children`](Self::loaded_children), but on a cache miss it marks the path in
+    /// flight and enqueues a background scan (so the result comes back via
+    /// `AppCommand::BrowseTreeChildrenLoaded`). Returns the children only if already loaded; never
+    /// reads the disk on the main thread.
+    fn loaded_or_request(&self, path: &Path) -> Option<Vec<PathBuf>> {
+        let mut cache = self.ivars().children.borrow_mut();
+        if let Some(children) = cache.loaded(path) {
+            return Some(children.to_vec());
         }
-        let computed = tree_model::child_directories(path);
+        // Miss or in flight: ask the cache to start a scan (no-op if already in flight).
+        if cache.begin_scan(path, Instant::now()) {
+            log::debug!("Tree scan queued: {}", path.display());
+            self.ivars().scanner.scan(path.to_path_buf());
+        }
+        None
+    }
+
+    /// Store a finished scan's children. Called from the executor on
+    /// `AppCommand::BrowseTreeChildrenLoaded` before it reloads the node. Returns the node so the
+    /// caller can hand it to `reloadItem:reloadChildren:` (or `None` if the path isn't a known
+    /// node — e.g. a stale scan after the tree changed).
+    fn complete_scan(&self, path: &Path, children: Vec<PathBuf>) -> Option<Retained<NodeObject>> {
         self.ivars()
             .children
             .borrow_mut()
-            .insert(path.to_path_buf(), computed.clone());
-        computed
+            .complete_scan(path, children);
+        // Only return a node if we already minted one for this path (roots and expanded folders
+        // have one). A path we've never shown has no node and needs no reload.
+        self.ivars().nodes.borrow().get(path).cloned()
+    }
+
+    /// The earliest still-in-flight scan start time, for the loading-overlay timer. `None` when no
+    /// scan is pending.
+    fn earliest_in_flight(&self) -> Option<Instant> {
+        self.ivars().children.borrow().earliest_in_flight()
     }
 
     /// Build the one-line cell view: a small folder icon + the folder's display name.
@@ -474,6 +590,29 @@ impl BrowseTree {
     /// The scroll view to add to the sidebar pane.
     pub fn scroll_view(&self) -> &NSScrollView {
         &self.scroll
+    }
+
+    /// Apply a completed background scan: store the children in the cache, then reload that node so
+    /// the outline view re-queries it and shows the rows. Called from the executor on
+    /// `AppCommand::BrowseTreeChildrenLoaded`. A `None` node (path never shown, or a stale scan)
+    /// just updates the cache with no UI reload needed.
+    pub fn children_loaded(&self, path: &Path, children: Vec<PathBuf>) {
+        let node = self._data_source.complete_scan(path, children);
+        let Some(node) = node else {
+            return;
+        };
+        unsafe {
+            // `reloadItem:reloadChildren:` re-queries `numberOfChildrenOfItem:` / `child:ofItem:`
+            // for this node (now served from the freshly-loaded cache), redrawing its subtree.
+            let item: *const AnyObject = Retained::as_ptr(&node).cast();
+            let _: () = msg_send![&*self.outline, reloadItem: item, reloadChildren: true];
+        }
+    }
+
+    /// The earliest still-in-flight scan start time, for the loading-overlay timer. `None` when no
+    /// scan is pending (overlay stays hidden).
+    pub fn earliest_in_flight_scan(&self) -> Option<Instant> {
+        self._data_source.earliest_in_flight()
     }
 
     /// Move the selection by `delta` (+1 Down, -1 Up) across the currently visible rows,

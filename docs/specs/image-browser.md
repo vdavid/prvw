@@ -5,9 +5,11 @@ native AppKit screen: a folder tree on the left, a thumbnail grid on the right. 
 overlap.
 
 Status: in progress on the `image-browser` worktree. Done: Phase 0 (spike), Phase 1 (thumbnails → previews rename),
-Phase 3 (real folder tree). The left pane is now a live `NSOutlineView` source list (home + mounted volumes, lazy
-directory enumeration, path-identity nodes, arrow-key nav, selection recorded in `browser::State`). Still stubbed: the
-right-pane grid (Phase 4) and Phase 2 thumbnail plumbing. See `apps/desktop/src/browser/CLAUDE.md` for the tree details.
+Phase 3 (real folder tree). The left pane is now a live `NSOutlineView` source list (home + mounted volumes,
+**asynchronous** directory enumeration on a background scanner thread, path-identity nodes, arrow-key nav, selection
+recorded in `browser::State`). Still stubbed: the right-pane grid (Phase 4) and Phase 2 thumbnail plumbing. See
+`apps/desktop/src/browser/CLAUDE.md` for the tree details, including the async-load model (the data source never reads a
+directory on the main thread — a slow SMB share would otherwise freeze the whole app) and the loading overlay.
 
 ## Why native AppKit, not wgpu
 
@@ -93,6 +95,11 @@ So browse mode does **not** use the AppKit responder chain for keys:
   `NSCollectionView` directly — those work without the responder-chain caveat.
 - The spike's `BrowsePane` `keyDown:` subclass is dropped; panes are plain scroll views hosting the native controls.
 - Focused pane (for Tab) is tracked in `browser::State`, not the native key-view loop.
+- **Restore the content view as first responder when leaving browse.** The live `NSOutlineView` does take first
+  responder while browse is up (so winit doesn't always re-assert it, contrary to the spike's first read). On Esc →
+  image the hidden outline view keeps it, and winit then never sees the next key — image-mode Enter does nothing.
+  `browser::State::enter_image` calls `window::restore_content_view_first_responder` (`makeFirstResponder:` the winit
+  `ns_view`) so the keyboard returns to winit and the Enter → browse → Esc → image → Enter cycle repeats. Don't drop it.
 
 More input-routing code than leaning on the native key loop, but deterministic and it doesn't fight winit for first
 responder.

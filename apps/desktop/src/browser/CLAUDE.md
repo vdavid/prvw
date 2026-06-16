@@ -4,12 +4,12 @@ A second top-level screen for the main window: a native AppKit folder tree + thu
 image viewer. The **tree is real** (Phase 3): an `NSOutlineView` source list of the home folder + mounted volumes. The
 grid is still a `(grid)` stub (a later phase wires `NSCollectionView`). Full design: `docs/specs/image-browser.md`.
 
-| File            | Purpose                                                                                                                                             |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mod.rs`        | `ViewMode` + `PaneSide` enums + `browser::State` (mode, focused pane, selected folder, native handles); tree-nav delegation; tests                  |
-| `split_view.rs` | macOS `NSSplitView` build, hide/show, `set_focused_pane` highlight, divider + traffic-light fixes; hosts the tree                                   |
-| `outline.rs`    | macOS `NSOutlineView` source-list tree: `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + drives keyboard nav) |
-| `tree_model.rs` | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `count_supported_images`, `next_selectable_row`                  |
+| File            | Purpose                                                                                                                                                                                                           |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mod.rs`        | `ViewMode` + `PaneSide` enums + `browser::State` (mode, focused pane, selected folder, native handles); tree-nav delegation; tests                                                                                |
+| `split_view.rs` | macOS `NSSplitView` build, hide/show, `set_focused_pane` highlight, divider + traffic-light fixes; hosts the tree                                                                                                 |
+| `outline.rs`    | macOS `NSOutlineView` source-list tree: `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + drives keyboard nav)                                                               |
+| `tree_model.rs` | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `count_supported_images`, `next_selectable_row`, the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate |
 
 ## The swap
 
@@ -33,14 +33,14 @@ Commands: `ToggleBrowseMode` (menu + Enter in image mode), `EnterImageMode` (Esc
 
 `outline.rs` builds the left pane: an `NSOutlineView` with `setStyle(NSTableViewStyle::SourceList)` (the rounded-pill
 source-list selection + inset; `setSelectionHighlightStyle:` is deprecated) inside an `NSVisualEffectView` `.sidebar`
-material. One column, directories only, lazy.
+material. One column, directories only, children loaded asynchronously (see below — the data source never reads a
+directory on the main thread).
 
 - **Item identity is load-bearing.** `NSOutlineView` tracks items by pointer identity — it hands the data-source methods
   back the exact pointers they returned earlier and compares by address. So each node is a `NodeObject` (a tiny
   `NSObject` subclass holding the node's `PathBuf`), and `TreeDataSource::node_for_path` returns the **same**
   `Retained<NodeObject>` per path from a `RefCell<HashMap<PathBuf, Retained<NodeObject>>>` cache. Return a fresh object
-  per call and the tree misbehaves (wrong expansion, lost selection). Child directories are likewise computed once per
-  path and cached (`children` map) — the outline view queries a lot during layout.
+  per call and the tree misbehaves (wrong expansion, lost selection).
 - **Roots are flat, not grouped.** Home folder first, then each mounted volume as a sibling top-level row. A
   Finder-style "Locations" group header needs group-row pseudo-items (no path), which fights the path-keyed node model —
   so flat roots. Volumes come from `NSFileManager mountedVolumeURLsIncludingResourceValuesForKeys:options:`
@@ -53,6 +53,46 @@ material. One column, directories only, lazy.
 - **Selection → app state.** `outlineViewSelectionDidChange:` sends `BrowseSelectFolder(path)`; the executor stores it
   in `State::selected_folder` and logs the supported-image count (`tree_model::count_supported_images`). The grid that
   lists those images is a later phase.
+
+### Children load asynchronously — never read a directory on the main thread
+
+The data source's child enumeration is **fully async**. Reading a directory inline on the main thread freezes winit's
+event loop (the whole app) whenever the filesystem is slow — a stale SMB mount blocks for ~10 s. So:
+
+- The data source serves children **only from an in-memory cache** (`tree_model::ChildCache`, a
+  `NotLoaded → InFlight → Loaded` state machine). It never calls `read_dir` itself.
+- On a cache miss (`numberOfChildrenOfItem:` for a not-yet-scanned path), `loaded_or_request` marks the path `InFlight`,
+  enqueues a scan on the background `TreeScanner` thread (`std::thread` + `mpsc`, mirroring `navigation::preloader` — no
+  tokio), and reports **0 children** for now. `begin_scan` returns `false` for an already-in-flight/loaded path, so the
+  same dir is scanned once no matter how often the outline view re-queries during layout.
+- The scanner reads the directory off-thread (`tree_model::child_directories`) and posts the result back to the main
+  thread via `crate::commands::send_command(AppCommand::BrowseTreeChildrenLoaded { path, children })` (the global
+  `EventLoopProxy`). The executor stores it (`complete_scan`) and calls `reloadItem:reloadChildren:` for that node, so
+  the outline view re-queries and shows the rows.
+- **`isItemExpandable:` and `child:ofItem:` never read the disk.** `isItemExpandable:` assumes any directory is
+  expandable (returns `YES` on a miss/in-flight, so the disclosure triangle shows; a folder that scans empty loses its
+  triangle on the reload). `child:ofItem:` serves only from the loaded cache (it's called only for indices
+  `numberOfChildren` already reported, i.e. post-load).
+- **Roots' children are async too** (the SMB volume's contents are the slow case): they go through the exact same path
+  when AppKit first asks for a root's child count. The roots **list** (home + `mountedVolumeURLs`) stays synchronous —
+  it's a fast metadata call, not a directory walk.
+
+**Loading overlay (tree pane only).** A scan the user is waiting on that outlives `tree_model::LOADING_OVERLAY_DELAY` (1
+s) reveals a translucent (~0.8) "Loading…" overlay over the tree pane (`BrowseSplitView::loading_overlay`), hidden again
+when scans finish. The 1 s delay keeps it from flashing for fast local dirs. It's driven by the existing wakeup
+mechanism: `ChildCache::earliest_in_flight` feeds `App::schedule_wakeup` (which schedules a wakeup at the 1 s deadline)
+and `App::about_to_wait` calls `refresh_loading_overlay` each pass, which consults the pure `tree_model::scan_overdue`
+predicate. While a scan is in flight the rest of the UI (Tab, Esc/Enter mode switching) stays fully responsive — the
+freeze is contained to the tree pane's loading state, because the main thread never blocks on the read.
+
+### First responder restored on entering image mode
+
+Browse mode hosts a live `NSOutlineView` that holds (or some descendant holds) the window's first responder. On Esc →
+image the hidden outline view can keep the responder, so winit never receives the next key and image-mode Enter does
+nothing (the menu still works — muda events bypass the responder chain). `browser::State::enter_image` therefore calls
+`window::restore_content_view_first_responder` (`makeFirstResponder:` the winit `ns_view`), handing the keyboard back to
+winit so the Enter → browse → Esc → image → Enter cycle repeats indefinitely. **Don't drop this call** — without it,
+Enter→browse only works once per session.
 
 ### Two fixes baked into `split_view.rs`
 
