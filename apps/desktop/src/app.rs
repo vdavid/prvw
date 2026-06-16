@@ -1671,17 +1671,12 @@ impl App {
         }
     }
 
-    /// Build text blocks for the header overlay. Pills are computed from actual text
-    /// measurements during prepare() — no manual rect computation needed here.
-    fn build_text_overlay(&self) -> Vec<text::TextBlock> {
-        let Some(rend) = &self.renderer else {
-            return Vec::new();
-        };
-        let Some(dir) = &self.navigation.dir_list else {
-            return Vec::new();
-        };
-
-        let logical_width = rend.logical_width();
+    /// Build the title and zoom-readout strings shown in the title-bar strip. The title is
+    /// `"{i} / {n} – {filename}"` (with the folder-position prefix) or the bare filename for a
+    /// single image; the zoom readout is `"{pct}%"`. One source for both the native labels
+    /// (`window::set_titlebar_text`) and the glyphon pills (`build_text_overlay`).
+    fn titlebar_text(&self) -> Option<(String, String)> {
+        let dir = self.navigation.dir_list.as_ref()?;
 
         let filename = dir
             .current()
@@ -1702,47 +1697,59 @@ impl App {
         let zoom_pct = (self.zoom.view.zoom * 100.0).round() as i32;
         let zoom_text = format!("{zoom_pct}%");
 
+        Some((title, zoom_text))
+    }
+
+    /// Build text blocks for the header overlay. Pills are computed from actual text
+    /// measurements during prepare() — no manual rect computation needed here.
+    ///
+    /// When the title bar is on, the title/zoom readout is drawn by native `NSTextField`
+    /// labels (`window::set_titlebar_text`) that ride inside the glass strip and auto-contrast
+    /// in light/dark mode, so glyphon builds neither here. When the title bar is off, the
+    /// text floats over the image, so glyphon draws it with a dark pill for contrast. The
+    /// centered "Loading…" overlay stays glyphon in both cases.
+    fn build_text_overlay(&self) -> Vec<text::TextBlock> {
+        let Some(rend) = &self.renderer else {
+            return Vec::new();
+        };
+        let Some((title, zoom_text)) = self.titlebar_text() else {
+            return Vec::new();
+        };
+
+        let logical_width = rend.logical_width();
+
         let pill_color: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
-        let pad_x = Logical(8.0_f32);
-        let pad_y = Logical(4.0_f32);
-        let radius = Logical(5.0_f32);
-        let title_x = Logical(88.0_f32); // Right of the traffic lights (nudged in 8px from the edge)
-        let title_y = Logical(4.0_f32); // Sits in the title-bar strip, a touch below the top
-        let zoom_margin = Logical(7.0_f32); // Equidistant from top and right edge
 
-        // The zoom pill is right-aligned: x = the right edge of the pill.
-        let zoom_right_edge = logical_width - zoom_margin;
-        let zoom_budget = Logical(70.0_f32); // space reserved for zoom pill (for title truncation)
-        let gap = Logical(12.0_f32); // minimum space between title and zoom pills
-        let title_max_render =
-            logical_width - title_x - zoom_budget - pad_x * 2.0 - zoom_margin - gap;
+        // With the title bar on, the native `NSTextField` labels own the title/zoom readout
+        // (see `window::set_titlebar_text`), so glyphon draws neither. With the title bar off,
+        // the text floats over the image and glyphon draws it with a dark pill for contrast.
+        let mut blocks: Vec<text::TextBlock> = Vec::new();
+        if !self.title_bar {
+            let pad_x = Logical(8.0_f32);
+            let pad_y = Logical(4.0_f32);
+            let radius = Logical(5.0_f32);
+            let title_x = Logical(88.0_f32); // Right of the traffic lights (nudged in 8px from the edge)
+            let title_y = Logical(4.0_f32); // Sits in the title-bar strip, a touch below the top
+            let zoom_margin = Logical(7.0_f32); // Equidistant from top and right edge
 
-        // With the title bar on, the info sits in the glass title-bar strip, which gives it
-        // enough contrast on its own — bare text. With the title bar off, the info floats
-        // over the image, so it needs a dark pill behind it to stay readable.
-        // Right-aligned text sits `pad_x` further right when there's no pill (the pill
-        // padding is what insets it). Anchor the no-pill case in by `pad_x` too so the zoom
-        // value stays in the exact same spot whether or not the backdrop is shown.
-        let zoom_anchor = if self.title_bar {
-            zoom_right_edge - pad_x
-        } else {
-            zoom_right_edge
-        };
-        let title_block = text::TextBlock::new(title, title_x + pad_x, title_y + pad_y)
-            .bold()
-            .max_render_width(title_max_render);
-        let zoom_block = text::TextBlock::new(zoom_text, zoom_anchor, title_y + pad_y)
-            .bold()
-            .align_right();
-        let (title_block, zoom_block) = if self.title_bar {
-            (title_block, zoom_block)
-        } else {
-            (
-                title_block.pill(pill_color, pad_x, pad_y, radius),
-                zoom_block.pill(pill_color, pad_x, pad_y, radius),
-            )
-        };
-        let mut blocks = vec![title_block, zoom_block];
+            // The zoom pill is right-aligned: x = the right edge of the pill.
+            let zoom_right_edge = logical_width - zoom_margin;
+            let zoom_budget = Logical(70.0_f32); // space reserved for zoom pill (for title truncation)
+            let gap = Logical(12.0_f32); // minimum space between title and zoom pills
+            let title_max_render =
+                logical_width - title_x - zoom_budget - pad_x * 2.0 - zoom_margin - gap;
+
+            let title_block = text::TextBlock::new(title, title_x + pad_x, title_y + pad_y)
+                .bold()
+                .max_render_width(title_max_render)
+                .pill(pill_color, pad_x, pad_y, radius);
+            let zoom_block = text::TextBlock::new(zoom_text, zoom_right_edge, title_y + pad_y)
+                .bold()
+                .align_right()
+                .pill(pill_color, pad_x, pad_y, radius);
+            blocks.push(title_block);
+            blocks.push(zoom_block);
+        }
 
         // Centered "Loading..." overlay during a pending navigation target.
         // Styled like the title pill but larger — system font, bigger
@@ -2481,6 +2488,18 @@ impl ApplicationHandler<AppCommand> for App {
                 log::trace!("Rendering frame");
                 let mut text_blocks = self.build_text_overlay();
                 let offset = self.content_offset_y();
+
+                // When the title bar is on (and not fullscreen), the native title/zoom labels
+                // in the glass strip own the readout. They auto-contrast in light/dark, so they
+                // replace the glyphon pills (which `build_text_overlay` skips in this case).
+                #[cfg(target_os = "macos")]
+                if self.title_bar
+                    && !self.is_fullscreen()
+                    && let Some(win) = &self.window
+                    && let Some((title, zoom_text)) = self.titlebar_text()
+                {
+                    window::set_titlebar_text(win, &title, &zoom_text);
+                }
                 // The histogram and EXIF overlays anchor to a fixed top inset (the title-bar
                 // height) rather than the content offset, so they stay put when the title bar
                 // is off instead of riding up over the zoom readout.

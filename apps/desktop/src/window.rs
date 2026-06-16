@@ -29,6 +29,18 @@
 //! - **Title-bar double-click.** Forwarded to the native window `zoom:` (`zoom_window`) so the
 //!   title bar fills/restores the screen like any macOS app. Our content view covers the title
 //!   bar, so AppKit never sees the click — `app.rs` routes title-bar double-clicks here.
+//! - **Native title/zoom labels.** When the title bar is on, two `NSTextField` labels
+//!   (`add_titlebar_labels`, added on both the Liquid Glass and legacy paths) show the title and
+//!   zoom readout in the title-bar area. They're contentView subviews — siblings of the wgpu Metal
+//!   layer — with their layer `zPosition` raised above it
+//!   (`TITLEBAR_LABEL_Z_POSITION`) so they composite in front of the transparent strip region.
+//!   (They can't live inside the strip: it's behind the Metal layer, and a transparent Metal pixel
+//!   occludes in-window content behind it.) They use the appearance-aware `labelColor` /
+//!   `secondaryLabelColor`, so they auto-contrast in light/dark mode — the old glyphon white text
+//!   was unreadable on light glass. `set_titlebar_text` updates them each redraw (cache-guarded);
+//!   `set_titlebar_vibrancy_visible` hides them in lockstep with the strip (title-bar off,
+//!   fullscreen). The title-bar-off case still uses glyphon pills over the image (see
+//!   `render/CLAUDE.md`).
 //!
 //! ## Gotchas
 //!
@@ -49,11 +61,24 @@
 //! - **Fullscreen appearance hand-off.** Toggling fullscreen triggers a `Resized` event
 //!   which calls `set_fullscreen_appearance` to swap the background (vibrancy → solid
 //!   black in fullscreen).
+//! - **Title-bar labels must be click-through.** The app forwards title-bar mouse events
+//!   through winit (`App::pointer_in_title_bar` → `zoom_window` for the double-click), so the
+//!   strip's subviews must not capture them. The labels are `ClickThroughLabel`s whose
+//!   `hitTest:` returns null; a plain `NSTextField` would swallow double-click-to-zoom and
+//!   window drags where the title/zoom text sits.
 
 use crate::pixels::{
     Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
     to_logical_size,
 };
+// Brought to module scope for the `ClickThroughLabel` `define_class!` below, whose macro
+// arms require the superclass and protocol as bare identifiers (not paths).
+#[cfg(target_os = "macos")]
+use objc2::MainThreadOnly;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSTextField;
+#[cfg(target_os = "macos")]
+use objc2_foundation::NSObjectProtocol;
 use std::path::Path;
 use std::sync::Arc;
 use winit::dpi::{LogicalSize, PhysicalSize};
@@ -167,6 +192,12 @@ fn configure_macos_window(window: &Window) {
         if !liquid_glass_available() {
             add_titlebar_vibrancy(ns_view);
         }
+
+        // The native title/zoom labels are independent of the strip (they're contentView
+        // subviews composited above the Metal layer via `zPosition`), so they're added on BOTH
+        // paths: Liquid Glass has no separate strip but still needs the readout.
+        let mtm = objc2_foundation::MainThreadMarker::new_unchecked();
+        add_titlebar_labels(ns_view, mtm);
 
         // Round the window's own frame view to match the glass, so the system's
         // default-radius corner stroke (drawn on the key window) doesn't peek out past
@@ -347,6 +378,24 @@ unsafe fn add_image_area_vibrancy(ns_view: *const objc2::runtime::AnyObject) {
 const TITLEBAR_VIBRANCY_IDENTIFIER: &str = "prvw.titlebar_vibrancy";
 #[cfg(target_os = "macos")]
 const IMAGE_AREA_VIBRANCY_IDENTIFIER: &str = "prvw.image_area_vibrancy";
+/// Identifiers on the native title/zoom labels riding inside the title-bar strip, so
+/// `set_titlebar_text` can find them and update their `stringValue`.
+#[cfg(target_os = "macos")]
+const TITLEBAR_TITLE_IDENTIFIER: &str = "prvw.titlebar_title";
+#[cfg(target_os = "macos")]
+const TITLEBAR_ZOOM_IDENTIFIER: &str = "prvw.titlebar_zoom";
+
+/// Point size of the bold system font used for the native title/zoom labels. Matches the
+/// 13.5pt the glyphon overlay used for the title-bar-off case.
+#[cfg(target_os = "macos")]
+const TITLEBAR_LABEL_FONT_SIZE: f64 = 13.5;
+
+/// `zPosition` for the native title/zoom label layers. Above the wgpu CAMetalLayer's `1.0` (set
+/// by `push_metal_layer_above_vibrancy`) so the labels — added as contentView subviews, siblings
+/// of the Metal layer — composite in front of it. A transparent Metal pixel still occludes
+/// in-window content behind it, so the labels must sit in front, not behind.
+#[cfg(target_os = "macos")]
+const TITLEBAR_LABEL_Z_POSITION: f64 = 2.0;
 
 /// Add an NSVisualEffectView pinned to the top 32px (the title bar area).
 #[cfg(target_os = "macos")]
@@ -416,10 +465,260 @@ unsafe fn add_titlebar_vibrancy(ns_view: *const objc2::runtime::AnyObject) {
     }
 }
 
-/// Show or hide the title bar vibrancy view.
+#[cfg(target_os = "macos")]
+objc2::define_class!(
+    /// `NSTextField` label that's transparent to mouse events: `hitTest:` always returns null
+    /// so clicks and drags fall through to the strip and winit's content view.
+    ///
+    /// Why click-through: the app forwards title-bar mouse events through winit (the content
+    /// view covers the title bar, so AppKit never sees them — `App::pointer_in_title_bar` routes
+    /// a title-bar double-click to `zoom_window`). A default label captures mouse events within
+    /// its text bounds, which would swallow double-click-to-zoom and window drags right where
+    /// the title/zoom text sits.
+    #[unsafe(super(NSTextField))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrvwClickThroughLabel"]
+    pub(crate) struct ClickThroughLabel;
+
+    unsafe impl NSObjectProtocol for ClickThroughLabel {}
+
+    impl ClickThroughLabel {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, _point: objc2_foundation::NSPoint) -> *mut objc2_app_kit::NSView {
+            std::ptr::null_mut()
+        }
+    }
+);
+
+#[cfg(target_os = "macos")]
+impl ClickThroughLabel {
+    /// Alloc/init a `ClickThroughLabel`. The `labelWithString:` convenience constructor would
+    /// return a plain `NSTextField`, not this subclass, so we alloc/init directly.
+    fn new(mtm: objc2_foundation::MainThreadMarker) -> objc2::rc::Retained<Self> {
+        use objc2::msg_send;
+        let this = mtm.alloc().set_ivars(());
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Add the title and zoom-readout labels as subviews of the contentView (`ns_view`), positioned
+/// in the top title-bar strip. They're `ClickThroughLabel`s (mouse-transparent — see that type),
+/// non-editable, non-selectable, transparent-background, colored with the appearance-aware
+/// semantic colors (`labelColor` / `secondaryLabelColor`) so they auto-contrast in light and dark
+/// mode with no observer code.
+///
+/// They sit on the contentView (siblings of the Metal layer) with a `zPosition` above it, not
+/// inside the `effect` strip: the strip is behind the Metal layer and a transparent Metal pixel
+/// occludes in-window content behind it, so a label inside the strip would be invisible. The view
+/// hierarchy owns the retains after `addSubview`, so the local `Retained` handles drop at end of
+/// scope.
+#[cfg(target_os = "macos")]
+unsafe fn add_titlebar_labels(
+    ns_view: *const objc2::runtime::AnyObject,
+    mtm: objc2_foundation::MainThreadMarker,
+) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{
+        NSColor, NSFont, NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+        NSLayoutRelation, NSLineBreakMode,
+    };
+    use objc2_foundation::NSString;
+
+    /// Build one label: non-editable, non-selectable, bordered/bezeled off, transparent
+    /// background, bold system font, with the given identifier.
+    unsafe fn make_label(
+        identifier: &str,
+        mtm: objc2_foundation::MainThreadMarker,
+    ) -> objc2::rc::Retained<ClickThroughLabel> {
+        let label = ClickThroughLabel::new(mtm);
+        label.setEditable(false);
+        label.setSelectable(false);
+        label.setBordered(false);
+        label.setDrawsBackground(false);
+        label.setBezeled(false);
+        label.setFont(Some(&NSFont::boldSystemFontOfSize(
+            TITLEBAR_LABEL_FONT_SIZE,
+        )));
+        unsafe {
+            let id = NSString::from_str(identifier);
+            let _: () = msg_send![&*label, setIdentifier: &*id];
+            let _: () = msg_send![&*label, setTranslatesAutoresizingMaskIntoConstraints: false];
+        }
+        label
+    }
+
+    unsafe {
+        let title = make_label(TITLEBAR_TITLE_IDENTIFIER, mtm);
+        title.setTextColor(Some(&NSColor::labelColor()));
+        title.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
+
+        let zoom = make_label(TITLEBAR_ZOOM_IDENTIFIER, mtm);
+        zoom.setTextColor(Some(&NSColor::secondaryLabelColor()));
+
+        let title_obj: *const AnyObject = &*title as *const ClickThroughLabel as *const _;
+        let zoom_obj: *const AnyObject = &*zoom as *const ClickThroughLabel as *const _;
+        let _: () = msg_send![ns_view, addSubview: title_obj];
+        let _: () = msg_send![ns_view, addSubview: zoom_obj];
+
+        // Composite the labels in front of the wgpu Metal layer (a sibling layer under the
+        // contentView's root). Layer-back each label, then raise its `zPosition` above the
+        // Metal layer's `1.0`.
+        for label_obj in [title_obj, zoom_obj] {
+            let _: () = msg_send![label_obj, setWantsLayer: true];
+            let layer: *const AnyObject = msg_send![label_obj, layer];
+            if !layer.is_null() {
+                let _: () = msg_send![layer, setZPosition: TITLEBAR_LABEL_Z_POSITION];
+            }
+        }
+
+        // The title yields first: lower horizontal compression resistance than the zoom means
+        // the title middle-truncates while the zoom stays intact when space runs out.
+        title.setContentCompressionResistancePriority_forOrientation(
+            249.0_f32,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        zoom.setContentCompressionResistancePriority_forOrientation(
+            751.0_f32,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+
+        // Constraints pin to the contentView. The labels sit in the top title-bar strip:
+        // `centerY = contentView.top + 17` sits them in the strip, nudged 1pt below the strip's
+        // vertical middle (32pt strip) to align with the traffic lights. Leading 88 clears the
+        // traffic lights; trailing −12 is the zoom's right margin.
+        let parent: &AnyObject = &*ns_view;
+
+        let title_leading = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &title, NSLayoutAttribute::Leading,
+            NSLayoutRelation::Equal,
+            Some(parent), NSLayoutAttribute::Leading, 1.0, 88.0,
+        );
+        let title_center_y = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &title, NSLayoutAttribute::CenterY,
+            NSLayoutRelation::Equal,
+            Some(parent), NSLayoutAttribute::Top, 1.0, 17.0,
+        );
+
+        // Zoom: trailing = contentView.trailing − 12, centerY in the strip, leading ≥ title.trailing + 12.
+        let zoom_trailing = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &zoom, NSLayoutAttribute::Trailing,
+            NSLayoutRelation::Equal,
+            Some(parent), NSLayoutAttribute::Trailing, 1.0, -12.0,
+        );
+        let zoom_center_y = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &zoom, NSLayoutAttribute::CenterY,
+            NSLayoutRelation::Equal,
+            Some(parent), NSLayoutAttribute::Top, 1.0, 17.0,
+        );
+        let gap = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+            &zoom, NSLayoutAttribute::Leading,
+            NSLayoutRelation::GreaterThanOrEqual,
+            Some(&*title), NSLayoutAttribute::Trailing, 1.0, 12.0,
+        );
+
+        for c in [
+            &title_leading,
+            &title_center_y,
+            &zoom_trailing,
+            &zoom_center_y,
+            &gap,
+        ] {
+            c.setActive(true);
+        }
+    }
+}
+
+/// Update the native title/zoom labels in the title-bar strip. Finds both labels by their
+/// identifier and sets `stringValue`. Cache-guarded: skips a label whose value is unchanged,
+/// avoiding a needless Auto Layout pass on every redraw.
+#[cfg(target_os = "macos")]
+pub fn set_titlebar_text(window: &Window, title: &str, zoom: &str) {
+    set_label_text_by_id(window, TITLEBAR_TITLE_IDENTIFIER, title);
+    set_label_text_by_id(window, TITLEBAR_ZOOM_IDENTIFIER, zoom);
+}
+
+/// Find an `NSTextField` by its `identifier` (searching the contentView's subtree) and set
+/// its `stringValue`, skipping the set when the value already matches. The labels are nested
+/// inside the title-bar strip view, not direct children of the contentView, so the search
+/// recurses through subviews.
+#[cfg(target_os = "macos")]
+fn set_label_text_by_id(window: &Window, identifier: &str, value: &str) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let target_id = NSString::from_str(identifier);
+        let label = find_subview_by_id(ns_view, &target_id);
+        if label.is_null() {
+            return;
+        }
+        let new_value = NSString::from_str(value);
+        let current: *const NSString = msg_send![label, stringValue];
+        if !current.is_null() {
+            let same: bool = msg_send![&*new_value, isEqualToString: current];
+            if same {
+                return;
+            }
+        }
+        let _: () = msg_send![label, setStringValue: &*new_value];
+    }
+}
+
+/// Depth-first search of `view`'s subtree for a subview whose `identifier` matches `target_id`.
+/// Returns null if none is found.
+#[cfg(target_os = "macos")]
+unsafe fn find_subview_by_id(
+    view: *const objc2::runtime::AnyObject,
+    target_id: &objc2_foundation::NSString,
+) -> *const objc2::runtime::AnyObject {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
+
+    unsafe {
+        let subviews: *const AnyObject = msg_send![view, subviews];
+        if subviews.is_null() {
+            return std::ptr::null();
+        }
+        let count: usize = msg_send![subviews, count];
+        for i in 0..count {
+            let subview: *const AnyObject = msg_send![subviews, objectAtIndex: i];
+            let id: *const NSString = msg_send![subview, identifier];
+            if !id.is_null() {
+                let matches: bool = msg_send![target_id, isEqualToString: id];
+                if matches {
+                    return subview;
+                }
+            }
+            let found = find_subview_by_id(subview, target_id);
+            if !found.is_null() {
+                return found;
+            }
+        }
+        std::ptr::null()
+    }
+}
+
+/// Show or hide the title bar vibrancy view and its title/zoom labels together. The labels are
+/// contentView subviews (not children of the strip — see `add_titlebar_labels`), so they need
+/// toggling explicitly alongside the strip; this keeps them in lockstep for the title-bar-off and
+/// fullscreen cases.
 #[cfg(target_os = "macos")]
 pub fn set_titlebar_vibrancy_visible(window: &Window, visible: bool) {
     set_subview_hidden_by_id(window, TITLEBAR_VIBRANCY_IDENTIFIER, !visible);
+    set_subview_hidden_by_id(window, TITLEBAR_TITLE_IDENTIFIER, !visible);
+    set_subview_hidden_by_id(window, TITLEBAR_ZOOM_IDENTIFIER, !visible);
 }
 
 /// Switch the window's appearance for fullscreen vs windowed.

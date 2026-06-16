@@ -19,6 +19,18 @@ the renderer's uniform buffer via `crate::zoom::view::TransformUniform`.
   it in front of AppKit `NSVisualEffectView` subview layers. Opaque image pixels cover the vibrancy; transparent areas
   (title-bar strip) let it show through.
 
+## Title/zoom readout: native when the title bar is on
+
+The title and zoom-% readout are glyphon `TextBlock`s (with a dark pill) **only when the title bar is off** — text
+floating over the image, where the pill provides contrast. When the title bar is on, native `NSTextField` labels in the
+title-bar area own the readout instead (`window.rs`: `add_titlebar_labels` builds them, `set_titlebar_text` updates them
+from the `RedrawRequested` arm). They use the appearance-aware `labelColor` / `secondaryLabelColor`, so they
+auto-contrast in light and dark mode — glyphon white-on-glass was unreadable in Light mode. The labels are contentView
+subviews composited above the wgpu Metal layer via `zPosition` (a transparent Metal pixel occludes in-window content
+behind it, so they can't sit inside the title-bar vibrancy strip), and they're created on both the Liquid Glass and
+legacy window paths. `App::titlebar_text` is the single source for both paths' strings. The centered "Loading…" overlay
+stays glyphon in both cases.
+
 ## Gotchas
 
 - **Image texture must be explicitly destroyed on replace.** `set_image` holds the previous `wgpu::Texture` in
