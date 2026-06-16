@@ -6,7 +6,12 @@ Prvw is a fast, minimal image viewer for macOS written in Rust (`winit` + `wgpu`
 pic, see it instantly, zoom/pan, arrow keys for next/prev (preloaded in background), ESC to close. Free forever for
 personal use (BSL license). Website at [getprvw.com](https://getprvw.com).
 
-- Desktop app: `cd apps/desktop && cargo run -- <image_path>`
+The main window has two top-level screens that swap: **image mode** (the wgpu viewer) and **browse mode** (a macOS-only
+native AppKit folder tree + thumbnail grid; `src/browser/`). Enter (in image mode) enters browse; `f`/`F11` keep
+toggling fullscreen (Enter no longer does). A directory CLI argument boots into browse at that folder. See
+`docs/specs/image-browser.md` and `src/browser/CLAUDE.md`.
+
+- Desktop app: `cd apps/desktop && cargo run -- <image_path_or_dir>`
 - Website dev: `cd apps/website && pnpm dev`
 
 ## Principles

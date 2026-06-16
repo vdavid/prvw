@@ -13,8 +13,9 @@ Not a feature. This is the runtime scaffolding every feature plugs into.
 App holds three per-feature State structs (`zoom`, `color`, `navigation`) plus truly cross-cutting state:
 
 - **Per-feature state**: `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`,
-  `histogram: histogram::State`, `exif_overlay: exif_overlay::State`, `slideshow: slideshow::State`. Each feature's
-  runtime + setting-backed fields live in its own module.
+  `histogram: histogram::State`, `exif_overlay: exif_overlay::State`, `slideshow: slideshow::State`,
+  `browser: browser::State` (browse mode — `ViewMode`, `focused_pane`, tree selection, grid selection, native handles).
+  Each feature's runtime + setting-backed fields live in its own module.
 - **Launch**: `file_path`, `explicit_files`, `waiting_for_file`, `launch_directory` (a lone directory CLI arg → boot
   into browse mode at that folder; see `browser::classify_launch_target` and `initialize_viewer`), `wait_start`.
 - **Handles**: `window`, `renderer`, `app_menu`.

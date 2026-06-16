@@ -57,7 +57,9 @@ both a text confirmation and a `state` field with the current app state as JSON.
 ## Resources
 
 - **prvw://state**: Current app state as JSON (file, zoom, pan, fullscreen, window/image geometry, settings, title,
-  `loop_navigation`, `cache_indices` (sorted directory indices currently in the image cache)).
+  `loop_navigation`, `cache_indices` (sorted directory indices currently in the image cache), and the browse-mode fields
+  `view_mode`, `focused_pane`, `browse_selected_folder`, `browse_grid_selected`, `browse_grid_count`,
+  `browse_reveal_pending`).
 - **prvw://settings**: Current settings from disk as JSON (auto_update, auto_fit_window, enlarge_small_images,
   loop_navigation).
 - **prvw://menu**: Menu bar structure.
@@ -87,3 +89,10 @@ All endpoints also available as simple HTTP for cURL debugging. POST endpoints r
 | POST   | /enlarge-small   | "on" or "off"                                             | State JSON       |
 | POST   | /window-geometry | JSON: `{"x": 100, "y": 100, "width": 800, "height": 600}` | State JSON       |
 | POST   | /refresh         | -                                                         | State JSON       |
+| POST   | /browse/select-folder | absolute folder path (test-only, macOS)              | State JSON       |
+| POST   | /browse/select-grid | grid index (test-only, macOS)                          | State JSON       |
+| POST   | /browse/open     | - (open the selected grid image; test-only, macOS)        | State JSON       |
+
+The three `/browse/*` endpoints are test-only driving hooks: the QA path can't synthesize native outline/collection-view
+clicks, so integration tests drive tree selection, grid selection, and open through them. macOS-only (browse mode is);
+they return 400 off macOS.

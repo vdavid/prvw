@@ -1,13 +1,13 @@
 # Browser (browse mode)
 
 A second top-level screen for the main window: a native AppKit folder tree + thumbnail grid that **swaps** with the wgpu
-image viewer. Both panes are real now: the **tree** (Phase 3) is an `NSOutlineView` source list of the home folder +
-mounted volumes; the **grid** (Phase 4) is an `NSCollectionView` thumbnail gallery of the selected folder's images,
-driven by the Phase-2 scheduler + cache plumbing. Full design: `docs/specs/image-browser.md`.
+image viewer. The **tree** is an `NSOutlineView` source list of the home folder + mounted volumes; the **grid** is an
+`NSCollectionView` thumbnail gallery of the selected folder's images, driven by the visible-range scheduler + byte-budget
+cache. Full design: `docs/specs/image-browser.md`.
 
 | File                 | Purpose                                                                                                                                                                                                                                                                                                                                                |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `mod.rs`             | `ViewMode` + `PaneSide` + `LaunchTarget` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, `pending_grid_preselect` + `pending_browse_open_focus` for browse-open, native handles); the `sync_native` render-from-state choke-point; `reveal_to_folder`; pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command`/`grid_preselect_index`/`classify_launch_target` + field-transition cores; tree + grid delegation; tests |
+| `mod.rs`             | `ViewMode` + `PaneSide` + `LaunchTarget` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, `pending_grid_preselect` + `pending_browse_open_focus` for browse-open, native handles); the `sync_native` render-from-state choke-point; `reveal_to_folder`; QA accessors (`grid_count`, `reveal_pending`) + the `qa_select_grid_index` test-driving hook; pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command`/`grid_preselect_index`/`classify_launch_target` + field-transition cores; tree + grid delegation; tests |
 | `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (makes the focused pane's control first responder + refreshes grid emphasis — called by `sync_native`), divider + traffic-light fixes; hosts the tree (left) and the grid (right)                                                                                                                  |
 | `grid.rs`            | macOS `NSCollectionView` grid: `BrowseCollectionView` (keyDown override), `GridItem` (cell, focus-aware selection rect + double-click in `mouseDown:`), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs/focus)                                               |
 | `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                                                                                                                                                                                  |
@@ -48,7 +48,7 @@ completions queued), `BrowseGridSelected(usize)` (grid click/selection — also 
 view's `keyDown:` override (`browser::browse_keydown_command`), not winit. Dispatched in `app/executor.rs`. All but
 `ToggleBrowseMode`/`EnterImageMode`/`ToggleBrowseFocus`/`BrowseOpenSelected` are macOS-only.
 
-## Browse-open positioning + dir-arg launch (Phase 5)
+## Browse-open positioning + dir-arg launch
 
 **Entering browse opens already showing where you are.** When the user enters browse from an image (Enter or Navigate →
 Image browser), `set_view_mode(Browse)` runs `enter_browse` then `App::reveal_current_image_in_browse`: it reveals +
@@ -111,7 +111,7 @@ same event-loop callback. (We deliberately do NOT paint the selection while stil
 the window behind the browse UI. The selection is warmed into the cache instead, see below, so the reveal paint is a
 cache hit.)
 
-## The folder tree (Phase 3)
+## The folder tree
 
 `outline.rs` builds the left pane: an `NSOutlineView` with `setStyle(NSTableViewStyle::SourceList)` (the rounded-pill
 source-list selection + inset; `setSelectionHighlightStyle:` is deprecated) inside an `NSVisualEffectView` `.sidebar`
@@ -181,8 +181,8 @@ without it, Enter→browse only works once per session. (Detail in "Browse UI ar
 
 - **Divider opens at ~240pt without a drag.** `setPosition:ofDividerAtIndex:` no-ops at build time (zero frame). We set
   it once in `set_hidden(false)` after `layoutSubtreeIfNeeded` forces the edge constraints to resolve, latched by a
-  `Cell<bool>` ivar so a later show won't yank a divider the user dragged. (An earlier attempt set it from an overridden
-  `layout` — `setPosition:` re-enters `layout` synchronously, so it must not run there.)
+  `Cell<bool>` ivar so a later show won't yank a divider the user dragged. **Don't** set it from an overridden `layout`:
+  `setPosition:` re-enters `layout` synchronously, so that recurses.
 - **Sidebar clears the traffic lights.** The `.sidebar` vibrancy fills the pane, but the outline scroll view is inset
   `crate::TITLE_BAR_HEIGHT` (32pt) from the top so no row sits under the traffic-light strip.
 
@@ -252,16 +252,21 @@ native selection/scroll stays immediate. The map is the pure `browser::browse_ke
 delivers a key in browse mode, but with first responder held by the native view it normally doesn't fire. **No
 winit-routed browse arrow handling exists** (arrows are native).
 
-`SharedAppState` exposes `view_mode`, `focused_pane` (`"tree"`/`"grid"`/`"none"`), `browse_selected_folder`, and
-`browse_grid_selected` (also at `GET /state`) so QA/tests can assert the mode swap, focus flip, tree selection, and grid
-selection without real keystrokes. The QA `SendKey` path maps only Tab/Enter/Esc in browse mode (arrows are native, so
-the QA path can't drive native selection by key).
+`SharedAppState` exposes the full browse picture at `GET /state` so QA/tests can assert it without keystrokes or
+screenshots: `view_mode`, `focused_pane` (`"tree"`/`"grid"`/`"none"`), `browse_selected_folder`, `browse_grid_selected`,
+`browse_grid_count` (the listed folder's supported-image count), and `browse_reveal_pending` (the tree's async reveal
+walk is in flight — the barrier tests poll on). The QA `SendKey` path maps only Tab/Enter/Esc in browse mode (arrows are
+native, so the QA path can't drive native selection by key); for the rest, test-only driving hooks
+(`POST /browse/select-folder`, `/browse/select-grid`, `/browse/open`) drive tree selection, grid selection, and open,
+since the QA path can't synthesize native outline/collection-view clicks. `qa_select_grid_index` updates the grid model
+the way the native `didSelectItemsAtIndexPaths:` delegate does (so the open path reads the right image). See
+`qa/CLAUDE.md`.
 
-## The thumbnail grid (Phase 4)
+## The thumbnail grid
 
 `grid.rs` builds the right pane: an `NSCollectionView` (`NSCollectionViewFlowLayout`, vertical scroll) of ~160pt square
 cells, each a `GridItem` (an `NSCollectionViewItem` subclass with a proportionally-scaling `NSImageView` + a filename
-label). The slider that live-resizes cells is a later phase — Phase 4 uses a fixed cell size.
+label). The slider that live-resizes cells is a later phase; the grid uses a fixed cell size for now.
 
 - **Where the mutable state lives.** `NSCollectionView` holds its data source/delegate weakly, so `BrowseGrid` keeps the
   `Retained<GridDataSource>` alive for the window's life. All the grid's mutable state — the `grid_model::GridModel`,
@@ -323,8 +328,9 @@ previews. The worker delivers RGBA8 (`cg_image_to_rgba8`); the grid's consumptio
   the pump is cheap when nothing changed. `NSCollectionViewPrefetching` widens the range further ahead/behind.
 - **Completion → cell.** `BrowseThumbnailsAvailable` → `BrowseGrid::thumbnails_available`: drops stale-generation
   deliveries (the model's folder generation guards them), wraps RGBA8 in an `NSImage`, stores it in the map + the
-  cache's byte bookkeeping, then **feeds `evict_to_budget()`'s returned indices to `Scheduler::uncache`** (Phase 2's
-  invariant) and drops their `NSImage`s, and reloads the affected items so cells pick up their image.
+  cache's byte bookkeeping, then **feeds `evict_to_budget()`'s returned indices to `Scheduler::uncache`** (the
+  cache/scheduler invariant: an evicted thumbnail must be re-requestable) and drops their `NSImage`s, and reloads the
+  affected items so cells pick up their image.
 - **Pure plumbing.** `grid_scheduler::Scheduler` (visible-range-centered order, `MARGIN` = 100 cap) and
   `thumbnail_cache::ThumbnailCache` (128 MB byte budget, farthest-from-range eviction, ties by least-recently-touched)
   stay pure and unit-tested; `grid.rs` is their runtime caller. Both share `grid_scheduler::distance_from_range` so
@@ -355,7 +361,7 @@ RGBA8 thumbnail is `512 × 512 × 4 ≈ 1 MB` (`EST_THUMBNAIL_BYTES`), so 128 MB
   helpers are the trap because the generic `&T` swallows the `Retained`.) Bit us building the tree cell.
 - **`NSSplitView` sizes its arranged subviews itself.** The panes KEEP `translatesAutoresizingMaskIntoConstraints` ON
   (the default). Disabling it on the arranged subviews (and giving them no size constraints) collapses both panes to
-  zero — the gray void the first spike rendered. Set an initial divider position with `setPosition:ofDividerAtIndex:` so
+  zero — a gray void. Set an initial divider position with `setPosition:ofDividerAtIndex:` so
   neither pane starts collapsed.
 - **Build on the main thread.** `BrowseSplitView::create` asserts the `MainThreadMarker`; it's only ever called from the
   winit event loop (main thread).

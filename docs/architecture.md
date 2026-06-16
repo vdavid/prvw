@@ -28,6 +28,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | Path                 | Owns                                                                                                 |
 | -------------------- | ---------------------------------------------------------------------------------------------------- |
 | `about.rs`           | About window                                                                                         |
+| `browser/`           | macOS browse mode: native AppKit folder tree + thumbnail grid that swaps with the viewer + `browser::State` |
 | `color/`             | ICC transform + display-profile detection (macOS) + Color settings panel + `color::State`            |
 | `decoding/`          | Image format decoders (JPEG via zune-jpeg; camera RAW via rawler; PNG/GIF/WebP/BMP/TIFF via `image`) |
 | `diagnostics.rs`     | Performance observability: `NavigationRecord` + `build_text`                                         |

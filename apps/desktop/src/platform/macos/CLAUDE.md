@@ -68,3 +68,15 @@ aspect-fit; `aspect_fit_rect` is the pure, unit-tested core.
     Liquid Glass.
   - Worked example: the native title/zoom labels (`window::add_titlebar_labels`) and
     `docs/specs/native-title-overlay.md`.
+- **In idle-winit browse mode the focused native view holds the window's first responder.** Browse mode hides the Metal
+  layer and stops requesting redraws, so winit goes idle and does NOT re-assert first responder — the focused
+  `NSOutlineView`/`NSCollectionView` keeps it and handles its own keys (arrows, type-select) natively. So a native
+  control's `keyDown:` override only needs to intercept the app-level keys (Tab/Enter/Esc) and `super` the rest. On
+  leaving browse, hand first responder back to winit's content view (`window::restore_content_view_first_responder`) or
+  the hidden control swallows the next key. (Don't infer focus FROM the first responder, though — see the next point.)
+- **Custom NSCollectionView item emphasis must be repainted from app state, not inferred from the first responder.** The
+  click→command focus flip is async, so reading `window.firstResponder` during it is racy (it left the grid drawn blue
+  after a tree click). The browse grid draws each item's selection blue-iff-focused from a state-driven flag
+  (`browser::State::focused_pane`, mirrored onto the grid via `set_focused`), repainted on every focus change. (A source
+  list — the tree — is the exception: AppKit repaints its own accent-blue selection when it's first responder, so syncing
+  the responder to state is enough there.)

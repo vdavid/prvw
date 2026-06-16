@@ -20,6 +20,7 @@ src/
 │
 │   Features:
 ├── about.rs                 About window
+├── browser/                 macOS-only: browse mode — native AppKit folder tree + thumbnail grid that swaps with the wgpu viewer + browser::State
 ├── color/                   ICC transform + display profile (macOS) + Color settings panel + color::State
 ├── decoding/                Image format decoders (JPEG via zune-jpeg, RAW via rawler, generic via `image`) + `RawPipelineFlags` per-stage toggle struct + `ExifMetadata` extraction
 ├── diagnostics.rs           Performance observability (cache/nav/RSS formatter)
@@ -43,10 +44,10 @@ Single-file features (`about.rs`, `diagnostics.rs`, `updater.rs`, `window.rs`) u
 
 ## Per-feature state
 
-`App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`, and (macOS)
-`previews: previews::State`. Each feature's runtime state lives in its own module. App only keeps truly cross-cutting
-state: handles (window, renderer, menu), launch flags (file_path, waiting_for_file), runtime input (modifiers,
-drag_start, etc.), and the single cross-feature toggle `title_bar`.
+`App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`, `browser: browser::State`, and
+(macOS) `previews: previews::State`. Each feature's runtime state lives in its own module. App only keeps truly
+cross-cutting state: handles (window, renderer, menu), launch flags (file_path, waiting_for_file, launch_directory),
+runtime input (modifiers, drag_start, etc.), and the single cross-feature toggle `title_bar`.
 
 ## Top-level principles
 

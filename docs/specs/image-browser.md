@@ -4,18 +4,17 @@ A second top-level screen for the main window. Image mode (today's wgpu viewer) 
 native AppKit screen: a folder tree on the left, a thumbnail grid on the right. The two screens **swap**, they never
 overlap.
 
-Status: in progress on the `image-browser` worktree. Done: Phase 0 (spike), Phase 1 (thumbnails → previews rename),
-Phase 2 (headless thumbnail plumbing), Phase 3 (real folder tree), Phase 4 (real thumbnail grid). The left pane is a
-live `NSOutlineView` source list (home + mounted volumes, **asynchronous** directory enumeration, path-identity nodes,
-arrow-key nav, selection recorded in `browser::State`). The right pane is now a live `NSCollectionView` thumbnail
-gallery (`browser::grid`): selecting a folder lists its supported images **on a background worker**
-(`browser::grid_listing`, never the main thread), the grid populates and shows QuickLook thumbnails generated via a
-second `previews::quicklook` request path (RGBA8 → `NSImage` through `quicklook::nsimage_from_rgba8`), driven by the
-Phase-2 visible-range scheduler + 128 MB byte-budget cache. Native click selects; double-click or Enter (grid focused)
-opens that image in image mode (sets up `navigation`, switches mode); an empty folder shows "(No images)" and is
-non-focusable so Tab stays on the tree. Phase 5 (browse-open positioning, the async reveal-path walk, dir-arg startup,
-arrow-key pane isolation) is done. Still to do: Phase 6 (styling), Phase 7 (full QA tooling + tests + arch docs). See
-`apps/desktop/src/browser/CLAUDE.md` for the tree, grid, thumbnail, and browse-open positioning details.
+Status: shipped (functionally complete). The left pane is a live `NSOutlineView` source list (home + mounted volumes,
+**asynchronous** directory enumeration, path-identity nodes, arrow-key nav, selection recorded in `browser::State`). The
+right pane is a live `NSCollectionView` thumbnail gallery (`browser::grid`): selecting a folder lists its supported
+images **on a background worker** (`browser::grid_listing`, never the main thread), the grid populates and shows
+QuickLook thumbnails generated via a second `previews::quicklook` request path (RGBA8 → `NSImage` through
+`quicklook::nsimage_from_rgba8`), driven by the visible-range scheduler + 128 MB byte-budget cache. Native click selects;
+double-click or Enter (grid focused) opens that image in image mode (sets up `navigation`, switches mode); an empty
+folder shows "(No images)" and is non-focusable so Tab stays on the tree. Browse-open positioning, the async reveal-path
+walk, dir-arg startup, and arrow-key pane isolation are all in place; the QA `/state` snapshot and integration tests
+assert the full flow. Remaining: the dedicated styling pass (the "beautiful gallery" look), reviewed visually with David.
+See `apps/desktop/src/browser/CLAUDE.md` for the tree, grid, thumbnail, and browse-open positioning details.
 
 ## Why native AppKit, not wgpu
 
@@ -103,18 +102,25 @@ under the live surface. We hide one and show the other.
 
 ## State
 
-A new per-feature `browser::State` (sibling of `zoom::State`, `navigation::State`, etc.) holding the current
-`ViewMode { Image, Browse }`, the tree's selected folder, the grid's selected index, and the native view handles (behind
-macOS `cfg`). `App` delegates to it. The grid's selection and `navigation::DirectoryList::current_index` are kept
-coherent so switching modes lands on the right image and the existing preloader warms neighbors.
+A per-feature `browser::State` (sibling of `zoom::State`, `navigation::State`, etc.) holding the current
+`ViewMode { Image, Browse }`, `focused_pane`, the tree's selected folder, the grid's selected index, and the native view
+handles (behind macOS `cfg`). `App` delegates to it. The grid's selection and
+`navigation::DirectoryList::current_index` are kept coherent so switching modes lands on the right image and the
+existing preloader warms neighbors.
+
+**QA observability.** `SharedAppState` (read by the QA server at `GET /state`) mirrors the browse picture so tests and
+tools can assert it without keystrokes or screenshots: `view_mode`, `focused_pane` (`"tree"`/`"grid"`/`"none"`),
+`browse_selected_folder`, `browse_grid_selected`, `browse_grid_count` (the listed folder's supported-image count), and
+`browse_reveal_pending` (the tree's async reveal walk is in flight — the barrier tests poll on). The QA server also adds
+test-only driving hooks (`POST /browse/select-folder`, `/browse/select-grid`, `/browse/open`) so the integration tests
+can drive the flow headlessly, since the QA path can't synthesize native outline/collection-view clicks. See
+`apps/desktop/src/qa/CLAUDE.md` and `docs/mcp-server.md`.
 
 ## Input architecture
 
 In browse mode the GPU layer is hidden and the app stops requesting redraws, so **winit is idle and does not re-assert
-first responder.** That lets the focused native view hold the window's first responder and handle its own keys. (This
-refines the Phase 0 spike's first read, which saw winit win first responder — that was a stub artifact: plain
-placeholder panes with redraws still firing. With real controls in idle-winit browse mode, the native first responder
-holds — verified: `makeFirstResponder` accepted, and no winit re-assertion during browse.)
+first responder.** That lets the focused native view hold the window's first responder and handle its own keys
+(verified: `makeFirstResponder` is accepted, and winit doesn't re-assert during browse).
 
 So browse mode uses the AppKit responder chain, with one app-level source of truth and a single render step:
 
@@ -195,55 +201,43 @@ A future **slider** at the window bottom live-resizes cells by changing the flow
 the cached max-size bitmaps — zero regeneration). Out of baseline scope, but the sizing rule above is chosen to support
 it; add it in the styling era if it fits.
 
-## Build order (phases)
+## What shipped (and what's left)
 
-Each phase is a focused, checks-green commit on the worktree. I lead; subagents do the legwork; I review every diff and
-re-run checks before integrating.
+Everything below is built and checks-green except the dedicated styling pass:
 
-0. **Spike (de-risk, first).** Stub split view + both panes (placeholder content), the menu item + label flip, the mode
-   swap (hide/show Metal layer), Tab focus between panes, and double-click/Enter/Esc → mode change wired through
-   `AppCommand`. Goal: prove the AppKit-in-the-winit-loop focus/keyboard/swap plumbing with no crashes before investing
-   in real content. May evolve into the real implementation rather than be thrown away.
-1. **Rename** `thumbnails` → `previews` (independent, mechanical; lands as its own commit).
-2. **Thumbnail plumbing:** extract the shared, size-parameterized QuickLook generator, then add the grid request path
-   and the visible-centered scheduler. Headless unit tests (TDD) for the scheduler's nearest-first ordering + scroll
-   re-prioritization and for the 128 MB budget eviction.
-3. **Tree pane** (done): `NSOutlineView` source-list (`setStyle(.SourceList)`), home + mounted volumes as **flat sibling
-   roots** (the grouped "Locations" header was the target but fights the path-keyed node model, so flat roots — see
-   `browser/CLAUDE.md`), lazy directory enumeration, path-identity `NodeObject`s, native arrow-key nav (the outline view
-   holds first responder), selection → `BrowseSelectFolder` recorded in `browser::State` (+ supported-image count
-   logged).
-4. **Grid pane** (done): `NSCollectionView` wired to the thumbnail scheduler + cache, async folder listing
-   (`grid_listing`), the RGBA8→`NSImage` seam (`quicklook::nsimage_from_rgba8`), native selection (single-click instant,
-   double-click opens via `mouseDown:`), focus-aware per-item selection emphasis, Enter open-to-image hand-off, and the
-   "(No images)" empty state (grid non-focusable when empty). See `browser/CLAUDE.md`.
-5. **Behaviors** (done): browse-open folder-reveal + scroll-to-mid + current-image preselect + grid focus, via the
-   **async reveal-path walk** (`tree_model::reveal_path_chain` + a pending `RevealWalk` advanced by
-   `BrowseTreeChildrenLoaded`, since children load on the background scanner — never a synchronous expand); Tab;
-   double-click/Enter → image; dir-arg startup (`browser::classify_launch_target` + `App::launch_directory`); arrow-key
-   pane isolation (automatic from the single-first-responder focus model). Pure logic (reveal chain, launch
-   classification, grid-preselect index) is unit-tested; the objc2 walk + view expansion are smoke + live-QA covered.
-6. **Styling pass:** the "beautiful gallery" look — reviewed visually with David.
-7. **QA + tests + docs:** new `SharedAppState` fields (mode, selected folder, grid count, focused pane) so the QA/MCP
-   server and integration tests can assert browse mode; colocated `CLAUDE.md` for the new `browser/` and `thumbnails/`
-   modules; update `architecture.md` and `AGENTS.md`.
+- **Thumbnail plumbing.** `thumbnails` → `previews` rename; the shared, size-parameterized QuickLook generator with a
+  second grid request path; the visible-centered scheduler + 128 MB byte-budget cache (headless unit-tested for
+  nearest-first ordering, scroll re-prioritization, and eviction).
+- **Tree pane.** `NSOutlineView` source-list (`setStyle(.SourceList)`), home + mounted volumes as **flat sibling roots**
+  (the grouped "Locations" header fights the path-keyed node model — see `browser/CLAUDE.md`), lazy async directory
+  enumeration, path-identity `NodeObject`s, native arrow-key nav, selection → `BrowseSelectFolder`.
+- **Grid pane.** `NSCollectionView` wired to the scheduler + cache, async folder listing (`grid_listing`), the
+  RGBA8→`NSImage` seam (`quicklook::nsimage_from_rgba8`), native selection (single-click instant, double-click opens via
+  `mouseDown:`), focus-aware per-item emphasis, Enter open-to-image hand-off, and the "(No images)" empty state (grid
+  non-focusable when empty).
+- **Behaviors.** Browse-open folder-reveal + scroll-to-mid + current-image preselect + grid focus via the **async
+  reveal-path walk** (`tree_model::reveal_path_chain` + a `RevealWalk` advanced by `BrowseTreeChildrenLoaded`, since
+  children load on the background scanner); Tab; double-click/Enter → image; dir-arg startup
+  (`browser::classify_launch_target` + `App::launch_directory`); arrow-key pane isolation (automatic from the
+  single-first-responder focus model). Pure logic (reveal chain, launch classification, grid-preselect index) is
+  unit-tested.
+- **QA + tests + docs.** `SharedAppState` browse fields + the test-only QA driving hooks (see the QA observability note
+  in "State"); integration tests asserting the full flow; colocated module docs; this spec, `architecture.md`, and
+  `AGENTS.md`.
 
-## Risks and unknowns
-
-- **Focus/first-responder is the make-or-break** — winit's event loop and AppKit's responder chain sharing key events.
-  Phase 0 proves it before anything else.
-- **`NSCollectionView` styling** is craft, not a flag; baseline then iterate.
-- **Grouped source-list roots** (volumes under a "Locations" header) may need an `NSOutlineView` group-row data source;
-  flat roots are the fallback.
-- **objc2-app-kit features to add** in `Cargo.toml`: `NSSplitView`, `NSOutlineView`, `NSCollectionView`, `NSScrollView`.
+**Left:** the styling pass — the "beautiful gallery" look (`NSCollectionView` polish is craft, not a flag), reviewed
+visually with David.
 
 ## Test plan
 
-- Phase 1 (rename): full `./scripts/check.sh` green, no behavior change; existing preview/placeholder tests pass under
-  new names.
-- Phase 2 (thumbnails): headless unit tests for cache budgeting/eviction and the generate-on-demand windowing.
-- Phases 3–5: integration tests via the QA/MCP server asserting mode switch, selected folder, grid count, focused pane,
-  and that a dir argument boots into browse. Manual: focus/Tab/keyboard, dir-arg launch, empty folder, very large folder
-  scrolling.
-- Visual review with David for the styling pass and any positioning nuance.
-- `./scripts/check.sh` (all checks) green before every commit. </content> </invoke>
+- **Headless unit tests:** the scheduler's nearest-first ordering + scroll re-prioritization, the 128 MB cache
+  eviction, and the pure browse logic (reveal chain, launch classification, grid-preselect/reveal index, focus
+  transitions).
+- **Integration tests** (`tests/integration.rs`, driven through the QA server, macOS-only): mode switch (Enter/Esc),
+  dir-arg launch booting into browse with the folder revealed + listed, selecting a folder by path lists its images,
+  the empty-folder zero-count + non-focusable grid, Tab focus flips reflected in `focused_pane`, the grid-selection →
+  open round-trip, and entering browse from an image preselecting it. They poll `/state`
+  (`browse_reveal_pending == false` + `browse_grid_count`) for a non-flaky barrier, each with its own temp `HOME` so
+  the tree's home root scopes a short reveal walk.
+- **Manual:** focus/Tab/keyboard, dir-arg launch, empty folder, very large folder scrolling, and the styling review.
+- `./scripts/check.sh` (all checks) green before every commit.
