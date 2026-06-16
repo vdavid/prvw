@@ -90,9 +90,9 @@ deliver RGBA8 (`cg_image_to_rgba8`); they differ only in the wake command (`Prev
 them in an `NSImage` via `quicklook::nsimage_from_rgba8` (the documented seam at the top of `quicklook.rs`). Previews
 behavior is unchanged.
 
-`RequestTable` runs a dedicated worker thread (`prvw-previewgen` for previews, `prvw-gridgen` for the grid) that owns the
-`entries: HashMap<RequestId, Retained<QLThumbnailGenerationRequest>>` and the `QLThumbnailGenerator` singleton (created
-on that thread via `sharedGenerator`). All ops on the main thread are mpsc sends:
+`RequestTable` runs a dedicated worker thread (`prvw-previewgen` for previews, `prvw-gridgen` for the grid) that owns
+the `entries: HashMap<RequestId, Retained<QLThumbnailGenerationRequest>>` and the `QLThumbnailGenerator` singleton
+(created on that thread via `sharedGenerator`). All ops on the main thread are mpsc sends:
 
 | Main → Worker             | Worker action                                                                |
 | ------------------------- | ---------------------------------------------------------------------------- |

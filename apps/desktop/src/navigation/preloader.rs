@@ -520,6 +520,53 @@ impl Preloader {
         }
     }
 
+    /// Warm an explicit set of paths into the cache, decoding each into a
+    /// background task. Cancels in-flight tasks for paths NOT in the new list
+    /// (a moved selection no longer wants them), keeps the rest alive, and
+    /// queues fresh tasks for paths not yet in flight. Path-keyed and
+    /// equal-priority (no cancel-all like `prioritize_target`), so it warms
+    /// arbitrary paths WITHOUT disturbing the displayed image or `dir_list`:
+    /// the browse selection treats its prospective current image + neighbors
+    /// as warm targets while the viewer still shows the previous image.
+    ///
+    /// `tasks` are `(index, path)` pairs where `index` is purely a label /
+    /// shared-state slot — the cache is keyed by path, so a warm decode lands
+    /// in the same `image_cache` the viewer reads regardless of the slot.
+    /// Re-calling with a new set cancels the paths that dropped out (the
+    /// move-cancellation the browse selection needs).
+    pub fn warm_paths(&mut self, tasks: Vec<(usize, PathBuf)>, total: usize) {
+        let requested: std::collections::HashSet<PathBuf> =
+            tasks.iter().map(|(_, p)| p.clone()).collect();
+        let mut cancelled_count = 0usize;
+        self.in_flight.retain(|p, token| {
+            if requested.contains(p) {
+                true
+            } else {
+                token.store(true, Ordering::Relaxed);
+                cancelled_count += 1;
+                false
+            }
+        });
+        if cancelled_count > 0 {
+            log::debug!("Cancelled {cancelled_count} stale browse-warm tasks");
+        }
+        let indices: Vec<usize> = tasks.iter().map(|(i, _)| *i).collect();
+        if !indices.is_empty() {
+            log::debug!("Warming browse selection: {indices:?}");
+        }
+        // The first task is the prospective current image, so it should land
+        // first; the rest are neighbors. `current_index` for the log offset is
+        // the first index (the prospective current).
+        let current_index = indices.first().copied().unwrap_or(0);
+        for (index, path) in tasks.into_iter() {
+            if self.in_flight.contains_key(&path) {
+                continue;
+            }
+            // Warm targets are not displayed yet — no preview placeholder.
+            self.queue_task(index, path, current_index, total, false);
+        }
+    }
+
     /// Build the task closure and queue it on the worker channel. Both
     /// `prioritize_target` and `request_neighbor_preload` use this so
     /// the closure body lives in one place.

@@ -59,10 +59,20 @@ under the live surface. We hide one and show the other.
 - **Entering browse** (from image mode via Enter or Navigate → Image browser): select the current image's folder in the
   tree and scroll it to roughly mid-view; list that folder's images; select the last-displayed image in the grid; focus
   the grid.
-- **Leaving browse to a specific image:** double-click or Enter on a grid item → image mode showing that image. Enter on
-  the tree, or Navigate → Image view, also returns to image mode (showing the current image).
+- **Leaving browse to a specific image:** double-click or Enter on a grid item → image mode showing that image. This is
+  **instant** — opening switches to image mode and shows something at once (the warmed full image if cached, else the
+  grid thumbnail's QuickLook preview stretched to size with a "Loading…" overlay), then the sharp full decode swaps in.
+  It never blocks the main thread on a full decode; it reuses the same async cache-hit / cache-miss display path image-
+  mode navigation uses. Enter on the tree, or Navigate → Image view, also returns to image mode (showing the current
+  image).
 - **Selecting a folder** in the tree lists its images in the grid. It does not change "the displayed image" until the
   user opens one.
+- **The browse selection is warmed.** When the selection lands on an image (grid click or arrow-key selection), the app
+  treats it as the prospective current image and decodes it + N±2 neighbors into the shared image cache via the
+  preloader, cancelling/replacing as the selection moves (standard image-mode preloader behavior). Warming is **by path
+  only** — it never changes the displayed image or `current` position, so pressing Esc still returns to image mode with
+  the image unchanged. By the time the user opens, the full image is usually already cached (instant open), and arrowing
+  in image mode afterward is warm.
 - **Tab** toggles focus between tree and grid (app-managed in `browser::State`, not the native key-view loop — see
   "Input architecture"; the grid is skipped when empty).
 - **Esc** in browse mode returns to image mode (mirrors today's exit-fullscreen-or-app feel; the current image stays).
@@ -84,9 +94,9 @@ coherent so switching modes lands on the right image and the existing preloader 
 
 In browse mode the GPU layer is hidden and the app stops requesting redraws, so **winit is idle and does not re-assert
 first responder.** That lets the focused native view hold the window's first responder and handle its own keys. (This
-refines the Phase 0 spike's first read, which saw winit win first responder — that was a stub artifact: plain placeholder
-panes with redraws still firing. With real controls in idle-winit browse mode, the native first responder holds —
-verified: `makeFirstResponder` accepted, and no winit re-assertion during browse.)
+refines the Phase 0 spike's first read, which saw winit win first responder — that was a stub artifact: plain
+placeholder panes with redraws still firing. With real controls in idle-winit browse mode, the native first responder
+holds — verified: `makeFirstResponder` accepted, and no winit re-assertion during browse.)
 
 So browse mode uses the AppKit responder chain, with one app-level source of truth and a single render step:
 
@@ -102,8 +112,8 @@ So browse mode uses the AppKit responder chain, with one app-level source of tru
   until you click").
 - **Every mutation goes through state then `sync_native`** — the one choke-point, no observer/event-bus. `enter_browse`
   (focus the grid if the selected folder has images, else the tree; also grow the window to a sensible browse minimum if
-  it shrank for a small image), `enter_image` (`focused_pane = None`), `toggle_focus` (Tab: toggle Tree↔Grid, skipping an
-  empty grid), a grid click (focus Grid + record the index), a tree selection (focus Tree), and a completed folder
+  it shrank for a small image), `enter_image` (`focused_pane = None`), `toggle_focus` (Tab: toggle Tree↔Grid, skipping
+  an empty grid), a grid click (focus Grid + record the index), a tree selection (focus Tree), and a completed folder
   listing all set state then render. This structurally prevents the native UI from drifting from state (the bug an
   earlier per-event-emphasis model had: a click updated one pane's emphasis but not the other).
 - **Keyboard via the focused view's `keyDown:` override, not winit.** `BrowseOutlineView` and `BrowseCollectionView`
@@ -180,7 +190,8 @@ re-run checks before integrating.
 3. **Tree pane** (done): `NSOutlineView` source-list (`setStyle(.SourceList)`), home + mounted volumes as **flat sibling
    roots** (the grouped "Locations" header was the target but fights the path-keyed node model, so flat roots — see
    `browser/CLAUDE.md`), lazy directory enumeration, path-identity `NodeObject`s, native arrow-key nav (the outline view
-   holds first responder), selection → `BrowseSelectFolder` recorded in `browser::State` (+ supported-image count logged).
+   holds first responder), selection → `BrowseSelectFolder` recorded in `browser::State` (+ supported-image count
+   logged).
 4. **Grid pane** (done): `NSCollectionView` wired to the thumbnail scheduler + cache, async folder listing
    (`grid_listing`), the RGBA8→`NSImage` seam (`quicklook::nsimage_from_rgba8`), native selection (single-click instant,
    double-click opens via `mouseDown:`), focus-aware per-item selection emphasis, Enter open-to-image hand-off, and the

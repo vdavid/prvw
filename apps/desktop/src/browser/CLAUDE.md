@@ -5,29 +5,28 @@ image viewer. Both panes are real now: the **tree** (Phase 3) is an `NSOutlineVi
 mounted volumes; the **grid** (Phase 4) is an `NSCollectionView` thumbnail gallery of the selected folder's images,
 driven by the Phase-2 scheduler + cache plumbing. Full design: `docs/specs/image-browser.md`.
 
-| File                 | Purpose                                                                                                                                                                                      |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| File                 | Purpose                                                                                                                                                                                                                                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `mod.rs`             | `ViewMode` + `PaneSide` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, native handles); the `sync_native` render-from-state choke-point; pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command` + field-transition cores; tree + grid delegation; tests |
-| `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (makes the focused pane's control first responder + refreshes grid emphasis — called by `sync_native`), divider + traffic-light fixes; hosts the tree (left) and the grid (right) |
-| `grid.rs`            | macOS `NSCollectionView` grid: `BrowseCollectionView` (keyDown override), `GridItem` (cell, focus-aware selection rect + double-click in `mouseDown:`), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs/focus) |
-| `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                        |
-| `grid_listing.rs`    | Background folder-image lister (its own OS thread + `mpsc`, like the tree scanner) + the pure `list_supported_images`                                                                        |
-| `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (the grid's `BrowseGrid::pump` drives it)                                                                        |
-| `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants                                                 |
-| `outline.rs`         | macOS `NSOutlineView` source-list tree: `BrowseOutlineView` (keyDown override), `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + `make_first_responder`) |
-| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate                              |
+| `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (makes the focused pane's control first responder + refreshes grid emphasis — called by `sync_native`), divider + traffic-light fixes; hosts the tree (left) and the grid (right)                                                                                                                  |
+| `grid.rs`            | macOS `NSCollectionView` grid: `BrowseCollectionView` (keyDown override), `GridItem` (cell, focus-aware selection rect + double-click in `mouseDown:`), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs/focus)                                               |
+| `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                                                                                                                                                                                  |
+| `grid_listing.rs`    | Background folder-image lister (its own OS thread + `mpsc`, like the tree scanner) + the pure `list_supported_images`                                                                                                                                                                                                                                  |
+| `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (the grid's `BrowseGrid::pump` drives it)                                                                                                                                                                                                                                  |
+| `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants                                                                                                                                                                                                           |
+| `outline.rs`         | macOS `NSOutlineView` source-list tree: `BrowseOutlineView` (keyDown override), `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + `make_first_responder`)                                                                                                                                                         |
+| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate                                                                                                                                                                                       |
 
 ## The swap
 
 `App` holds `browser: browser::State`. `App::set_view_mode` (in `app.rs`) drives it via `enter_browse` / `enter_image`,
 which set state then render through `sync_native` (see "Browse UI architecture" below — `sync_native` derives split-view
-+ Metal-layer visibility, the image labels, first responder, and emphasis from `mode` + `focused_pane`):
+and Metal-layer visibility, the image labels, first responder, and emphasis from `mode` + `focused_pane`):
 
 - **Image → Browse:** build the split view on first use, grow the window to the browse minimum if it's smaller
-  (`window::grow_to_browse_minimum`, ~860×560 — a small image's fit-to-window may have shrunk it), set
-  `mode = Browse` + focus (grid if it has images, else tree), `sync_native`. No redraw requested — the GPU goes idle
-  (render-on-demand). The min-size is enforced on browse entry only, never in image mode (so it doesn't fight
-  fit-to-window).
+  (`window::grow_to_browse_minimum`, ~860×560 — a small image's fit-to-window may have shrunk it), set `mode = Browse` +
+  focus (grid if it has images, else tree), `sync_native`. No redraw requested — the GPU goes idle (render-on-demand).
+  The min-size is enforced on browse entry only, never in image mode (so it doesn't fight fit-to-window).
 - **Browse → Image:** set `mode = Image` + `focused_pane = None`, `sync_native`, then `set_view_mode` re-asserts the
   title-label visibility and `request_redraw()`.
 
@@ -39,11 +38,11 @@ hide-one-show-the-other, not compositing.
 Commands: `ToggleBrowseMode` (menu + Enter in image mode), `EnterImageMode` (Esc while browsing; Enter on the tree),
 `ToggleBrowseFocus` (Tab while browsing), `BrowseSelectFolder(PathBuf)` (tree selection — also focuses the tree pane),
 `BrowseFolderListed { folder, images }` (a background listing finished), `BrowseThumbnailsAvailable` (grid-thumbnail
-completions queued), `BrowseGridSelected(usize)` (grid click/selection — also focuses the grid pane), `BrowseOpenSelected`
-(Enter on the focused grid, or a double-click — opens the selected image, else falls back to image mode). Browse keys are
-intercepted by the focused native view's `keyDown:` override (`browser::browse_keydown_command`), not winit. Dispatched
-in `app/executor.rs`. All but `ToggleBrowseMode`/`EnterImageMode`/`ToggleBrowseFocus`/`BrowseOpenSelected` are
-macOS-only.
+completions queued), `BrowseGridSelected(usize)` (grid click/selection — also focuses the grid pane),
+`BrowseOpenSelected` (Enter on the focused grid, or a double-click — opens the selected image, else falls back to image
+mode). Browse keys are intercepted by the focused native view's `keyDown:` override (`browser::browse_keydown_command`),
+not winit. Dispatched in `app/executor.rs`. All but
+`ToggleBrowseMode`/`EnterImageMode`/`ToggleBrowseFocus`/`BrowseOpenSelected` are macOS-only.
 
 ## The folder tree (Phase 3)
 
@@ -153,7 +152,8 @@ subscription.
 - `enter_browse` / `enter_image` (`set_view_mode` in `app.rs`) — set `mode` + `focused_pane`. `enter_browse` also grows
   the window to the browse minimum first (see below).
 - `toggle_focus` (Tab) — flips the pane via `next_focused_pane`.
-- `set_grid_selected` (a grid click/selection → `BrowseGridSelected`) — `focused_pane = Grid`, `grid_selected = clicked`.
+- `set_grid_selected` (a grid click/selection → `BrowseGridSelected`) — `focused_pane = Grid`,
+  `grid_selected = clicked`.
 - `set_tree_focused` (a tree selection → `BrowseSelectFolder`) — `focused_pane = Tree`.
 - `grid_folder_listed` (a background listing finished) — a listing flips the grid empty↔non-empty, so re-syncing
   re-derives focus + the grid-selection anchor.
@@ -169,7 +169,7 @@ responder and handles its own keys.
 **On entering image mode**, `sync_native` hands first responder back to winit (`restore_content_view_first_responder`):
 the hidden outline view would otherwise keep the responder and swallow image-mode keys, so Enter→browse would work only
 once. **Don't drop this** — it's why the Enter → browse → Esc → image → Enter cycle repeats. (The labels' visibility is
-re-asserted by `set_view_mode` against the title-bar/fullscreen state — `sync_native` only ever *hides* them in browse,
+re-asserted by `set_view_mode` against the title-bar/fullscreen state — `sync_native` only ever _hides_ them in browse,
 never forces them on, so a title-bar-off/fullscreen setting wins.)
 
 **Keys via the focused view's `keyDown:` override, not winit.** `BrowseOutlineView` and `BrowseCollectionView` subclass
@@ -208,12 +208,33 @@ label). The slider that live-resizes cells is a later phase — Phase 4 uses a f
   posts `BrowseFolderListed { folder, images }`; the executor calls `BrowseGrid::folder_listed`, which sorts via the
   model's `SortBy`, reloads the collection view, toggles the "(No images)" overlay, and seeds the scheduler/cache. This
   subsumes the old main-thread `count_supported_images` read — the listing returns the actual paths off-thread.
-- **Open → image mode.** Double-click (detected in `GridItem::mouseDown:` via `clickCount == 2` — not a click gesture
-  recognizer, which delays the single click ~600 ms) or Enter on the focused grid fires `BrowseOpenSelected`. Single
-  click selects instantly. `App::open_selected_grid_image` builds a `DirectoryList::from_explicit` from
-  the grid's image list (same `SortBy`, so the order matches), positions it at the selected index via `go_by`, switches
-  to image mode, seeds previews, displays the image, and warms neighbors (`warm_initial_neighbors`, shared with launch)
-  — so arrow-key nav works immediately. Enter on the tree (or with no grid selection) just returns to image mode.
+- **Open → image mode (INSTANT, never blocks on decode).** Double-click (detected in `GridItem::mouseDown:` via
+  `clickCount == 2` — not a click gesture recognizer, which delays the single click ~600 ms) or Enter on the focused
+  grid fires `BrowseOpenSelected`. Single click selects instantly. `App::open_selected_grid_image` builds a
+  `DirectoryList::from_explicit` from the grid's image list (same `SortBy`, so the order matches), positions it at the
+  selected index via `go_by`, switches to image mode, seeds previews, then hands off to `App::display_open_target` — the
+  **same async display path image-mode navigation uses for a cache miss**, so the switch to image mode shows something
+  at once with zero perceptible delay:
+  - **Cache hit** (the common case — the selection was warmed, see below): display from cache immediately, then
+    `warm_initial_neighbors` tops up the arrow-key window.
+  - **Cache miss**: set `pending_current`, show a placeholder instantly (the grid thumbnail's QuickLook preview
+    stretched to size via `display_preview_placeholder`, else a metadata-only `apply_preview_auto_fit`) + a "Loading…"
+    title, and `prioritize_target` the full decode on the preloader. The sharp image swaps in when `poll_preloader` sees
+    `Ready` for `pending_current`, which also queues neighbors. **No blocking `display_image` on the main thread.**
+
+  Enter on the tree (or with no grid selection) just returns to image mode.
+
+- **Warming the browse selection (so open is actually instant).** When the browse selection lands on an image — a grid
+  click (`BrowseGridSelected`) or the seeded selection after a folder lists (`BrowseFolderListed`) — the executor calls
+  `App::warm_browse_selection`: it reads the grid's image list + selected index (`State::grid_warm_target`, focus-
+  independent), computes the prospective-current + N±2 neighbor indices (`browser::browse_warm_indices`, built on
+  `navigation::wrap::active_preload_indices`, clamped to the folder, no wrap), maps them to paths, and warms them into
+  the shared `navigation::image_cache` via `Preloader::warm_paths`. **Warming is by PATH and never touches `dir_list`,
+  `pending_current`, or the displayed image** — the cache is path-keyed, so warming arbitrary paths is safe. That's the
+  load-bearing constraint: pressing Esc instead of opening must still show the previously displayed image unchanged.
+  `warm_paths` cancels paths that drop out of the new set, so a moved selection cancels its stale warms (standard image-
+  mode preloader behavior). Net effect: by open time the full image is usually already cached → instant; and after
+  opening, arrowing left/right is warm.
 
 ### Thumbnails: same QL worker as previews, AppKit owns the bitmaps
 

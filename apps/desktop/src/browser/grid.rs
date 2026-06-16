@@ -60,8 +60,9 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSCollectionView, NSCollectionViewFlowLayout, NSCollectionViewItem,
-    NSCollectionViewScrollDirection, NSCollectionViewScrollPosition, NSColor, NSEvent, NSImageScaling,
-    NSImageView, NSIndexPathNSCollectionViewAdditions, NSScrollView, NSTextField, NSView,
+    NSCollectionViewScrollDirection, NSCollectionViewScrollPosition, NSColor, NSEvent,
+    NSImageScaling, NSImageView, NSIndexPathNSCollectionViewAdditions, NSScrollView, NSTextField,
+    NSView,
 };
 use objc2_foundation::{
     NSArray, NSEdgeInsets, NSIndexPath, NSInteger, NSPoint, NSRect, NSSet, NSSize, NSString,

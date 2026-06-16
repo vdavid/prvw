@@ -382,6 +382,9 @@ impl App {
                 if let Some(win) = self.window.clone() {
                     self.browser.grid_folder_listed(images, &win);
                 }
+                // The listing seeds a selection (index 0); warm it + neighbors so the likely-opened
+                // image is ready. Doesn't touch the displayed image.
+                self.warm_browse_selection();
                 self.update_shared_state();
             }
             #[cfg(target_os = "macos")]
@@ -395,6 +398,10 @@ impl App {
                 if let Some(win) = self.window.clone() {
                     self.browser.set_grid_selected(index, &win);
                 }
+                // Warm the now-selected image + neighbors into the image cache so opening is
+                // instant and arrowing is warm. Doesn't change the displayed image (Esc still shows
+                // the prior one); cancels the previous selection's stale warms.
+                self.warm_browse_selection();
                 self.update_shared_state();
             }
             AppCommand::BrowseOpenSelected => {

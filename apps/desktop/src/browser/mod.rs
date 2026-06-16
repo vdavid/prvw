@@ -155,6 +155,29 @@ pub fn browse_entry_pane(grid_empty: bool) -> PaneSide {
     }
 }
 
+/// How many images each side of the browse selection to warm into the image cache. Matches the
+/// image-mode preloader radius (`preloader::preload_count()` is also 2) so opening lands on a warm
+/// image and arrowing left/right in image mode is immediately warm.
+pub const BROWSE_WARM_RADIUS: usize = 2;
+
+/// The grid indices to warm when the browse selection lands on `selected`: the selection itself
+/// (first, the prospective current image) plus `BROWSE_WARM_RADIUS` neighbors each side, clamped to
+/// `[0, total)`. Browse never loops (loop navigation is an image-mode concept), so the window stops
+/// at the folder edges. Returns empty when the folder is empty. Pure (headless-tested); the executor
+/// maps these to paths and hands them to `Preloader::warm_paths`.
+#[must_use]
+pub fn browse_warm_indices(selected: usize, total: usize) -> Vec<usize> {
+    if total == 0 || selected >= total {
+        return Vec::new();
+    }
+    crate::navigation::wrap::active_preload_indices(
+        selected,
+        total,
+        BROWSE_WARM_RADIUS,
+        /* loop_on */ false,
+    )
+}
+
 /// Per-feature browse-mode state (sibling of `zoom::State`, `navigation::State`, …). Holds the
 /// current `ViewMode` and, on macOS, the native split-view handles built lazily on first entry.
 pub struct State {
@@ -301,6 +324,18 @@ impl State {
         let selected = grid.selected_index()?;
         let path = grid.selected_path()?;
         Some((path, grid.images(), selected))
+    }
+
+    /// The grid's full image list and the selected index, for warming the prospective current image
+    /// and its neighbors into the image cache. Unlike `grid_open_target`, this is focus-independent
+    /// (a selection lands the same whether it came from a grid click or a tree-arrow move). `None`
+    /// when the split view isn't built or the grid has no selection (empty folder). No-op off macOS.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn grid_warm_target(&self) -> Option<(Vec<std::path::PathBuf>, usize)> {
+        let grid = self.split_view.as_ref()?.grid();
+        let selected = grid.selected_index()?;
+        Some((grid.images(), selected))
     }
 
     /// The current top-level screen.
@@ -586,6 +621,40 @@ mod tests {
         assert!(browse_keydown_command(123).is_none());
         assert!(browse_keydown_command(125).is_none());
         assert!(browse_keydown_command(0).is_none());
+    }
+
+    #[test]
+    fn browse_warm_indices_centers_on_selection_with_two_each_side() {
+        // The selection comes first (the prospective current image), then ±2 neighbors. Order
+        // beyond the first doesn't matter to the warmer, so compare as a set, but pin the first.
+        let warm = browse_warm_indices(5, 10);
+        assert_eq!(
+            warm[0], 5,
+            "selection warms first (it's the prospective current)"
+        );
+        let set: std::collections::HashSet<usize> = warm.iter().copied().collect();
+        assert_eq!(set, std::collections::HashSet::from([3, 4, 5, 6, 7]));
+    }
+
+    #[test]
+    fn browse_warm_indices_clamps_at_folder_edges_and_does_not_wrap() {
+        // At the first image, only the selection + the two ahead survive (no wrap to the end).
+        let start = browse_warm_indices(0, 10);
+        let start_set: std::collections::HashSet<usize> = start.iter().copied().collect();
+        assert_eq!(start_set, std::collections::HashSet::from([0, 1, 2]));
+
+        // At the last image, only the selection + the two behind survive.
+        let end = browse_warm_indices(9, 10);
+        let end_set: std::collections::HashSet<usize> = end.iter().copied().collect();
+        assert_eq!(end_set, std::collections::HashSet::from([9, 8, 7]));
+    }
+
+    #[test]
+    fn browse_warm_indices_handles_empty_and_out_of_range() {
+        assert!(browse_warm_indices(0, 0).is_empty());
+        assert!(browse_warm_indices(5, 3).is_empty());
+        // A single-image folder warms just that image.
+        assert_eq!(browse_warm_indices(0, 1), vec![0]);
     }
 
     #[test]

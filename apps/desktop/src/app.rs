@@ -666,6 +666,35 @@ impl App {
         }
     }
 
+    /// Warm the browse selection's prospective current image + its neighbors into the image cache,
+    /// so opening it is instant and arrowing left/right in image mode afterward is warm. Called when
+    /// the browse selection lands on an image (a grid click, or the seeded selection after a folder
+    /// lists). Warms by PATH via `Preloader::warm_paths` — it does NOT touch `dir_list`,
+    /// `pending_current`, or the displayed image, so pressing Esc instead of opening still shows the
+    /// previously displayed image unchanged (the cache is path-keyed, so warming arbitrary paths is
+    /// safe). A moved selection cancels the now-stale warms (`warm_paths` cancels paths that drop out
+    /// of the new set). No-op off macOS, when neighbor preloading is disabled, or with no selection.
+    #[cfg(target_os = "macos")]
+    fn warm_browse_selection(&mut self) {
+        if !self.navigation.preload_neighbors {
+            return;
+        }
+        let Some((images, selected)) = self.browser.grid_warm_target() else {
+            return;
+        };
+        let total = images.len();
+        let tasks: Vec<(usize, PathBuf)> = crate::browser::browse_warm_indices(selected, total)
+            .into_iter()
+            .filter_map(|i| images.get(i).map(|p| (i, p.clone())))
+            .collect();
+        if tasks.is_empty() {
+            return;
+        }
+        if let Some(preloader) = &mut self.navigation.preloader {
+            preloader.warm_paths(tasks, total);
+        }
+    }
+
     fn display_initial_image(&mut self, path: &Path) {
         let is_raw = path
             .extension()
@@ -1169,8 +1198,10 @@ impl App {
         {
             // Enter on the tree (or with no grid selection) just returns to image mode showing the
             // current image — only a focused grid with a selection opens a specific image.
-            let grid_focused =
-                matches!(self.browser.focused_pane(), Some(crate::browser::PaneSide::Grid));
+            let grid_focused = matches!(
+                self.browser.focused_pane(),
+                Some(crate::browser::PaneSide::Grid)
+            );
             let target = if grid_focused {
                 self.browser.grid_open_target()
             } else {
@@ -1206,25 +1237,82 @@ impl App {
                 self.previews.set_folder(paths, current);
             }
 
-            // Display the chosen image (synchronous decode — a user-initiated open, like launch).
-            self.display_image(&path);
-            if let Some((dir_index, total)) = self
-                .navigation
-                .dir_list
-                .as_ref()
-                .map(|d| (d.current_index(), d.len()))
-                && let Some(win) = &self.window
-            {
+            // Show the image INSTANTLY: never block the main thread on a full decode. If the warmed
+            // selection already landed it in the cache (the common case — `warm_browse_selection`
+            // pre-decoded it), display from cache immediately; otherwise set `pending_current`, show
+            // a placeholder (the QuickLook preview stretched to size, "Loading…" title) and let the
+            // preloader deliver the full decode via `poll_preloader`. Same async path image-mode
+            // navigation uses for a cache miss.
+            self.display_open_target();
+
+            // Warm neighbors so arrow-key nav is instant, mirroring the launch path. (When the open
+            // target was a cache miss, `poll_preloader` queues neighbors after `Ready`; this covers
+            // the cache-hit case where no `Ready` will fire.)
+            if self.navigation.pending_current.is_none() {
+                self.warm_initial_neighbors();
+            }
+            self.update_shared_state();
+        }
+    }
+
+    /// Display the current `dir_list` image when opening from the browse grid: instant from cache
+    /// if present, else the async placeholder path (set `pending_current`, show the preview
+    /// placeholder or a metadata-only auto-fit, "Loading…" title, and `prioritize_target` so the
+    /// preloader decodes in the background). NEVER blocks the main thread on a full decode — that's
+    /// the whole point of Fix #14. Mirrors the cache-hit / cache-miss branches of
+    /// `after_position_change` (direction unknown). macOS-only — it reads the QuickLook `previews`
+    /// state for the placeholder; the open path is macOS-only anyway.
+    #[cfg(target_os = "macos")]
+    fn display_open_target(&mut self) {
+        let Some((path, index, total)) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| (d.current().to_path_buf(), d.current_index(), d.len()))
+        else {
+            return;
+        };
+        self.navigation.last_direction = directory::Direction::Unknown;
+        self.request_times.insert(index, Instant::now());
+
+        if self.navigation.image_cache.contains(&path) {
+            // Warm hit — display instantly, no decode wait.
+            self.navigation.pending_current = None;
+            if let Some(win) = &self.window {
                 window::set_title_keeping_buttons(
                     win,
-                    &window::window_title_with_position(&path, dir_index, total),
+                    &window::window_title_with_position(&path, index, total),
                 );
             }
-
-            // Warm neighbors so arrow-key nav is instant, mirroring the launch path.
-            self.warm_initial_neighbors();
-            self.pump_preview_requests();
-            self.update_shared_state();
+            self.display_from_cache(index);
+            self.request_times.remove(&index);
+            self.on_primary_decode_settled();
+            self.on_preview_current_changed(index);
+            log::info!(
+                "Browse open: {} displayed from cache (instant)",
+                path.display()
+            );
+        } else {
+            // Cache miss — show a placeholder instantly and decode in the background. The full
+            // image swaps in when `poll_preloader` sees `Ready` for `pending_current`.
+            self.pending_crossfade = false;
+            self.navigation.pending_current = Some(index);
+            if let Some(win) = &self.window {
+                window::set_title_keeping_buttons(win, &window::window_title_loading(index, total));
+            }
+            self.on_primary_decode_started();
+            self.on_preview_current_changed(index);
+            // The grid thumbnail's QuickLook preview is the same cache the image-mode placeholder
+            // reads, so the stretched preview shows at once; fall back to a metadata-only auto-fit
+            // if no preview is cached yet.
+            if !self.display_preview_placeholder(index) {
+                self.apply_preview_auto_fit(index);
+            }
+            self.needs_redraw = true;
+            if let Some(preloader) = &mut self.navigation.preloader {
+                preloader.prioritize_target(index, path, total);
+            }
+            log::info!("Browse open: cache miss — placeholder shown, decoding in background");
         }
     }
 

@@ -59,8 +59,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSEvent, NSImageView, NSOutlineView, NSScrollView, NSTableColumn, NSTableViewStyle, NSTextField,
-    NSView, NSWorkspace,
+    NSEvent, NSImageView, NSOutlineView, NSScrollView, NSTableColumn, NSTableViewStyle,
+    NSTextField, NSView, NSWorkspace,
 };
 use objc2_foundation::{NSNotification, NSString};
 
