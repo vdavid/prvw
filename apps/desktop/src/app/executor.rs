@@ -363,8 +363,10 @@ impl App {
             #[cfg(target_os = "macos")]
             AppCommand::BrowseSelectFolder(folder) => {
                 log::info!("Browse: selected folder {}", folder.display());
-                // Lists the folder's images on a background worker (never the main thread); the
-                // grid populates when `BrowseFolderListed` arrives.
+                // Selecting in the tree focuses the tree pane (single source of truth), then lists
+                // the folder's images on a background worker (never the main thread); the grid
+                // populates when `BrowseFolderListed` arrives.
+                self.browser.set_tree_focused();
                 self.browser.set_selected_folder(folder);
                 self.update_shared_state();
             }
@@ -391,14 +393,6 @@ impl App {
             }
             AppCommand::BrowseOpenSelected => {
                 self.open_selected_grid_image();
-            }
-            #[cfg(target_os = "macos")]
-            AppCommand::BrowseMoveTreeSelection(delta) => {
-                self.browser.move_tree_selection(delta);
-            }
-            #[cfg(target_os = "macos")]
-            AppCommand::BrowseExpandTreeSelection(expand) => {
-                self.browser.expand_tree_selection(expand);
             }
             #[cfg(target_os = "macos")]
             AppCommand::BrowseTreeChildrenLoaded { path, children } => {

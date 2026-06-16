@@ -7,7 +7,6 @@
 //!   unreadable entries skipped, sorted case-insensitively by name. Runs on the background
 //!   scanner thread (never the main thread — slow filesystems would freeze the UI).
 //! - [`enumerate_roots`]: the source-list roots — the home folder plus every mounted volume.
-//! - [`next_selectable_row`]: the Up/Down arrow-key target row in a flat list of visible rows.
 //! - [`ChildCache`]: the per-path load-state machine (`NotLoaded` → `InFlight` → `Loaded`) the
 //!   data source serves children from. The data source NEVER reads a directory inline; it only
 //!   ever consults this cache and lets the background scanner fill it.
@@ -287,34 +286,6 @@ fn sort_by_name_roots(roots: &mut [Root]) {
     });
 }
 
-/// The row a Up/Down arrow key should move to, given the current selection and how many rows
-/// are visible. `delta` is +1 (Down) or -1 (Up). Clamps at both ends so arrowing past the edge
-/// is a no-op rather than wrapping.
-///
-/// `selected` is `None` when nothing is selected yet — Down then selects the first row, Up the
-/// last, matching how a fresh source list behaves under the arrow keys. Returns `None` only when
-/// there are no rows at all.
-#[must_use]
-pub fn next_selectable_row(
-    selected: Option<usize>,
-    visible_rows: usize,
-    delta: i32,
-) -> Option<usize> {
-    if visible_rows == 0 {
-        return None;
-    }
-    let last = visible_rows - 1;
-    match selected {
-        Some(current) => {
-            let next = (current as i64 + delta as i64).clamp(0, last as i64);
-            Some(next as usize)
-        }
-        // Nothing selected: Down lands on the first row, Up on the last.
-        None if delta > 0 => Some(0),
-        None => Some(last),
-    }
-}
-
 /// Borrow a path's final component as a `&str`, or `None` if it has none / isn't valid UTF-8.
 fn file_name_str(path: &Path) -> Option<&str> {
     path.file_name().and_then(|n| n.to_str())
@@ -416,28 +387,6 @@ mod tests {
         let roots = build_roots(None, volumes);
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].name, "Macintosh HD");
-    }
-
-    #[test]
-    fn next_selectable_row_clamps_at_edges() {
-        // 5 rows, 0..=4.
-        assert_eq!(next_selectable_row(Some(2), 5, 1), Some(3));
-        assert_eq!(next_selectable_row(Some(2), 5, -1), Some(1));
-        // Clamp, don't wrap.
-        assert_eq!(next_selectable_row(Some(4), 5, 1), Some(4));
-        assert_eq!(next_selectable_row(Some(0), 5, -1), Some(0));
-    }
-
-    #[test]
-    fn next_selectable_row_from_no_selection() {
-        assert_eq!(next_selectable_row(None, 5, 1), Some(0)); // Down → first
-        assert_eq!(next_selectable_row(None, 5, -1), Some(4)); // Up → last
-    }
-
-    #[test]
-    fn next_selectable_row_empty_list_is_none() {
-        assert_eq!(next_selectable_row(None, 0, 1), None);
-        assert_eq!(next_selectable_row(Some(0), 0, 1), None);
     }
 
     // ── ChildCache state machine ──

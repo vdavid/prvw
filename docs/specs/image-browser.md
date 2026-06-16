@@ -80,35 +80,45 @@ A new per-feature `browser::State` (sibling of `zoom::State`, `navigation::State
 macOS `cfg`). `App` delegates to it. The grid's selection and `navigation::DirectoryList::current_index` are kept
 coherent so switching modes lands on the right image and the existing preloader warms neighbors.
 
-## Input architecture (spike finding)
+## Input architecture
 
-The Phase 0 spike established how the keyboard behaves when the native browse UI is shown, and it is the opposite of the
-initial assumption: **winit keeps delivering `WindowEvent::KeyboardInput` even while the native split view is up.**
-Proof — in browse mode, Esc reached the app's Exit path and the native pane's `keyDown:` override never fired, even
-though `makeFirstResponder` returned `true` (winit re-asserts its own content view as first responder, so a native view
-can't reliably hold the keyboard).
+In browse mode the GPU layer is hidden and the app stops requesting redraws, so **winit is idle and does not re-assert
+first responder.** That lets the focused native view hold the window's first responder and handle its own keys. (This
+refines the Phase 0 spike's first read, which saw winit win first responder — that was a stub artifact: plain placeholder
+panes with redraws still firing. With real controls in idle-winit browse mode, the native first responder holds —
+verified: `makeFirstResponder` accepted, and no winit re-assertion during browse.)
 
-So browse mode does **not** use the AppKit responder chain for keys:
+So browse mode uses the AppKit responder chain, with one app-level source of truth for focus:
 
-- **All keyboard flows through winit → `input` → `AppCommand`, branched by mode.** When `browser.is_browse()`, keys map
-  to browse actions (Tab → toggle focused pane, arrows → move selection in the focused native view, Enter → open the
-  selected image, Esc → image mode) instead of image-viewer actions. Image mode is unchanged. The `main.rs` Esc
-  special-case (fullscreen-or-quit) must also branch: Esc in browse returns to image mode, never quits.
-- **Browse-mode keys drive the native views programmatically** (`NSOutlineView` expand/collapse + row selection,
-  `NSCollectionView` selection + scroll-to-visible). The views render selection highlight regardless of first-responder
-  state, so app-managed focus is enough.
-- **Mouse is fully native:** click, double-click-to-open, and scroll-wheel are handled by `NSOutlineView` /
-  `NSCollectionView` directly — those work without the responder-chain caveat.
-- The spike's `BrowsePane` `keyDown:` subclass is dropped; panes are plain scroll views hosting the native controls.
-- Focused pane (for Tab) is tracked in `browser::State`, not the native key-view loop.
-- **Restore the content view as first responder when leaving browse.** The live `NSOutlineView` does take first
-  responder while browse is up (so winit doesn't always re-assert it, contrary to the spike's first read). On Esc →
-  image the hidden outline view keeps it, and winit then never sees the next key — image-mode Enter does nothing.
-  `browser::State::enter_image` calls `window::restore_content_view_first_responder` (`makeFirstResponder:` the winit
-  `ns_view`) so the keyboard returns to winit and the Enter → browse → Esc → image → Enter cycle repeats. Don't drop it.
-
-More input-routing code than leaning on the native key loop, but deterministic and it doesn't fight winit for first
-responder.
+- **`browser::State.focused_pane: Option<PaneSide>` is the single source of truth.** `None` in image mode,
+  `Some(Tree)`/`Some(Grid)` in browse mode. Nothing else decides which pane is focused; focus is never inferred from the
+  native first responder in logic.
+- **`apply_focus` syncs the native first responder to `focused_pane`** (`makeFirstResponder:` the `NSOutlineView` for
+  Tree, the `NSCollectionView` for Grid) and refreshes emphasis on both panes. Called on every focus change. Keeping the
+  native first responder synced makes native selection emphasis correct for free and lets the focused view handle arrows
+  natively.
+- **Focus transitions.** `enter_browse`: focus the grid if the selected folder has images, else the tree.
+  `enter_image`: `focused_pane = None`, restore the winit content view as first responder. Tab (browse): toggle
+  Tree↔Grid, skipping an empty grid. Click in a pane: focus that pane (a grid click focuses Grid, a tree selection
+  focuses Tree).
+- **Keyboard via the focused view's `keyDown:` override, not winit.** `BrowseOutlineView` and `BrowseCollectionView`
+  subclass their controls and override `keyDown:` to intercept only Tab → `ToggleBrowseFocus`, Enter (Return/keypad) →
+  open-selected (Grid) or return-to-image (Tree), Esc → `EnterImageMode`. Everything else (arrows, page keys,
+  type-select) calls `super`, so native selection/scroll stays immediate. The map is `browser::browse_keydown_command`,
+  routed via `crate::commands::send_command`. There is **no** winit-routed browse arrow handling.
+- **Emphasis follows focus.** Tree: an `NSOutlineView` source list draws accent-blue selection when it's first responder
+  and gray otherwise — so syncing first responder to `focused_pane` makes it correct automatically. Grid: each
+  `GridItem` draws its selection as a rounded rect — accent-blue when selected and the grid is first responder, gray when
+  selected but not, nothing when not selected. `BrowseGrid::refresh_focus_emphasis` repaints visible selected items on a
+  Tab flip.
+- **Mouse is fully native:** single-click selects instantly (focusing the grid), double-click opens (detected in
+  `GridItem::mouseDown:` via `clickCount == 2`, so no click-delay), and scroll-wheel scrolls — all native.
+- **Restore the content view as first responder when leaving browse.** On Esc → image the hidden outline view can keep
+  the responder, so winit never sees the next key (image-mode Enter does nothing). `browser::State::enter_image` calls
+  `window::restore_content_view_first_responder` so the Enter → browse → Esc → image → Enter cycle repeats. Don't drop
+  it.
+- A defensive `input::browse_key_to_command` fallback still maps Tab/Enter/Esc in case winit ever delivers a key in
+  browse mode, but with first responder held by the native view it normally doesn't fire.
 
 ## Thumbnails: rename first, reuse QuickLook, let AppKit own the memory
 
@@ -164,12 +174,12 @@ re-run checks before integrating.
    re-prioritization and for the 128 MB budget eviction.
 3. **Tree pane** (done): `NSOutlineView` source-list (`setStyle(.SourceList)`), home + mounted volumes as **flat sibling
    roots** (the grouped "Locations" header was the target but fights the path-keyed node model, so flat roots — see
-   `browser/CLAUDE.md`), lazy directory enumeration, path-identity `NodeObject`s, arrow-key nav driven programmatically,
-   selection → `BrowseSelectFolder` recorded in `browser::State` (+ supported-image count logged).
+   `browser/CLAUDE.md`), lazy directory enumeration, path-identity `NodeObject`s, native arrow-key nav (the outline view
+   holds first responder), selection → `BrowseSelectFolder` recorded in `browser::State` (+ supported-image count logged).
 4. **Grid pane** (done): `NSCollectionView` wired to the thumbnail scheduler + cache, async folder listing
-   (`grid_listing`), the RGBA8→`NSImage` seam (`quicklook::nsimage_from_rgba8`), native + programmatic selection,
-   double-click/Enter open-to-image hand-off, and the "(No images)" empty state (grid non-focusable when empty). See
-   `browser/CLAUDE.md`.
+   (`grid_listing`), the RGBA8→`NSImage` seam (`quicklook::nsimage_from_rgba8`), native selection (single-click instant,
+   double-click opens via `mouseDown:`), focus-aware per-item selection emphasis, Enter open-to-image hand-off, and the
+   "(No images)" empty state (grid non-focusable when empty). See `browser/CLAUDE.md`.
 5. **Behaviors:** browse-open folder-select + scroll-to-mid + last-image select + focus; Tab; double-click/Enter →
    image; dir-arg startup; menu wiring.
 6. **Styling pass:** the "beautiful gallery" look — reviewed visually with David.

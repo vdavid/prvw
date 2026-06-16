@@ -51,8 +51,8 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
         // Fullscreen. `f` and `F11` keep toggling fullscreen. Enter used to as well,
         // but now enters the image browser instead (the capability isn't lost — only
         // Enter's binding moved). In image mode no native view is first responder, so
-        // winit delivers Enter here; once in browse mode, a focused pane's `keyDown:`
-        // owns Enter (see `browser::split_view::BrowsePane`).
+        // winit delivers Enter here; once in browse mode, the focused pane's `keyDown:`
+        // override owns Enter (see `browser::browse_keydown_command`).
         Key::Named(NamedKey::F11) | Key::Character("f") => Some(AppCommand::ToggleFullscreen),
         Key::Named(NamedKey::Enter) => Some(AppCommand::ToggleBrowseMode),
 
@@ -71,10 +71,12 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
 
 /// Map a keyboard key press to an `AppCommand` **while browse mode is active**.
 ///
-/// Browse mode does not use the AppKit responder chain: winit keeps delivering
-/// `WindowEvent::KeyboardInput` even with the native split view up, so the keyboard is routed
-/// here instead of `key_to_command`. Returns `None` for keys with no browse action (they're
-/// swallowed, not forwarded to image-mode handlers).
+/// In idle-winit browse mode the focused native pane holds first responder and handles its own
+/// keys: arrows/page-keys/type-select stay native, and Tab/Enter/Esc are intercepted by the pane's
+/// `keyDown:` override (see `browser::browse_keydown_command`). So winit normally delivers nothing
+/// in browse mode. This mapping stays as a defensive fallback for Tab/Enter/Esc in case winit ever
+/// does deliver a key here; arrows are deliberately NOT mapped (they're native). Returns `None` for
+/// everything else.
 pub fn browse_key_to_command(key: Key<&str>, _modifiers: &ModifiersState) -> Option<AppCommand> {
     match key {
         // Esc leaves browse mode for image mode (showing the current image).
@@ -85,17 +87,6 @@ pub fn browse_key_to_command(key: Key<&str>, _modifiers: &ModifiersState) -> Opt
         Key::Named(NamedKey::Enter) => Some(AppCommand::BrowseOpenSelected),
         // Tab flips focus between the tree and grid panes.
         Key::Named(NamedKey::Tab) => Some(AppCommand::ToggleBrowseFocus),
-        // Arrows drive the focused pane's native selection. The tree (when focused): Up/Down
-        // move the selection, Left/Right collapse/expand the selected row. The executor gates
-        // these on the tree pane being focused (the grid's arrow nav lands with the grid phase).
-        #[cfg(target_os = "macos")]
-        Key::Named(NamedKey::ArrowDown) => Some(AppCommand::BrowseMoveTreeSelection(1)),
-        #[cfg(target_os = "macos")]
-        Key::Named(NamedKey::ArrowUp) => Some(AppCommand::BrowseMoveTreeSelection(-1)),
-        #[cfg(target_os = "macos")]
-        Key::Named(NamedKey::ArrowRight) => Some(AppCommand::BrowseExpandTreeSelection(true)),
-        #[cfg(target_os = "macos")]
-        Key::Named(NamedKey::ArrowLeft) => Some(AppCommand::BrowseExpandTreeSelection(false)),
         _ => None,
     }
 }
@@ -196,14 +187,9 @@ pub fn browse_qa_key_to_command(key_name: &str) -> Option<AppCommand> {
         "Escape" => Some(AppCommand::EnterImageMode),
         "Enter" => Some(AppCommand::BrowseOpenSelected),
         "Tab" => Some(AppCommand::ToggleBrowseFocus),
-        #[cfg(target_os = "macos")]
-        "ArrowDown" => Some(AppCommand::BrowseMoveTreeSelection(1)),
-        #[cfg(target_os = "macos")]
-        "ArrowUp" => Some(AppCommand::BrowseMoveTreeSelection(-1)),
-        #[cfg(target_os = "macos")]
-        "ArrowRight" => Some(AppCommand::BrowseExpandTreeSelection(true)),
-        #[cfg(target_os = "macos")]
-        "ArrowLeft" => Some(AppCommand::BrowseExpandTreeSelection(false)),
+        // Arrows are native (the focused pane's first responder handles them); the QA path can't
+        // drive native selection by key, so it doesn't map them. Tab/Enter/Esc cover the testable
+        // focus/mode transitions.
         _ => {
             log::debug!("QA server (browse mode): unhandled key '{key_name}'");
             None

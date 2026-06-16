@@ -26,12 +26,14 @@
 //!   the outline scroll view is inset `TITLE_BAR_HEIGHT` (32pt) from the top so no row sits under
 //!   the traffic-light strip — the same metric `window.rs` reserves for the title bar.
 //!
-//! ## No responder chain — keyboard is app-driven
+//! ## Focus: native first responder follows `focused_pane`
 //!
-//! The panes are plain views; they don't subclass `keyDown:`. winit keeps delivering keyboard
-//! input even with this split view up, so browse keys flow through winit → `AppCommand` and drive
-//! the outline view programmatically (`BrowseTree::move_selection` / `expand_selected` /
-//! `collapse_selected`). `set_focused_pane` only recolors the panes for a visible focus cue.
+//! In idle-winit browse mode the focused native view holds the window's first responder, so it
+//! handles its own arrows/page-keys/type-select natively and only Tab/Enter/Esc are intercepted by
+//! its `keyDown:` override. `apply_focus` is the sync point: it `makeFirstResponder:`s the focused
+//! pane's control (outline view or collection view) and refreshes the grid's per-item emphasis. The
+//! tree (a source list) draws accent-blue selection automatically while it's first responder and
+//! gray otherwise, so its emphasis needs no extra code.
 //!
 //! Every `Retained<>` here is owned by the view hierarchy after `addSubview` or stored in
 //! `BrowseSplitView` (which `App` keeps for the window's life) — so nothing drops early and
@@ -113,8 +115,11 @@ impl BrowseSplitViewInner {
 /// this in `browser::State` so the `Retained<>`s never drop while the window lives.
 pub struct BrowseSplitView {
     split: Retained<BrowseSplitViewInner>,
-    tree_pane: Retained<NSView>,
-    grid_pane: Retained<NSView>,
+    /// The two pane container views. Held for the window's lifetime (autorelease discipline) but no
+    /// longer read after build — focus emphasis now lives in the native controls (tree source-list
+    /// selection, grid per-item rect), not a pane background.
+    _tree_pane: Retained<NSView>,
+    _grid_pane: Retained<NSView>,
     /// The folder tree the app drives for keyboard navigation.
     tree: BrowseTree,
     /// The thumbnail grid the app drives (listing, selection, thumbnail generation).
@@ -166,28 +171,23 @@ impl BrowseSplitView {
         }
     }
 
-    /// Recolor the panes so the focused one is visibly highlighted (stub-level focus ring).
-    /// Called on entering browse mode and whenever `ToggleBrowseFocus` flips the pane.
-    pub fn set_focused_pane(&self, focused: PaneSide) {
-        unsafe {
-            set_pane_focus(&self.tree_pane, matches!(focused, PaneSide::Tree));
-            set_pane_focus(&self.grid_pane, matches!(focused, PaneSide::Grid));
+    /// Sync the native first responder to the focused pane and refresh emphasis on both panes.
+    /// `makeFirstResponder:` the focused pane's native control (the `NSOutlineView` for Tree, the
+    /// `NSCollectionView` for Grid) so it draws native selection emphasis and its `keyDown:`
+    /// override fires for that pane; then refresh the grid's per-item emphasis (the tree's
+    /// source-list emphasis follows first responder automatically). Called on entering browse and
+    /// whenever `ToggleBrowseFocus` flips the pane.
+    pub fn apply_focus(&self, focused: PaneSide) {
+        // Make the focused pane's control first responder. The window draws accent-blue emphasis
+        // on the first-responder source list (tree) for free; the grid reads its own
+        // first-responder state for per-item blue/gray.
+        match focused {
+            PaneSide::Tree => self.tree.make_first_responder(),
+            PaneSide::Grid => self.grid.make_first_responder(),
         }
-    }
-
-    /// Move the tree selection by `delta` (+1 Down, -1 Up). Driven by browse-mode arrow keys.
-    pub fn move_tree_selection(&self, delta: i32) {
-        self.tree.move_selection(delta);
-    }
-
-    /// Expand the selected tree row (Right arrow).
-    pub fn expand_tree_selection(&self) {
-        self.tree.expand_selected();
-    }
-
-    /// Collapse the selected tree row (Left arrow).
-    pub fn collapse_tree_selection(&self) {
-        self.tree.collapse_selected();
+        // Refresh the grid's selected-item emphasis to match the new focus (blue when focused, gray
+        // when not). The tree repaints itself on the first-responder change.
+        self.grid.refresh_focus_emphasis();
     }
 
     /// Apply a completed background directory scan: store the children and reload that tree node.
@@ -370,8 +370,8 @@ unsafe fn build(
 
         BrowseSplitView {
             split,
-            tree_pane,
-            grid_pane,
+            _tree_pane: tree_pane,
+            _grid_pane: grid_pane,
             tree,
             grid,
             loading_overlay,
@@ -448,22 +448,6 @@ unsafe fn center_in(item: &AnyObject, container: &AnyObject) {
             0.0,
         );
     }
-}
-
-/// Recolor a pane's layer to show whether it's focused. Focused → a faint accent tint; unfocused
-/// → transparent (the sidebar vibrancy / grid background shows through). Distinct enough that a
-/// human can SEE Tab switch focus; the real selection rings live in the native controls.
-/// SAFETY: `pane` is a live layer-backed `NSView` on the main thread.
-unsafe fn set_pane_focus(pane: &NSView, focused: bool) {
-    let Some(layer) = pane.layer() else {
-        return;
-    };
-    let color = if focused {
-        NSColor::controlAccentColor().colorWithAlphaComponent(0.12)
-    } else {
-        NSColor::clearColor()
-    };
-    unsafe { set_layer_background(&*layer as *const _ as *const AnyObject, &color) };
 }
 
 /// Set a layer's `backgroundColor` from an `NSColor`, given the layer as a raw `AnyObject` pointer.

@@ -33,11 +33,21 @@
 //!    feeds `evict_to_budget`'s returned indices to `Scheduler::uncache` (dropping their
 //!    `NSImage`s), and reloads the affected items so cells pick up their image.
 //!
-//! ## Keyboard is app-driven (same as the tree)
+//! ## Keyboard: the collection view holds first responder, arrows are native
 //!
-//! winit keeps the keyboard even with the collection view up, so selection/open arrive as
-//! `AppCommand`s, not through the responder chain. Mouse (click to select, double-click to open,
-//! scroll) is fully native. A double-click gesture recognizer fires `BrowseOpenSelected`.
+//! In idle-winit browse mode the focused native view holds the window's first responder, so the
+//! collection view handles its own arrow selection + scroll natively. The [`BrowseCollectionView`]
+//! subclass overrides `keyDown:` to intercept only Tab/Enter/Esc (routed via `AppCommand`) and
+//! calls `super` for everything else. `apply_focus` (`BrowseGrid::make_first_responder`) keeps the
+//! collection view first responder when the grid pane is focused.
+//!
+//! ## Selection emphasis follows focus
+//!
+//! A selected [`GridItem`] draws a rounded rect: accent-blue when the grid is the focused pane
+//! (the collection view is first responder), gray when selected but unfocused, nothing when not
+//! selected. The item reads its own first-responder state at paint time; `refresh_focus_emphasis`
+//! repaints visible selected items on a Tab focus flip. Single-click selects instantly (the open
+//! gesture is detected in the item's `mouseDown:` via `clickCount == 2`, so no click-delay).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -49,8 +59,8 @@ use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSClickGestureRecognizer, NSCollectionView, NSCollectionViewFlowLayout, NSCollectionViewItem,
-    NSCollectionViewScrollDirection, NSCollectionViewScrollPosition, NSColor, NSImageScaling,
+    NSCollectionView, NSCollectionViewFlowLayout, NSCollectionViewItem,
+    NSCollectionViewScrollDirection, NSCollectionViewScrollPosition, NSColor, NSEvent, NSImageScaling,
     NSImageView, NSIndexPathNSCollectionViewAdditions, NSScrollView, NSTextField, NSView,
 };
 use objc2_foundation::{
@@ -83,6 +93,44 @@ const ITEM_IDENTIFIER: &str = "PrvwGridItem";
 /// How many items ahead/behind the visible range the prefetcher warms. One screen's worth is a
 /// good default; the scheduler's own `MARGIN` is the hard cap on generation.
 const PREFETCH_MARGIN: usize = 24;
+
+// ─── BrowseCollectionView: keyDown override for Tab/Enter/Esc ───────────────
+
+define_class!(
+    /// `NSCollectionView` subclass whose `keyDown:` intercepts only Tab/Enter/Esc (routed via
+    /// `AppCommand`); every other key falls through to `super` so native arrow selection + scroll
+    /// stay immediate. The grid pane's first responder is this view (synced by `apply_focus`), so
+    /// its `keyDown:` fires for browse keys.
+    // SAFETY: NSCollectionView subclass, no Drop, no ivars. Main-thread only.
+    #[unsafe(super(NSCollectionView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrvwBrowseCollectionView"]
+    struct BrowseCollectionView;
+
+    unsafe impl NSObjectProtocol for BrowseCollectionView {}
+
+    impl BrowseCollectionView {
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            let key_code: u16 = unsafe { msg_send![event, keyCode] };
+            if let Some(command) = super::browse_keydown_command(key_code) {
+                log::debug!("Browse grid keyDown intercepted key_code={key_code}");
+                crate::commands::send_command(command);
+            } else {
+                unsafe {
+                    let _: () = msg_send![super(self), keyDown: event];
+                }
+            }
+        }
+    }
+);
+
+impl BrowseCollectionView {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc().set_ivars(());
+        unsafe { msg_send![super(this), init] }
+    }
+}
 
 // ─── GridItem: the NSCollectionViewItem subclass ───────────────────────────
 
@@ -153,31 +201,83 @@ define_class!(
             }
         }
 
-        /// Tint the cell background when selected so the selection reads clearly (the base item's
-        /// `isSelected` is set by AppKit on click; we recolor on `setSelected:`).
+        /// Repaint the selection emphasis when AppKit sets `isSelected` (on click / programmatic
+        /// selection). Blue when also focused, gray when selected-but-unfocused, none otherwise —
+        /// the focus state is read live from the collection view's first responder.
         #[unsafe(method(setSelected:))]
         fn set_selected(&self, selected: bool) {
             unsafe {
                 let _: () = msg_send![super(self), setSelected: selected];
             }
-            self.apply_selection_style(selected);
+            self.refresh_emphasis();
+        }
+
+        /// Detect a double-click here (instead of a click gesture recognizer, which delays the
+        /// single click ~600 ms to disambiguate). A single click selects instantly via `super`'s
+        /// native handling; a double-click also fires the open command. Routed to `super` either
+        /// way so native selection still happens.
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            let click_count: isize = unsafe { msg_send![event, clickCount] };
+            unsafe {
+                let _: () = msg_send![super(self), mouseDown: event];
+            }
+            if click_count == 2 {
+                crate::commands::send_command(crate::commands::AppCommand::BrowseOpenSelected);
+            }
+        }
+
+        /// ObjC entry point for `BrowseGrid::refresh_focus_emphasis` to repaint a visible cell on a
+        /// Tab focus flip (dispatched by selector since `visibleItems` yields base
+        /// `NSCollectionViewItem`s). Delegates to the Rust `refresh_emphasis`.
+        #[unsafe(method(refreshEmphasis))]
+        fn refresh_emphasis_objc(&self) {
+            self.refresh_emphasis();
         }
     }
 );
 
 impl GridItem {
-    // Called only from `setSelected:` (an AppKit override on a class AppKit instantiates), so the
-    // dead-code lint can't see the use — it's reached at runtime on every click/selection change.
+    /// Repaint the selection emphasis to match `isSelected` and the grid's focus. Called from
+    /// `setSelected:` (AppKit) and from `BrowseGrid::refresh_focus_emphasis` on a Tab focus flip.
+    /// `#[allow(dead_code)]`: reached only via the AppKit override + the grid's refresh, which the
+    /// lint can't see.
     #[allow(dead_code)]
-    fn apply_selection_style(&self, selected: bool) {
-        // The view exists once loaded; recolor its layer background.
+    fn refresh_emphasis(&self) {
+        let selected: bool = unsafe { msg_send![self, isSelected] };
+        let focused = self.grid_is_first_responder();
+        self.apply_selection_style(selected, focused);
+    }
+
+    /// Whether the grid (this item's collection view) is the window's first responder — i.e. the
+    /// grid pane is the focused pane. Drives blue (focused) vs gray (unfocused) selection.
+    fn grid_is_first_responder(&self) -> bool {
+        unsafe {
+            let cv: *const AnyObject = msg_send![self, collectionView];
+            if cv.is_null() {
+                return false;
+            }
+            let window: *const AnyObject = msg_send![cv, window];
+            if window.is_null() {
+                return false;
+            }
+            let first_responder: *const AnyObject = msg_send![window, firstResponder];
+            std::ptr::eq(first_responder, cv)
+        }
+    }
+
+    /// Draw the selection as a rounded rect: accent-blue when selected AND focused, gray when
+    /// selected AND not focused, transparent when not selected (no indicator).
+    fn apply_selection_style(&self, selected: bool, focused: bool) {
         let view: Option<Retained<NSView>> = unsafe { msg_send![self, view] };
         let Some(view) = view else { return };
         let Some(layer) = view.layer() else { return };
-        let color = if selected {
+        let color = if !selected {
+            NSColor::clearColor()
+        } else if focused {
             NSColor::selectedContentBackgroundColor().colorWithAlphaComponent(0.85)
         } else {
-            NSColor::clearColor()
+            NSColor::unemphasizedSelectedContentBackgroundColor()
         };
         let layer_ptr = &*layer as *const _ as *const AnyObject;
         unsafe {
@@ -288,13 +388,6 @@ define_class!(
             self.ivars().cache.borrow_mut().set_visible_range(range);
         }
 
-        // ── Double-click to open ──
-        /// Target of the double-click gesture recognizer. Opens the selected image in image mode.
-        /// (Single-click selection is native; this is the open gesture.)
-        #[unsafe(method(handleDoubleClick:))]
-        fn handle_double_click(&self, _sender: *mut AnyObject) {
-            crate::commands::send_command(crate::commands::AppCommand::BrowseOpenSelected);
-        }
     }
 );
 
@@ -362,7 +455,7 @@ fn first_index(set: &NSSet<NSIndexPath>) -> Option<usize> {
 /// drops early (autorelease-segfault rule). Also the handle the app drives.
 pub struct BrowseGrid {
     scroll: Retained<NSScrollView>,
-    collection: Retained<NSCollectionView>,
+    collection: Retained<BrowseCollectionView>,
     /// Kept alive: the collection view holds the data source/delegate weakly (`assign`).
     data_source: Retained<GridDataSource>,
     /// Centered "(No images)" label, shown when the listed folder has no supported images.
@@ -398,7 +491,7 @@ impl BrowseGrid {
                 right: CELL_SPACING,
             });
 
-            let collection = NSCollectionView::new(mtm);
+            let collection = BrowseCollectionView::new(mtm);
             collection.setCollectionViewLayout(Some(&layout));
             collection.setSelectable(true);
             collection.setAllowsMultipleSelection(false);
@@ -424,13 +517,9 @@ impl BrowseGrid {
             let _: () = msg_send![&*collection, setDelegate: ds_obj];
             let _: () = msg_send![&*collection, setPrefetchDataSource: ds_obj];
 
-            // Double-click to open: a click gesture recognizer set to 2 clicks, targeting the
-            // data source (it forwards to the open command). Single-click selection stays native.
-            let recognizer = NSClickGestureRecognizer::new(mtm);
-            recognizer.setNumberOfClicksRequired(2);
-            let _: () = msg_send![&*recognizer, setTarget: &*data_source];
-            let _: () = msg_send![&*recognizer, setAction: Some(sel!(handleDoubleClick:))];
-            collection.addGestureRecognizer(&recognizer);
+            // Double-click to open is detected in `GridItem::mouseDown:` (clickCount == 2), not a
+            // click gesture recognizer — the recognizer delays the single click ~600 ms to
+            // disambiguate, which made selection feel laggy. Single click selects instantly.
 
             // Scroll view host.
             let scroll = NSScrollView::new(mtm);
@@ -462,6 +551,40 @@ impl BrowseGrid {
     /// The scroll view to add to the grid pane.
     pub fn scroll_view(&self) -> &NSScrollView {
         &self.scroll
+    }
+
+    /// Make the collection view the window's first responder. Called by `apply_focus` when the
+    /// grid pane is focused: the collection view then handles its own arrow selection + scroll
+    /// natively, and `GridItem`s read it as first responder to draw blue (focused) emphasis.
+    pub fn make_first_responder(&self) {
+        unsafe {
+            let window: *const AnyObject = msg_send![&*self.collection, window];
+            if window.is_null() {
+                return;
+            }
+            let cv_obj: *const AnyObject = Retained::as_ptr(&self.collection).cast();
+            let accepted: bool = msg_send![window, makeFirstResponder: cv_obj];
+            log::debug!("Grid make_first_responder accepted={accepted}");
+        }
+    }
+
+    /// Repaint the visible selected items' emphasis to match the grid's current focus (blue when
+    /// the grid is first responder, gray otherwise). Called from `apply_focus` on a Tab focus flip,
+    /// since AppKit doesn't re-run `setSelected:` just because first responder moved.
+    pub fn refresh_focus_emphasis(&self) {
+        let visible = self.collection.visibleItems();
+        let count = visible.count();
+        for i in 0..count {
+            // `visibleItems` yields base `NSCollectionViewItem`s; every cell is a `GridItem`, which
+            // implements `refreshEmphasis`. Dispatch by selector (guarded by respondsToSelector: so
+            // a stray non-GridItem can't crash).
+            let item = visible.objectAtIndex(i);
+            let responds: bool =
+                unsafe { msg_send![&*item, respondsToSelector: sel!(refreshEmphasis)] };
+            if responds {
+                let _: () = unsafe { msg_send![&*item, refreshEmphasis] };
+            }
+        }
     }
 
     /// The "(No images)" overlay label, for the pane to position centered over the grid.

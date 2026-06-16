@@ -66,8 +66,8 @@ pub struct SharedAppState {
     pub previews: PreviewsSnapshot,
     /// Current top-level screen: `"image"` or `"browse"`.
     pub view_mode: &'static str,
-    /// Which browse pane has keyboard focus: `"tree"` or `"grid"`. Only meaningful while
-    /// `view_mode == "browse"`; stays at its last value otherwise.
+    /// Which browse pane has keyboard focus: `"tree"` or `"grid"` in browse mode, `"none"` in
+    /// image mode (the single source of truth `focused_pane` is `None` there).
     pub focused_pane: &'static str,
     /// Absolute path of the folder selected in the browse-mode tree, or `None` if none picked
     /// yet. Lets QA/tests assert tree selection without a screenshot.
@@ -143,7 +143,7 @@ impl Default for SharedAppState {
             diagnostics_text: String::new(),
             previews: PreviewsSnapshot::default(),
             view_mode: "image",
-            focused_pane: "tree",
+            focused_pane: "none",
             browse_selected_folder: None,
             browse_grid_selected: None,
         }
@@ -175,8 +175,9 @@ impl App {
             "image"
         };
         state.focused_pane = match self.browser.focused_pane() {
-            crate::browser::PaneSide::Tree => "tree",
-            crate::browser::PaneSide::Grid => "grid",
+            Some(crate::browser::PaneSide::Tree) => "tree",
+            Some(crate::browser::PaneSide::Grid) => "grid",
+            None => "none",
         };
         state.browse_selected_folder = self
             .browser

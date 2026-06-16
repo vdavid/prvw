@@ -1170,7 +1170,7 @@ impl App {
             // Enter on the tree (or with no grid selection) just returns to image mode showing the
             // current image — only a focused grid with a selection opens a specific image.
             let grid_focused =
-                matches!(self.browser.focused_pane(), crate::browser::PaneSide::Grid);
+                matches!(self.browser.focused_pane(), Some(crate::browser::PaneSide::Grid));
             let target = if grid_focused {
                 self.browser.grid_open_target()
             } else {

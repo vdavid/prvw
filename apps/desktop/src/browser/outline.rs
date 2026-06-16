@@ -39,12 +39,15 @@
 //! `reloadItem:reloadChildren:` so the outline view re-queries the node. `isItemExpandable:`
 //! assumes every directory is expandable (no disk read) until a scan proves it empty.
 //!
-//! ## Keyboard is app-driven, not the responder chain
+//! ## Keyboard: the outline view holds first responder, arrows are native
 //!
-//! winit keeps the keyboard even with the outline view up (see `docs/specs/image-browser.md` →
-//! "Input architecture"), so arrow keys don't reach `NSOutlineView`'s own `keyDown:`. Instead
-//! the app routes Up/Down/Left/Right through winit → `AppCommand` and drives the outline view
-//! programmatically via [`BrowseTree`] (`move_selection`, `expand_selected`, `collapse_selected`).
+//! In idle-winit browse mode the focused native view holds the window's first responder (see
+//! `docs/specs/image-browser.md` → "Input architecture"), so the outline view handles its own
+//! arrows/expand/collapse/type-select natively. The [`BrowseOutlineView`] subclass overrides
+//! `keyDown:` to intercept only Tab/Enter/Esc (routed via `AppCommand`) and calls `super` for
+//! everything else, so native row navigation stays immediate. `apply_focus`
+//! (`BrowseTree::make_first_responder`) is what keeps the outline view first responder when the
+//! tree pane is focused — which also gives it accent-blue source-list selection emphasis for free.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -56,12 +59,50 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSImageView, NSOutlineView, NSScrollView, NSTableColumn, NSTableViewStyle, NSTextField, NSView,
-    NSWorkspace,
+    NSEvent, NSImageView, NSOutlineView, NSScrollView, NSTableColumn, NSTableViewStyle, NSTextField,
+    NSView, NSWorkspace,
 };
 use objc2_foundation::{NSNotification, NSString};
 
 use super::tree_model::{self, ChildCache};
+
+// ─── BrowseOutlineView: keyDown override for Tab/Enter/Esc ──────────────────
+
+define_class!(
+    /// `NSOutlineView` subclass whose `keyDown:` intercepts only Tab/Enter/Esc (routed via
+    /// `AppCommand`); every other key falls through to `super` so native row navigation,
+    /// expand/collapse, and type-select stay immediate. The tree pane's first responder is this
+    /// view (synced by `apply_focus`), so its `keyDown:` fires for browse keys.
+    // SAFETY: NSOutlineView subclass, no Drop, no ivars. Main-thread only.
+    #[unsafe(super(NSOutlineView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrvwBrowseOutlineView"]
+    struct BrowseOutlineView;
+
+    unsafe impl NSObjectProtocol for BrowseOutlineView {}
+
+    impl BrowseOutlineView {
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            let key_code: u16 = unsafe { msg_send![event, keyCode] };
+            if let Some(command) = super::browse_keydown_command(key_code) {
+                log::debug!("Browse tree keyDown intercepted key_code={key_code}");
+                crate::commands::send_command(command);
+            } else {
+                unsafe {
+                    let _: () = msg_send![super(self), keyDown: event];
+                }
+            }
+        }
+    }
+);
+
+impl BrowseOutlineView {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc().set_ivars(());
+        unsafe { msg_send![super(this), init] }
+    }
+}
 
 // ─── Background scanner: directory I/O off the main thread ─────────────────
 
@@ -518,7 +559,7 @@ unsafe fn as_nsview<T>(obj: &T) -> &NSView {
 /// Also the handle the app drives for keyboard navigation.
 pub struct BrowseTree {
     scroll: Retained<NSScrollView>,
-    outline: Retained<NSOutlineView>,
+    outline: Retained<BrowseOutlineView>,
     /// Kept alive: the outline view holds the data source/delegate weakly (`assign`).
     _data_source: Retained<TreeDataSource>,
 }
@@ -542,7 +583,7 @@ impl BrowseTree {
         let data_source = TreeDataSource::new(mtm, roots);
 
         unsafe {
-            let outline = NSOutlineView::new(mtm);
+            let outline = BrowseOutlineView::new(mtm);
             // Source-list look: rounded-pill selection, like Finder's sidebar. `setStyle:` with
             // `SourceList` is the modern replacement for the deprecated
             // `setSelectionHighlightStyle:` — it applies the source-list selection + inset.
@@ -615,83 +656,20 @@ impl BrowseTree {
         self._data_source.earliest_in_flight()
     }
 
-    /// Move the selection by `delta` (+1 Down, -1 Up) across the currently visible rows,
-    /// clamped at the ends. App-driven (winit owns the keyboard); see the module docs.
-    pub fn move_selection(&self, delta: i32) {
+    /// Make the outline view the window's first responder. Called by `apply_focus` when the tree
+    /// pane is focused: the outline view then handles its own arrows/expand/collapse/type-select
+    /// natively, and a source list draws accent-blue selection emphasis while it's first responder
+    /// (gray otherwise) — so tree emphasis follows focus for free.
+    pub fn make_first_responder(&self) {
         unsafe {
-            let count: isize = msg_send![&*self.outline, numberOfRows];
-            let selected: isize = msg_send![&*self.outline, selectedRow];
-            let current = if selected < 0 {
-                None
-            } else {
-                Some(selected as usize)
-            };
-            let Some(next) = tree_model::next_selectable_row(current, count as usize, delta) else {
-                return;
-            };
-            self.select_row(next);
-        }
-    }
-
-    /// Expand the selected row (Right arrow), if it has children.
-    pub fn expand_selected(&self) {
-        unsafe {
-            let row: isize = msg_send![&*self.outline, selectedRow];
-            if row < 0 {
+            let window: *const AnyObject = msg_send![&*self.outline, window];
+            if window.is_null() {
                 return;
             }
-            let item: *mut AnyObject = msg_send![&*self.outline, itemAtRow: row];
-            if !item.is_null() {
-                let _: () = msg_send![&*self.outline, expandItem: item];
-            }
+            let outline_obj: *const AnyObject = Retained::as_ptr(&self.outline).cast();
+            let accepted: bool = msg_send![window, makeFirstResponder: outline_obj];
+            log::debug!("Tree make_first_responder accepted={accepted}");
         }
-    }
-
-    /// Collapse the selected row (Left arrow). If the row is a leaf or already collapsed,
-    /// collapse its parent instead so Left walks up the tree (Finder behavior).
-    pub fn collapse_selected(&self) {
-        unsafe {
-            let row: isize = msg_send![&*self.outline, selectedRow];
-            if row < 0 {
-                return;
-            }
-            let item: *mut AnyObject = msg_send![&*self.outline, itemAtRow: row];
-            if item.is_null() {
-                return;
-            }
-            let expanded: bool = msg_send![&*self.outline, isItemExpanded: item];
-            if expanded {
-                let _: () = msg_send![&*self.outline, collapseItem: item];
-            } else {
-                let parent: *mut AnyObject = msg_send![&*self.outline, parentForItem: item];
-                if !parent.is_null() {
-                    let _: () = msg_send![&*self.outline, collapseItem: parent];
-                    // Move selection to the parent we just collapsed.
-                    let parent_row: isize = msg_send![&*self.outline, rowForItem: parent];
-                    if parent_row >= 0 {
-                        self.select_row(parent_row as usize);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Select `row` and scroll it into view. Fires the selection-changed delegate, which
-    /// records the folder.
-    fn select_row(&self, row: usize) {
-        unsafe {
-            let index_set = index_set_with(row);
-            let _: () = msg_send![&*self.outline, selectRowIndexes: &*index_set, byExtendingSelection: false];
-            let _: () = msg_send![&*self.outline, scrollRowToVisible: row as isize];
-        }
-    }
-}
-
-/// An `NSIndexSet` containing the single index `i`.
-fn index_set_with(i: usize) -> Retained<AnyObject> {
-    unsafe {
-        let cls = objc2::class!(NSIndexSet);
-        msg_send![cls, indexSetWithIndex: i]
     }
 }
 

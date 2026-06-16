@@ -130,28 +130,19 @@ pub enum AppCommand {
     /// in image mode. Image → Browse hides the Metal layer and shows the split
     /// view; Browse → Image reverses it.
     ToggleBrowseMode,
-    /// Leave browse mode for the image viewer unconditionally. Fired by Esc / Enter while
-    /// browsing — keys flow through winit → `input::browse_key_to_command`, branched by mode,
-    /// never the AppKit responder chain (winit keeps the keyboard even while the split view is
-    /// up).
+    /// Leave browse mode for the image viewer unconditionally. Fired by Esc while browsing (the
+    /// focused native pane's `keyDown:` override routes it here) and by Enter on the tree (via
+    /// `BrowseOpenSelected`'s fallback).
     EnterImageMode,
-    /// Flip browse-mode keyboard focus between the tree and grid panes (Tab). Updates the
-    /// app-tracked `browser::State::focused_pane` and the native highlight. Browse-mode only.
+    /// Flip browse-mode keyboard focus between the tree and grid panes (Tab from the focused
+    /// pane's `keyDown:` override). Updates `browser::State::focused_pane` (the single source of
+    /// truth) and syncs the native first responder + emphasis via `apply_focus`. Browse-mode only.
     ToggleBrowseFocus,
     /// A folder was selected in the browse-mode tree. Records it in `browser::State` and logs
     /// how many supported images it holds. Fired by the `NSOutlineView` selection delegate.
     /// (Listing the folder's images in the grid is a later phase.)
     #[cfg(target_os = "macos")]
     BrowseSelectFolder(PathBuf),
-    /// Move the browse-mode tree selection (arrow keys). `+1` = Down, `-1` = Up. Drives the
-    /// `NSOutlineView` programmatically — winit keeps the keyboard, so the responder chain is
-    /// never used. Browse-mode only, ignored unless the tree pane is focused.
-    #[cfg(target_os = "macos")]
-    BrowseMoveTreeSelection(i32),
-    /// Expand (Right arrow) or collapse (Left arrow) the selected browse-mode tree row.
-    /// `true` = expand, `false` = collapse. Browse-mode only, tree pane focused.
-    #[cfg(target_os = "macos")]
-    BrowseExpandTreeSelection(bool),
     /// A background scan of `path`'s child directories finished. The data source NEVER reads a
     /// directory on the main thread (a slow SMB share would freeze the whole app), so children
     /// arrive here: the executor stores them in the tree's child cache and tells the outline view
