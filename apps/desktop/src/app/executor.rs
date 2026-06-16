@@ -399,6 +399,9 @@ impl App {
                 // The listing seeds a selection (index 0); warm it + neighbors so the likely-opened
                 // image is ready. Doesn't touch the displayed image.
                 self.warm_browse_selection();
+                // Live folder sync: in browse the active (image-list) watch follows the grid's
+                // listed folder, so re-target it onto the folder that just listed.
+                self.retarget_active_folder_watch();
                 self.update_shared_state();
             }
             #[cfg(target_os = "macos")]
@@ -441,6 +444,18 @@ impl App {
                 // outline view shows them (the data source never reads directories on the main
                 // thread — see `browser::outline`). Refreshing the overlay happens inside.
                 self.browser.tree_children_loaded(&path, children);
+            }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseTreeFolderExpanded(path) => {
+                // Live folder sync (Part B): a tree node expanded — watch its folder for subdir
+                // changes so new/removed subfolders reload the node.
+                self.watch_tree_folder(path);
+            }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseTreeFolderCollapsed(path) => {
+                // Live folder sync (Part B): a tree node collapsed — stop watching it (roots stay
+                // watched; the helper skips them).
+                self.unwatch_tree_folder(&path);
             }
             AppCommand::ToggleSlideshow => {
                 self.toggle_slideshow();

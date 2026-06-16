@@ -232,6 +232,17 @@ impl BrowseSplitView {
         self.refresh_loading_overlay();
     }
 
+    /// The source-list root paths (home + volumes), for the live-folder-sync tree watch.
+    pub fn tree_root_paths(&self) -> Vec<std::path::PathBuf> {
+        self.tree.root_paths()
+    }
+
+    /// Re-scan a watched (expanded) tree folder's subdirectories after it changed on disk and
+    /// reload its node (live folder sync, Part B), preserving expansion/selection.
+    pub fn reload_tree_node(&self, folder: &std::path::Path) {
+        self.tree.reload_node(folder);
+    }
+
     /// The earliest still-in-flight tree scan start time, for the loading-overlay timer.
     pub fn earliest_in_flight_scan(&self) -> Option<std::time::Instant> {
         self.tree.earliest_in_flight_scan()

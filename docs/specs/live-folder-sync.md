@@ -45,6 +45,34 @@ A live filesystem watcher keeps the data correct. Two roles, ideally one shared 
 - The main-thread handler routes by the changed path: active image folder → image-list update; an expanded tree folder →
   tree-children update.
 
+### Browse-mode live sync — DONE
+
+The active-folder (image-list) watch **follows the grid's listed folder in browse, the current image's folder in image
+mode** (`App::active_folder`); `retarget_active_folder_watch` re-targets on every mode switch, browse folder listing
+(`BrowseFolderListed`), and image open. They coincide once synced, but a user can browse a different folder than the
+open image — we watch what's shown.
+
+A `FolderChanged` for the grid's listed folder re-scans off-thread (same `RescanLister`), and `apply_folder_rescan`
+updates BOTH the grid (`State::apply_grid_rescan` → `BrowseGrid::apply_rescan`) and the image-mode `dir_list` when each
+owns the folder, so synced modes stay coherent. The grid: inserts adds at the sorted position, drops removes, **keeps
+the selection by path** (pure `grid_model::select_after_rescan` — next/previous surviving image when the selected file
+is deleted, empty when the folder emptied), and refreshes thumbnails (a full clear-and-repump regenerates modified/added
+cells from the shared QuickLook cache). A changed selection re-warms via `warm_browse_selection`.
+
+**Tree-structure watch lifecycle (Part B).** Roots are watched for the window's life (`watch_tree_roots` at browse setup
+/ dir-arg launch). Each expanded tree folder is watched on `outlineViewItemDidExpand:` (→ `BrowseTreeFolderExpanded` →
+`App::watch_tree_folder`) and unwatched on `outlineViewItemDidCollapse:` (→ `BrowseTreeFolderCollapsed` →
+`App::unwatch_tree_folder`). Collapse never unwatches a **root**, nor a folder still serving as the active image-list
+folder. Bounded: only roots + expanded folders are watched, never the whole disk. A `FolderChanged` for a watched tree
+folder re-scans its subdirectories (`State::reload_tree_node` → invalidate the child cache + re-scan via the existing
+async `TreeScanner` → `reloadItem:reloadChildren:`), preserving expansion + selection of surviving descendants. A
+deleted-selected/revealed folder degrades gracefully: `children_loaded` selects the reloaded parent so the grid
+re-anchors rather than leaving a dangling selection.
+
+**Routing.** One `FolderChanged { folder }` can match two roles, and BOTH fire (neither is `else` to the other): the
+**active image-list folder** (→ grid + `dir_list` update) AND/OR a **watched tree node** (→ subdir reload). A folder can
+be both the listed folder and an expanded tree node.
+
 ### Image-list updates (active folder, both modes)
 
 Driven by re-scanning the folder (robust against rename-saves) plus per-path `Modify` events:
@@ -86,8 +114,11 @@ QuickLook entry (QuickLook keys on file content/mtime, so a fresh request regene
 3. **Image-mode live sync** — DONE. The active-folder watch is wired to sequence updates, cache + preview eviction,
    current-by-path recalc, delete-current navigation (next / previous / empty), and the image-mode "(No images)" empty
    state. See `navigation/CLAUDE.md` → "Live folder sync (image mode)".
-4. **Browse-mode live sync** — grid list + thumbnail refresh on change; tree expanded-folder watch → subfolder updates.
-   The active-folder watch infra (steps 2–3) is built to be shared by browse; only image mode is wired so far.
+4. **Browse-mode live sync** — DONE. The active-folder watch follows the grid's listed folder in browse;
+   `apply_folder_rescan` updates the grid (add/remove/modify + selection-by-path + empty state) alongside image mode.
+   The tree-structure watch (roots + expanded folders, expand/collapse lifecycle) reloads a watched node's
+   subdirectories on change, preserving expansion/selection. See "Browse-mode live sync" above and
+   `src/browser/CLAUDE.md` → "Live folder sync (browse mode)".
 5. **Tests + docs** — headless tests for the diff/debounce + integration tests (add/modify/delete in a temp folder, both
    modes, via the QA hooks); update `browser/CLAUDE.md`, `navigation/CLAUDE.md`, `architecture.md`, this spec.
 

@@ -1637,3 +1637,109 @@ fn live_sync_modify_current_re_decodes_in_place() {
     assert!(state["file"].as_str().unwrap().contains("img-00"));
     assert_eq!(state["total_files"].as_u64(), Some(3));
 }
+
+// ── Live folder sync (browse mode: grid + tree) ───────────────────────────────────────────────
+//
+// These boot into browse mode on a temp folder (dir-arg launch) and mutate the listed folder from
+// the test process, then poll `/state`'s browse fields for the grid to update live. The grid runs
+// off the same FSEvents watcher + off-thread re-scan as image mode; here the watch follows the
+// grid's listed folder. The tree-structure reload (subfolder add/remove on an expanded node) isn't
+// observable through `/state` (no tree-children field), so it's covered by logs + live QA, not here.
+
+#[test]
+fn live_sync_browse_grid_grows_when_an_image_is_added() {
+    // Browse the `pics` folder (4 images), then drop a 5th into it from the shell side. The grid's
+    // active-folder watch should pick it up and grow the listed count to 5.
+    let (home, images, _empty) = create_browse_home(4);
+    let app = TestApp::start_browse_dir(&images, home.path());
+    wait_for_browse_listed(&app, 4, Duration::from_secs(8));
+
+    write_png(&images.join("img-99.png"), 13);
+
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["browse_grid_count"].as_u64() == Some(5)
+    });
+    assert_eq!(
+        state["browse_grid_count"].as_u64(),
+        Some(5),
+        "an image added to the listed folder should appear in the grid, got {state}"
+    );
+    // The selection (img-00, index 0) is unchanged — the add sorts after it.
+    assert_eq!(state["browse_grid_selected"].as_u64(), Some(0));
+}
+
+#[test]
+fn live_sync_browse_grid_shrinks_when_a_non_selected_image_is_deleted() {
+    // Browse `pics` (4 images, selection on index 0 = img-00). Delete img-03 (not selected). The
+    // grid count drops to 3 and the selection stays on img-00.
+    let (home, images, _empty) = create_browse_home(4);
+    let app = TestApp::start_browse_dir(&images, home.path());
+    wait_for_browse_listed(&app, 4, Duration::from_secs(8));
+    assert_eq!(app.get_state()["browse_grid_selected"].as_u64(), Some(0));
+
+    std::fs::remove_file(images.join("img-03.png")).unwrap();
+
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["browse_grid_count"].as_u64() == Some(3)
+    });
+    assert_eq!(
+        state["browse_grid_count"].as_u64(),
+        Some(3),
+        "a deleted image should vanish from the grid, got {state}"
+    );
+    // Selection unchanged (img-00 still at index 0).
+    assert_eq!(state["browse_grid_selected"].as_u64(), Some(0));
+}
+
+#[test]
+fn live_sync_browse_grid_keeps_selection_by_path_when_an_earlier_image_is_deleted() {
+    // Browse `pics` (4 images), select index 2 (img-02). Delete img-00 (before the selection). The
+    // count drops to 3 and the selection tracks img-02 by path — now at index 1.
+    let (home, images, _empty) = create_browse_home(4);
+    let app = TestApp::start_browse_dir(&images, home.path());
+    wait_for_browse_listed(&app, 4, Duration::from_secs(8));
+
+    // Select img-02 (index 2) via the QA hook.
+    app.post("/browse/select-grid", "2");
+    let state = wait_for_state(&app, Duration::from_secs(5), |s| {
+        s["browse_grid_selected"].as_u64() == Some(2)
+    });
+    assert_eq!(state["browse_grid_selected"].as_u64(), Some(2));
+
+    std::fs::remove_file(images.join("img-00.png")).unwrap();
+
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["browse_grid_count"].as_u64() == Some(3)
+    });
+    assert_eq!(state["browse_grid_count"].as_u64(), Some(3));
+    // img-02 shifted from index 2 to index 1, but the selection still points at it (by path).
+    assert_eq!(
+        state["browse_grid_selected"].as_u64(),
+        Some(1),
+        "the selection should track the same file by path across a delete, got {state}"
+    );
+}
+
+#[test]
+fn live_sync_browse_grid_empties_when_all_images_are_deleted() {
+    // Browse a folder of 2 images, delete both → the grid lists zero and the "(No images)" state
+    // applies (grid_count 0). The tree stays put.
+    let (home, images, _empty) = create_browse_home(2);
+    let app = TestApp::start_browse_dir(&images, home.path());
+    wait_for_browse_listed(&app, 2, Duration::from_secs(8));
+
+    std::fs::remove_file(images.join("img-00.png")).unwrap();
+    std::fs::remove_file(images.join("img-01.png")).unwrap();
+
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["browse_grid_count"].as_u64() == Some(0)
+    });
+    assert_eq!(
+        state["browse_grid_count"].as_u64(),
+        Some(0),
+        "deleting every image should empty the grid, got {state}"
+    );
+    assert_eq!(state["browse_grid_selected"], serde_json::Value::Null);
+    // Still in browse mode (the grid emptying doesn't bounce us to image mode).
+    assert_eq!(state["view_mode"].as_str(), Some("browse"));
+}

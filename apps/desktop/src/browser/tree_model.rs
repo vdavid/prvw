@@ -99,6 +99,15 @@ impl ChildCache {
         self.started.remove(path);
     }
 
+    /// Forget `path`'s load state so the next query re-scans it from scratch. Used by live folder
+    /// sync (Part B): when a watched (expanded) tree folder changes on disk, its cached child list
+    /// is stale, so we invalidate it and re-request a scan. Clears any in-flight start time too.
+    /// A no-op for a path that was never cached.
+    pub fn invalidate(&mut self, path: &Path) {
+        self.states.remove(path);
+        self.started.remove(path);
+    }
+
     /// The earliest start time among all still-in-flight scans, or `None` if none are pending.
     /// `about_to_wait` feeds this to [`scan_overdue`] to decide whether to show the overlay and
     /// when to schedule the next wakeup.
@@ -553,6 +562,26 @@ mod tests {
 
         // begin_scan on an already-loaded path is also a no-op.
         assert!(!cache.begin_scan(path, t0 + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn child_cache_invalidate_forces_a_re_scan() {
+        // Live folder sync (Part B): a loaded folder that changed on disk must be re-scannable. After
+        // `invalidate`, the path is back to NotLoaded and `begin_scan` returns true again.
+        let mut cache = ChildCache::new();
+        let path = Path::new("/watched/folder");
+        let t0 = Instant::now();
+        cache.begin_scan(path, t0);
+        cache.complete_scan(path, vec![PathBuf::from("/watched/folder/sub")]);
+        assert!(cache.loaded(path).is_some());
+        // begin_scan on a loaded path is a no-op until we invalidate.
+        assert!(!cache.begin_scan(path, t0));
+
+        cache.invalidate(path);
+        assert_eq!(cache.state(path), None);
+        assert_eq!(cache.loaded(path), None);
+        // Now a fresh scan can start.
+        assert!(cache.begin_scan(path, t0 + Duration::from_secs(1)));
     }
 
     #[test]

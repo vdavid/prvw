@@ -376,6 +376,39 @@ previews. The worker delivers RGBA8 (`cg_image_to_rgba8`); the grid's consumptio
 RGBA8 thumbnail is `512 × 512 × 4 ≈ 1 MB` (`EST_THUMBNAIL_BYTES`), so 128 MB ≈ 128 resident thumbnails. Generated
 **once** at this size; smaller cells downscale the cached bitmap — never regenerated on resize.
 
+## Live folder sync (browse mode)
+
+Browse stays live on disk changes via the shared `crate::folder_watch` infra (FSEvents watcher + coalescer + off-thread
+re-scan). Two independent watches:
+
+**Grid (active-folder image-list watch).** The active-folder watch follows **the grid's listed folder** in browse (the
+current image's folder in image mode); `App::active_folder` picks by mode and `retarget_active_folder_watch` re-targets
+on every mode switch, on `BrowseFolderListed` (the grid's folder just changed), and on image open. A `FolderChanged` for
+the grid's folder re-scans off-thread; `App::apply_folder_rescan` then drives `State::apply_grid_rescan` →
+`BrowseGrid::apply_rescan`: insert adds at the sorted position, drop removes, **keep the selection by path** (pure
+`grid_model::select_after_rescan` — next/previous surviving image when the selected file was deleted, `None` for an
+emptied folder → "(No images)"), and refresh thumbnails (a full clear-and-repump regenerates modified/added cells from
+the shared QuickLook cache). A changed selection re-warms via `warm_browse_selection`. The same re-scan also updates the
+image-mode `dir_list` when the folder is the open image's folder, so synced modes stay coherent (see
+`navigation/CLAUDE.md` → "Live folder sync (image mode)").
+
+**Tree (folder-structure watch).** Roots are watched for the window's life (`App::watch_tree_roots`, called when the
+split view is first built). Each folder is watched on expand (`outlineViewItemDidExpand:` →
+`AppCommand::BrowseTreeFolderExpanded` → `App::watch_tree_folder`) and unwatched on collapse
+(`outlineViewItemDidCollapse:` → `BrowseTreeFolderCollapsed` → `App::unwatch_tree_folder`). Collapse never unwatches a
+**root** or a folder still serving as the active image-list folder (a folder can be both). Bounded: only roots +
+expanded folders are watched, never the whole disk. A `FolderChanged` for a watched tree folder re-scans its
+subdirectories — `State::reload_tree_node` → `BrowseTree::reload_node` invalidates the `ChildCache` entry and re-scans
+via the existing async `TreeScanner`, and `children_loaded` does the `reloadItem:reloadChildren:`, which preserves the
+expansion and selection of surviving descendants by identity-stable `NodeObject`. A **deleted selected/revealed folder**
+degrades gracefully: `children_loaded` detects the vanished selection and selects the reloaded parent so the grid
+re-anchors rather than leaving a dangling selection.
+
+**Routing.** One `FolderChanged { folder }` can match BOTH roles, and both fire (`App::handle_folder_changed` runs the
+tree-node reload and the active-folder re-scan independently — neither is `else` to the other). The objc2
+expand/collapse and reload are covered by smoke + live QA; the grid add/remove/modify with selection-by-path is covered
+by the `live_sync_browse_grid_*` integration tests and the pure `select_after_rescan` unit tests.
+
 ## Gotchas
 
 - **`Retained<>` must outlive the window.** `BrowseSplitView` stores the split view, both panes, the `BrowseTree`, and

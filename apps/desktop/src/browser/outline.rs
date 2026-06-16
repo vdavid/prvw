@@ -342,8 +342,53 @@ define_class!(
                 node.path().to_path_buf(),
             ));
         }
+
+        /// A node expanded → start watching its folder for subdirectory changes (live folder sync,
+        /// Part B). The notification's `userInfo["NSObject"]` is the expanded item (a `NodeObject`).
+        /// Fires after the children load (AppKit expands once `numberOfChildrenOfItem:` reports a
+        /// count), so the watch covers an already-populated node. Roots are watched at browse setup,
+        /// not here.
+        #[unsafe(method(outlineViewItemDidExpand:))]
+        fn item_did_expand(&self, notification: &NSNotification) {
+            if let Some(path) = expanded_item_path(notification) {
+                crate::commands::send_command(
+                    crate::commands::AppCommand::BrowseTreeFolderExpanded(path),
+                );
+            }
+        }
+
+        /// A node collapsed → stop watching its folder (keeps the tree-watch set bounded to what's
+        /// expanded). Roots stay watched regardless (the executor skips unwatching them).
+        #[unsafe(method(outlineViewItemDidCollapse:))]
+        fn item_did_collapse(&self, notification: &NSNotification) {
+            if let Some(path) = expanded_item_path(notification) {
+                crate::commands::send_command(
+                    crate::commands::AppCommand::BrowseTreeFolderCollapsed(path),
+                );
+            }
+        }
     }
 );
+
+/// Pull the expanded/collapsed `NodeObject`'s path out of an expand/collapse notification. AppKit
+/// puts the item in `userInfo` under the `"NSObject"` key. Returns `None` if it's missing or not a
+/// `NodeObject` (defensive — shouldn't happen).
+fn expanded_item_path(notification: &NSNotification) -> Option<PathBuf> {
+    unsafe {
+        let info: *mut AnyObject = msg_send![notification, userInfo];
+        if info.is_null() {
+            return None;
+        }
+        let key = NSString::from_str("NSObject");
+        let key_obj: &AnyObject = &key;
+        let item: *mut AnyObject = msg_send![info, objectForKey: key_obj];
+        if item.is_null() {
+            return None;
+        }
+        let node = &*(item as *const NodeObject);
+        Some(node.path().to_path_buf())
+    }
+}
 
 impl TreeDataSource {
     fn new(mtm: MainThreadMarker, roots: Vec<tree_model::Root>) -> Retained<Self> {
@@ -400,6 +445,33 @@ impl TreeDataSource {
             self.ivars().scanner.scan(path.to_path_buf());
         }
         None
+    }
+
+    /// The source-list root paths (home + volumes), for the live-folder-sync tree watch (the roots
+    /// stay watched for the window's life).
+    fn root_paths(&self) -> Vec<PathBuf> {
+        self.ivars().roots.iter().map(|r| r.path.clone()).collect()
+    }
+
+    /// Invalidate `path`'s cached children and enqueue a fresh background scan (live folder sync,
+    /// Part B). The result returns via `AppCommand::BrowseTreeChildrenLoaded` → `children_loaded`,
+    /// which reloads the node — so a subfolder added/removed on disk appears/vanishes. No disk read
+    /// here (the scan is off-thread). Only re-scans a path the tree knows (a node exists for it);
+    /// nothing to refresh otherwise.
+    fn rescan(&self, path: &Path) {
+        if !self.ivars().nodes.borrow().contains_key(path) {
+            return;
+        }
+        self.ivars().children.borrow_mut().invalidate(path);
+        if self
+            .ivars()
+            .children
+            .borrow_mut()
+            .begin_scan(path, Instant::now())
+        {
+            log::debug!("Tree re-scan queued (live sync): {}", path.display());
+            self.ivars().scanner.scan(path.to_path_buf());
+        }
     }
 
     /// Store a finished scan's children. Called from the executor on
@@ -698,18 +770,77 @@ impl BrowseTree {
     /// just updates the cache with no UI reload needed. After the reload, advances any in-progress
     /// reveal walk that was waiting on this path's children (browse-open positioning).
     pub fn children_loaded(&self, path: &Path, children: Vec<PathBuf>) {
+        // Capture the selected folder before the reload so we can detect a deleted-selected-folder
+        // (live folder sync, Part B): a re-scan that drops a subfolder the user had selected leaves
+        // `NSOutlineView` with no selection, and the grid would keep showing the gone folder.
+        let selected_before = self.selected_path();
+
         if let Some(node) = self._data_source.complete_scan(path, children) {
             unsafe {
                 // `reloadItem:reloadChildren:` re-queries `numberOfChildrenOfItem:` /
                 // `child:ofItem:` for this node (now served from the freshly-loaded cache),
-                // redrawing its subtree.
+                // redrawing its subtree. Surviving descendants keep their expansion + selection
+                // (tracked by identity-stable `NodeObject`s).
                 let item: *const AnyObject = Retained::as_ptr(&node).cast();
                 let _: () = msg_send![&*self.outline, reloadItem: item, reloadChildren: true];
+            }
+            // If the selected folder was under the reloaded node and is now gone (its row vanished),
+            // degrade gracefully: select the reloaded parent so the grid re-anchors to it rather
+            // than keeping a dangling selection on a deleted folder.
+            if let Some(selected) = selected_before
+                && selected != path
+                && selected.starts_with(path)
+                && self.selected_row() < 0
+            {
+                log::debug!(
+                    "Selected folder {} vanished on re-scan — selecting parent {}",
+                    selected.display(),
+                    path.display()
+                );
+                self.select_and_scroll_to(path);
             }
         }
         // Even a scan with no live node (e.g. the root's first scan before it's expanded) can be
         // the level a reveal is waiting on — advance regardless of the reload above.
         self.advance_reveal(path);
+    }
+
+    /// The currently-selected folder's path, or `None` when nothing is selected. Reads the outline
+    /// view's selected row back to its `NodeObject`.
+    fn selected_path(&self) -> Option<PathBuf> {
+        let row = self.selected_row();
+        if row < 0 {
+            return None;
+        }
+        unsafe {
+            let item: *mut AnyObject = msg_send![&*self.outline, itemAtRow: row];
+            if item.is_null() {
+                return None;
+            }
+            Some((*(item as *const NodeObject)).path().to_path_buf())
+        }
+    }
+
+    /// The outline view's selected row index (`-1` when nothing is selected).
+    fn selected_row(&self) -> isize {
+        unsafe { msg_send![&*self.outline, selectedRow] }
+    }
+
+    /// The source-list root paths (home + mounted volumes). The live-folder-sync tree watch keeps
+    /// these watched for the window's life (a root never collapses out of watching).
+    pub fn root_paths(&self) -> Vec<PathBuf> {
+        self._data_source.root_paths()
+    }
+
+    /// Re-scan a watched (expanded) tree folder's subdirectories after it changed on disk (live
+    /// folder sync, Part B): invalidate its cached children and enqueue a fresh background scan. The
+    /// result arrives via `BrowseTreeChildrenLoaded` → `children_loaded`, which
+    /// `reloadItem:reloadChildren:`s the node — so a new subfolder appears and a deleted one
+    /// vanishes. `reloadItem:reloadChildren:` preserves the expansion + selection of surviving
+    /// descendants (tracked by identity-stable `NodeObject`s), so the user's open subtree stays put.
+    /// Never reads the disk on the main thread.
+    pub fn reload_node(&self, folder: &Path) {
+        self._data_source.rescan(folder);
     }
 
     /// Reveal `folder` in the tree: compute the root-to-folder chain from the tree's own roots

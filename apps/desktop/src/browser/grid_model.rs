@@ -110,6 +110,64 @@ impl GridModel {
         }
         self.selected
     }
+
+    /// Replace the listed images from a live folder re-scan, **preserving the selection by path**
+    /// (not by index). Unlike [`set_images`](Self::set_images) — which resets the selection to the
+    /// first image (used on a fresh folder pick) — this keeps the grid cursor on the same file
+    /// across adds/removes, or lands sensibly when the selected file was deleted: the next
+    /// surviving image, the new last if it was last, or `None` for an emptied folder. Bumps the
+    /// generation so stale thumbnail completions are dropped. Returns the new generation.
+    ///
+    /// `selected_path` is the path the grid was sitting on before the re-scan (its
+    /// [`selected_path`](Self::selected_path)); the new selection is computed by the pure
+    /// [`select_after_rescan`].
+    pub fn apply_rescan(&mut self, mut images: Vec<PathBuf>, selected_path: Option<&Path>) -> u64 {
+        crate::navigation::sort::sort_files(&mut images, self.sort_by);
+        self.selected = select_after_rescan(&self.images, &images, selected_path);
+        self.images = images;
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+}
+
+/// Where the grid selection should land after a live folder re-scan, tracking the previously
+/// selected file by path. Pure so the next/prev/empty decision is unit-testable without AppKit.
+///
+/// - The selected file still exists → stay on it (its new sorted index).
+/// - It was deleted but images remain → land on the next surviving image after it in the OLD
+///   order (the file that took its place), or the new last image if it was the last one.
+/// - The folder is now empty → `None`.
+/// - Nothing was selected before → the first image (or `None` when empty), matching a fresh listing.
+///
+/// `old` and `new` are both sorted in the active order; `selected_path` is the file the grid was on.
+#[must_use]
+pub fn select_after_rescan(
+    old: &[PathBuf],
+    new: &[PathBuf],
+    selected_path: Option<&Path>,
+) -> Option<usize> {
+    if new.is_empty() {
+        return None;
+    }
+    let Some(selected) = selected_path else {
+        // No prior selection (a fresh/empty grid that just gained images) → first image.
+        return Some(0);
+    };
+    // Still present → track it by path.
+    if let Some(index) = new.iter().position(|p| p.as_path() == selected) {
+        return Some(index);
+    }
+    // Deleted. Walk forward from its old position to the first surviving successor; that's the
+    // image that took its slot. If none survive (it was last, or all successors went too), land on
+    // the new last image — the "previous" relative to where the cursor was.
+    if let Some(old_index) = old.iter().position(|p| p.as_path() == selected) {
+        for succ in &old[old_index + 1..] {
+            if let Some(idx) = new.iter().position(|p| p == succ) {
+                return Some(idx);
+            }
+        }
+    }
+    Some(new.len() - 1)
 }
 
 /// Clamp a half-open visible `range` to `[0, len)`, returning an empty range when `len` is 0.
@@ -200,6 +258,67 @@ mod tests {
         assert_eq!(clamp_visible_range(15..20, 10), 10..10);
         // Empty folder → empty range.
         assert_eq!(clamp_visible_range(0..5, 0), 0..0);
+    }
+
+    #[test]
+    fn apply_rescan_keeps_selection_on_the_same_file_across_an_add() {
+        let mut m = GridModel::new(SortBy::Name);
+        m.set_images(vec![p("a.jpg"), p("c.jpg")]);
+        m.set_selected(1); // on "c"
+        let selected = m.selected_path().map(std::path::Path::to_path_buf);
+        // "b" added; the selection stays on "c", which shifts from index 1 to 2.
+        let generation = m.apply_rescan(
+            vec![p("a.jpg"), p("b.jpg"), p("c.jpg")],
+            selected.as_deref(),
+        );
+        assert_eq!(generation, 2);
+        assert_eq!(m.selected_path(), Some(p("c.jpg").as_path()));
+        assert_eq!(m.selected(), Some(2));
+    }
+
+    #[test]
+    fn apply_rescan_keeps_selection_when_a_non_selected_file_is_removed() {
+        let mut m = GridModel::new(SortBy::Name);
+        m.set_images(vec![p("a.jpg"), p("b.jpg"), p("c.jpg")]);
+        m.set_selected(2); // on "c"
+        let selected = m.selected_path().map(std::path::Path::to_path_buf);
+        // "a" removed; "c" survives, now at index 1.
+        m.apply_rescan(vec![p("b.jpg"), p("c.jpg")], selected.as_deref());
+        assert_eq!(m.selected(), Some(1));
+        assert_eq!(m.selected_path(), Some(p("c.jpg").as_path()));
+    }
+
+    #[test]
+    fn select_after_rescan_deleted_selected_lands_on_next_then_previous_then_empty() {
+        let old = vec![p("a.jpg"), p("b.jpg"), p("c.jpg")];
+        // Selected "b" deleted → next surviving is "c", now index 1.
+        assert_eq!(
+            select_after_rescan(&old, &[p("a.jpg"), p("c.jpg")], Some(p("b.jpg").as_path())),
+            Some(1)
+        );
+        // Selected "c" (last) deleted → new last "b", index 1.
+        assert_eq!(
+            select_after_rescan(&old, &[p("a.jpg"), p("b.jpg")], Some(p("c.jpg").as_path())),
+            Some(1)
+        );
+        // Selected "b" AND its successor "c" both gone → new last "a", index 0.
+        assert_eq!(
+            select_after_rescan(&old, &[p("a.jpg")], Some(p("b.jpg").as_path())),
+            Some(0)
+        );
+        // Folder emptied → no selection.
+        assert_eq!(
+            select_after_rescan(&old, &[], Some(p("b.jpg").as_path())),
+            None
+        );
+    }
+
+    #[test]
+    fn select_after_rescan_no_prior_selection_picks_first_or_none() {
+        // Empty grid gained images → first.
+        assert_eq!(select_after_rescan(&[], &[p("a.jpg")], None), Some(0));
+        // Still empty → none.
+        assert_eq!(select_after_rescan(&[], &[], None), None);
     }
 
     #[test]

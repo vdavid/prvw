@@ -169,6 +169,14 @@ pub(crate) struct App {
     /// Paths flagged `Modify` by the latest `FolderChanged`, carried across the async re-scan so
     /// `apply_folder_rescan` can re-decode a modified currently-displayed image. Cleared on apply.
     pub(crate) pending_modified: Vec<PathBuf>,
+    /// Browse-mode tree folders currently watched for subdirectory changes (`Part B`): the roots
+    /// (always watched once browse is built) plus every folder the user has expanded. Bounded to
+    /// what's visible — never the whole disk. A folder is added on expand / at root setup and
+    /// removed on collapse (`watch_tree_folder` / `unwatch_tree_folder`). A `FolderChanged` for one
+    /// of these reloads that tree node's children. Distinct from `watched_folder` (the image-list
+    /// watch); a folder can be in both. macOS-only — there's no native tree elsewhere.
+    #[cfg(target_os = "macos")]
+    pub(crate) watched_tree_folders: Vec<PathBuf>,
 
     // ── Preview placeholder tracking ─────────────────────────────
     /// True while the image texture holds a preview placeholder
@@ -246,6 +254,8 @@ impl App {
             no_images_empty_state: false,
             rescan_lister: None,
             pending_modified: Vec::new(),
+            #[cfg(target_os = "macos")]
+            watched_tree_folders: Vec::new(),
             #[cfg(target_os = "macos")]
             placeholder_active: false,
             #[cfg(target_os = "macos")]
@@ -683,6 +693,8 @@ impl App {
             // image (`reveal_to_folder` with `None` → the grid picks index 0).
             self.browser.reveal_to_folder(&dir, None);
             self.set_browse_menu_label();
+            // Live folder sync (Part B): the split view (and tree) now exist — watch the roots.
+            self.watch_tree_roots();
         }
 
         self.request_redraw();
@@ -845,26 +857,52 @@ impl App {
         self.request_redraw();
     }
 
-    /// Point the live folder-sync watcher at the current image's folder, unwatching the previously
-    /// watched one. Call after the active folder changes — open a file/dir, reveal from browse,
-    /// re-scan that empties the folder. No current image (empty state) leaves nothing watched.
-    /// No-op when the watcher couldn't start. The watch set is shareable with browse mode later;
-    /// for now only image mode drives it.
-    pub(crate) fn retarget_active_folder_watch(&mut self) {
-        let new_folder = self
-            .navigation
+    /// The active folder whose images are on screen: in **browse mode** the grid's listed folder
+    /// (what the user is looking at), in **image mode** the current image's parent. They coincide
+    /// once synced, but a user can browse a different folder than the open image — we watch what's
+    /// shown. `None` when nothing's listed/open (empty state). Drives `retarget_active_folder_watch`.
+    fn active_folder(&self) -> Option<PathBuf> {
+        #[cfg(target_os = "macos")]
+        if self.browser.is_browse() {
+            return self.browser.selected_folder().map(Path::to_path_buf);
+        }
+        self.navigation
             .dir_list
             .as_ref()
             .map(|d| d.current())
             .and_then(|p| p.parent())
-            .map(Path::to_path_buf);
+            .map(Path::to_path_buf)
+    }
+
+    /// Point the live folder-sync watcher at the active folder, unwatching the previously watched
+    /// one. Call after the active folder changes — open a file/dir, reveal from browse, select a
+    /// folder in the browse tree, re-scan that empties the folder, switch modes. The active folder
+    /// follows the grid's listed folder in browse and the current image's folder in image mode
+    /// (`active_folder`). No active folder (empty state) leaves nothing watched. No-op when the
+    /// watcher couldn't start. This is the **image-list watch**, distinct from the tree-structure
+    /// watch (`watch_tree_folder`/`unwatch_tree_folder`); a single folder can be both.
+    pub(crate) fn retarget_active_folder_watch(&mut self) {
+        let new_folder = self.active_folder();
 
         if new_folder == self.watched_folder {
             return;
         }
 
+        // Don't unwatch the old active folder if it's still a watched tree node (a folder can be
+        // both the listed folder and an expanded tree node / root). Only the role that owned it for
+        // the image-list watch is ending; the tree watch must persist.
+        #[cfg(target_os = "macos")]
+        let old_still_tree_watched = self
+            .watched_folder
+            .as_ref()
+            .is_some_and(|old| self.watched_tree_folders.iter().any(|p| p == old));
+        #[cfg(not(target_os = "macos"))]
+        let old_still_tree_watched = false;
+
         if let Some(watcher) = &self.folder_watcher {
-            if let Some(old) = self.watched_folder.take() {
+            if let Some(old) = self.watched_folder.take()
+                && !old_still_tree_watched
+            {
                 watcher.unwatch(old);
             }
             if let Some(new) = &new_folder {
@@ -874,15 +912,92 @@ impl App {
         self.watched_folder = new_folder;
     }
 
+    /// Watch the browse-tree roots for subdirectory changes (live folder sync, Part B). Roots stay
+    /// watched for the window's life (they never collapse out of watching), so this is called once,
+    /// when the split view is first built (browse entry / dir-arg launch). Idempotent: a root
+    /// already in the set is skipped. No-op off macOS or before the tree exists.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn watch_tree_roots(&mut self) {
+        for root in self.browser.tree_root_paths() {
+            self.watch_tree_folder(root);
+        }
+    }
+
+    /// Start watching a tree folder for subdirectory changes and record it in the tree-watch set
+    /// (live folder sync, Part B). Called on a node expand and for each root at setup. Idempotent —
+    /// a folder already watched is skipped (so a root re-added at a later browse entry is harmless,
+    /// and `notify` re-watch is a no-op anyway). No-op off the watcher.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn watch_tree_folder(&mut self, folder: PathBuf) {
+        if self.watched_tree_folders.contains(&folder) {
+            return;
+        }
+        if let Some(watcher) = &self.folder_watcher {
+            watcher.watch(folder.clone());
+        }
+        log::debug!("Tree-watch added: {}", folder.display());
+        self.watched_tree_folders.push(folder);
+    }
+
+    /// Stop watching a tree folder on collapse (live folder sync, Part B), unless it's a **root**
+    /// (roots stay watched for the window's life) or it's still the **active image-list folder**
+    /// (that watch is owned separately by `watched_folder` — don't pull it out from under the grid
+    /// / image sequence). Removes it from the tree-watch set. No-op off the watcher.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn unwatch_tree_folder(&mut self, folder: &Path) {
+        let Some(pos) = self.watched_tree_folders.iter().position(|p| p == folder) else {
+            return;
+        };
+        // Roots are never unwatched.
+        if self.browser.tree_root_paths().iter().any(|r| r == folder) {
+            return;
+        }
+        self.watched_tree_folders.remove(pos);
+        // Keep the watch alive if it's still the active image-list folder (a folder can be both a
+        // collapsed tree node and the grid's/image's folder).
+        if self.watched_folder.as_deref() == Some(folder) {
+            log::debug!(
+                "Tree-watch removed but kept (still active folder): {}",
+                folder.display()
+            );
+            return;
+        }
+        if let Some(watcher) = &self.folder_watcher {
+            watcher.unwatch(folder.to_path_buf());
+        }
+        log::debug!("Tree-watch removed: {}", folder.display());
+    }
+
     /// Handle a coalesced filesystem change for `folder`. When `folder` is the active (watched)
     /// folder, re-scan it OFF the main thread (a slow SMB folder must never block here — reuse the
     /// background `grid_listing::FolderLister` worker) and finish in `apply_folder_rescan` once the
     /// listing posts back as `BrowseFolderListed`. `modified` paths are evicted from the image and
     /// preview caches right away (cheap, no I/O) so nothing stale is served; a modified
-    /// currently-displayed image is re-decoded after the re-scan lands. Changes to other folders
-    /// are ignored (only the active folder is wired in this pass).
+    /// currently-displayed image is re-decoded after the re-scan lands.
+    ///
+    /// **Routing.** One `FolderChanged` can match two roles, and BOTH fire:
+    /// - the **active (image-list) folder** (the grid's listed folder in browse, the current
+    ///   image's folder in image mode) → evict caches + re-scan off-thread (`apply_folder_rescan`
+    ///   updates the grid and/or `dir_list`);
+    /// - a **watched tree folder** (a currently-expanded tree node) → re-scan its subdirectories so
+    ///   the tree reloads (`reload_tree_node`). A folder can be both the listed folder and an
+    ///   expanded node, so neither branch is `else` to the other.
+    ///
+    /// A change matching neither role is ignored (we only watch what's on screen).
     pub(crate) fn handle_folder_changed(&mut self, folder: &Path, modified: &[PathBuf]) {
-        if self.watched_folder.as_deref() != Some(folder) {
+        let is_active = self.watched_folder.as_deref() == Some(folder);
+
+        // ── Tree-structure watch: an expanded tree node changed → reload its subdirectories. ──
+        #[cfg(target_os = "macos")]
+        if self.watched_tree_folders.iter().any(|p| p == folder) {
+            log::debug!(
+                "Watched tree folder changed: {} — re-scanning subdirs",
+                folder.display()
+            );
+            self.browser.reload_tree_node(folder);
+        }
+
+        if !is_active {
             return;
         }
         log::debug!(
@@ -926,11 +1041,34 @@ impl App {
     /// outstanding, and directly off macOS. Never blocks: the only decode here is the
     /// currently-displayed image via the normal display path (cache hit after eviction → async
     /// re-decode), matching the spec's "re-decode + repaint seamlessly".
+    ///
+    /// **Both modes update from one re-scan.** When the changed folder is the browse grid's listed
+    /// folder, the grid is updated (insert adds at the sorted position, drop removes, keep the
+    /// selection by path, refresh thumbnails). When it's the current image's folder, the image-mode
+    /// `dir_list` is updated as below. They coincide when synced, so both fire and stay coherent.
     pub(crate) fn apply_folder_rescan(&mut self, folder: &Path, images: Vec<PathBuf>) {
         // Ignore a stale re-scan for a folder we've since navigated away from.
         if self.watched_folder.as_deref() != Some(folder) {
             self.pending_modified.clear();
             return;
+        }
+
+        // ── Browse grid update (when this is the grid's listed folder) ──
+        // Update the grid first, off the same re-scan. The grid preserves its selection by path,
+        // inserts/removes at the sorted position, and refreshes thumbnails for the change. A
+        // changed selection re-warms the prospective current image.
+        #[cfg(target_os = "macos")]
+        {
+            let is_grid_folder = self.browser.selected_folder() == Some(folder);
+            if is_grid_folder && let Some(win) = self.window.clone() {
+                let modified = self.pending_modified.clone();
+                let selection_changed =
+                    self.browser
+                        .apply_grid_rescan(images.clone(), &modified, &win);
+                if selection_changed {
+                    self.warm_browse_selection();
+                }
+            }
         }
 
         let sort_by = self
@@ -950,6 +1088,23 @@ impl App {
             .dir_list
             .as_ref()
             .map(|d| d.current().to_path_buf());
+
+        // Only drive the image-mode sequence when this folder is the current image's folder. In
+        // browse mode the grid's folder may differ from the open image's folder (the user browsed
+        // elsewhere); then the grid updated above and `dir_list` must stay put.
+        let is_image_folder = current
+            .as_deref()
+            .and_then(Path::parent)
+            .map(|p| p == folder)
+            .unwrap_or(false)
+            // In the image-mode empty state there's no current image, but the watched folder IS
+            // the (emptied) image folder — let a re-appearing image recover it.
+            || (current.is_none() && !self.browser.is_browse());
+        if !is_image_folder {
+            self.pending_modified.clear();
+            self.update_shared_state();
+            return;
+        }
 
         let modified = std::mem::take(&mut self.pending_modified);
         let current_path_modified = current
@@ -1739,6 +1894,9 @@ impl App {
                     }
                     self.render_frame();
                     self.browser.enter_browse(&win);
+                    // Live folder sync (Part B): the split view (and tree) are now built — watch the
+                    // roots (idempotent, so re-entering browse is harmless).
+                    self.watch_tree_roots();
                     // Browse-open positioning: reveal + select the current image's folder in the
                     // tree (async walk) and preselect that image in the grid, so browse opens
                     // already showing where you are and Esc/Enter round-trips back to it.
@@ -1768,6 +1926,11 @@ impl App {
             }
             self.request_redraw();
         }
+        // Live folder sync: the active (image-list) watch follows the grid's folder in browse and
+        // the current image's folder in image mode, so re-target on every mode switch. (When
+        // entering browse, the reveal's folder listing also re-targets via `BrowseFolderListed`;
+        // this covers leaving browse and the no-reveal cases.)
+        self.retarget_active_folder_watch();
         self.update_shared_state();
     }
 

@@ -441,6 +441,31 @@ impl State {
         }
     }
 
+    /// Apply a live folder re-scan to the grid (browse-mode live sync): update the listed images
+    /// preserving the selection by path, refresh thumbnails for the change, and re-sync the native
+    /// UI (the grid may have flipped empty↔non-empty, so focus + the grid-selection anchor may need
+    /// re-deriving). Tracks the grid's selection mirror. Returns `true` when the selected image
+    /// changed identity (added/removed shifted it, or the selected file was deleted), so the
+    /// executor can re-warm the new selection. No-op (returns `false`) if the split view isn't
+    /// built.
+    #[cfg(target_os = "macos")]
+    pub fn apply_grid_rescan(
+        &mut self,
+        images: Vec<std::path::PathBuf>,
+        modified: &[std::path::PathBuf],
+        window: &winit::window::Window,
+    ) -> bool {
+        let selection_changed = if let Some(split) = &self.split_view {
+            let changed = split.grid().apply_rescan(images, modified);
+            self.grid_selected = split.grid().selected_index();
+            changed
+        } else {
+            false
+        };
+        self.sync_native(window);
+        selection_changed
+    }
+
     /// Drain queued grid-thumbnail completions into the collection view's cells. No-op if the split
     /// view isn't built.
     #[cfg(target_os = "macos")]
@@ -663,6 +688,27 @@ impl State {
         self.enter_browse_state(self.grid_is_empty());
         self.sync_native(window);
         log::info!("Entered browse mode, focused {:?}", self.focused_pane);
+    }
+
+    /// The source-list root paths (home + volumes), for the live-folder-sync tree watch (roots stay
+    /// watched for the window's life). Empty if the split view isn't built.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn tree_root_paths(&self) -> Vec<std::path::PathBuf> {
+        self.split_view
+            .as_ref()
+            .map(split_view::BrowseSplitView::tree_root_paths)
+            .unwrap_or_default()
+    }
+
+    /// Re-scan a watched (expanded) tree folder's subdirectories after it changed on disk and
+    /// reload its node (live folder sync, Part B), preserving expansion + selection. No-op if the
+    /// split view isn't built.
+    #[cfg(target_os = "macos")]
+    pub fn reload_tree_node(&self, folder: &std::path::Path) {
+        if let Some(split) = &self.split_view {
+            split.reload_tree_node(folder);
+        }
     }
 
     /// Apply a completed background directory scan to the tree: store the children and reload that

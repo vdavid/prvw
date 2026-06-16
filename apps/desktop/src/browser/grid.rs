@@ -740,6 +740,59 @@ impl BrowseGrid {
         self.pump_visible_range();
     }
 
+    /// Apply a live folder re-scan to the grid (browse-mode live sync). Unlike
+    /// [`Self::folder_listed`] (a fresh folder pick, which resets the selection to the first image),
+    /// this **preserves the selection by path** across adds/removes — `GridModel::apply_rescan` keeps
+    /// the cursor on the same file, or lands on the next/previous surviving image when the selected
+    /// one was deleted, or clears it for an emptied folder. Then it refreshes thumbnails for the
+    /// change: drops the cached `NSImage` for every `modified` path so it regenerates with fresh
+    /// bytes, drops thumbnails for removed indices, reloads the collection view, and re-pumps
+    /// generation (which schedules thumbnails for any added images in the visible range). Returns
+    /// `true` when the selected image changed identity (so the executor can re-warm it).
+    ///
+    /// `modified` are the paths flagged `Modify` by the watcher (content changed in place); their
+    /// thumbnails must be regenerated even though the path is unchanged. Reuses the same machinery
+    /// as the fresh-listing path; the only behavioral difference is selection-by-path.
+    pub fn apply_rescan(&self, images: Vec<PathBuf>, modified: &[PathBuf]) -> bool {
+        let selected_before = self.selected_path();
+        let len = images.len();
+        {
+            let mut model = self.data_source.ivars().model.borrow_mut();
+            model.apply_rescan(images, selected_before.as_deref());
+        }
+        let selected_after = self.selected_path();
+
+        // New folder contents: clear all generated thumbnails and reseed the scheduler/cache from
+        // scratch on the current visible range. A full reset is the same robust approach the
+        // fresh-listing path takes — the visible range re-pumps regeneration, and a re-saved
+        // (`modified`) image can't keep a stale bitmap because the whole map is cleared. (The
+        // map/cache are keyed by index, which shifts on add/remove, so a targeted drop would be
+        // fragile; the clear-and-repump is cheap — thumbnails come from the shared QL cache.)
+        let _ = modified; // The full clear below covers modified paths too.
+        self.data_source.ivars().images.borrow_mut().clear();
+        let initial_visible = grid_model::clamp_visible_range(0..first_screen_count(), len);
+        self.data_source
+            .ivars()
+            .scheduler
+            .borrow_mut()
+            .set_folder(len, initial_visible.clone());
+        self.data_source
+            .ivars()
+            .cache
+            .borrow_mut()
+            .set_visible_range(initial_visible);
+
+        self.collection.reloadData();
+        self.refresh_empty_overlay();
+        // Re-assert the preserved selection in the native collection view (reloadData clears it).
+        if let Some(index) = self.selected_index() {
+            self.select_index(index, false);
+        }
+        self.pump_visible_range();
+
+        selected_before != selected_after
+    }
+
     /// Recompute the visible range from the collection view and feed it to the scheduler + cache,
     /// then pump generation. Called on scroll (via the executor) and after a reload.
     pub fn pump_visible_range(&self) {

@@ -153,6 +153,18 @@ pub enum AppCommand {
         path: PathBuf,
         children: Vec<PathBuf>,
     },
+    /// A tree node was expanded — start watching its folder for subdirectory changes (live folder
+    /// sync, Part B). Fired by the `NSOutlineView` `outlineViewItemDidExpand:` delegate after the
+    /// node's children load. The executor adds the folder to the tree-watch set so a
+    /// `FolderChanged` for it reloads the node's subdirectories. Roots are watched at browse setup,
+    /// not via this. Browse-mode only.
+    #[cfg(target_os = "macos")]
+    BrowseTreeFolderExpanded(PathBuf),
+    /// A tree node was collapsed — stop watching its folder (live folder sync, Part B). Fired by
+    /// `outlineViewItemDidCollapse:`. Keeps the tree-watch set bounded to what's expanded; roots
+    /// stay watched. Browse-mode only.
+    #[cfg(target_os = "macos")]
+    BrowseTreeFolderCollapsed(PathBuf),
     /// A background folder listing finished. The grid NEVER reads a directory on the main thread (a
     /// slow SMB share would freeze the app), so the selected folder's images arrive here: the
     /// executor populates the grid model + reloads the collection view. Posted by the grid lister
