@@ -2,9 +2,9 @@
 //!
 //! Sibling of [`crate::previews::scheduler`], but prioritized around a **visible
 //! range** (the rows currently on screen in the `NSCollectionView`) rather than a
-//! single `current` index. Phase 4's collection view feeds it the visible range on
-//! every scroll; the scheduler hands back the order in which to ask QuickLook for
-//! grid thumbnails so whatever is on-screen always generates first.
+//! single `current` index. The collection view feeds it the visible range on every
+//! scroll; the scheduler hands back the order in which to ask QuickLook for grid
+//! thumbnails so whatever is on-screen always generates first.
 //!
 //! ## Ordering
 //!
@@ -16,7 +16,7 @@
 //! 2. **Outward from the visible range**, nearest-first (one below the range, one
 //!    above, two below, two above, …), bounded by [`MARGIN`]. This warms a margin
 //!    ahead/behind so a small scroll reveals already-generated cells — matching the
-//!    `NSCollectionViewPrefetching` window Phase 4 wires up.
+//!    `NSCollectionViewPrefetching` window the collection view wires up.
 //!
 //! Indices beyond `visible.end + MARGIN` / before `visible.start − MARGIN` are not
 //! enqueued: a 10 000-image folder must not queue 10 000 jobs. On scroll the caller
@@ -32,7 +32,7 @@ use std::ops::Range;
 /// How far beyond the visible range (in indices, each direction) we generate
 /// thumbnails. Warms a margin so a small scroll reveals ready cells. Generation
 /// past this waits for the next `set_visible_range`. Chosen to comfortably cover
-/// one screen of prefetch ahead/behind for typical cell counts; Phase 4 can tune it.
+/// one screen of prefetch ahead/behind for typical cell counts.
 pub const MARGIN: usize = 100;
 
 /// Opaque handle a caller can use to correlate a completion with its request.

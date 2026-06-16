@@ -1,8 +1,8 @@
 //! Grid thumbnail cache bookkeeping — a pure, headless-tested state machine.
 //!
-//! Phase 2 builds only the **policy**: a byte-budgeted, distance-from-visible-range
+//! This is only the **policy**: a byte-budgeted, distance-from-visible-range
 //! eviction map keyed by folder index. The real bitmaps (`NSImage`) live AppKit-side,
-//! owned by the `NSCollectionView` cells and released on cell reuse (Phase 4) — this
+//! owned by the `NSCollectionView` cells and released on cell reuse — this
 //! map never holds pixels, only each entry's **byte size**. So this is the LRU
 //! backstop that bounds the small-cell worst case (many tiny cells visible at once),
 //! not the primary residency mechanism; cell reuse does most of the work.

@@ -4,18 +4,18 @@ Keep the image sequence and the browse UI correct and live: re-anchor browse mod
 and watch the filesystem so adds/modifies/deletes reflect in both modes without a manual refresh. Builds on the image
 browser (`docs/specs/image-browser.md`).
 
-Status: shipped. Parts 1 and 2 (mode sync, image-mode + browse-mode file watching, tree-structure watch) are all built
-and checks-green. Same `image-browser` worktree + branch.
+Status: shipped. Both parts (mode sync, image-mode + browse-mode file watching, tree-structure watch) are built and
+checks-green.
 
-## Part 1 — Mode sync: browse always re-anchors to the current image — DONE
+## Part 1 — Mode sync: browse always re-anchors to the current image
 
-Re-entering browse mode used to restore the _stale_ selection from the last time you were in browse. Now: after you
-navigate in image mode and press Enter, browse shows **the image you're currently viewing**.
+Browse mode re-anchors to the current image on every entry, never the stale selection from the last time you browsed: so
+after you navigate in image mode and press Enter, browse shows **the image you're currently viewing**.
 
 - **Every `enter_browse` re-anchors to `navigation`'s current image** (not the last browse state): reveal the current
   image's folder in the tree, select it, preselect that image in the grid, focus the grid, and **scroll both into view**
-  (handles a selection pushed off-screen by scrolling or a window resize). Reuses the Phase-5 browse-open positioning,
-  run on _every_ entry against the live current image, not just first entry / dir-arg.
+  (handles a selection pushed off-screen by scrolling or a window resize). Reuses the browse-open positioning, run on
+  _every_ entry against the live current image, not just first entry / dir-arg.
 - If there's no current image (nothing open), falls back to the last folder / home.
 
 **How it works.** `set_view_mode(Browse)` calls `App::reveal_current_image_in_browse` on every entry; the anchor target
@@ -37,16 +37,15 @@ A live filesystem watcher keeps the data correct. Two roles, ideally one shared 
 
 ### Mechanism
 
-- **`notify` crate** (wraps macOS FSEvents). Pin a stable version ≥14 days old; verify license compatibility before
-  adding. A `folder_watch` module owns a `notify` watcher over a **dynamic set of non-recursive paths**, exposing
-  `watch(path)` / `unwatch(path)`.
+- **`notify` crate** (wraps macOS FSEvents). The `folder_watch` module owns a `notify` watcher over a **dynamic set of
+  non-recursive paths**, exposing `watch(path)` / `unwatch(path)`.
 - Events run off the main thread; **coalesce/debounce ~150ms** (bursts, and editors' temp-write-rename saves) and post
   to the main thread via the `EventLoopProxy` as an `AppCommand` carrying the changed folder (and changed paths/kinds).
   Never block the main thread.
 - The main-thread handler routes by the changed path: active image folder → image-list update; an expanded tree folder →
   tree-children update.
 
-### Browse-mode live sync — DONE
+### Browse-mode live sync
 
 The active-folder (image-list) watch **follows the grid's listed folder in browse, the current image's folder in image
 mode** (`App::active_folder`); `retarget_active_folder_watch` re-targets on every mode switch, browse folder listing
@@ -118,30 +117,25 @@ The gating + fallback decision are pure and unit-tested (`subdirs_changed`, `sel
 affected path on modify/delete so nothing stale survives. A regenerated thumbnail must not be served from a stale
 QuickLook entry (QuickLook keys on file content/mtime, so a fresh request regenerates; force-evict our own caches).
 
-## Build order
+## Component map
 
-1. **Mode sync** (Part 1) — small, independent; fixes the reported re-entry bug. Reuses Phase-5 positioning on every
-   entry.
-2. **Watcher infrastructure** — DONE. The `folder_watch` module: a `notify` FSEvents watcher over a dynamic
-   non-recursive path set (`watch`/`unwatch`), a pure debounce/coalescer (`Coalescer`, ~150 ms), and an off-thread
-   `RescanLister`, posting `AppCommand::FolderChanged` / `ActiveFolderRescanned` via the `EventLoopProxy`.
-   Headless-tested: the coalescer and the folder-diff (`navigation::folder_diff`, old list vs rescanned list →
-   add/remove + delete-current outcome under each `SortBy`).
-3. **Image-mode live sync** — DONE. The active-folder watch is wired to sequence updates, cache + preview eviction,
-   current-by-path recalc, delete-current navigation (next / previous / empty), and the image-mode "(No images)" empty
-   state. See `navigation/CLAUDE.md` → "Live folder sync (image mode)".
-4. **Browse-mode live sync** — DONE. The active-folder watch follows the grid's listed folder in browse;
-   `apply_folder_rescan` updates the grid (add/remove/modify + selection-by-path + empty state) alongside image mode.
-   The tree-structure watch (roots + expanded folders, expand/collapse lifecycle) reloads a watched node's
-   subdirectories on change, preserving expansion/selection. See "Browse-mode live sync" above and
-   `src/browser/CLAUDE.md` → "Live folder sync (browse mode)".
-5. **Tests + docs** — headless tests for the diff/debounce + integration tests (add/modify/delete in a temp folder, both
-   modes, via the QA hooks); update `browser/CLAUDE.md`, `navigation/CLAUDE.md`, `architecture.md`, this spec.
+- **Watcher infrastructure.** The `folder_watch` module: a `notify` FSEvents watcher over a dynamic non-recursive path
+  set (`watch`/`unwatch`), a pure debounce/coalescer (`Coalescer`, ~150 ms), and an off-thread `RescanLister`, posting
+  `AppCommand::FolderChanged` / `ActiveFolderRescanned` via the `EventLoopProxy`. Headless-tested: the coalescer and the
+  folder-diff (`navigation::folder_diff`, old list vs rescanned list → add/remove + delete-current outcome under each
+  `SortBy`).
+- **Image-mode live sync.** The active-folder watch drives sequence updates, cache + preview eviction, current-by-path
+  recalc, delete-current navigation (next / previous / empty), and the image-mode "(No images)" empty state. See
+  `navigation/CLAUDE.md` → "Live folder sync (image mode)".
+- **Browse-mode live sync.** The active-folder watch follows the grid's listed folder in browse; `apply_folder_rescan`
+  updates the grid (add/remove/modify + selection-by-path + empty state) alongside image mode. The tree-structure watch
+  (roots + expanded folders, expand/collapse lifecycle) reloads a watched node's subdirectories on change, preserving
+  expansion/selection. See "Browse-mode live sync" above and `src/browser/CLAUDE.md` → "Live folder sync (browse mode)".
 
 ## Risks / notes
 
-- **Watch-lifecycle on expand/collapse** is the fiddliest part; if it gets gnarly, land steps 1–3 (mode sync + image
-  list) first and treat the tree-structure watch as an additive follow-up.
+- **Watch-lifecycle on expand/collapse** is the fiddliest part — the subdir-delta gate + selection-preserving reload
+  (see "Tree-structure updates") are what keep it correct under a busy ancestor.
 - **Event storms** (bulk copy/delete): debounce + full re-scan of the affected folder keeps state correct without
   per-event thrash.
 - **Atomic saves** (temp + rename) look like Create/Remove/Rename; re-scan-on-debounce reflects the final state.

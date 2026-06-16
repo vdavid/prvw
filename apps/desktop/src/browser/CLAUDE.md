@@ -306,8 +306,9 @@ the way the native `didSelectItemsAtIndexPaths:` delegate does (so the open path
 
 `grid.rs` builds the right pane: an `NSCollectionView` (`NSCollectionViewFlowLayout`, vertical scroll) of fixed-size
 square cells (`CELL_PT`, see "Styling constants"), each a `GridItem` (an `NSCollectionViewItem` subclass with a
-proportionally-scaling `NSImageView` + a filename label). The slider that live-resizes cells is a later phase; the grid
-uses a fixed cell size for now. The grid sits on a rounded gallery surface (see `split_view.rs`).
+proportionally-scaling `NSImageView` + a filename label). The grid uses a fixed cell size; a bottom slider to
+live-resize cells is deferred (see "Deferred work + known limitations"). The grid sits on a rounded gallery surface (see
+`split_view.rs`).
 
 - **Where the mutable state lives.** `NSCollectionView` holds its data source/delegate weakly, so `BrowseGrid` keeps the
   `Retained<GridDataSource>` alive for the window's life. All the grid's mutable state — the `grid_model::GridModel`,

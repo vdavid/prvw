@@ -4,18 +4,17 @@ A second top-level screen for the main window. Image mode (today's wgpu viewer) 
 native AppKit screen: a folder tree on the left, a thumbnail grid on the right. The two screens **swap**, they never
 overlap.
 
-Status: shipped (functionally complete). The left pane is a live `NSOutlineView` source list (home + mounted volumes,
-**asynchronous** directory enumeration, path-identity nodes, arrow-key nav, selection recorded in `browser::State`). The
-right pane is a live `NSCollectionView` thumbnail gallery (`browser::grid`): selecting a folder lists its supported
-images **on a background worker** (`browser::grid_listing`, never the main thread), the grid populates and shows
-QuickLook thumbnails generated via a second `previews::quicklook` request path (RGBA8 → `NSImage` through
-`quicklook::nsimage_from_rgba8`), driven by the visible-range scheduler + 128 MB byte-budget cache. Native click
-selects; double-click or Enter (grid focused) opens that image in image mode (sets up `navigation`, switches mode); an
-empty folder shows "(No images)" and is non-focusable so Tab stays on the tree. Browse-open positioning, the async
-reveal-path walk, dir-arg startup, and arrow-key pane isolation are all in place; the QA `/state` snapshot and
-integration tests assert the full flow. Remaining: the dedicated styling pass (the "beautiful gallery" look), reviewed
-visually with David. See `apps/desktop/src/browser/CLAUDE.md` for the tree, grid, thumbnail, and browse-open positioning
-details.
+Status: shipped, bar a dedicated styling pass (the "beautiful gallery" look, reviewed visually with David). The left
+pane is a live `NSOutlineView` source list (home + mounted volumes, **asynchronous** directory enumeration,
+path-identity nodes, arrow-key nav, selection recorded in `browser::State`). The right pane is a live `NSCollectionView`
+thumbnail gallery (`browser::grid`): selecting a folder lists its supported images **on a background worker**
+(`browser::grid_listing`, never the main thread), the grid populates and shows QuickLook thumbnails generated via a
+second `previews::quicklook` request path (RGBA8 → `NSImage` through `quicklook::nsimage_from_rgba8`), driven by the
+visible-range scheduler + 128 MB byte-budget cache. Native click selects; double-click or Enter (grid focused) opens
+that image in image mode (sets up `navigation`, switches mode); an empty folder shows "(No images)" and is non-focusable
+so Tab stays on the tree. Browse-open positioning, the async reveal-path walk, dir-arg startup, and arrow-key pane
+isolation are all in place; the QA `/state` snapshot and integration tests assert the full flow. See
+`apps/desktop/src/browser/CLAUDE.md` for the tree, grid, thumbnail, and browse-open positioning details.
 
 ## Why native AppKit, not wgpu
 
@@ -45,8 +44,9 @@ under the live surface. We hide one and show the other.
 
 - **Left pane — folder tree.** `NSVisualEffectView` `.sidebar` material behind an `NSOutlineView` with
   `selectionHighlightStyle = .sourceList` (this is where the rounded-pill selection comes from). Directories only, no
-  files. Lazy disclosure. Roots: the home folder and every mounted volume. Finder-style group rows ("Locations" for
-  volumes) are the target; if grouping fights the data source, fall back to flat sibling roots (home + volumes).
+  files. Lazy disclosure. Roots: the home folder and every mounted volume as **flat sibling rows** — a Finder-style
+  "Locations" group header needs group-row pseudo-items that fight the path-keyed node model, so flat roots win (see
+  `browser/CLAUDE.md` → "The folder tree"). Grouped rows could return in the styling phase.
 - **Right pane — thumbnail grid.** `NSCollectionView` with a flow layout, styled into a polished gallery (rounded
   container background like Finder's content area, comfortable cell spacing, native hover/selection). Vertically
   scrollable. Shows the images of the folder selected in the tree, in the existing sort order (`navigation::SortBy`).
@@ -169,52 +169,45 @@ So browse mode uses the AppKit responder chain, with one app-level source of tru
 - A defensive `input::browse_key_to_command` fallback still maps Tab/Enter/Esc in case winit ever delivers a key in
   browse mode, but with first responder held by the native view it normally doesn't fire.
 
-## Thumbnails: rename first, reuse QuickLook, let AppKit own the memory
+## Thumbnails: the `previews` module, reused QuickLook, AppKit-owned memory
 
-The existing `src/thumbnails/` is a **misnomer** — it generates ~1024px (512pt × retina) QuickLook _previews_ used as
-soft placeholders during decode, not grid thumbnails. The work splits cleanly:
+The module is named `previews` (not `thumbnails`) because what it generates are ~1024px (512pt × retina) QuickLook
+_previews_ used as soft placeholders during full-image decode, not grid thumbnails. Apple's own names stay verbatim
+(`QLThumbnailGenerator`, `QLThumbnailGenerationRequest`, `QLThumbnailGenerationRequestRepresentationTypes::Thumbnail`,
+the `objc2-quick-look-thumbnailing` crate, ImageIO keys) — the rename is ours, the framework's vocabulary isn't.
 
-1. **Rename `thumbnails` → `previews`** across the codebase (module/dir, types `Thumbnail`/`ThumbnailEvent`/…, fns
-   `display_thumbnail_placeholder`/`pump_thumbnail_requests`/…, the `AppCommand::ThumbnailsAvailable` variant, the
-   `previews_status` QA tool, fields, comments, docs, `preview-preload.md`, the colocated `CLAUDE.md`). Apple names stay
-   verbatim (`QLThumbnailGenerator`, `QLThumbnailGenerationRequest`,
-   `QLThumbnailGenerationRequestRepresentationTypes::Thumbnail`, the `objc2-quick-look-thumbnailing` crate, ImageIO
-   keys). Pure refactor, zero behavior change — full check suite stays green. A precise ~150-site inventory exists from
-   the planning pass.
+The QuickLook generator is shared, size-parameterized infrastructure: both the preview path (requests ~1024px) and the
+grid (requests grid size) call the same `quicklook::RequestTable`. `QLThumbnailGenerator` _is_ Finder's system cache
+(`quicklookd`, shared, warm), so the grid is a second request path, not a second engine.
 
-2. **Extract the QuickLook generator into shared, size-parameterized infrastructure.** It currently lives inside the
-   module; both the preview path (requests ~1024px) and the new grid (requests grid size) call it.
-   `QLThumbnailGenerator` _is_ Finder's system cache (`quicklookd`, shared, warm), so this is a second request path, not
-   a second engine.
+**Grid thumbnails are AppKit-owned, generated once at the slider max, never regenerated on resize.**
 
-3. **Grid thumbnails are AppKit-owned, generated once at the slider max, never regenerated on resize.**
-   - **Size:** always generate at `max_cell_pt × 2` physical px. With the slider max at **256pt that's 512px ≈ 1 MB**
-     per thumbnail. Smaller cell sizes **downscale** the cached bitmap (instant, crisp); the slider never re-requests. A
-     larger max means bigger thumbnails and more memory, so 256pt is the default ceiling.
-   - **No Rust pixel copies.** Grid cells are `NSImageView`s consuming `NSImage` straight from QuickLook; the bitmaps
-     live AppKit-side, owned by the cells, released on cell reuse. (Previews copy into `Vec<u8>` only because they
-     upload to a wgpu texture; the grid doesn't.)
-   - **Memory = visible set + margin, capped.** `NSCollectionView` cell reuse releases off-screen images, so resident
-     memory tracks the visible set, not the folder size — a 10k-image folder costs the same as a 50-image one. A **128
-     MB** LRU backstop (≈128 resident thumbnails, centered on the visible range) bounds the small-cell worst case (many
-     tiny cells visible at once).
-   - **Smooth scrolling via a visible-centered scheduler.** Reuse the `previews` scheduler pattern: enqueue the folder
-     prioritized **centered on the visible range, nearest-first**, and **re-prioritize live on scroll** so whatever is
-     on-screen always generates first. `NSCollectionViewPrefetching` warms a one-screen margin ahead/behind. Evicted
-     thumbnails re-request fast from Finder's warm cache; fast-scroll past the margin shows a brief placeholder
-     (Finder/Photos behavior).
+- **Size:** always generate at `max_cell_pt × 2` physical px. With the slider max at **256pt that's 512px ≈ 1 MB** per
+  thumbnail. Smaller cell sizes **downscale** the cached bitmap (instant, crisp); the slider never re-requests. A larger
+  max means bigger thumbnails and more memory, so 256pt is the ceiling.
+- **No Rust pixel copies.** Grid cells are `NSImageView`s consuming `NSImage` straight from QuickLook; the bitmaps live
+  AppKit-side, owned by the cells, released on cell reuse. (Previews copy into `Vec<u8>` only because they upload to a
+  wgpu texture; the grid doesn't.)
+- **Memory = visible set + margin, capped.** `NSCollectionView` cell reuse releases off-screen images, so resident
+  memory tracks the visible set, not the folder size — a 10k-image folder costs the same as a 50-image one. A **128 MB**
+  LRU backstop (≈128 resident thumbnails, centered on the visible range) bounds the small-cell worst case (many tiny
+  cells visible at once).
+- **Smooth scrolling via a visible-centered scheduler.** Same pattern as the `previews` scheduler: the folder is
+  enqueued prioritized **centered on the visible range, nearest-first**, **re-prioritized live on scroll** so whatever
+  is on-screen always generates first. `NSCollectionViewPrefetching` warms a one-screen margin ahead/behind. Evicted
+  thumbnails re-request fast from Finder's warm cache; fast-scroll past the margin shows a brief placeholder
+  (Finder/Photos behavior).
 
-A future **slider** at the window bottom live-resizes cells by changing the flow-layout item size (image views downscale
-the cached max-size bitmaps — zero regeneration). Out of baseline scope, but the sizing rule above is chosen to support
-it; add it in the styling era if it fits.
+The deferred bottom **slider** (see "Deferred work" in `browser/CLAUDE.md`) would live-resize cells by changing the
+flow-layout item size only — the sizing rule above keeps that regeneration-free.
 
-## What shipped (and what's left)
+## Component map
 
-Everything below is built and checks-green except the dedicated styling pass:
+What makes up the feature, and where the load-bearing decisions live:
 
-- **Thumbnail plumbing.** `thumbnails` → `previews` rename; the shared, size-parameterized QuickLook generator with a
-  second grid request path; the visible-centered scheduler + 128 MB byte-budget cache (headless unit-tested for
-  nearest-first ordering, scroll re-prioritization, and eviction).
+- **Thumbnail plumbing.** The shared, size-parameterized QuickLook generator with a second grid request path; the
+  visible-centered scheduler + 128 MB byte-budget cache (headless unit-tested for nearest-first ordering, scroll
+  re-prioritization, and eviction).
 - **Tree pane.** `NSOutlineView` source-list (`setStyle(.SourceList)`), home + mounted volumes as **flat sibling roots**
   (the grouped "Locations" header fights the path-keyed node model — see `browser/CLAUDE.md`), lazy async directory
   enumeration, path-identity `NodeObject`s, native arrow-key nav, selection → `BrowseSelectFolder`.
@@ -228,12 +221,12 @@ Everything below is built and checks-green except the dedicated styling pass:
   (`browser::classify_launch_target` + `App::launch_directory`); arrow-key pane isolation (automatic from the
   single-first-responder focus model). Pure logic (reveal chain, launch classification, grid-preselect index) is
   unit-tested.
-- **QA + tests + docs.** `SharedAppState` browse fields + the test-only QA driving hooks (see the QA observability note
-  in "State"); integration tests asserting the full flow; colocated module docs; this spec, `architecture.md`, and
-  `AGENTS.md`.
+- **QA + tests.** `SharedAppState` browse fields + the test-only QA driving hooks (see the QA observability note in
+  "State"); integration tests asserting the full flow.
 
-**Left:** the styling pass — the "beautiful gallery" look (`NSCollectionView` polish is craft, not a flag), reviewed
-visually with David.
+The remaining piece is the styling pass — the "beautiful gallery" look (`NSCollectionView` polish is craft, not a flag),
+reviewed visually with David. The grid uses a fixed cell size until then; the deferred bottom size-slider is tracked in
+`browser/CLAUDE.md` → "Deferred work".
 
 ## Test plan
 

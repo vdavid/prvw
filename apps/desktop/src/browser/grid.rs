@@ -25,7 +25,7 @@
 //! 2. The listing returns via `BrowseFolderListed` → [`BrowseGrid::folder_listed`] populates the
 //!    model, reseeds the scheduler/cache on the visible range, and `reloadData`s the collection
 //!    view. An empty folder shows the "(No images)" overlay.
-//! 3. On scroll (and after a reload), `BrowseGrid::on_visible_range_changed` feeds the visible
+//! 3. On scroll (and after a reload), `BrowseGrid::pump_visible_range` feeds the visible
 //!    range to the scheduler + cache and pumps the scheduler into the QL worker at
 //!    `GRID_THUMBNAIL_PX`.
 //! 4. Completions arrive as `BrowseThumbnailsAvailable`; [`BrowseGrid::thumbnails_available`]
