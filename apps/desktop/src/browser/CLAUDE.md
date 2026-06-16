@@ -7,15 +7,15 @@ driven by the Phase-2 scheduler + cache plumbing. Full design: `docs/specs/image
 
 | File                 | Purpose                                                                                                                                                                                                                                                                                                                                                |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `mod.rs`             | `ViewMode` + `PaneSide` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, native handles); the `sync_native` render-from-state choke-point; pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command` + field-transition cores; tree + grid delegation; tests |
+| `mod.rs`             | `ViewMode` + `PaneSide` + `LaunchTarget` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, `pending_grid_preselect` + `pending_browse_open_focus` for browse-open, native handles); the `sync_native` render-from-state choke-point; `reveal_to_folder`; pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command`/`grid_preselect_index`/`classify_launch_target` + field-transition cores; tree + grid delegation; tests |
 | `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (makes the focused pane's control first responder + refreshes grid emphasis — called by `sync_native`), divider + traffic-light fixes; hosts the tree (left) and the grid (right)                                                                                                                  |
 | `grid.rs`            | macOS `NSCollectionView` grid: `BrowseCollectionView` (keyDown override), `GridItem` (cell, focus-aware selection rect + double-click in `mouseDown:`), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs/focus)                                               |
 | `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                                                                                                                                                                                  |
 | `grid_listing.rs`    | Background folder-image lister (its own OS thread + `mpsc`, like the tree scanner) + the pure `list_supported_images`                                                                                                                                                                                                                                  |
 | `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (the grid's `BrowseGrid::pump` drives it)                                                                                                                                                                                                                                  |
 | `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants                                                                                                                                                                                                           |
-| `outline.rs`         | macOS `NSOutlineView` source-list tree: `BrowseOutlineView` (keyDown override), `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + `make_first_responder`)                                                                                                                                                         |
-| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate                                                                                                                                                                                       |
+| `outline.rs`         | macOS `NSOutlineView` source-list tree: `BrowseOutlineView` (keyDown override), `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + `make_first_responder` + the async `reveal_to_folder` walk)                                                                                                                                                         |
+| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `reveal_path_chain` (root-to-target reveal walk), the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate                                                                                                                                                                                       |
 
 ## The swap
 
@@ -47,6 +47,52 @@ completions queued), `BrowseGridSelected(usize)` (grid click/selection — also 
 `BrowseOpenSelected` (Enter on the focused grid, or a double-click). Browse keys are intercepted by the focused native
 view's `keyDown:` override (`browser::browse_keydown_command`), not winit. Dispatched in `app/executor.rs`. All but
 `ToggleBrowseMode`/`EnterImageMode`/`ToggleBrowseFocus`/`BrowseOpenSelected` are macOS-only.
+
+## Browse-open positioning + dir-arg launch (Phase 5)
+
+**Entering browse opens already showing where you are.** When the user enters browse from an image (Enter or Navigate →
+Image browser), `set_view_mode(Browse)` runs `enter_browse` then `App::reveal_current_image_in_browse`: it reveals +
+selects the current image's folder in the tree and preselects that image in the grid. So Esc/Enter right after opening
+round-trips to the same image (verified: Enter → browse preselects the came-from image's grid index, Esc reveals it
+back). Empty / no-image cases fall back gracefully (first image, or the tree for an empty folder).
+
+**The async reveal-path walk** (`outline::BrowseTree`). Child directories load on the background scanner, so "reveal a
+path" can't expand synchronously — there'd be no children yet. Instead it's a pending walk advanced by
+`BrowseTreeChildrenLoaded`:
+
+- `tree_model::reveal_path_chain(roots, target)` (pure, tested) computes the root-to-target path list: the **root** is
+  the longest-prefix `Root` match (a path under home reveals under Home, not the `/` volume), then every intermediate
+  directory, ending at `target`. `None` when no root contains `target`.
+- `BrowseTree::reveal_to_folder(folder)` computes the chain from its own roots and starts a `RevealWalk { chain,
+  position }`. It expands `chain[0]` (the root), which makes AppKit query its children → enqueues the scan (no main-
+  thread disk read). `children_loaded` calls `advance_reveal`: when the level it's waiting on (`chain[position]`)
+  arrives, it steps `position` forward and expands the next ancestor; at the target it selects + scrolls-to-mid and
+  clears the walk. A level whose children are **already cached** (a re-reveal) advances synchronously so the walk
+  doesn't stall waiting for a scan that won't re-fire. A single-element chain (target is a root) selects immediately.
+- The terminal `select_and_scroll_to` fires `outlineViewSelectionDidChange:` → `BrowseSelectFolder`, so the reveal
+  drives the grid listing through the normal path. `scroll_row_to_middle` centers the row in the scroll clip (vs the
+  default "just make visible").
+
+**Grid preselect + grid focus on browse-open.** `browser::State` holds a one-shot `pending_grid_preselect:
+Option<PathBuf>` (the came-from image) and `pending_browse_open_focus: bool`, both set by `State::reveal_to_folder` and
+consumed by `grid_folder_listed`. When the revealed folder's images land, `BrowseGrid::folder_listed(images,
+preselect)` selects the preselect image's index (`browser::grid_preselect_index`, pure/tested — maps the came-from path
+to its slot in the SORTED list) and scrolls it into view, else index 0; and `grid_folder_listed` moves focus to the grid
+(the reveal's tree selection had focused the tree, since the grid was empty when `enter_browse` ran). An empty revealed
+folder keeps the tree focused (the grid is non-focusable).
+
+**Dir-arg launch** (`main.rs` + `app.rs`). `browser::classify_launch_target(is_file, is_dir)` (pure/tested) maps a
+single CLI argument: a file → image mode (unchanged), a directory → browse mode, neither → onboarding (like no
+argument). `main.rs` detects a lone directory arg, canonicalizes it, and passes `App::new(..., launch_directory, ...)`.
+`initialize_viewer` then skips the initial-image display (no `dir_list`, the user opens one from the grid) and, after the
+window/renderer/menu/preloader are up, runs `enter_browse` + `reveal_to_folder(dir, None)` (no came-from image → grid
+preselects the first image, or the tree for an empty folder). Multiple args stay an image set; a missing/unreadable path
+falls through to onboarding.
+
+**Arrow-key pane isolation** is automatic from the focus model: exactly one pane is first responder (synced by
+`sync_native`/`apply_focus`), arrows fall through to `super` (native) only on that view, and the winit/QA browse key
+maps (`input::browse_key_to_command` / `browse_qa_key_to_command`) route only Tab/Enter/Esc — never arrows. So arrows
+move only the focused pane; the other never moves. No extra code.
 
 **Esc == Enter == reveal the selected image.** All three browse-exit commands (`EnterImageMode`, `BrowseOpenSelected`,
 and the Browse→image direction of `ToggleBrowseMode`) route to one place: `App::reveal_selected_image`. There's no "Esc

@@ -127,6 +127,49 @@ pub struct Root {
     pub path: PathBuf,
 }
 
+/// The ordered chain of paths to walk to reveal `target` in the tree, from the containing root
+/// down to (and including) `target` itself.
+///
+/// Browse-open positioning needs to expand the tree from the right root through every ancestor
+/// directory down to the current image's folder, then select it. This computes that path list,
+/// platform-free so it's unit-testable:
+///
+/// - The **root** is the [`Root`] whose `path` is a prefix of `target` (an ancestor or `target`
+///   itself). When several roots match — e.g. `/` (a volume) and `/Users/dave` (home) both
+///   contain `/Users/dave/Pics` — the **longest** match wins, so a path under home reveals under
+///   the Home row, not under the volume. `roots` is searched as given (home-first per
+///   [`build_roots`]); longest-prefix breaks the tie regardless of order.
+/// - The **chain** is `[root.path, …each intermediate dir…, target]`, in root-to-target order.
+///   When `target == root.path` the chain is just `[root.path]` (the row is already a top-level
+///   node; only a select + scroll is needed, no expansion).
+///
+/// Returns `None` when no root contains `target` (the path is on no mounted root — nothing to
+/// reveal; the caller leaves the tree as-is). Comparison is purely lexical on components: callers
+/// pass already-canonical paths (the launch path is canonicalized; an image's parent is concrete),
+/// so no disk access happens here.
+#[must_use]
+pub fn reveal_path_chain(roots: &[Root], target: &Path) -> Option<Vec<PathBuf>> {
+    // Longest-prefix root match: a path under home (`/Users/dave/...`) must reveal under the Home
+    // row, not under the `/` volume row, even though both are ancestors.
+    let root = roots
+        .iter()
+        .filter(|r| target.starts_with(&r.path))
+        .max_by_key(|r| r.path.components().count())?;
+
+    // Build [root, …ancestors…, target] by walking target's ancestors up to (and including) the
+    // root, then reversing. `Path::ancestors` yields target, its parent, … up to the filesystem
+    // root, so we stop once we pass the matched root's path.
+    let mut chain: Vec<PathBuf> = Vec::new();
+    for ancestor in target.ancestors() {
+        chain.push(ancestor.to_path_buf());
+        if ancestor == root.path {
+            break;
+        }
+    }
+    chain.reverse();
+    Some(chain)
+}
+
 /// List the immediate child directories of `dir`, ready to show as tree rows.
 ///
 /// Keeps only directories (no files), skips dot-folders (`.git`, `.Trash`, …) and entries we
@@ -376,6 +419,96 @@ mod tests {
         let roots = build_roots(Some(home), volumes);
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].name, "Home");
+    }
+
+    // ── reveal_path_chain ──
+
+    fn roots_home_and_volume() -> Vec<Root> {
+        // The realistic shape: a `/` volume (Macintosh HD) plus the home folder under it. Both are
+        // ancestors of a path in home, so the longest-prefix rule must pick home.
+        vec![
+            Root {
+                name: "Home".to_string(),
+                path: PathBuf::from("/Users/dave"),
+            },
+            Root {
+                name: "Macintosh HD".to_string(),
+                path: PathBuf::from("/"),
+            },
+            Root {
+                name: "Backup".to_string(),
+                path: PathBuf::from("/Volumes/Backup"),
+            },
+        ]
+    }
+
+    #[test]
+    fn reveal_path_chain_under_home_walks_root_to_target() {
+        let roots = roots_home_and_volume();
+        let chain =
+            reveal_path_chain(&roots, Path::new("/Users/dave/Pictures/Trip/2024")).unwrap();
+        // Root-to-target order, starting at the Home root (NOT the `/` volume — longest prefix).
+        assert_eq!(
+            chain,
+            vec![
+                PathBuf::from("/Users/dave"),
+                PathBuf::from("/Users/dave/Pictures"),
+                PathBuf::from("/Users/dave/Pictures/Trip"),
+                PathBuf::from("/Users/dave/Pictures/Trip/2024"),
+            ]
+        );
+    }
+
+    #[test]
+    fn reveal_path_chain_picks_longest_prefix_root() {
+        // A path that's under both `/` and `/Users/dave` must resolve to the home root.
+        let roots = roots_home_and_volume();
+        let chain = reveal_path_chain(&roots, Path::new("/Users/dave/Pics")).unwrap();
+        assert_eq!(chain.first(), Some(&PathBuf::from("/Users/dave")));
+    }
+
+    #[test]
+    fn reveal_path_chain_under_volume_not_home_uses_the_volume() {
+        // A path on a mounted volume (not under home) reveals under that volume's root.
+        let roots = roots_home_and_volume();
+        let chain = reveal_path_chain(&roots, Path::new("/Volumes/Backup/Photos/Old")).unwrap();
+        assert_eq!(
+            chain,
+            vec![
+                PathBuf::from("/Volumes/Backup"),
+                PathBuf::from("/Volumes/Backup/Photos"),
+                PathBuf::from("/Volumes/Backup/Photos/Old"),
+            ]
+        );
+    }
+
+    #[test]
+    fn reveal_path_chain_target_equals_root_is_just_the_root() {
+        // Selecting a root itself needs no expansion — the chain is the single root row.
+        let roots = roots_home_and_volume();
+        let chain = reveal_path_chain(&roots, Path::new("/Users/dave")).unwrap();
+        assert_eq!(chain, vec![PathBuf::from("/Users/dave")]);
+    }
+
+    #[test]
+    fn reveal_path_chain_no_matching_root_is_none() {
+        // With no `/` volume root, a path under none of the roots has nothing to reveal. (When a
+        // `/` root IS present it matches almost everything — that's the realistic Macintosh-HD
+        // case; this covers the genuinely-orphaned path.)
+        let roots = vec![
+            Root {
+                name: "Home".to_string(),
+                path: PathBuf::from("/Users/dave"),
+            },
+            Root {
+                name: "Backup".to_string(),
+                path: PathBuf::from("/Volumes/Backup"),
+            },
+        ];
+        assert_eq!(
+            reveal_path_chain(&roots, Path::new("/Volumes/Other/x")),
+            None
+        );
     }
 
     #[test]

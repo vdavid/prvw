@@ -663,12 +663,22 @@ impl BrowseGrid {
     /// and kick off thumbnail generation for the initial visible range. Always applies the latest
     /// listing that arrives; the model's folder generation guards thumbnail completions, so a stale
     /// in-flight thumbnail from a previous folder is dropped when it lands.
-    pub fn folder_listed(&self, images: Vec<PathBuf>) {
+    ///
+    /// `preselect` is the image to preselect (browse-open positioning: the image the user came
+    /// from, so Esc/Enter right after open round-trips to it). When it's `Some` and present in the
+    /// folder, that image is selected + scrolled into view; otherwise the first image is selected.
+    pub fn folder_listed(&self, images: Vec<PathBuf>, preselect: Option<&std::path::Path>) {
         let len = images.len();
+        // Resolve the preselect index against the SORTED image list, so it matches the grid's
+        // display order. `set_images` sorts in place, so read the sorted list back afterward.
         {
             let mut model = self.data_source.ivars().model.borrow_mut();
             model.set_images(images);
         }
+        let preselect_index = {
+            let model = self.data_source.ivars().model.borrow();
+            super::grid_preselect_index(model.images(), preselect)
+        };
         // New folder: clear generated images + reseed the scheduler/cache from scratch.
         self.data_source.ivars().images.borrow_mut().clear();
         let initial_visible = grid_model::clamp_visible_range(0..first_screen_count(), len);
@@ -685,10 +695,13 @@ impl BrowseGrid {
 
         self.collection.reloadData();
         self.refresh_empty_overlay();
-        // Select the first image so the model + native selection agree (Phase 5 refines the
-        // browse-open positioning; here we just keep them coherent and visible).
+        // Preselect the came-from image when revealing into it (scroll it into view); else select
+        // the first image so the model + native selection stay coherent and visible.
         if len > 0 {
-            self.select_index(0, false);
+            match preselect_index {
+                Some(index) => self.select_index(index, true),
+                None => self.select_index(0, false),
+            }
         }
         self.pump_visible_range();
     }

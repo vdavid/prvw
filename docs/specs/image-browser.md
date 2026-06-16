@@ -13,9 +13,9 @@ gallery (`browser::grid`): selecting a folder lists its supported images **on a 
 second `previews::quicklook` request path (RGBA8 → `NSImage` through `quicklook::nsimage_from_rgba8`), driven by the
 Phase-2 visible-range scheduler + 128 MB byte-budget cache. Native click selects; double-click or Enter (grid focused)
 opens that image in image mode (sets up `navigation`, switches mode); an empty folder shows "(No images)" and is
-non-focusable so Tab stays on the tree. Still to do: Phase 5 (browse-open positioning, dir-arg startup, the arrow-key
-routing nuance between panes), Phase 6 (styling), Phase 7 (full QA tooling + tests + arch docs). See
-`apps/desktop/src/browser/CLAUDE.md` for the tree, grid, and thumbnail details.
+non-focusable so Tab stays on the tree. Phase 5 (browse-open positioning, the async reveal-path walk, dir-arg startup,
+arrow-key pane isolation) is done. Still to do: Phase 6 (styling), Phase 7 (full QA tooling + tests + arch docs). See
+`apps/desktop/src/browser/CLAUDE.md` for the tree, grid, thumbnail, and browse-open positioning details.
 
 ## Why native AppKit, not wgpu
 
@@ -56,9 +56,15 @@ under the live surface. We hide one and show the other.
 ## Behavior
 
 - **Tree is browse-only.** Image mode is unchanged; no tree there.
-- **Entering browse** (from image mode via Enter or Navigate → Image browser): select the current image's folder in the
-  tree and scroll it to roughly mid-view; list that folder's images; select the last-displayed image in the grid; focus
-  the grid.
+- **Entering browse** (from image mode via Enter or Navigate → Image browser): reveal + select the current image's
+  folder in the tree and scroll it to roughly mid-view; list that folder's images; preselect the current image in the
+  grid (blue) and scroll it into view; focus the grid. The grid drives the image-mode current (`resolve_reveal_index`),
+  so Esc/Enter right after opening round-trips to the same image. The reveal is **async** because child directories load
+  on the background scanner: `tree_model::reveal_path_chain` computes the root-to-folder chain (longest-prefix root, so
+  a path under home reveals under Home, not the `/` volume), and a pending `RevealWalk` in `outline::BrowseTree` expands
+  one ancestor per `BrowseTreeChildrenLoaded` until the target is reached, then selects it — never blocking the main
+  thread. With the selected folder empty, focus falls back to the tree. See `browser/CLAUDE.md` → "Browse-open
+  positioning".
 - **Esc == Enter == reveal the browse-selected image.** The user's model: the image-mode current image IS whatever the
   browse cursor points at, even while the Metal canvas is hidden. So Esc, Enter (on the focused grid), a double-click,
   and Navigate → Image view all do the **same** thing — reveal image mode showing the currently-selected browse image.
@@ -90,7 +96,10 @@ under the live surface. We hide one and show the other.
 - **Menu:** new "Image browser" / "Image view" item at the **top of the Navigate menu** with a separator under it. One
   item, label flips by mode (same `set_text()` pattern the slideshow Start/Stop item uses).
 - **Startup:** an image argument → image mode (unchanged). A **directory argument** → browse mode, that directory
-  selected in the tree and its images listed. No argument → today's behavior (onboarding).
+  revealed + selected in the tree (reusing the browse-open reveal walk) and its images listed; the grid focuses with the
+  first image preselected, or the tree for an empty folder. No argument (or a missing/unreadable path) → today's
+  behavior (onboarding). The file-vs-dir-vs-onboarding split is the pure `browser::classify_launch_target`; `main.rs`
+  detects a lone directory arg and `app.rs`'s `initialize_viewer` boots browse mode instead of displaying an image.
 
 ## State
 
@@ -208,8 +217,12 @@ re-run checks before integrating.
    (`grid_listing`), the RGBA8→`NSImage` seam (`quicklook::nsimage_from_rgba8`), native selection (single-click instant,
    double-click opens via `mouseDown:`), focus-aware per-item selection emphasis, Enter open-to-image hand-off, and the
    "(No images)" empty state (grid non-focusable when empty). See `browser/CLAUDE.md`.
-5. **Behaviors:** browse-open folder-select + scroll-to-mid + last-image select + focus; Tab; double-click/Enter →
-   image; dir-arg startup; menu wiring.
+5. **Behaviors** (done): browse-open folder-reveal + scroll-to-mid + current-image preselect + grid focus, via the
+   **async reveal-path walk** (`tree_model::reveal_path_chain` + a pending `RevealWalk` advanced by
+   `BrowseTreeChildrenLoaded`, since children load on the background scanner — never a synchronous expand); Tab;
+   double-click/Enter → image; dir-arg startup (`browser::classify_launch_target` + `App::launch_directory`); arrow-key
+   pane isolation (automatic from the single-first-responder focus model). Pure logic (reveal chain, launch
+   classification, grid-preselect index) is unit-tested; the objc2 walk + view expansion are smoke + live-QA covered.
 6. **Styling pass:** the "beautiful gallery" look — reviewed visually with David.
 7. **QA + tests + docs:** new `SharedAppState` fields (mode, selected folder, grid count, focused pane) so the QA/MCP
    server and integration tests can assert browse mode; colocated `CLAUDE.md` for the new `browser/` and `thumbnails/`

@@ -204,6 +204,55 @@ pub fn resolve_reveal_index(
     sorted.iter().position(|p| p == target)
 }
 
+/// The grid index to preselect when revealing a folder that contains `current_image`, given the
+/// grid's image list (already sorted in the grid's `SortBy`). Returns the position of
+/// `current_image` in `images`, or `None` when the image isn't in the list (a different folder, or
+/// no current image). The caller falls back to index 0 (preselect the first image) on `None`.
+///
+/// This is the browse-open round-trip invariant: entering browse from an image preselects that
+/// exact image in the grid, so Esc/Enter right after open reveals the same image you came from
+/// (the grid selection drives the image-mode current via `resolve_reveal_index`). Pure
+/// (headless-tested). Compares by path equality; callers pass concrete paths (the displayed
+/// image's path and the freshly-listed folder paths share the same canonical parent), so no disk
+/// access happens here.
+#[must_use]
+pub fn grid_preselect_index(
+    images: &[std::path::PathBuf],
+    current_image: Option<&std::path::Path>,
+) -> Option<usize> {
+    let current = current_image?;
+    images.iter().position(|p| p == current)
+}
+
+/// What a launch argument resolves to, deciding the startup screen. Computed purely from a path's
+/// kind (`is_file` / `is_dir`) so the dir-vs-file branch is unit-testable without spinning up the
+/// app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchTarget {
+    /// A readable image file → image mode (today's behavior).
+    Image,
+    /// A readable directory → browse mode, revealed + selected in the tree.
+    Directory,
+    /// Neither a readable file nor directory (missing, unreadable, or an unsupported kind) →
+    /// onboarding, exactly as a no-argument launch.
+    Onboarding,
+}
+
+/// Classify a launch path into the startup screen. `is_file`/`is_dir` are passed in (rather than
+/// hitting the disk here) so the decision is pure and testable; the caller reads them from
+/// `Path::is_file()` / `Path::is_dir()` once. A file wins over a directory if a path somehow
+/// reports both (it can't in practice). Pure (headless-tested).
+#[must_use]
+pub fn classify_launch_target(is_file: bool, is_dir: bool) -> LaunchTarget {
+    if is_file {
+        LaunchTarget::Image
+    } else if is_dir {
+        LaunchTarget::Directory
+    } else {
+        LaunchTarget::Onboarding
+    }
+}
+
 /// Per-feature browse-mode state (sibling of `zoom::State`, `navigation::State`, …). Holds the
 /// current `ViewMode` and, on macOS, the native split-view handles built lazily on first entry.
 pub struct State {
@@ -223,6 +272,17 @@ pub struct State {
     /// The sort order the grid lists folder images in. Read from settings at startup so the grid
     /// and image-mode `DirectoryList` agree (opening a grid item lands on the matching index).
     sort_by: crate::navigation::SortBy,
+    /// The image to preselect (focused/blue) when the next folder listing lands — browse-open
+    /// positioning: the image the user came from, so Esc/Enter right after opening reveals the same
+    /// image. Set by `reveal_to_folder`, consumed by `grid_folder_listed`. `None` when there's no
+    /// came-from image (a dir-arg launch), in which case the grid preselects index 0.
+    pending_grid_preselect: Option<std::path::PathBuf>,
+    /// True when the next folder listing is a browse-open reveal (entering browse from an image, or
+    /// a dir-arg launch) — so the grid should take focus once its images land (the reveal's tree
+    /// selection had focused the tree). Set by `reveal_to_folder`, consumed by `grid_folder_listed`.
+    /// Separate from `pending_grid_preselect` because a dir-arg launch focuses the grid yet has no
+    /// came-from image to preselect.
+    pending_browse_open_focus: bool,
     /// The native split view + its panes, built once on first entry to browse mode and kept
     /// alive for the window's lifetime thereafter. `None` until first built.
     #[cfg(target_os = "macos")]
@@ -244,6 +304,8 @@ impl State {
             selected_folder: None,
             grid_selected: None,
             sort_by: crate::navigation::SortBy::default(),
+            pending_grid_preselect: None,
+            pending_browse_open_focus: false,
             #[cfg(target_os = "macos")]
             split_view: None,
         }
@@ -290,11 +352,43 @@ impl State {
         images: Vec<std::path::PathBuf>,
         window: &winit::window::Window,
     ) {
+        // Consume any pending browse-open preselect: only honor it when the listing is for the
+        // folder we revealed into (the reveal's tree selection set `selected_folder` to it). A
+        // later, unrelated folder selection (e.g. the user clicks elsewhere while a stale listing
+        // is in flight) must not pull the preselect — so take it unconditionally; it's a one-shot.
+        let preselect = self.pending_grid_preselect.take();
+        let was_browse_open = std::mem::take(&mut self.pending_browse_open_focus);
         if let Some(split) = &self.split_view {
-            split.grid().folder_listed(images);
+            split.grid().folder_listed(images, preselect.as_deref());
             self.grid_selected = split.grid().selected_index();
         }
+        // Browse-open positioning focuses the GRID once its images land (the reveal walk's tree
+        // selection had focused the tree, since the grid was empty when `enter_browse` ran). A
+        // plain folder click keeps the tree focused. Only move focus when the grid actually has
+        // images (an empty revealed folder stays on the tree — the grid is non-focusable).
+        if was_browse_open && !self.grid_is_empty() {
+            self.focused_pane = Some(PaneSide::Grid);
+        }
         self.sync_native(window);
+    }
+
+    /// Reveal `folder` in the tree (expand from its root, select + scroll-to-mid — async) and, when
+    /// that folder's images list, preselect `current_image` in the grid. This is browse-open
+    /// positioning: entering browse from an image opens already showing where you are. The tree
+    /// selection that ends the reveal walk fires `BrowseSelectFolder`, which lists the folder; the
+    /// stored `pending_grid_preselect` then drives the grid's preselection (so Esc/Enter right
+    /// after open round-trips to the same image). No-op off macOS or if the split view isn't built.
+    #[cfg(target_os = "macos")]
+    pub fn reveal_to_folder(
+        &mut self,
+        folder: &std::path::Path,
+        current_image: Option<std::path::PathBuf>,
+    ) {
+        self.pending_grid_preselect = current_image;
+        self.pending_browse_open_focus = true;
+        if let Some(split) = &self.split_view {
+            split.reveal_folder_in_tree(folder);
+        }
     }
 
     /// Drain queued grid-thumbnail completions into the collection view's cells. No-op if the split
@@ -748,6 +842,56 @@ mod tests {
         let images: Vec<PathBuf> = vec![PathBuf::from("only.jpg")];
         assert_eq!(resolve_reveal_index(&images, 0, SortBy::Name), Some(0));
         assert_eq!(resolve_reveal_index(&images, 5, SortBy::Name), None);
+    }
+
+    #[test]
+    fn grid_preselect_index_finds_the_current_image_else_none() {
+        use std::path::PathBuf;
+        let images: Vec<PathBuf> = ["a.jpg", "b.jpg", "c.jpg"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        // The current image is in the listed folder → preselect its exact slot (round-trip).
+        assert_eq!(
+            grid_preselect_index(&images, Some(std::path::Path::new("b.jpg"))),
+            Some(1)
+        );
+        // Not in the list (different folder) → None, caller falls back to index 0.
+        assert_eq!(
+            grid_preselect_index(&images, Some(std::path::Path::new("zzz.jpg"))),
+            None
+        );
+        // No current image at all → None.
+        assert_eq!(grid_preselect_index(&images, None), None);
+        // Empty folder → None regardless.
+        assert_eq!(
+            grid_preselect_index(&[], Some(std::path::Path::new("a.jpg"))),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_launch_target_picks_image_dir_or_onboarding() {
+        // A file → image mode (today's behavior, unchanged).
+        assert_eq!(
+            classify_launch_target(/* is_file */ true, /* is_dir */ false),
+            LaunchTarget::Image
+        );
+        // A directory → browse mode.
+        assert_eq!(
+            classify_launch_target(/* is_file */ false, /* is_dir */ true),
+            LaunchTarget::Directory
+        );
+        // Neither (missing / unreadable) → onboarding, like a no-arg launch.
+        assert_eq!(
+            classify_launch_target(/* is_file */ false, /* is_dir */ false),
+            LaunchTarget::Onboarding
+        );
+        // A path reporting both (can't happen in practice) → file wins.
+        assert_eq!(
+            classify_launch_target(/* is_file */ true, /* is_dir */ true),
+            LaunchTarget::Image
+        );
     }
 
     #[test]

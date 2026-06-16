@@ -62,7 +62,7 @@ use objc2_app_kit::{
     NSEvent, NSImageView, NSOutlineView, NSScrollView, NSTableColumn, NSTableViewStyle,
     NSTextField, NSView, NSWorkspace,
 };
-use objc2_foundation::{NSNotification, NSString};
+use objc2_foundation::{NSNotification, NSRect, NSString};
 
 use super::tree_model::{self, ChildCache};
 
@@ -351,6 +351,11 @@ impl TreeDataSource {
             .clone()
     }
 
+    /// The source-list roots (home + volumes), for computing a reveal path chain.
+    fn roots(&self) -> &[tree_model::Root] {
+        &self.ivars().roots
+    }
+
     /// The loaded child directories of `path`, or `None` if a scan hasn't finished yet (a miss or
     /// still in flight). Read-only — never reads the disk and never starts a scan.
     fn loaded_children(&self, path: &Path) -> Option<Vec<PathBuf>> {
@@ -554,6 +559,21 @@ unsafe fn as_nsview<T>(obj: &T) -> &NSView {
 
 // ─── BrowseTree: the owned outline + scroll view ───────────────────────────
 
+/// An in-progress "reveal a path" walk. Browse-open positioning must expand the tree from a root
+/// down through every ancestor to the current image's folder, then select it — but child
+/// directories load **asynchronously** (the data source never reads the disk on the main thread).
+/// So the walk can't expand synchronously; it advances one level each time a
+/// `BrowseTreeChildrenLoaded` for the level it's waiting on arrives.
+///
+/// `chain` is the root-to-target path list from `tree_model::reveal_path_chain`; `position` is the
+/// index in `chain` whose children the walk is currently waiting on. When `chain[position]`'s
+/// children arrive, the walk expands `chain[position + 1]` (triggering its scan) and advances; at
+/// the last element it selects + scrolls the target and the reveal is done.
+struct RevealWalk {
+    chain: Vec<PathBuf>,
+    position: usize,
+}
+
 /// Owns the outline view, its scroll view, and the data source/delegate for the window's
 /// lifetime. `BrowseSplitView` stores this so nothing drops early (autorelease-segfault rule).
 /// Also the handle the app drives for keyboard navigation.
@@ -562,6 +582,10 @@ pub struct BrowseTree {
     outline: Retained<BrowseOutlineView>,
     /// Kept alive: the outline view holds the data source/delegate weakly (`assign`).
     _data_source: Retained<TreeDataSource>,
+    /// The in-progress async reveal walk (browse-open positioning), or `None` when idle. Advanced
+    /// by `children_loaded` as each ancestor's scan completes. `RefCell` because the reveal is
+    /// driven from `&self` methods on the main thread (no cross-thread sharing).
+    reveal: RefCell<Option<RevealWalk>>,
 }
 
 // SAFETY: all fields are main-thread-only AppKit objects, stored not shared across threads.
@@ -624,6 +648,7 @@ impl BrowseTree {
                 scroll,
                 outline,
                 _data_source: data_source,
+                reveal: RefCell::new(None),
             }
         }
     }
@@ -636,17 +661,179 @@ impl BrowseTree {
     /// Apply a completed background scan: store the children in the cache, then reload that node so
     /// the outline view re-queries it and shows the rows. Called from the executor on
     /// `AppCommand::BrowseTreeChildrenLoaded`. A `None` node (path never shown, or a stale scan)
-    /// just updates the cache with no UI reload needed.
+    /// just updates the cache with no UI reload needed. After the reload, advances any in-progress
+    /// reveal walk that was waiting on this path's children (browse-open positioning).
     pub fn children_loaded(&self, path: &Path, children: Vec<PathBuf>) {
-        let node = self._data_source.complete_scan(path, children);
-        let Some(node) = node else {
+        if let Some(node) = self._data_source.complete_scan(path, children) {
+            unsafe {
+                // `reloadItem:reloadChildren:` re-queries `numberOfChildrenOfItem:` /
+                // `child:ofItem:` for this node (now served from the freshly-loaded cache),
+                // redrawing its subtree.
+                let item: *const AnyObject = Retained::as_ptr(&node).cast();
+                let _: () = msg_send![&*self.outline, reloadItem: item, reloadChildren: true];
+            }
+        }
+        // Even a scan with no live node (e.g. the root's first scan before it's expanded) can be
+        // the level a reveal is waiting on — advance regardless of the reload above.
+        self.advance_reveal(path);
+    }
+
+    /// Reveal `folder` in the tree: compute the root-to-folder chain from the tree's own roots
+    /// (`tree_model::reveal_path_chain`) and start the async walk. No-op when `folder` is under no
+    /// root (nothing to reveal). The public entry the app calls on browse-open / dir-arg launch.
+    pub fn reveal_to_folder(&self, folder: &Path) {
+        let Some(chain) = tree_model::reveal_path_chain(self._data_source.roots(), folder) else {
+            log::debug!("Tree reveal: {} is under no root, skipping", folder.display());
             return;
         };
+        self.reveal_path(chain);
+    }
+
+    /// Start an async walk that expands the tree from the containing root down through every
+    /// ancestor to `chain`'s last element (the target folder), then selects + scrolls it. `chain`
+    /// is `tree_model::reveal_path_chain`'s root-to-target list. Because children load
+    /// asynchronously, this only kicks off the first level; `children_loaded` advances it as each
+    /// scan completes. A single-element chain (target is a root) selects immediately. An empty
+    /// chain is a no-op. Replaces any in-progress reveal.
+    pub fn reveal_path(&self, chain: Vec<PathBuf>) {
+        if chain.is_empty() {
+            return;
+        }
+        log::debug!(
+            "Tree reveal start: {} level(s), target {}",
+            chain.len(),
+            chain.last().map(|p| p.display().to_string()).unwrap_or_default()
+        );
+        // The target is the last element. If the chain is just the root, it's already a top-level
+        // row — select it now, no expansion needed.
+        if chain.len() == 1 {
+            self.select_and_scroll_to(&chain[0]);
+            return;
+        }
+        *self.reveal.borrow_mut() = Some(RevealWalk {
+            chain,
+            position: 0,
+        });
+        // Kick off the first level: expand the root so its children scan (or, if already loaded,
+        // advance straight through).
+        let first = self.reveal.borrow().as_ref().map(|w| w.chain[0].clone());
+        if let Some(first) = first {
+            self.expand_or_advance(&first);
+        }
+    }
+
+    /// Advance the reveal walk when `loaded_path`'s children have arrived. No-op when no reveal is
+    /// active or the loaded level isn't the one the walk is waiting on (a stale or unrelated scan).
+    /// Steps the position forward and expands the next ancestor (which triggers its scan); the
+    /// terminal target select happens in `expand_or_advance`.
+    fn advance_reveal(&self, loaded_path: &Path) {
+        let next = {
+            let mut guard = self.reveal.borrow_mut();
+            let Some(walk) = guard.as_mut() else {
+                return;
+            };
+            if walk.chain.get(walk.position).map(PathBuf::as_path) != Some(loaded_path) {
+                return; // Not the level we're waiting on (stale/unrelated scan).
+            }
+            // The walk only ever waits on a non-target level (the target is never expanded, so its
+            // scan never fires), so there's always a next level here. Step to it.
+            walk.position += 1;
+            walk.chain.get(walk.position).cloned()
+        };
+        if let Some(next) = next {
+            self.expand_or_advance(&next);
+        } else {
+            // Defensive: a scan landed for the target itself (only if something expanded it). Just
+            // finish the reveal on the target.
+            let target = self.reveal.borrow().as_ref().and_then(|w| w.chain.last().cloned());
+            if let Some(target) = target {
+                self.select_and_scroll_to(&target);
+            }
+            *self.reveal.borrow_mut() = None;
+        }
+    }
+
+    /// One step of the reveal walk for `path`: if it's the target (last element), select + scroll
+    /// and finish. Otherwise expand it so the outline view queries its children (firing the async
+    /// scan); if those children are already cached (a re-reveal), advance immediately so the walk
+    /// doesn't stall waiting for a scan that won't re-fire.
+    fn expand_or_advance(&self, path: &Path) {
+        let is_target = self
+            .reveal
+            .borrow()
+            .as_ref()
+            .is_some_and(|w| w.chain.last().map(PathBuf::as_path) == Some(path));
+        if is_target {
+            self.select_and_scroll_to(path);
+            *self.reveal.borrow_mut() = None;
+            return;
+        }
+        // Expand the node so AppKit queries `numberOfChildrenOfItem:`, which enqueues the scan via
+        // `loaded_or_request` (no disk read on the main thread). `expandItem:` mints/reuses the
+        // node through the data source's identity cache.
+        self.expand_node(path);
+        // If this level's children are already loaded (the data source served them synchronously),
+        // no `BrowseTreeChildrenLoaded` will arrive to advance us — step now.
+        if self._data_source.loaded_children(path).is_some() {
+            self.advance_reveal(path);
+        }
+    }
+
+    /// Expand the tree node for `path` (programmatic disclosure). Reuses the data source's
+    /// identity-stable node so the outline view tracks it correctly.
+    fn expand_node(&self, path: &Path) {
+        let node = self._data_source.node_for_path(path.to_path_buf());
         unsafe {
-            // `reloadItem:reloadChildren:` re-queries `numberOfChildrenOfItem:` / `child:ofItem:`
-            // for this node (now served from the freshly-loaded cache), redrawing its subtree.
             let item: *const AnyObject = Retained::as_ptr(&node).cast();
-            let _: () = msg_send![&*self.outline, reloadItem: item, reloadChildren: true];
+            let _: () = msg_send![&*self.outline, expandItem: item];
+        }
+    }
+
+    /// Select the row for `path` and scroll it to roughly mid-view. Used at the end of a reveal
+    /// walk. The selection fires `outlineViewSelectionDidChange:` → `BrowseSelectFolder`, which
+    /// lists the folder's images in the grid (so the reveal drives the grid listing). Scrolls via
+    /// the enclosing scroll view's clip so the row lands centered rather than just barely visible.
+    fn select_and_scroll_to(&self, path: &Path) {
+        let node = self._data_source.node_for_path(path.to_path_buf());
+        unsafe {
+            let item: *const AnyObject = Retained::as_ptr(&node).cast();
+            let row: isize = msg_send![&*self.outline, rowForItem: item];
+            if row < 0 {
+                log::debug!("Tree reveal: row not found for {}", path.display());
+                return;
+            }
+            // Select the row (no row in an NSIndexSet helper — build one). `selectRowIndexes:` with
+            // a single index, not extending the selection.
+            let index_set = objc2_foundation::NSIndexSet::indexSetWithIndex(row as usize);
+            let _: () =
+                msg_send![&*self.outline, selectRowIndexes: &*index_set, byExtendingSelection: false];
+            self.scroll_row_to_middle(row);
+            log::debug!("Tree reveal done: selected row {row} for {}", path.display());
+        }
+    }
+
+    /// Scroll so `row` sits roughly mid-view: center its rect in the scroll view's clip rather than
+    /// the default `scrollRowToVisible:` (which only scrolls just enough to make it visible).
+    fn scroll_row_to_middle(&self, row: isize) {
+        unsafe {
+            let row_rect: NSRect = msg_send![&*self.outline, rectOfRow: row];
+            let clip_height: f64 = {
+                let clip: *const AnyObject = msg_send![&*self.scroll, contentView];
+                if clip.is_null() {
+                    // Fall back to a plain "make visible" if there's no clip view.
+                    let _: () = msg_send![&*self.outline, scrollRowToVisible: row];
+                    return;
+                }
+                let bounds: NSRect = msg_send![clip, bounds];
+                bounds.size.height
+            };
+            // Target origin centers the row's rect in the visible clip height, clamped at 0.
+            let target_y = (row_rect.origin.y + row_rect.size.height / 2.0 - clip_height / 2.0)
+                .max(0.0);
+            let point = objc2_foundation::NSPoint::new(0.0, target_y);
+            let clip: *const AnyObject = msg_send![&*self.scroll, contentView];
+            let _: () = msg_send![clip, scrollToPoint: point];
+            let _: () = msg_send![&*self.scroll, reflectScrolledClipView: clip];
         }
     }
 

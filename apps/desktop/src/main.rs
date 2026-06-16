@@ -51,7 +51,7 @@ pub(crate) const TITLE_BAR_HEIGHT: f32 = 32.0;
 #[derive(Parser)]
 #[command(name = "prvw", about = "A fast, minimal image viewer")]
 struct Cli {
-    /// Path(s) to image file(s) to open
+    /// Path(s) to open: image file(s) for image mode, or a single directory to browse
     files: Vec<PathBuf>,
 }
 
@@ -96,25 +96,47 @@ fn main() {
 
     let cli = Cli::parse();
 
-    let resolved_files: Vec<PathBuf> = cli
-        .files
-        .iter()
-        .filter_map(|f| match f.canonicalize() {
-            Ok(p) if p.is_file() => Some(p),
-            Ok(p) => {
-                log::warn!("Not a file, skipping: {}", p.display());
-                None
-            }
-            Err(e) => {
-                log::warn!("Couldn't resolve {}: {e}", f.display());
-                None
-            }
-        })
-        .collect();
+    // A single directory argument launches browse mode at that folder. Detect it before the
+    // file-filtering pass (which would otherwise drop it as "not a file"). Classification is the
+    // pure `browser::classify_launch_target`; we read `is_file`/`is_dir` once off the canonical
+    // path here. Multiple args are always treated as an image set (no "browse two folders").
+    let mut launch_directory: Option<PathBuf> = None;
+    if cli.files.len() == 1
+        && let Ok(canonical) = cli.files[0].canonicalize()
+        && matches!(
+            browser::classify_launch_target(canonical.is_file(), canonical.is_dir()),
+            browser::LaunchTarget::Directory
+        )
+    {
+        log::info!("Launching browse mode at directory {}", canonical.display());
+        launch_directory = Some(canonical);
+    }
 
-    let waiting_for_file = resolved_files.is_empty();
+    let resolved_files: Vec<PathBuf> = if launch_directory.is_some() {
+        Vec::new()
+    } else {
+        cli.files
+            .iter()
+            .filter_map(|f| match f.canonicalize() {
+                Ok(p) if p.is_file() => Some(p),
+                Ok(p) => {
+                    log::warn!("Not a file, skipping: {}", p.display());
+                    None
+                }
+                Err(e) => {
+                    log::warn!("Couldn't resolve {}: {e}", f.display());
+                    None
+                }
+            })
+            .collect()
+    };
 
-    if waiting_for_file {
+    // Onboarding (the "waiting" path) only when there's neither a file nor a launch directory.
+    let waiting_for_file = resolved_files.is_empty() && launch_directory.is_none();
+
+    if launch_directory.is_some() {
+        // Already logged above.
+    } else if waiting_for_file {
         log::info!("No files on CLI, waiting for Apple Event (Finder double-click)");
     } else if resolved_files.len() == 1 {
         log::info!("Opening {}", resolved_files[0].display());
@@ -172,6 +194,7 @@ fn main() {
         file_path,
         explicit_files,
         waiting_for_file,
+        launch_directory,
         proxy,
         Arc::clone(&shared_state),
     );

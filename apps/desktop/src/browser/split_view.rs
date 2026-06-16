@@ -193,6 +193,13 @@ impl BrowseSplitView {
         self.grid.set_focused(matches!(focused, PaneSide::Grid));
     }
 
+    /// Reveal `folder` in the tree: expand from its containing root down to it and select +
+    /// scroll-to-mid (async — see `outline::BrowseTree::reveal_to_folder`). Used for browse-open
+    /// positioning and dir-arg launch.
+    pub fn reveal_folder_in_tree(&self, folder: &std::path::Path) {
+        self.tree.reveal_to_folder(folder);
+    }
+
     /// Apply a completed background directory scan: store the children and reload that tree node.
     /// Then refresh the loading overlay (it may now hide if no scan is left pending).
     pub fn tree_children_loaded(&self, path: &std::path::Path, children: Vec<std::path::PathBuf>) {

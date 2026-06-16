@@ -77,6 +77,10 @@ pub(crate) struct App {
     pub(crate) explicit_files: Option<Vec<PathBuf>>,
     /// True when launched with no CLI files (Finder double-click or Dock launch).
     pub(crate) waiting_for_file: bool,
+    /// A directory passed on the CLI: launch straight into browse mode with this folder revealed +
+    /// selected in the tree (instead of image mode). `None` for an image-file or no-argument
+    /// launch. Consumed by `initialize_viewer`.
+    pub(crate) launch_directory: Option<PathBuf>,
     /// When `waiting_for_file`: the time we started waiting. After 500ms with no file,
     /// show the onboarding window.
     pub(crate) wait_start: Option<Instant>,
@@ -174,6 +178,7 @@ impl App {
         file_path: PathBuf,
         explicit_files: Option<Vec<PathBuf>>,
         waiting_for_file: bool,
+        launch_directory: Option<PathBuf>,
         event_loop_proxy: EventLoopProxy<AppCommand>,
         shared_state: Arc<Mutex<SharedAppState>>,
     ) -> Self {
@@ -187,6 +192,7 @@ impl App {
             file_path,
             explicit_files,
             waiting_for_file,
+            launch_directory,
             wait_start: None,
             window: None,
             renderer: None,
@@ -554,7 +560,12 @@ impl App {
         // The browse grid lists folder images in the same order, so opening a grid item lands on
         // the matching image-mode index.
         self.browser.set_sort_by(initial_sort_by);
-        self.navigation.dir_list = if let Some(files) = self.explicit_files.take() {
+        // A directory launch boots into browse mode (handled at the end of this function), so there
+        // is no initial image and no directory list yet — the user opens one from the grid.
+        let launch_directory = self.launch_directory.take();
+        self.navigation.dir_list = if launch_directory.is_some() {
+            None
+        } else if let Some(files) = self.explicit_files.take() {
             Some(directory::DirectoryList::from_explicit(
                 files,
                 initial_sort_by,
@@ -591,11 +602,14 @@ impl App {
 
         // Load and display the initial image. RAW launches take the async
         // quick-preview path (mirrors cache-miss navigation); everything else
-        // stays on the synchronous decode (fast enough not to need it).
-        let initial_path = self.file_path.clone();
-        self.display_initial_image(&initial_path);
-
-        self.warm_initial_neighbors();
+        // stays on the synchronous decode (fast enough not to need it). Skipped
+        // for a directory launch — there's no initial image; browse mode opens
+        // below and the user picks one from the grid.
+        if launch_directory.is_none() {
+            let initial_path = self.file_path.clone();
+            self.display_initial_image(&initial_path);
+            self.warm_initial_neighbors();
+        }
 
         // Pause the preview scheduler while the initial primary decode is
         // running (the async RAW path leaves `pending_current` set). The full
@@ -620,6 +634,21 @@ impl App {
         #[cfg(target_os = "macos")]
         if settings::Settings::load().auto_update {
             updater::check_and_update();
+        }
+
+        // Directory launch: boot straight into browse mode with the folder revealed + selected in
+        // the tree and its images listed in the grid. Reuses the browse-open reveal path; the
+        // listing then focuses the grid (or the tree for an empty folder, per `grid_folder_listed`
+        // / `enter_browse`). Done after the window/renderer/menu/preloader are up so the swap and
+        // the eventual image reveal have everything they need.
+        #[cfg(target_os = "macos")]
+        if let Some(dir) = launch_directory {
+            log::info!("Directory launch: opening browse mode at {}", dir.display());
+            self.browser.enter_browse(&win);
+            // No current image to round-trip to (nothing was opened); preselect the folder's first
+            // image (`reveal_to_folder` with `None` → the grid picks index 0).
+            self.browser.reveal_to_folder(&dir, None);
+            self.set_browse_menu_label();
         }
 
         self.request_redraw();
@@ -695,6 +724,29 @@ impl App {
         if let Some(preloader) = &mut self.navigation.preloader {
             preloader.warm_paths(tasks, total);
         }
+    }
+
+    /// Browse-open positioning: reveal + select the current image's folder in the tree (async
+    /// expand-walk) and preselect the current image in the grid. Called right after `enter_browse`
+    /// so browse mode opens already showing where you are. The current image is `dir_list`'s
+    /// current entry; its folder is that path's parent. The reveal's tree selection lists the
+    /// folder, and the stored preselect then blues the came-from image — so Esc/Enter right after
+    /// open reveals the same image. No current image (nothing opened) → nothing to reveal. No-op
+    /// off macOS.
+    #[cfg(target_os = "macos")]
+    fn reveal_current_image_in_browse(&mut self) {
+        let Some(current) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.current().to_path_buf())
+        else {
+            return;
+        };
+        let Some(folder) = current.parent().map(std::path::Path::to_path_buf) else {
+            return;
+        };
+        self.browser.reveal_to_folder(&folder, Some(current));
     }
 
     fn display_initial_image(&mut self, path: &Path) {
@@ -1362,7 +1414,13 @@ impl App {
             // `enter_browse`/`enter_image` set `mode` + `focused_pane` then `sync_native` the result
             // (the single render-from-state choke-point) — no separate `toggle_mode` here.
             Some(win) => match target {
-                crate::browser::ViewMode::Browse => self.browser.enter_browse(&win),
+                crate::browser::ViewMode::Browse => {
+                    self.browser.enter_browse(&win);
+                    // Browse-open positioning: reveal + select the current image's folder in the
+                    // tree (async walk) and preselect that image in the grid, so browse opens
+                    // already showing where you are and Esc/Enter round-trips back to it.
+                    self.reveal_current_image_in_browse();
+                }
                 crate::browser::ViewMode::Image => self.browser.enter_image(&win),
             },
             // No window yet (defensive — browse is unreachable without one): still track the mode.
