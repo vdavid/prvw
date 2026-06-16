@@ -65,9 +65,10 @@ cells from the shared QuickLook cache). A changed selection re-warms via `warm_b
 `App::unwatch_tree_folder`). Collapse never unwatches a **root**, nor a folder still serving as the active image-list
 folder. Bounded: only roots + expanded folders are watched, never the whole disk. A `FolderChanged` for a watched tree
 folder re-scans its subdirectories (`State::reload_tree_node` → invalidate the child cache + re-scan via the existing
-async `TreeScanner` → `reloadItem:reloadChildren:`), preserving expansion + selection of surviving descendants. A
-deleted-selected/revealed folder degrades gracefully: `children_loaded` selects the reloaded parent so the grid
-re-anchors rather than leaving a dangling selection.
+async `TreeScanner`). The completion is **subdir-delta-gated** — `reloadItem:reloadChildren:` only if a subfolder was
+actually added/removed (a busy ancestor's file churn must not reload the tree) — and **selection-preserving** — it
+restores a surviving folder's selection without re-listing the grid, and the deleted-selected fallback (select the
+reloaded parent) fires only when the folder is genuinely gone from disk. See "Tree-structure updates" below.
 
 **Routing.** One `FolderChanged { folder }` can match two roles, and BOTH fire (neither is `else` to the other): the
 **active image-list folder** (→ grid + `dir_list` update) AND/OR a **watched tree node** (→ subdir reload). A folder can
@@ -90,11 +91,25 @@ Driven by re-scanning the folder (robust against rename-saves) plus per-path `Mo
 
 ### Tree-structure updates (expanded folders)
 
-- On a change in a watched (expanded) folder, re-scan that folder's subdirectories (the existing async scan) and
-  `reloadItem:reloadChildren:` that node. Preserve expansion/selection where possible. New subfolders appear, deleted
-  ones vanish.
+The tree shows **directories only**, so it reacts to sub-folder changes, never file changes. Both rules below matter
+because a reveal expands and watches the target's ancestors, and a busy ancestor (`/tmp`, Downloads — every process
+writes temp files there) fires file-change events constantly:
+
+- **Subdir-delta gating.** On a change in a watched (expanded) folder, re-scan its subdirectories (the existing async
+  scan) and compare the fresh subdir set to what the node showed. `reloadItem:reloadChildren:` **only if the subdir set
+  actually changed** (a subfolder was added or removed). If only files changed, do nothing to the tree. This stops a
+  busy ancestor from churning the tree. (The active-folder _image_ watch still handles file changes for the
+  grid/sequence — separate, and unaffected.)
+- **A reload never corrupts the selection.** `reloadItem:reloadChildren:` can drop the selected descendant's selection
+  even when it still exists. Preserve it: re-select the same folder if it still exists (without re-listing the grid —
+  the user never re-selected it), preserving expansion of surviving descendants. The **"deleted selected folder → select
+  the parent" fallback fires ONLY when the selected folder is genuinely gone from disk**, never during a routine reload
+  where it still exists. A tree-node reload never dispatches `BrowseSelectFolder` / re-lists the grid for the reloaded
+  node itself — only a real user selection (or the intentional reveal) changes the selected folder + grid.
 - Watch lifecycle: add a watch when a node expands (after its children load), remove it on collapse. Roots stay watched.
-  If a currently-selected/revealed folder is deleted, degrade gracefully (select its parent or a root).
+
+The gating + fallback decision are pure and unit-tested (`subdirs_changed`, `selection_action_after_reload` in
+`outline.rs`); the objc2 reload/re-select is covered by smoke + live QA.
 
 ### Cache discipline
 

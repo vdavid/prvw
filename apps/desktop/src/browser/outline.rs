@@ -49,8 +49,8 @@
 //! (`BrowseTree::make_first_responder`) is what keeps the outline view first responder when the
 //! tree pane is focused — which also gives it accent-blue source-list selection emphasis for free.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
@@ -220,6 +220,18 @@ struct TreeDataSourceIvars {
     children: RefCell<ChildCache>,
     /// Background directory scanner (its own OS thread). Kept alive for the data source's life.
     scanner: TreeScanner,
+    /// Paths whose pending scan was kicked off by a **live-folder-sync reload** (`reload_node`), not
+    /// an ordinary expand/reveal. Their completion is subdir-delta-gated: the tree only reloads if
+    /// the subdirectory set actually changed (a busy folder churning file events must NOT churn the
+    /// tree — the tree shows directories only). Captured here at reload time and consumed when the
+    /// scan completes. The map value is the subdir set the node showed BEFORE the re-scan, so the
+    /// completion can diff it against the fresh scan.
+    reload_pending: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    /// Set while we programmatically re-select a row after a tree-node reload, so
+    /// `outlineViewSelectionDidChange:` knows the change is internal (preserving the user's
+    /// selection across the reload) and must NOT dispatch `BrowseSelectFolder` / re-list the grid.
+    /// Only a real user selection (or the intentional reveal) changes the selected folder + grid.
+    suppress_selection_command: Cell<bool>,
 }
 
 define_class!(
@@ -323,8 +335,16 @@ define_class!(
     // ── NSOutlineViewDelegate ──
     impl TreeDataSource {
         /// Selection changed → record + log the folder via an `AppCommand`.
+        ///
+        /// Suppressed during a programmatic re-select after a tree-node reload: that re-select only
+        /// **restores** the selection the reload dropped, so dispatching `BrowseSelectFolder` would
+        /// spuriously re-list the grid for a folder the user never re-selected. Real user
+        /// selections and the reveal walk leave the flag clear, so they dispatch normally.
         #[unsafe(method(outlineViewSelectionDidChange:))]
         fn selection_did_change(&self, notification: &NSNotification) {
+            if self.ivars().suppress_selection_command.get() {
+                return;
+            }
             let outline: Retained<NSOutlineView> = unsafe {
                 let obj: *mut AnyObject = msg_send![notification, object];
                 Retained::retain(obj as *mut NSOutlineView).expect("notification has an object")
@@ -370,6 +390,65 @@ define_class!(
     }
 );
 
+/// Whether the set of subdirectories changed between `before` and `after` (order-independent). The
+/// live-folder-sync tree reload uses this to gate: a watched folder firing file-change events
+/// (busy `/tmp`, Downloads) keeps the same subdir set, so the tree must NOT reload — the tree shows
+/// directories only, and a needless reload drops the selected descendant's selection and trips the
+/// select-parent fallback. Only a genuine subfolder add/remove returns `true`. Pure + unit-tested.
+fn subdirs_changed(before: &[PathBuf], after: &[PathBuf]) -> bool {
+    if before.len() != after.len() {
+        return true;
+    }
+    let before_set: HashSet<&PathBuf> = before.iter().collect();
+    after.iter().any(|p| !before_set.contains(p))
+}
+
+/// What to do with the selection after a live-folder-sync tree-node reload — see
+/// [`selection_action_after_reload`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionAction {
+    /// Selection survived the reload intact (or nothing was under the reloaded node): do nothing.
+    Keep,
+    /// The selected folder still exists (its row is present) but the reload dropped the visual
+    /// selection: re-select it WITHOUT re-listing the grid (the user never re-selected it).
+    Restore,
+    /// The selected folder is genuinely gone from the reloaded subtree (deleted on disk): select
+    /// the reloaded parent so the grid re-anchors. The only case that fires the select-parent
+    /// fallback (and the only one that re-lists the grid).
+    SelectParent,
+}
+
+/// Decide what to do with the tree selection after reloading node `reloaded` whose subdir set
+/// changed. Gates the "deleted selected folder → select the parent" fallback so it fires ONLY when
+/// the selected folder is genuinely absent — never during a routine reload where it still exists.
+///
+/// - `still_selected`: the selected path is still the outline view's selection after the reload.
+/// - `row_exists`: the selected path still has a row in the (reloaded) tree.
+///
+/// Returns `Keep` when the selection survived, `Restore` when the folder still exists but lost its
+/// visual selection, `SelectParent` only when the folder vanished from under the reloaded node.
+/// Pure + unit-tested.
+fn selection_action_after_reload(
+    reloaded: &Path,
+    selected: &Path,
+    still_selected: bool,
+    row_exists: bool,
+) -> SelectionAction {
+    if still_selected {
+        return SelectionAction::Keep;
+    }
+    if row_exists {
+        return SelectionAction::Restore;
+    }
+    // Selection was lost AND the folder has no row. Only treat it as a genuine deletion (→ select
+    // parent) when the selected folder was a descendant of the reloaded node; otherwise leave it.
+    if selected != reloaded && selected.starts_with(reloaded) {
+        SelectionAction::SelectParent
+    } else {
+        SelectionAction::Keep
+    }
+}
+
 /// Pull the expanded/collapsed `NodeObject`'s path out of an expand/collapse notification. AppKit
 /// puts the item in `userInfo` under the `"NSObject"` key. Returns `None` if it's missing or not a
 /// `NodeObject` (defensive — shouldn't happen).
@@ -397,6 +476,8 @@ impl TreeDataSource {
             nodes: RefCell::new(HashMap::new()),
             children: RefCell::new(ChildCache::new()),
             scanner: TreeScanner::start(),
+            reload_pending: RefCell::new(HashMap::new()),
+            suppress_selection_command: Cell::new(false),
         };
         let this = mtm.alloc().set_ivars(ivars);
         unsafe { msg_send![super(this), init] }
@@ -455,13 +536,31 @@ impl TreeDataSource {
 
     /// Invalidate `path`'s cached children and enqueue a fresh background scan (live folder sync,
     /// Part B). The result returns via `AppCommand::BrowseTreeChildrenLoaded` → `children_loaded`,
-    /// which reloads the node — so a subfolder added/removed on disk appears/vanishes. No disk read
-    /// here (the scan is off-thread). Only re-scans a path the tree knows (a node exists for it);
-    /// nothing to refresh otherwise.
+    /// which **subdir-delta-gates** the reload: only if the fresh subdirectory set differs from
+    /// what the node showed does it `reloadItem:reloadChildren:`. A busy folder (`/tmp`, Downloads)
+    /// firing constant *file*-change events therefore never churns the tree (the tree shows
+    /// directories only). No disk read here (the scan is off-thread). Only re-scans a path the tree
+    /// knows (a node exists for it); nothing to refresh otherwise.
+    ///
+    /// Records the node's current subdir set in `reload_pending` so the completion can diff it.
     fn rescan(&self, path: &Path) {
         if !self.ivars().nodes.borrow().contains_key(path) {
             return;
         }
+        // Snapshot the subdir set the node currently shows (empty if it was never loaded) so the
+        // completion can decide whether anything actually changed. Marking the path here is what
+        // routes its completion through the subdir-delta-gated, selection-preserving reload path.
+        let before = self
+            .ivars()
+            .children
+            .borrow()
+            .loaded(path)
+            .map(<[PathBuf]>::to_vec)
+            .unwrap_or_default();
+        self.ivars()
+            .reload_pending
+            .borrow_mut()
+            .insert(path.to_path_buf(), before);
         self.ivars().children.borrow_mut().invalidate(path);
         if self
             .ivars()
@@ -472,6 +571,14 @@ impl TreeDataSource {
             log::debug!("Tree re-scan queued (live sync): {}", path.display());
             self.ivars().scanner.scan(path.to_path_buf());
         }
+    }
+
+    /// Take the recorded "before" subdir set for a live-folder-sync reload of `path`, if its
+    /// pending scan was kicked off by [`rescan`](Self::rescan). `Some(before)` means this completion
+    /// is a live-sync reload and must be subdir-delta-gated + selection-preserving; `None` means an
+    /// ordinary expand/reveal scan that goes through the plain reload.
+    fn take_reload_before(&self, path: &Path) -> Option<Vec<PathBuf>> {
+        self.ivars().reload_pending.borrow_mut().remove(path)
     }
 
     /// Store a finished scan's children. Called from the executor on
@@ -769,29 +876,85 @@ impl BrowseTree {
     /// `AppCommand::BrowseTreeChildrenLoaded`. A `None` node (path never shown, or a stale scan)
     /// just updates the cache with no UI reload needed. After the reload, advances any in-progress
     /// reveal walk that was waiting on this path's children (browse-open positioning).
+    ///
+    /// **Live-folder-sync reloads are gated.** A scan kicked off by [`reload_node`](Self::reload_node)
+    /// (a watched tree folder changed on disk) goes through [`reload_completed`](Self::reload_completed)
+    /// instead: it reloads the node ONLY if the subdirectory set changed (so a busy folder's file
+    /// churn doesn't touch the tree), and it preserves the user's selection across the reload rather
+    /// than letting the reload drop it and spuriously trigger the select-parent fallback.
     pub fn children_loaded(&self, path: &Path, children: Vec<PathBuf>) {
-        // Capture the selected folder before the reload so we can detect a deleted-selected-folder
-        // (live folder sync, Part B): a re-scan that drops a subfolder the user had selected leaves
-        // `NSOutlineView` with no selection, and the grid would keep showing the gone folder.
-        let selected_before = self.selected_path();
+        // A live-folder-sync reload has its own gated, selection-preserving handling.
+        if let Some(before) = self._data_source.take_reload_before(path) {
+            self.reload_completed(path, &before, children);
+            // A live-sync re-scan is never a level a reveal walk waits on, but advancing is a no-op
+            // then — keep the call for symmetry with the ordinary path.
+            self.advance_reveal(path);
+            return;
+        }
 
+        // Ordinary expand/reveal scan: store the children and reload the node so its rows appear.
         if let Some(node) = self._data_source.complete_scan(path, children) {
-            unsafe {
-                // `reloadItem:reloadChildren:` re-queries `numberOfChildrenOfItem:` /
-                // `child:ofItem:` for this node (now served from the freshly-loaded cache),
-                // redrawing its subtree. Surviving descendants keep their expansion + selection
-                // (tracked by identity-stable `NodeObject`s).
-                let item: *const AnyObject = Retained::as_ptr(&node).cast();
-                let _: () = msg_send![&*self.outline, reloadItem: item, reloadChildren: true];
+            self.reload_item(&node);
+        }
+        // Even a scan with no live node (e.g. the root's first scan before it's expanded) can be
+        // the level a reveal is waiting on — advance regardless of the reload above.
+        self.advance_reveal(path);
+    }
+
+    /// Apply a completed **live-folder-sync** re-scan of a watched tree node (`path`), diffing the
+    /// fresh subdir set against `before` (what the node showed pre-rescan):
+    ///
+    /// - **No subdir delta** → store the fresh children but do NOT reload the node. The tree shows
+    ///   directories only, so a file created/modified/deleted in the folder is irrelevant to it.
+    ///   This is what stops a busy folder (`/tmp`, Downloads) from churning the tree — and, with it,
+    ///   from dropping the selected descendant's selection and tripping the select-parent fallback.
+    /// - **Subdir added/removed** → reload the node (so the new/gone subfolder appears/vanishes),
+    ///   then preserve the selection: re-select the same folder if it still exists, or fall back to
+    ///   the reloaded parent ONLY when the selected folder is genuinely gone from the reloaded tree.
+    ///
+    /// The reload never re-lists the grid for the node itself: a preserved re-select is suppressed
+    /// (`suppress_selection_command`), and only a genuine deletion dispatches `BrowseSelectFolder`.
+    fn reload_completed(&self, path: &Path, before: &[PathBuf], children: Vec<PathBuf>) {
+        let changed = subdirs_changed(before, &children);
+        let selected_before = self.selected_path();
+        let Some(node) = self._data_source.complete_scan(path, children) else {
+            return; // No live node for this path — nothing to reload.
+        };
+        if !changed {
+            log::debug!(
+                "Tree re-scan: {} subdirs unchanged — no reload",
+                path.display()
+            );
+            return;
+        }
+
+        self.reload_item(&node);
+
+        // The reload may have dropped the selection of a surviving descendant. Decide what to do
+        // from the live tree state (does the selected path still have a row?) — the pure
+        // `selection_action_after_reload` encodes the gating so the "fallback only on genuine
+        // deletion" rule is unit-testable.
+        let Some(selected) = selected_before else {
+            return; // Nothing was selected — nothing to preserve.
+        };
+        let still_selected = self.selected_path().as_deref() == Some(&selected);
+        let row_exists = self.row_for_path(&selected).is_some();
+        match selection_action_after_reload(path, &selected, still_selected, row_exists) {
+            SelectionAction::Keep => {}
+            SelectionAction::Restore => {
+                // The selected folder still has a row — the reload merely dropped the visual
+                // selection. Re-select it (suppressed, so no spurious `BrowseSelectFolder` re-list).
+                log::debug!(
+                    "Tree re-scan: restoring selection {} after reload of {}",
+                    selected.display(),
+                    path.display()
+                );
+                self.reselect_preserving(&selected);
             }
-            // If the selected folder was under the reloaded node and is now gone (its row vanished),
-            // degrade gracefully: select the reloaded parent so the grid re-anchors to it rather
-            // than keeping a dangling selection on a deleted folder.
-            if let Some(selected) = selected_before
-                && selected != path
-                && selected.starts_with(path)
-                && self.selected_row() < 0
-            {
+            SelectionAction::SelectParent => {
+                // The selected folder is GONE from the reloaded subtree (genuinely deleted on disk).
+                // Degrade gracefully: select the reloaded parent so the grid re-anchors to it. This
+                // IS a real selection change, so it dispatches `BrowseSelectFolder` (not suppressed).
                 log::debug!(
                     "Selected folder {} vanished on re-scan — selecting parent {}",
                     selected.display(),
@@ -800,9 +963,49 @@ impl BrowseTree {
                 self.select_and_scroll_to(path);
             }
         }
-        // Even a scan with no live node (e.g. the root's first scan before it's expanded) can be
-        // the level a reveal is waiting on — advance regardless of the reload above.
-        self.advance_reveal(path);
+    }
+
+    /// `reloadItem:reloadChildren:` for `node`: re-queries `numberOfChildrenOfItem:` /
+    /// `child:ofItem:` (now served from the freshly-loaded cache), redrawing its subtree. Surviving
+    /// descendants keep their expansion (tracked by identity-stable `NodeObject`s).
+    fn reload_item(&self, node: &Retained<NodeObject>) {
+        unsafe {
+            let item: *const AnyObject = Retained::as_ptr(node).cast();
+            let _: () = msg_send![&*self.outline, reloadItem: item, reloadChildren: true];
+        }
+    }
+
+    /// Re-select `path`'s row WITHOUT dispatching `BrowseSelectFolder`: restores a selection the
+    /// reload dropped on a surviving folder. The `suppress_selection_command` flag makes
+    /// `outlineViewSelectionDidChange:` a no-op for this programmatic change, so the grid is not
+    /// re-listed (the user never re-selected the folder — it was selected all along).
+    fn reselect_preserving(&self, path: &Path) {
+        let Some(row) = self.row_for_path(path) else {
+            return;
+        };
+        self._data_source
+            .ivars()
+            .suppress_selection_command
+            .set(true);
+        unsafe {
+            let index_set = objc2_foundation::NSIndexSet::indexSetWithIndex(row as usize);
+            let _: () = msg_send![&*self.outline, selectRowIndexes: &*index_set, byExtendingSelection: false];
+        }
+        self._data_source
+            .ivars()
+            .suppress_selection_command
+            .set(false);
+    }
+
+    /// The outline-view row for `path`, or `None` if the path has no visible row (not expanded into
+    /// view, or no node minted). Reads through the data source's identity-stable node.
+    fn row_for_path(&self, path: &Path) -> Option<isize> {
+        let node = self._data_source.node_for_path(path.to_path_buf());
+        let row: isize = unsafe {
+            let item: *const AnyObject = Retained::as_ptr(&node).cast();
+            msg_send![&*self.outline, rowForItem: item]
+        };
+        (row >= 0).then_some(row)
     }
 
     /// The currently-selected folder's path, or `None` when nothing is selected. Reads the outline
@@ -1057,4 +1260,102 @@ impl BrowseTree {
 /// A clear `NSColor` (transparent outline background so the sidebar vibrancy shows).
 fn clear_color() -> Retained<objc2_app_kit::NSColor> {
     objc2_app_kit::NSColor::clearColor()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SelectionAction, selection_action_after_reload, subdirs_changed};
+    use std::path::PathBuf;
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn subdir_set_unchanged_is_not_a_change() {
+        // Same subdirs, even reordered, is not a change — a busy folder's file churn must NOT
+        // reload the tree (the bug: a reload there ran away the selection to the busy ancestor).
+        assert!(!subdirs_changed(
+            &paths(&["/a/x", "/a/y"]),
+            &paths(&["/a/x", "/a/y"])
+        ));
+        assert!(!subdirs_changed(
+            &paths(&["/a/x", "/a/y"]),
+            &paths(&["/a/y", "/a/x"])
+        ));
+        assert!(!subdirs_changed(&[], &[]));
+    }
+
+    #[test]
+    fn subdir_added_or_removed_is_a_change() {
+        assert!(subdirs_changed(
+            &paths(&["/a/x"]),
+            &paths(&["/a/x", "/a/y"])
+        )); // added
+        assert!(subdirs_changed(
+            &paths(&["/a/x", "/a/y"]),
+            &paths(&["/a/x"])
+        )); // removed
+        assert!(subdirs_changed(&paths(&["/a/x"]), &paths(&["/a/z"]))); // swapped (same count)
+        assert!(subdirs_changed(&[], &paths(&["/a/x"]))); // first subdir
+    }
+
+    #[test]
+    fn selection_kept_when_it_survived_the_reload() {
+        // Selection still held by the outline view → do nothing, regardless of row presence.
+        assert_eq!(
+            selection_action_after_reload(&PathBuf::from("/a"), &PathBuf::from("/a/x"), true, true),
+            SelectionAction::Keep
+        );
+    }
+
+    #[test]
+    fn selection_restored_when_folder_still_has_a_row() {
+        // The reload dropped the visual selection but the folder still exists → restore it
+        // (suppressed — NO grid re-list). This is the busy-ancestor case made safe.
+        assert_eq!(
+            selection_action_after_reload(
+                &PathBuf::from("/a"),
+                &PathBuf::from("/a/x"),
+                false,
+                true
+            ),
+            SelectionAction::Restore
+        );
+    }
+
+    #[test]
+    fn select_parent_fallback_only_on_genuine_deletion() {
+        // Selection lost AND the descendant folder has no row → it was genuinely deleted → fall back
+        // to the reloaded parent. This is the ONLY case that fires the fallback / re-lists the grid.
+        assert_eq!(
+            selection_action_after_reload(
+                &PathBuf::from("/a"),
+                &PathBuf::from("/a/x"),
+                false,
+                false
+            ),
+            SelectionAction::SelectParent
+        );
+    }
+
+    #[test]
+    fn no_fallback_for_a_lost_selection_outside_the_reloaded_node() {
+        // Selection lost, no row, but the selected path is NOT under the reloaded node → not our
+        // deletion to handle; keep (never run away the selection to an unrelated parent).
+        assert_eq!(
+            selection_action_after_reload(
+                &PathBuf::from("/a"),
+                &PathBuf::from("/b/x"),
+                false,
+                false
+            ),
+            SelectionAction::Keep
+        );
+        // The reloaded node itself losing selection (selected == reloaded) is not a child deletion.
+        assert_eq!(
+            selection_action_after_reload(&PathBuf::from("/a"), &PathBuf::from("/a"), false, false),
+            SelectionAction::Keep
+        );
+    }
 }
