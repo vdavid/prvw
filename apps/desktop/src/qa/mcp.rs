@@ -298,8 +298,8 @@ fn mcp_tools_list() -> Result<Value, Value> {
             }
         },
         {
-            "name": "thumbnails_status",
-            "description": "Report the thumbnail scheduler's state: folder size, in-flight indices, queue length, cached/failed indices, paused flag, parallelism cap.",
+            "name": "previews_status",
+            "description": "Report the preview scheduler's state: folder size, in-flight indices, queue length, cached/failed indices, paused flag, parallelism cap.",
             "inputSchema": { "type": "object", "properties": {} }
         },
         {
@@ -643,7 +643,7 @@ fn mcp_tools_call(
             content["state"] = state_json;
             Ok(content)
         }
-        "thumbnails_status" => {
+        "previews_status" => {
             // Round-trip a Sync so the returned state reflects any
             // in-flight mutations from just-processed commands.
             let (tx, rx) = mpsc::channel();
@@ -656,7 +656,7 @@ fn mcp_tools_call(
                 let guard = state
                     .lock()
                     .map_err(|_| json_rpc_error(-32603, "Lock poisoned"))?;
-                guard.thumbnails.clone()
+                guard.previews.clone()
             };
             let events: Vec<Value> = snap
                 .events
@@ -683,14 +683,14 @@ fn mcp_tools_call(
                 "events": events,
             });
             let mut content = mcp_text_content(&format!(
-                "Thumbnails: {} cached, {} in flight, {} queued, paused={}, placeholder_active={}",
+                "Previews: {} cached, {} in flight, {} queued, paused={}, placeholder_active={}",
                 snap.cached.len(),
                 snap.in_flight.len(),
                 snap.queue_len,
                 snap.paused,
                 snap.placeholder_active
             ));
-            content["thumbnails"] = payload;
+            content["previews"] = payload;
             Ok(content)
         }
         _ => Err(json_rpc_error(

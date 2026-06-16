@@ -1,8 +1,8 @@
-# Thumbnails (macOS-only)
+# Previews (macOS-only)
 
-Background-generate thumbnails for every file in the current folder so navigating to an image outside the full-decode
+Background-generate previews for every file in the current folder so navigating to an image outside the full-decode
 preload window shows a blurry placeholder instantly instead of a blank screen. Relies on macOS's system-wide QuickLook
-thumbnail cache (`quicklookd`), shared with Finder, Preview, and every other Mac app — no disk storage of our own.
+preview cache (`quicklookd`), shared with Finder, Preview, and every other Mac app — no disk storage of our own.
 
 | File              | Purpose                                                                                                          |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------- |
@@ -17,14 +17,14 @@ thumbnail cache (`quicklookd`), shared with Finder, Preview, and every other Mac
 1. `App::resumed` calls `State::set_folder(paths, current)` after the directory scan.
 2. The scheduler enqueues every folder index, ordered centered-outward but with indices inside the full-decode preload
    window (`|i − current| ≤ 2`) pushed last — the full-decode preloader will cover those anyway, so they're the
-   lowest-value thumbs to fetch.
-3. `App::pump_thumbnail_requests` drains the scheduler up to `max_parallel` (`available_parallelism() / 2`, min 1) and
+   lowest-value previews to fetch.
+3. `App::pump_preview_requests` drains the scheduler up to `max_parallel` (`available_parallelism() / 2`, min 1) and
    submits each to `QLThumbnailGenerator`.
-4. `quicklookd` generates (or cache-hits) a 512 × scale thumb and calls our completion block on its internal queue.
-5. The block converts the `CGImage` to RGBA8 and fires `AppCommand::ThumbnailReady { index, rgba, width, height }` via
+4. `quicklookd` generates (or cache-hits) a 512 × scale preview and calls our completion block on its internal queue.
+5. The block converts the `CGImage` to RGBA8 and fires `AppCommand::PreviewReady { index, rgba, width, height }` via
    `EventLoopProxy`, which `winit` delivers as a `user_event` on the main thread.
-6. `App::execute_command` stores the thumb in the cache and — if this thumb is for `pending_current` — uploads it into
-   the image texture as a placeholder. The full decode later replaces it.
+6. `App::execute_command` stores the preview in the cache and — if this preview is for `pending_current` — uploads it
+   into the image texture as a placeholder. The full decode later replaces it.
 
 ## Key patterns
 
@@ -36,15 +36,15 @@ thumbnail cache (`quicklookd`), shared with Finder, Preview, and every other Mac
 - **Raw FFI for CF / CG / ImageIO.** `objc2-*` 0.3 ships bindings for a lot but not `CGBitmapContextCreate` (only the
   new adaptive variant). The few calls we need are declared in `extern "C"` blocks locally, matching the pattern in
   `color::display_profile`.
-- **ImageIO dims before thumb pixels.** `apply_thumbnail_auto_fit` runs on cache-miss navigation to resize the window to
-  the final image size _before_ any pixels paint. The thumb (and later the full decode) then fill the already-correct
+- **ImageIO dims before preview pixels.** `apply_preview_auto_fit` runs on cache-miss navigation to resize the window to
+  the final image size _before_ any pixels paint. The preview (and later the full decode) then fill the already-correct
   window. No second resize when the full decode lands — the numbers match.
-- **Thumb routes through the same display pipeline as full images.** `display_thumbnail_placeholder` calls
-  `App::prepare_display(source_w, source_h, false)` → `renderer.set_image(thumb)` → `App::finalize_display()`, exactly
+- **Preview routes through the same display pipeline as full images.** `display_preview_placeholder` calls
+  `App::prepare_display(source_w, source_h, false)` → `renderer.set_image(preview)` → `App::finalize_display()`, exactly
   like `display_from_cache` does for full images. The shared helpers handle window auto-fit, EDR surface state, and
-  `apply_initial_zoom`. Without this, thumbs landed at whatever zoom the previous image left behind (often 1:1, looking
-  like a crop). Linear sampling on upscale provides a soft, blurred appearance that signals "not final." A dedicated
-  blur shader is not currently implemented — the linear-sampler softness is sufficient.
+  `apply_initial_zoom`. Without this, previews landed at whatever zoom the previous image left behind (often 1:1,
+  looking like a crop). Linear sampling on upscale provides a soft, blurred appearance that signals "not final." A
+  dedicated blur shader is not currently implemented — the linear-sampler softness is sufficient.
 
 ## Pause semantics
 
@@ -57,33 +57,32 @@ running — cancellation has I/O cost and `quicklookd` is usually near-done.
 Memory and CPU footprint for large folders are governed by a single **RAM-proportional byte budget**, with the
 generation window derived from it so the two never fight.
 
-- **`thumbnail_budget_bytes()`** (`mod.rs`): `clamp(physical_RAM / 128, 64 MB, 1 GB)`. 64 GB → 512 MB, 16 GB → 128 MB, 8
-  GB → 64 MB (floor). A byte budget (not a fixed thumbnail count) so it self-adjusts to thumbnail size and display DPI.
+- **`preview_budget_bytes()`** (`mod.rs`): `clamp(physical_RAM / 128, 64 MB, 1 GB)`. 64 GB → 512 MB, 16 GB → 128 MB, 8
+  GB → 64 MB (floor). A byte budget (not a fixed preview count) so it self-adjusts to preview size and display DPI.
   Physical RAM comes from `platform::total_physical_ram_bytes()` (`sysctl hw.memsize`), queried once.
 
-- **Eviction (`evict_to_budget`)**: on `set_current` _and_ on each thumb's arrival (`mark_ready`), evict
-  farthest-from-`current` first until total bytes ≤ budget. Distance-based, so we always keep the thumbs nearest where
+- **Eviction (`evict_to_budget`)**: on `set_current` _and_ on each preview's arrival (`mark_ready`), evict
+  farthest-from-`current` first until total bytes ≤ budget. Distance-based, so we always keep the previews nearest where
   the user is — never a stale trail from where they _were_. Each eviction also drops the index from the scheduler's
   `cached` set (`uncache`) and the dim cache, so re-entering an area re-enqueues it.
 
 - **`scheduler::WINDOW_RADIUS` (50)** is now the _cap_ on the generation radius, not a fixed value. The effective radius
   is `generation_radius() = min(50, budget / (2 × ~4 MB))`, injected via `Scheduler::with_window_radius`. This keeps
-  generation ≤ retention: we never ask quicklookd to produce thumbs the byte budget would evict on arrival (which would
-  churn it nonstop on small-RAM machines). 64 GB → radius 50; 16 GB → ~16; 8 GB → ~8. The dim-prefetch window uses the
-  same effective radius via `scheduler.window_radius()`.
+  generation ≤ retention: we never ask quicklookd to produce previews the byte budget would evict on arrival (which
+  would churn it nonstop on small-RAM machines). 64 GB → radius 50; 16 GB → ~16; 8 GB → ~8. The dim-prefetch window uses
+  the same effective radius via `scheduler.window_radius()`.
 
 Trade-off: a far jump (#5000 → #100) blanks the new neighborhood (never generated) and evicts the old (now farthest).
 The new neighborhood repopulates over a few seconds. Going _back_ is fast — quicklookd's persistent disk cache survives
-our in-RAM eviction, so revisits hit cached thumbs at ~150 ms each instead of ~840 ms first-gen.
+our in-RAM eviction, so revisits hit cached previews at ~150 ms each instead of ~840 ms first-gen.
 
 The pure math (`budget_for_ram`, `generation_radius_for_budget`) and the distance-based eviction policy are unit-tested
 in `mod.rs`. `State::memory_bytes()` exposes the resident total for the diagnostics overlay (`process_memory` line
-breaks out image cache vs. thumbnails so the gap to RSS — GPU texture, decode buffers, allocator retention — is
-visible).
+breaks out image cache vs. previews so the gap to RSS — GPU texture, decode buffers, allocator retention — is visible).
 
 ## QL submission threading (option A)
 
-`RequestTable` runs a dedicated `prvw-thumbgen` worker thread that owns the
+`RequestTable` runs a dedicated `prvw-previewgen` worker thread that owns the
 `entries: HashMap<RequestId, Retained<QLThumbnailGenerationRequest>>` and the `QLThumbnailGenerator` singleton (created
 on that thread via `sharedGenerator`). All ops on the main thread are mpsc sends:
 
@@ -143,14 +142,14 @@ for one-shot reads — kept with `#[allow(deprecated)]` until upstream removes i
 1. **Phase 1** — immediate neighbors (`dist 1..=PRELOAD_HALF`), centered outward. Most likely next nav target. Must have
    a placeholder ready _before_ the user presses arrow.
 2. **Phase 2** — outside preload window (`dist > PRELOAD_HALF`), centered outward, capped by `WINDOW_RADIUS`.
-   Exploration thumbs.
-3. **Phase 3** — `current` itself, last. The primary decode is what we display; a thumb for it is redundant.
+   Exploration previews.
+3. **Phase 3** — `current` itself, last. The primary decode is what we display; a preview for it is redundant.
 
 The original order was Phase 2 → Phase 1 → current; that was wrong because a 7-image-per-second QL serving rate meant
-immediate-neighbor thumbs arrived ~5 s after launch — leaving the user's first arrow-key press without a placeholder.
+immediate-neighbor previews arrived ~5 s after launch — leaving the user's first arrow-key press without a placeholder.
 Swapping made the warm-up window for "the most likely nav target" go from ~5 s to <1 s.
 
-## Thumbnail size
+## Preview size
 
 `CGSize { 512, 512 }` at `NSScreen.backingScaleFactor` (2.0 Retina → 1024 effective pixels). This matches QuickLook's
 gallery cache bucket, so folders the user has browsed in Finder's gallery view hit the cache instantly. Above 1024
@@ -158,7 +157,7 @@ effective, `quicklookd` renders from source every time — falls off the cache e
 
 ## MCP
 
-Exposed via the `thumbnails_status` MCP tool. Returns folder length, current index, in-flight indices, queue length,
+Exposed via the `previews_status` MCP tool. Returns folder length, current index, in-flight indices, queue length,
 cached indices, failed indices, paused flag, and parallelism cap.
 
 ## Gotchas
@@ -166,7 +165,7 @@ cached indices, failed indices, paused flag, and parallelism cap.
 - **Request rendered content only, never the icon representation.** The QL request uses
   `RepresentationTypes::Thumbnail | LowQualityThumbnail`, _not_ `All`. `All` lets quicklookd fall back to the generic
   file-type icon (the gray "DNG"/"RAF" document stamp) for files it can't render, which we'd then show full-window as a
-  junk placeholder. Excluding `Icon` makes those files return an error instead (→ `ThumbnailFailed`, no placeholder), so
+  junk placeholder. Excluding `Icon` makes those files return an error instead (→ `PreviewFailed`, no placeholder), so
   the "Loading…" pill — and, for RAW, the embedded-JPEG preview — covers the gap. Don't switch back to `All`.
 - **`QLThumbnailRepresentation::CGImage()` returns a `Retained<CGImage>` wrapper.** Pass its raw pointer via
   `Retained::as_ptr` to the FFI `CGContextDrawImage`; the `Retained` drops at end-of-scope and releases naturally.

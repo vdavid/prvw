@@ -41,7 +41,7 @@
 //! folder browse.
 
 use crate::commands::AppCommand;
-use crate::thumbnails::scheduler::RequestId;
+use crate::previews::scheduler::RequestId;
 use block2::RcBlock;
 use objc2::AnyThread;
 use objc2::rc::Retained;
@@ -58,20 +58,20 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use winit::event_loop::EventLoopProxy;
 
-/// A ready thumbnail: raw RGBA8, row-packed (no padding).
-pub struct ThumbnailPixels {
+/// A ready preview: raw RGBA8, row-packed (no padding).
+pub struct PreviewPixels {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
 }
 
 /// One result slot delivered to the main thread by a QL completion block.
-/// `Ok(pixels)` for a generated thumbnail, `Err` for a failed request.
+/// `Ok(pixels)` for a generated preview, `Err` for a failed request.
 pub struct Delivery {
     pub index: usize,
     pub request_id: RequestId,
     pub folder_generation: u64,
-    pub result: Result<ThumbnailPixels, ()>,
+    pub result: Result<PreviewPixels, ()>,
 }
 
 /// Arguments for [`RequestTable::submit`].
@@ -98,13 +98,13 @@ enum WorkerMsg {
         proxy: EventLoopProxy<AppCommand>,
     },
     /// Drop the retained request for this id without cancelling — the
-    /// thumbnail completed naturally. Sent by the completion block.
+    /// preview completed naturally. Sent by the completion block.
     Forget(RequestId),
     /// Cancel every in-flight request. Used on folder change.
     CancelAll,
 }
 
-/// Front-end handle owned by `thumbnails::State` on the main thread.
+/// Front-end handle owned by `previews::State` on the main thread.
 /// All operations are non-blocking from the main thread's perspective:
 /// they just shovel an `mpsc` message to the worker.
 pub struct RequestTable {
@@ -120,9 +120,9 @@ impl RequestTable {
         let pending_for_worker = Arc::clone(&pending);
         let forget_tx = submit_tx.clone();
         let worker = thread::Builder::new()
-            .name("prvw-thumbgen".into())
+            .name("prvw-previewgen".into())
             .spawn(move || worker_loop(submit_rx, pending_for_worker, forget_tx))
-            .expect("Failed to spawn thumbnail submission worker");
+            .expect("Failed to spawn preview submission worker");
         Self {
             submit_tx,
             pending,
@@ -150,7 +150,7 @@ impl RequestTable {
     }
 
     /// Drain all queued deliveries. Called from the main-thread handler
-    /// for `AppCommand::ThumbnailsAvailable`.
+    /// for `AppCommand::PreviewsAvailable`.
     pub fn drain_pending(&self) -> Vec<Delivery> {
         if let Ok(mut q) = self.pending.lock() {
             q.drain(..).collect()
@@ -170,7 +170,7 @@ fn worker_loop(
     // reference that we never need to share.
     let generator = unsafe { QLThumbnailGenerator::sharedGenerator() };
     let mut entries: HashMap<RequestId, Retained<QLThumbnailGenerationRequest>> = HashMap::new();
-    log::debug!("Thumbnail submission worker started");
+    log::debug!("Preview submission worker started");
     while let Ok(msg) = rx.recv() {
         match msg {
             WorkerMsg::Submit {
@@ -207,12 +207,12 @@ fn worker_loop(
                     }
                 }
                 if count > 0 {
-                    log::debug!("Cancelled {count} in-flight thumbnail requests");
+                    log::debug!("Cancelled {count} in-flight preview requests");
                 }
             }
         }
     }
-    log::debug!("Thumbnail submission worker exiting");
+    log::debug!("Preview submission worker exiting");
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -250,7 +250,7 @@ fn worker_submit(
         // file-type icon (the gray "DNG"/"RAF" document stamp) for files it
         // can't render — we'd then show that junk icon as the placeholder.
         // Excluding `Icon` means such files return an error instead (→ our
-        // `ThumbnailFailed` path, no placeholder), leaving the "Loading…" pill
+        // `PreviewFailed` path, no placeholder), leaving the "Loading…" pill
         // (and, for RAW, our embedded-JPEG preview) to cover the gap.
         let representation_types = QLThumbnailGenerationRequestRepresentationTypes::Thumbnail
             | QLThumbnailGenerationRequestRepresentationTypes::LowQualityThumbnail;
@@ -332,7 +332,7 @@ fn push_delivery(
         Err(_) => return,
     };
     if was_empty {
-        let _ = proxy.send_event(AppCommand::ThumbnailsAvailable);
+        let _ = proxy.send_event(AppCommand::PreviewsAvailable);
     }
 }
 
@@ -398,7 +398,7 @@ struct CGRectC {
     size: CGSizeC,
 }
 
-fn cg_image_to_rgba8(rep: &QLThumbnailRepresentation) -> Option<ThumbnailPixels> {
+fn cg_image_to_rgba8(rep: &QLThumbnailRepresentation) -> Option<PreviewPixels> {
     unsafe {
         let cg_image_retained = rep.CGImage();
         let cg_image_ptr: CGImageRef = Retained::as_ptr(&cg_image_retained) as CGImageRef;
@@ -440,7 +440,7 @@ fn cg_image_to_rgba8(rep: &QLThumbnailRepresentation) -> Option<ThumbnailPixels>
         };
         CGContextDrawImage(ctx, rect, cg_image_ptr);
         CGContextRelease(ctx);
-        Some(ThumbnailPixels {
+        Some(PreviewPixels {
             width: width as u32,
             height: height as u32,
             rgba: buffer,

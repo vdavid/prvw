@@ -26,11 +26,11 @@ mod histogram;
 mod navigation;
 #[cfg(target_os = "macos")]
 mod onboarding;
+#[cfg(target_os = "macos")]
+mod previews;
 mod qa;
 mod settings;
 mod slideshow;
-#[cfg(target_os = "macos")]
-mod thumbnails;
 #[cfg(target_os = "macos")]
 mod updater;
 mod window;

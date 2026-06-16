@@ -1,10 +1,10 @@
-//! Thumbnail preload: generate thumbs for every file in the folder so a
+//! Preview preload: generate previews for every file in the folder so a
 //! navigation to any index can render a blurry placeholder instantly
 //! while the full decode runs.
 //!
 //! ## Overview
 //!
-//! Uses macOS's system-wide QuickLook thumbnail cache (shared with Finder,
+//! Uses macOS's system-wide QuickLook preview cache (shared with Finder,
 //! Preview, and every other Mac app) rather than maintaining our own
 //! on-disk store. `quicklookd` handles generation and caching; we just
 //! submit requests. The cache key includes the file's mtime, so modified
@@ -19,10 +19,10 @@
 //! 3. The app loop drains the scheduler via [`State::drain_ready_to_submit`]
 //!    each tick and fires QL requests via [`quicklook::RequestTable`].
 //! 4. `quicklookd` completions arrive on our main thread as
-//!    `AppCommand::ThumbnailReady` / `ThumbnailFailed` events (via
+//!    `AppCommand::PreviewReady` / `PreviewFailed` events (via
 //!    `EventLoopProxy::send_event`, which `winit` routes through
 //!    `user_event`).
-//! 5. `App` stores the RGBA8 thumb in the cache and calls back into
+//! 5. `App` stores the RGBA8 preview in the cache and calls back into
 //!    [`State::mark_ready`] so the scheduler moves on.
 //!
 //! ## Pause semantics
@@ -44,63 +44,63 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Rough size of one cached thumbnail (~1024² RGBA8). Used only to derive the
+/// Rough size of one cached preview (~1024² RGBA8). Used only to derive the
 /// generation radius from the byte budget; real eviction uses exact
-/// `rgba.len()` per thumb (they're aspect-fit, so most are a bit smaller).
-const EST_THUMB_BYTES: usize = 1024 * 1024 * 4;
+/// `rgba.len()` per preview (they're aspect-fit, so most are a bit smaller).
+const EST_PREVIEW_BYTES: usize = 1024 * 1024 * 4;
 
-/// Floor and ceiling for the RAM-scaled thumbnail cache budget. The floor
+/// Floor and ceiling for the RAM-scaled preview cache budget. The floor
 /// keeps a small machine usable (a handful of neighbor placeholders); the
-/// ceiling stops a 256 GB Mac Pro from spending 2 GB on thumbnails.
-const MIN_THUMBNAIL_BUDGET: usize = 64 * 1024 * 1024;
-const MAX_THUMBNAIL_BUDGET: usize = 1024 * 1024 * 1024;
+/// ceiling stops a 256 GB Mac Pro from spending 2 GB on previews.
+const MIN_PREVIEW_BUDGET: usize = 64 * 1024 * 1024;
+const MAX_PREVIEW_BUDGET: usize = 1024 * 1024 * 1024;
 
-/// RAM-proportional thumbnail cache budget: 1/128 of physical RAM, clamped to
+/// RAM-proportional preview cache budget: 1/128 of physical RAM, clamped to
 /// `[MIN, MAX]`. 64 GB → 512 MB, 16 GB → 128 MB, 8 GB → 64 MB (floor). Bytes,
-/// not a fixed thumbnail count, so it self-adjusts to thumbnail size and
+/// not a fixed preview count, so it self-adjusts to preview size and
 /// display DPI. Queried once (RAM doesn't change at runtime).
-pub fn thumbnail_budget_bytes() -> usize {
+pub fn preview_budget_bytes() -> usize {
     static BUDGET: OnceLock<usize> = OnceLock::new();
     *BUDGET.get_or_init(|| budget_for_ram(crate::platform::total_physical_ram_bytes() as usize))
 }
 
 /// Pure budget math, split out for testing without depending on host RAM.
 fn budget_for_ram(ram_bytes: usize) -> usize {
-    (ram_bytes / 128).clamp(MIN_THUMBNAIL_BUDGET, MAX_THUMBNAIL_BUDGET)
+    (ram_bytes / 128).clamp(MIN_PREVIEW_BUDGET, MAX_PREVIEW_BUDGET)
 }
 
 /// Generation radius derived from the budget, capped at
 /// [`scheduler::WINDOW_RADIUS`]. We never generate more than the byte-budgeted
-/// cache will retain — otherwise quicklookd would churn producing thumbs we
+/// cache will retain — otherwise quicklookd would churn producing previews we
 /// evict on arrival. At the 512 MB budget this lands at the full 50; at a
 /// 128 MB budget (~16 GB machine) it's ~16; at the 64 MB floor it's ~8.
 pub fn generation_radius() -> usize {
-    generation_radius_for_budget(thumbnail_budget_bytes())
+    generation_radius_for_budget(preview_budget_bytes())
 }
 
 /// Pure generation-radius math, split out for testing.
 fn generation_radius_for_budget(budget: usize) -> usize {
-    (budget / (2 * EST_THUMB_BYTES)).clamp(2, scheduler::WINDOW_RADIUS)
+    (budget / (2 * EST_PREVIEW_BYTES)).clamp(2, scheduler::WINDOW_RADIUS)
 }
 
-/// A ready thumbnail stored in the cache. Just the pixels — source
+/// A ready preview stored in the cache. Just the pixels — source
 /// dimensions are read lazily via `State::source_dimensions(index)` at
 /// display time. Caching them here was a footgun: storing them eagerly
-/// in `mark_ready` issues an ImageIO read per thumb, which blocks the
+/// in `mark_ready` issues an ImageIO read per preview, which blocks the
 /// main thread for hundreds of milliseconds per file on network shares
 /// and stalled the *initial* image render for 10+ seconds. Lazy reads
 /// happen only for the index we're actually displaying.
-pub struct Thumbnail {
+pub struct Preview {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
 }
 
-/// All thumbnail-related state owned by `App`.
+/// All preview-related state owned by `App`.
 pub struct State {
     pub scheduler: scheduler::Scheduler,
-    /// Ready thumbnails, keyed by folder index.
-    pub cache: HashMap<usize, Thumbnail>,
+    /// Ready previews, keyed by folder index.
+    pub cache: HashMap<usize, Preview>,
     /// Parallel pixel-dimension prefetcher. Populates dims for the
     /// active window in the background; lazy-fallback on miss.
     pub dim_prefetcher: dim_prefetch::DimPrefetcher,
@@ -108,12 +108,12 @@ pub struct State {
     /// when draining the scheduler.
     pub paths: Vec<PathBuf>,
     /// Current navigation index. Tracked here (mirrors the scheduler's) so
-    /// byte-budget eviction can measure distance-from-current when a thumb
+    /// byte-budget eviction can measure distance-from-current when a preview
     /// arrives, not just on `set_current`.
     current: usize,
     /// Monotonic counter bumped on every `set_folder`. Completion blocks
     /// capture the value at submit-time; the main thread drops completions
-    /// whose generation no longer matches, so a thumb for a stale folder
+    /// whose generation no longer matches, so a preview for a stale folder
     /// can never be inserted into the new folder's cache at a wrong index.
     pub folder_generation: u64,
     #[cfg(target_os = "macos")]
@@ -164,7 +164,7 @@ impl State {
     pub fn set_current(&mut self, current: usize) {
         self.current = current;
         self.scheduler.set_current(current);
-        self.evict_to_budget(current, thumbnail_budget_bytes());
+        self.evict_to_budget(current, preview_budget_bytes());
         self.enqueue_dim_prefetch_window(current);
     }
 
@@ -188,14 +188,14 @@ impl State {
         }
     }
 
-    /// Total bytes held by cached thumbnails. For diagnostics / RSS
+    /// Total bytes held by cached previews. For diagnostics / RSS
     /// attribution.
     pub fn memory_bytes(&self) -> usize {
         self.cache.values().map(|t| t.rgba.len()).sum()
     }
 
-    /// Evict cached thumbnails, farthest-from-`current` first, until total
-    /// bytes fit within `budget`. Keeps the thumbnails most likely to be
+    /// Evict cached previews, farthest-from-`current` first, until total
+    /// bytes fit within `budget`. Keeps the previews most likely to be
     /// navigated to (nearest the current image) — so we never pin a stale
     /// trail from where the user *was*. Also drops each evicted index from
     /// the scheduler's `cached` set so re-entering that area re-enqueues it,
@@ -216,8 +216,8 @@ impl State {
             if total <= budget {
                 break;
             }
-            if let Some(thumb) = self.cache.remove(&i) {
-                total -= thumb.rgba.len();
+            if let Some(preview) = self.cache.remove(&i) {
+                total -= preview.rgba.len();
                 // Let the scheduler re-queue it if the user navigates back.
                 self.scheduler.uncache(i);
                 evicted.push(i);
@@ -226,7 +226,7 @@ impl State {
         if !evicted.is_empty() {
             self.dim_prefetcher.invalidate(&evicted);
             log::debug!(
-                "Evicted {} thumb(s) to fit {} KB budget around current {current} ({} KB resident)",
+                "Evicted {} preview(s) to fit {} KB budget around current {current} ({} KB resident)",
                 evicted.len(),
                 budget / 1024,
                 total / 1024,
@@ -242,7 +242,7 @@ impl State {
         self.scheduler.resume();
     }
 
-    pub fn get(&self, index: usize) -> Option<&Thumbnail> {
+    pub fn get(&self, index: usize) -> Option<&Preview> {
         self.cache.get(&index)
     }
 
@@ -265,13 +265,13 @@ impl State {
         Some(dims)
     }
 
-    /// Called when `quicklookd` hands back a thumbnail. Stores in cache
+    /// Called when `quicklookd` hands back a preview. Stores in cache
     /// and lets the scheduler know the slot is free.
     ///
     /// **Does NOT pre-read source dimensions.** That's lazy via
-    /// `source_dimensions(index)` from `display_thumbnail_placeholder`,
+    /// `source_dimensions(index)` from `display_preview_placeholder`,
     /// which only fires for the user's actual nav target. Pre-reading
-    /// here for all 38 cached thumbs was a 7+ second main-thread block
+    /// here for all 38 cached previews was a 7+ second main-thread block
     /// on network shares (ImageIO file-header read per file).
     pub fn mark_ready(
         &mut self,
@@ -286,17 +286,17 @@ impl State {
         // thread doesn't need to forget here.
         self.cache.insert(
             index,
-            Thumbnail {
+            Preview {
                 width,
                 height,
                 rgba,
             },
         );
         self.scheduler.mark_ready(index);
-        // A fresh insert can push us over budget between navigations (thumbs
+        // A fresh insert can push us over budget between navigations (previews
         // stream in over seconds), so enforce the byte budget on arrival too,
         // not only on `set_current`.
-        self.evict_to_budget(self.current, thumbnail_budget_bytes());
+        self.evict_to_budget(self.current, preview_budget_bytes());
     }
 
     pub fn mark_failed(&mut self, index: usize, _request_id: RequestId) {
@@ -333,13 +333,13 @@ mod tests {
         assert_eq!(budget_for_ram(64 * GB), 512 * MB);
         assert_eq!(budget_for_ram(16 * GB), 128 * MB);
         assert_eq!(budget_for_ram(8 * GB), 64 * MB); // floor (also exactly 8 GB / 128)
-        assert_eq!(budget_for_ram(4 * GB), MIN_THUMBNAIL_BUDGET); // below floor → clamped up
-        assert_eq!(budget_for_ram(256 * GB), MAX_THUMBNAIL_BUDGET); // above ceiling → clamped down
+        assert_eq!(budget_for_ram(4 * GB), MIN_PREVIEW_BUDGET); // below floor → clamped up
+        assert_eq!(budget_for_ram(256 * GB), MAX_PREVIEW_BUDGET); // above ceiling → clamped down
     }
 
     #[test]
     fn generation_radius_tracks_budget_and_is_capped() {
-        // Big budget → full window; small budget → proportionally fewer thumbs,
+        // Big budget → full window; small budget → proportionally fewer previews,
         // so we never generate more than we'll retain.
         assert_eq!(
             generation_radius_for_budget(512 * MB),
@@ -353,10 +353,10 @@ mod tests {
         assert!(generation_radius_for_budget(usize::MAX) <= scheduler::WINDOW_RADIUS);
     }
 
-    fn insert_thumb(state: &mut State, index: usize, bytes: usize) {
+    fn insert_preview(state: &mut State, index: usize, bytes: usize) {
         state.cache.insert(
             index,
-            Thumbnail {
+            Preview {
                 width: 1,
                 height: 1,
                 rgba: vec![0u8; bytes],
@@ -367,11 +367,11 @@ mod tests {
     #[test]
     fn evict_to_budget_keeps_nearest_to_current() {
         let mut state = State::new();
-        // 10 thumbs of 10 MB each (100 MB total) at indices 0..=9.
+        // 10 previews of 10 MB each (100 MB total) at indices 0..=9.
         for i in 0..10 {
-            insert_thumb(&mut state, i, 10 * MB);
+            insert_preview(&mut state, i, 10 * MB);
         }
-        // Budget for 3 thumbs, current at index 5. Nearest are 4, 5, 6.
+        // Budget for 3 previews, current at index 5. Nearest are 4, 5, 6.
         state.evict_to_budget(5, 30 * MB);
 
         assert!(state.memory_bytes() <= 30 * MB, "must fit budget");
@@ -393,8 +393,8 @@ mod tests {
     #[test]
     fn evict_to_budget_noop_when_under() {
         let mut state = State::new();
-        insert_thumb(&mut state, 0, 10 * MB);
-        insert_thumb(&mut state, 1, 10 * MB);
+        insert_preview(&mut state, 0, 10 * MB);
+        insert_preview(&mut state, 1, 10 * MB);
         state.evict_to_budget(0, 512 * MB);
         assert_eq!(state.cache.len(), 2, "nothing evicted when under budget");
     }

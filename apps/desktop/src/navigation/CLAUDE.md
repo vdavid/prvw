@@ -88,19 +88,19 @@ presses a key, or some other OS event nudges the loop.
 
 **Fix:** the preloader worker thread sends `AppCommand::PreloaderProgress` via `EventLoopProxy::send_event` after every
 response. The handler is a no-op — the wake itself is the side effect, because winit always runs `about_to_wait` after
-any user event, which is where we drain the channel. Same pattern the thumbnail completion path uses.
+any user event, which is where we drain the channel. Same pattern the preview completion path uses.
 
 This was masked when neighbor preload was always-on (constant decode activity kept the loop awake) and surfaced only
 after the deferred-neighbor change reduced background work. If you add another async-result path, include the same
 `send_event` wakeup or the result will be silently delayed.
 
-## Thumbnail placeholder (macOS)
+## Preview placeholder (macOS)
 
 On a cache-miss navigation the title bar shows "Loading…" and a centered "Loading..." pill appears mid-screen. If the
-`thumbnails` module has a cached thumb for the target index, that thumb is uploaded to the image texture as a blurry
-placeholder, and `apply_thumbnail_auto_fit` resizes the window to the source dimensions (read via ImageIO, no decode)
-before any pixels paint. The full decode later replaces the placeholder when `PreloadResponse::Ready` arrives. The thumb
-scheduler is paused while `pending_current.is_some()`. See `apps/desktop/src/thumbnails/CLAUDE.md`.
+`previews` module has a cached preview for the target index, that preview is uploaded to the image texture as a blurry
+placeholder, and `apply_preview_auto_fit` resizes the window to the source dimensions (read via ImageIO, no decode)
+before any pixels paint. The full decode later replaces the placeholder when `PreloadResponse::Ready` arrives. The
+preview scheduler is paused while `pending_current.is_some()`. See `apps/desktop/src/previews/CLAUDE.md`.
 
 ## RAW quick preview
 
@@ -113,17 +113,17 @@ deliberately downscaled (~1024 px long edge) so it reads as a soft placeholder, 
 look differs from our develop, and the softness makes the sharp `Ready` swap read as snapping into focus rather than a
 confusing change. Not cached — purely transient. RAW-only (JPEG/generic decode fast enough not to need it). Neighbors
 never request a preview (they're never displayed yet). The `Preview` decode is cross-platform, but the _display_
-(`display_preview_placeholder`) is `#[cfg(target_os = "macos")]` — it reads the QuickLook-backed `thumbnails` state, so
+(`display_preview_placeholder`) is `#[cfg(target_os = "macos")]` — it reads the QuickLook-backed `previews` state, so
 non-macOS builds drop the `Preview` arm.
 
 **Initial launch uses the same path for RAW.** `App::display_initial_image` (called from `initialize_viewer`) gates on
 `decoding::is_raw_extension`: a RAW launch mirrors the cache-miss nav flow (set `pending_current`, size the window from
-ImageIO dims via `apply_thumbnail_auto_fit`, show "Loading…", call `prioritize_target`) so the embedded preview paints
+ImageIO dims via `apply_preview_auto_fit`, show "Loading…", call `prioritize_target`) so the embedded preview paints
 instantly instead of blocking the main thread on the ~450 ms develop. Non-RAW launches keep the synchronous
 `display_image` decode unchanged (tens of ms — an async path would only add a needless "Loading…" flash). This requires
-two ordering points in `initialize_viewer`: the preloader is stored into `navigation.preloader` and the thumbnail folder
-is seeded BEFORE the initial display, and the thumbnail scheduler is paused AFTER it (so the RAW path's
-`pending_current` gates the pause).
+two ordering points in `initialize_viewer`: the preloader is stored into `navigation.preloader` and the preview folder
+is seeded BEFORE the initial display, and the preview scheduler is paused AFTER it (so the RAW path's `pending_current`
+gates the pause).
 
 ## Loop navigation
 

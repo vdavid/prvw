@@ -60,7 +60,7 @@ but wasn't worth the complexity.
 
 ### Decision/Why: no crossfade on a cache miss
 
-If the advance target isn't cached yet, `after_position_change` clears `pending_crossfade`. Otherwise the thumbnail
+If the advance target isn't cached yet, `after_position_change` clears `pending_crossfade`. Otherwise the preview
 placeholder shown while decoding would become the "outgoing" frame, and an advance that stalls on a decode isn't a
 smooth transition anyway. Forward slideshow advances are almost always preloaded, so this rarely triggers.
 

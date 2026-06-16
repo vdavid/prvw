@@ -10,11 +10,11 @@ pub mod macos;
 use std::sync::OnceLock;
 
 /// Total physical RAM in bytes, queried once and cached. Used to size
-/// RAM-proportional cache budgets (see `thumbnails`) so a small machine
+/// RAM-proportional cache budgets (see `previews`) so a small machine
 /// stays frugal and a big one gets headroom. Falls back to a conservative
 /// 8 GB assumption if the `sysctl` query fails.
 ///
-/// macOS-only: its sole consumer is the QuickLook-backed `thumbnails` cache,
+/// macOS-only: its sole consumer is the QuickLook-backed `previews` cache,
 /// which is itself macOS-only.
 #[cfg(target_os = "macos")]
 pub fn total_physical_ram_bytes() -> u64 {

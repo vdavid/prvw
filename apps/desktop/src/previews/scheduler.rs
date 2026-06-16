@@ -1,10 +1,10 @@
-//! Thumbnail generation scheduler. Pure state machine — no OS calls, no I/O.
+//! Preview generation scheduler. Pure state machine — no OS calls, no I/O.
 //!
 //! Given a folder of N images and a current index, emits requests in the
 //! order that best serves the user:
 //!
 //! 1. **Immediate neighbors** (`dist 1..=PRELOAD_HALF`), centered outward.
-//!    The user's most likely next nav target is one step away; a thumb
+//!    The user's most likely next nav target is one step away; a preview
 //!    placeholder for that should be ready *first* even though the
 //!    full-decode preloader is also working on it (the placeholder shows
 //!    while the primary decode is still in flight, sometimes for 500 ms+
@@ -13,14 +13,14 @@
 //!    outward, **bounded by [`WINDOW_RADIUS`]**. These cover the
 //!    "exploration" navigations.
 //! 3. `current` itself, last. Primary decode is almost always faster than
-//!    a thumb fetch for an index we're actively loading, and we don't
+//!    a preview fetch for an index we're actively loading, and we don't
 //!    need a placeholder for the image we're displaying anyway.
 //!
 //! Indices outside the window aren't enqueued at all. For a 10 000-image
-//! folder we'd otherwise queue 10 000 thumbnail jobs at startup —
+//! folder we'd otherwise queue 10 000 preview jobs at startup —
 //! quicklookd serves ~7/sec, so it'd take 24 minutes to drain, with most
 //! of the work going to indices the user will never visit. Windowed
-//! scheduling caps the work at `2 × WINDOW_RADIUS` thumbs (~14 sec at the
+//! scheduling caps the work at `2 × WINDOW_RADIUS` previews (~14 sec at the
 //! current radius) and reseeds when the user navigates.
 //!
 //! Caps in-flight requests at `max_parallel` to avoid stressing the system.
@@ -33,11 +33,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// (matches `navigation::preloader::PRELOAD_AHEAD`).
 const PRELOAD_HALF: usize = 2;
 
-/// Upper bound on how far around `current` we generate thumbnails. The
+/// Upper bound on how far around `current` we generate previews. The
 /// effective radius is set per-`Scheduler` via [`Scheduler::with_window_radius`]
-/// and never exceeds this — `thumbnails::generation_radius` derives it from the
+/// and never exceeds this — `previews::generation_radius` derives it from the
 /// RAM-scaled cache budget so we never generate more than we'll retain. ~50
-/// means ~100 thumbs, ~14 sec to populate at quicklookd's ~7/sec serving rate.
+/// means ~100 previews, ~14 sec to populate at quicklookd's ~7/sec serving rate.
 pub const WINDOW_RADIUS: usize = 50;
 
 /// Opaque handle a caller can use to cancel a specific request. Monotonic.
@@ -87,14 +87,14 @@ impl Scheduler {
     }
 
     /// Set the generation radius (clamped to `[PRELOAD_HALF, WINDOW_RADIUS]`).
-    /// `thumbnails::State` derives this from the RAM-scaled cache budget so we
-    /// never enqueue thumbnails the byte-budgeted cache would immediately evict.
+    /// `previews::State` derives this from the RAM-scaled cache budget so we
+    /// never enqueue previews the byte-budgeted cache would immediately evict.
     pub fn with_window_radius(mut self, radius: usize) -> Self {
         self.window_radius = radius.clamp(PRELOAD_HALF, WINDOW_RADIUS);
         self
     }
 
-    /// The effective generation radius. Used by `thumbnails::State` to size the
+    /// The effective generation radius. Used by `previews::State` to size the
     /// dimension-prefetch window to match.
     pub fn window_radius(&self) -> usize {
         self.window_radius
@@ -128,7 +128,7 @@ impl Scheduler {
         self.paused = false;
     }
 
-    /// Mark a request completed successfully. The rendered thumb is cached.
+    /// Mark a request completed successfully. The rendered preview is cached.
     pub fn mark_ready(&mut self, index: usize) {
         self.in_flight.remove(&index);
         self.cached.insert(index);
@@ -143,7 +143,7 @@ impl Scheduler {
 
     /// Drop a previously-cached index back to "uncached" so it can be
     /// re-queued if it ever falls inside the active window again.
-    /// Called by `State::evict_distant_thumbs` when the RAM cache evicts
+    /// Called by `State::evict_distant_previews` when the RAM cache evicts
     /// — the scheduler's `cached` set must stay in sync or the index
     /// would get permanently skipped.
     pub fn uncache(&mut self, index: usize) {

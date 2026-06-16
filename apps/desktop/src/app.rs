@@ -5,9 +5,9 @@
 //! `execute_command` (see `executor.rs`).
 
 mod executor;
-mod shared_state;
 #[cfg(target_os = "macos")]
-mod thumbnails_hook;
+mod previews_hook;
+mod shared_state;
 
 pub(crate) use shared_state::SharedAppState;
 
@@ -97,11 +97,11 @@ pub(crate) struct App {
     pub(crate) histogram: histogram::State,
     pub(crate) exif_overlay: exif_overlay::State,
     pub(crate) slideshow: slideshow::State,
-    /// Browse mode (folder tree + thumbnail grid) vs image viewer. Owns the native
+    /// Browse mode (folder tree + preview grid) vs image viewer. Owns the native
     /// split-view handles on macOS. Starts in `Image`.
     pub(crate) browser: crate::browser::State,
     #[cfg(target_os = "macos")]
-    pub(crate) thumbnails: crate::thumbnails::State,
+    pub(crate) previews: crate::previews::State,
 
     // ── Cross-cutting toggles (owned by App because they don't fit one feature) ──
     /// Whether to reserve space at the top for the title bar.
@@ -148,8 +148,8 @@ pub(crate) struct App {
     pub(crate) event_loop_proxy: EventLoopProxy<AppCommand>,
     _qa_handle: Option<std::thread::JoinHandle<()>>,
 
-    // ── Thumbnail placeholder tracking ─────────────────────────────
-    /// True while the image texture holds a thumbnail placeholder
+    // ── Preview placeholder tracking ─────────────────────────────
+    /// True while the image texture holds a preview placeholder
     /// (uploaded on a cache-miss before the full decode arrives).
     /// Cleared when `display_from_cache` runs with the full image.
     #[cfg(target_os = "macos")]
@@ -157,14 +157,14 @@ pub(crate) struct App {
     /// Monotonic start time for event-timeline timestamps.
     #[cfg(target_os = "macos")]
     pub(crate) app_start: Instant,
-    /// Ring buffer of recent thumbnail-lifecycle events. Mirrored to
+    /// Ring buffer of recent preview-lifecycle events. Mirrored to
     /// `SharedAppState` on every `update_shared_state` so MCP clients
     /// can query the timeline after the fact. Capped at 64.
     #[cfg(target_os = "macos")]
-    pub(crate) thumbnail_events: std::collections::VecDeque<shared_state::ThumbnailEvent>,
+    pub(crate) preview_events: std::collections::VecDeque<shared_state::PreviewEvent>,
     /// `Instant::now()` captured at navigation time, keyed by target
     /// index. Used to compute "displayed after Xms" metrics for both
-    /// thumbs and full decodes. Entries are dropped after the full
+    /// previews and full decodes. Entries are dropped after the full
     /// image is displayed (or on folder change).
     pub(crate) request_times: std::collections::HashMap<usize, Instant>,
 }
@@ -201,7 +201,7 @@ impl App {
             slideshow: slideshow::State::from_settings(&initial_settings),
             browser: crate::browser::State::new(),
             #[cfg(target_os = "macos")]
-            thumbnails: crate::thumbnails::State::new(),
+            previews: crate::previews::State::new(),
             title_bar: initial_settings.title_bar,
             raw_flags: initial_settings.raw,
             edr_headroom: 1.0,
@@ -222,7 +222,7 @@ impl App {
             #[cfg(target_os = "macos")]
             app_start: Instant::now(),
             #[cfg(target_os = "macos")]
-            thumbnail_events: std::collections::VecDeque::with_capacity(64),
+            preview_events: std::collections::VecDeque::with_capacity(64),
             request_times: std::collections::HashMap::new(),
         }
     }
@@ -572,18 +572,18 @@ impl App {
             self.event_loop_proxy.clone(),
         ));
 
-        // Seed the thumbnail scheduler with the full folder so every image
-        // will get a thumb in priority order (indices outside the preload
+        // Seed the preview scheduler with the full folder so every image
+        // will get a preview in priority order (indices outside the preload
         // window first). Done BEFORE the initial display so the async RAW path
         // can read source dimensions (via `source_dimensions`'s synchronous
-        // fallback over `self.thumbnails.paths`) for the pre-paint auto-fit.
+        // fallback over `self.previews.paths`) for the pre-paint auto-fit.
         // The scheduler is paused below, after the display sets
         // `pending_current` on the async path.
         #[cfg(target_os = "macos")]
         if let Some(dir) = &self.navigation.dir_list {
             let paths = dir.files();
             let current = dir.current_index();
-            self.thumbnails.set_folder(paths, current);
+            self.previews.set_folder(paths, current);
         }
 
         // Load and display the initial image. RAW launches take the async
@@ -618,15 +618,15 @@ impl App {
             }
         }
 
-        // Pause the thumbnail scheduler while the initial primary decode is
+        // Pause the preview scheduler while the initial primary decode is
         // running (the async RAW path leaves `pending_current` set). The full
         // decode's arrival in `poll_preloader` resumes it.
         #[cfg(target_os = "macos")]
         if self.navigation.pending_current.is_some() {
-            self.thumbnails.pause();
+            self.previews.pause();
         }
         #[cfg(target_os = "macos")]
-        self.pump_thumbnail_requests();
+        self.pump_preview_requests();
 
         self.update_shared_state();
 
@@ -701,7 +701,7 @@ impl App {
         #[cfg(target_os = "macos")]
         {
             self.on_primary_decode_started();
-            self.apply_thumbnail_auto_fit(index);
+            self.apply_preview_auto_fit(index);
         }
 
         if let Some(win) = &self.window {
@@ -903,9 +903,9 @@ impl App {
     /// Caller uploads the texture between this and `finalize_display`.
     ///
     /// Used by both the cached-image path (`display_from_cache`) and the
-    /// thumbnail placeholder path (`display_thumbnail_placeholder`) so a
-    /// thumb is fitted with exactly the same math as the final image.
-    /// Without this, a thumb shown as a placeholder ended up at whatever
+    /// preview placeholder path (`display_preview_placeholder`) so a
+    /// preview is fitted with exactly the same math as the final image.
+    /// Without this, a preview shown as a placeholder ended up at whatever
     /// zoom the previous image left behind (often 1:1, looking like a
     /// crop of the wrong picture).
     fn prepare_display(&mut self, source_width: u32, source_height: u32, is_hdr: bool) {
@@ -1417,12 +1417,12 @@ impl App {
             #[cfg(target_os = "macos")]
             {
                 self.on_primary_decode_settled();
-                self.on_thumbnail_current_changed(current_index);
+                self.on_preview_current_changed(current_index);
             }
         } else {
             // Cache miss — show "Loading…" title and mark pending.
             // The render happens in `poll_preloader` when `Ready` arrives.
-            // No crossfade for a miss: the thumbnail placeholder would become
+            // No crossfade for a miss: the preview placeholder would become
             // the "outgoing" frame, and an advance that has to wait on a
             // decode isn't a smooth transition anyway.
             self.pending_crossfade = false;
@@ -1435,20 +1435,20 @@ impl App {
             }
             #[cfg(target_os = "macos")]
             {
-                let thumb_cached = self.thumbnails.get(current_index).is_some();
-                self.record_thumb_event(
+                let preview_cached = self.previews.get(current_index).is_some();
+                self.record_preview_event(
                     "nav-cache-miss",
-                    format!("from={from_index} to={current_index} thumb_cached={thumb_cached}"),
+                    format!("from={from_index} to={current_index} preview_cached={preview_cached}"),
                 );
                 self.on_primary_decode_started();
-                self.on_thumbnail_current_changed(current_index);
-                // Try to upload the thumb placeholder — that path now
+                self.on_preview_current_changed(current_index);
+                // Try to upload the preview placeholder — that path now
                 // also resizes the window and applies the initial zoom
-                // via `prepare_display`. If no thumb is cached yet, fall
+                // via `prepare_display`. If no preview is cached yet, fall
                 // back to a metadata-only auto-fit so the window still
                 // reaches the right size before pixels arrive.
-                if !self.display_thumbnail_placeholder(current_index) {
-                    self.apply_thumbnail_auto_fit(current_index);
+                if !self.display_preview_placeholder(current_index) {
+                    self.apply_preview_auto_fit(current_index);
                 }
                 self.needs_redraw = true;
             }
@@ -1582,24 +1582,24 @@ impl App {
     }
 
     /// Show a RAW's embedded-JPEG preview as a soft placeholder while the full
-    /// develop runs. Like `display_thumbnail_placeholder`, but uses the
-    /// passed-in preview (higher-res than the QL thumb, and available without
-    /// quicklookd, so it covers the first-visit / no-thumb case). Source dims
-    /// drive window/zoom — already set by `apply_thumbnail_auto_fit` on the
+    /// develop runs. Like `display_preview_placeholder`, but uses the
+    /// passed-in preview (higher-res than the QL preview, and available without
+    /// quicklookd, so it covers the first-visit / no-preview case). Source dims
+    /// drive window/zoom — already set by `apply_preview_auto_fit` on the
     /// cache-miss, so the resize is a no-op. The full decode replaces this when
     /// `Ready` arrives; the "Loading…" overlay stays up meanwhile (it's gated
     /// on `pending_current`), signalling the soft image isn't final.
     ///
-    /// macOS-only: the soft-placeholder path reads QuickLook-backed thumbnail
-    /// state (`thumbnails` source dims, `placeholder_active`), both gated to
+    /// macOS-only: the soft-placeholder path reads QuickLook-backed preview
+    /// state (`previews` source dims, `placeholder_active`), both gated to
     /// macOS. RAW preview decode itself is cross-platform, but its display isn't.
     #[cfg(target_os = "macos")]
-    fn display_preview_placeholder(&mut self, index: usize, image: decoding::DecodedImage) {
+    fn display_raw_preview_placeholder(&mut self, index: usize, image: decoding::DecodedImage) {
         if self.renderer.is_none() {
             return;
         }
         let dims = self
-            .thumbnails
+            .previews
             .source_dimensions(index)
             .map(|d| (d.width, d.height));
         let (sw, sh) = dims
@@ -1887,7 +1887,7 @@ impl App {
                         {
                             let had_placeholder = self.placeholder_active;
                             self.placeholder_active = false;
-                            self.record_thumb_event(
+                            self.record_preview_event(
                                 "primary-arrived",
                                 format!("index={index} had_placeholder={had_placeholder}"),
                             );
@@ -1985,14 +1985,14 @@ impl App {
                     // only while we're still waiting on THIS target's full
                     // develop. If a newer nav moved on (index no longer
                     // pending), or the full image already landed, drop it.
-                    // macOS-only display (see `display_preview_placeholder`).
+                    // macOS-only display (see `display_raw_preview_placeholder`).
                     #[cfg(target_os = "macos")]
                     if self.navigation.pending_current == Some(index) {
                         log::debug!(
                             "Showing RAW preview placeholder [{index}] {}",
                             path.display()
                         );
-                        self.display_preview_placeholder(index, image);
+                        self.display_raw_preview_placeholder(index, image);
                     }
                     #[cfg(not(target_os = "macos"))]
                     let _ = (index, path, image);

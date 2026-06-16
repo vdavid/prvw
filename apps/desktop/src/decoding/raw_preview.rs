@@ -12,7 +12,7 @@
 //! so the sharp full render is a crisp *upgrade*, never a confusing change — the
 //! camera's JPEG look (tone, color) differs from our develop, and we don't want
 //! a too-good preview that the user then "loses" when our version lands. Keeping
-//! it soft (like the QuickLook-thumb placeholder) hides that mismatch.
+//! it soft (like the QuickLook-preview placeholder) hides that mismatch.
 
 use std::path::Path;
 
@@ -26,7 +26,7 @@ use super::orientation::apply_orientation_bytes;
 
 /// Long-edge size the embedded preview is downscaled to. Small on purpose so
 /// the placeholder looks soft. **Tunable**: raise for a sharper preview, lower
-/// for blurrier. 1024 matches the QuickLook-thumb bucket the app already uses.
+/// for blurrier. 1024 matches the QuickLook-preview bucket the app already uses.
 const PREVIEW_LONG_EDGE_PX: u32 = 1024;
 
 /// Extract and prepare the embedded preview for `path`, or `None` if the file
@@ -59,7 +59,7 @@ pub(super) fn decode_raw_preview(
         .and_then(|m| m.exif.orientation)
         .unwrap_or(1);
 
-    // Downscale to the soft placeholder size. `thumbnail` preserves aspect,
+    // Downscale to the soft placeholder size. `preview` preserves aspect,
     // only ever downscales (never upscales a small preview), and uses a fast
     // box filter — slightly softer than a Lanczos resize, which is exactly what
     // we want for a "not final" placeholder.

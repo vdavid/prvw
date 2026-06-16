@@ -2,9 +2,9 @@
 //! Does not decode pixels — just parses metadata headers, so it's fast
 //! (~1 ms per file) and uniform across JPEG, PNG, HEIC, RAW, etc.
 //!
-//! Used by the thumbnail path so the viewer window can auto-fit to the
-//! final image size before the thumb pixels are even uploaded to the GPU.
-//! The thumb is conceptually the image, just lower-res; the window
+//! Used by the preview path so the viewer window can auto-fit to the
+//! final image size before the preview pixels are even uploaded to the GPU.
+//! The preview is conceptually the image, just lower-res; the window
 //! should reach its final size first.
 
 use std::ffi::c_void;

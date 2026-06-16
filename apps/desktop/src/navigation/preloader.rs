@@ -573,8 +573,8 @@ impl Preloader {
                     let _ = event_proxy.send_event(AppCommand::PreloaderProgress);
                 }
             }
-            // Test affordance: when `PRVW_THUMB_HOLD_MS` is set, delay
-            // the decode by N ms so the thumbnail placeholder stays
+            // Test affordance: when `PRVW_PREVIEW_HOLD_MS` is set, delay
+            // the decode by N ms so the preview placeholder stays
             // visible long enough to inspect via MCP or take a
             // screenshot. Zero cost when unset — `std::env::var`
             // returns `Err`, the `ok()` is `None`, and `unwrap_or(0)`
@@ -584,7 +584,7 @@ impl Preloader {
             // whole hold — otherwise queued-and-cancelled tasks
             // each burn the full `hold_ms` before the worker moves
             // on to the current target.
-            let hold_ms: u64 = std::env::var("PRVW_THUMB_HOLD_MS")
+            let hold_ms: u64 = std::env::var("PRVW_PREVIEW_HOLD_MS")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);

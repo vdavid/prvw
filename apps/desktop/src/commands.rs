@@ -112,7 +112,7 @@ pub enum AppCommand {
     /// Update the cached cursor position (used by MCP for hover-readout tests).
     SetCursorPosition { x: f64, y: f64 },
 
-    // ── Browse mode (macOS-only; native AppKit folder tree + thumbnail grid) ──
+    // ── Browse mode (macOS-only; native AppKit folder tree + preview grid) ──
     /// Swap between the wgpu image viewer and the native browse screen. Fired by
     /// the Navigate → "Image browser" / "Image view" menu item and the Enter key
     /// in image mode. Image → Browse hides the Metal layer and shows the split
@@ -220,14 +220,14 @@ pub enum AppCommand {
     /// stares at the placeholder.
     PreloaderProgress,
 
-    // ── Thumbnails (macOS-only; QuickLook-backed) ────────────────────
-    /// One or more QL thumbnail completions are sitting in the
-    /// `thumbnails::State::pending` queue waiting for the main thread to
+    // ── Previews (macOS-only; QuickLook-backed) ────────────────────
+    /// One or more QL preview completions are sitting in the
+    /// `previews::State::pending` queue waiting for the main thread to
     /// drain them. The completion block pushes deliveries onto the queue
     /// and fires this command **only when the queue was previously empty** —
     /// so a burst of 38 completions sends 1–2 user events, not 38, and
     /// keyboard / window events don't get starved by a high-frequency
     /// EventLoopProxy flood.
     #[cfg(target_os = "macos")]
-    ThumbnailsAvailable,
+    PreviewsAvailable,
 }

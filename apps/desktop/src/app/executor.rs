@@ -615,23 +615,23 @@ impl App {
             }
 
             #[cfg(target_os = "macos")]
-            AppCommand::ThumbnailsAvailable => {
+            AppCommand::PreviewsAvailable => {
                 // Drain every queued completion in one go. The
                 // completion blocks fire this command **only when the
                 // queue was previously empty** (see
-                // `quicklook::push_delivery`), so a burst of N thumb
+                // `quicklook::push_delivery`), so a burst of N preview
                 // completions sends 1–2 user events instead of N. Each
                 // user event is a winit dispatch; per-event cost adds
                 // up enough that 38 events were starving keyboard input
                 // for ~12 s during the initial folder scan.
-                let batch = self.thumbnails.requests.drain_pending();
+                let batch = self.previews.requests.drain_pending();
                 let mut redraw_for_pending = false;
                 for delivery in batch {
-                    if delivery.folder_generation != self.thumbnails.generation() {
+                    if delivery.folder_generation != self.previews.generation() {
                         log::debug!(
-                            "Thumb arrived from stale folder (gen {} != {}), dropping index {}",
+                            "Preview arrived from stale folder (gen {} != {}), dropping index {}",
                             delivery.folder_generation,
-                            self.thumbnails.generation(),
+                            self.previews.generation(),
                             delivery.index
                         );
                         continue;
@@ -639,12 +639,12 @@ impl App {
                     match delivery.result {
                         Ok(pixels) => {
                             log::info!(
-                                "Thumb ready: index={} {}x{}",
+                                "Preview ready: index={} {}x{}",
                                 delivery.index,
                                 pixels.width,
                                 pixels.height
                             );
-                            self.thumbnails.mark_ready(
+                            self.previews.mark_ready(
                                 delivery.index,
                                 pixels.width,
                                 pixels.height,
@@ -656,15 +656,15 @@ impl App {
                             }
                         }
                         Err(()) => {
-                            self.thumbnails
+                            self.previews
                                 .mark_failed(delivery.index, delivery.request_id);
                         }
                     }
                 }
                 if redraw_for_pending && let Some(index) = self.navigation.pending_current {
-                    self.display_thumbnail_placeholder(index);
+                    self.display_preview_placeholder(index);
                 }
-                self.pump_thumbnail_requests();
+                self.pump_preview_requests();
             }
         }
     }

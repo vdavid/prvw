@@ -61,9 +61,9 @@ pub struct SharedAppState {
     pub cache_indices: Vec<usize>,
     /// Pre-formatted diagnostics text, updated by the main thread.
     pub diagnostics_text: String,
-    /// Thumbnail scheduler status, mirrored from `thumbnails::State::status()`.
+    /// Preview scheduler status, mirrored from `previews::State::status()`.
     /// Macos-only; on other platforms stays at defaults.
-    pub thumbnails: ThumbnailsSnapshot,
+    pub previews: PreviewsSnapshot,
     /// Current top-level screen: `"image"` or `"browse"`.
     pub view_mode: &'static str,
     /// Which browse pane has keyboard focus: `"tree"` or `"grid"`. Only meaningful while
@@ -71,10 +71,10 @@ pub struct SharedAppState {
     pub focused_pane: &'static str,
 }
 
-/// Snapshot of the thumbnail scheduler, mirrored into shared state so the
+/// Snapshot of the preview scheduler, mirrored into shared state so the
 /// QA server can expose it over MCP without locking the scheduler itself.
 #[derive(Clone, Debug, Default)]
-pub struct ThumbnailsSnapshot {
+pub struct PreviewsSnapshot {
     pub folder_len: usize,
     pub current: usize,
     pub in_flight: Vec<usize>,
@@ -84,19 +84,19 @@ pub struct ThumbnailsSnapshot {
     pub paused: bool,
     pub max_parallel: usize,
     pub pending_current: Option<usize>,
-    /// Whether the image texture currently shows a thumbnail placeholder
-    /// (uploaded while `pending_current.is_some()` because a thumb was
+    /// Whether the image texture currently shows a preview placeholder
+    /// (uploaded while `pending_current.is_some()` because a preview was
     /// cached). Resets to false on full-decode arrival.
     pub placeholder_active: bool,
-    /// Ring buffer of recent thumbnail-lifecycle events with monotonic
+    /// Ring buffer of recent preview-lifecycle events with monotonic
     /// millisecond timestamps since app start. Lets MCP clients
-    /// reconstruct what happened even after the thumb-visible window
+    /// reconstruct what happened even after the preview-visible window
     /// has closed (solves "MCP too slow to catch the placeholder").
-    pub events: Vec<ThumbnailEvent>,
+    pub events: Vec<PreviewEvent>,
 }
 
 #[derive(Clone, Debug)]
-pub struct ThumbnailEvent {
+pub struct PreviewEvent {
     pub ts_ms: u64,
     pub kind: &'static str,
     pub detail: String,
@@ -135,7 +135,7 @@ impl Default for SharedAppState {
             loop_navigation: false,
             cache_indices: Vec::new(),
             diagnostics_text: String::new(),
-            thumbnails: ThumbnailsSnapshot::default(),
+            previews: PreviewsSnapshot::default(),
             view_mode: "image",
             focused_pane: "tree",
         }
@@ -229,23 +229,23 @@ impl App {
             .as_ref()
             .map(|d| d.files_ref())
             .unwrap_or(&[]);
-        // Thumbnails are QuickLook-backed (macOS-only); other platforms report 0.
+        // Previews are QuickLook-backed (macOS-only); other platforms report 0.
         #[cfg(target_os = "macos")]
-        let thumbnail_bytes = self.thumbnails.memory_bytes();
+        let preview_bytes = self.previews.memory_bytes();
         #[cfg(not(target_os = "macos"))]
-        let thumbnail_bytes = 0;
+        let preview_bytes = 0;
         state.diagnostics_text = crate::diagnostics::build_text(
             &self.navigation.image_cache.diagnostics(),
             state.current_index,
             dir_files,
             &self.navigation.history,
-            thumbnail_bytes,
+            preview_bytes,
         );
 
         #[cfg(target_os = "macos")]
         {
-            let status = self.thumbnails.status();
-            state.thumbnails = ThumbnailsSnapshot {
+            let status = self.previews.status();
+            state.previews = PreviewsSnapshot {
                 folder_len: status.folder_len,
                 current: status.current,
                 in_flight: status.in_flight,
@@ -256,7 +256,7 @@ impl App {
                 max_parallel: status.max_parallel,
                 pending_current: self.navigation.pending_current,
                 placeholder_active: self.placeholder_active,
-                events: self.thumbnail_events.iter().cloned().collect(),
+                events: self.preview_events.iter().cloned().collect(),
             };
         }
     }

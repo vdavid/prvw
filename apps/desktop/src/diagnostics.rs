@@ -76,7 +76,7 @@ pub fn build_text(
     current_index: usize,
     dir_files: &[PathBuf],
     navigation_history: &VecDeque<NavigationRecord>,
-    thumbnail_bytes: usize,
+    preview_bytes: usize,
 ) -> String {
     let mut out = String::new();
 
@@ -145,10 +145,10 @@ pub fn build_text(
     // visible at a glance.
     let process_memory = get_process_rss_mb();
     out.push_str(&format!(
-        "\nprocess_memory: {:.1} MB (image cache: {}, thumbnails: {})\n",
+        "\nprocess_memory: {:.1} MB (image cache: {}, previews: {})\n",
         process_memory,
         format_bytes(cache_diag.total_memory),
-        format_bytes(thumbnail_bytes)
+        format_bytes(preview_bytes)
     ));
 
     out

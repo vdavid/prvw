@@ -1,9 +1,9 @@
 //! Parallel pixel-dimension prefetcher.
 //!
 //! Reads `(width, height)` (with EXIF orientation applied) for every
-//! image in the active thumbnail window, in parallel across 16 worker
+//! image in the active preview window, in parallel across 16 worker
 //! threads. Populates a shared `HashMap<usize, Dimensions>` that the
-//! main thread reads when displaying a thumbnail placeholder.
+//! main thread reads when displaying a preview placeholder.
 //!
 //! ## Why this exists
 //!
@@ -26,7 +26,7 @@
 //! Local SSD can handle hundreds; iCloud Drive less. 16 is a good
 //! all-rounder.
 
-use crate::thumbnails::metadata::{self, Dimensions};
+use crate::previews::metadata::{self, Dimensions};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,8 +110,8 @@ impl DimPrefetcher {
         }
     }
 
-    /// Drop entries from the cache (called by `State::evict_distant_thumbs`
-    /// so the dim cache shadows the thumb cache's retention zone).
+    /// Drop entries from the cache (called by `State::evict_distant_previews`
+    /// so the dim cache shadows the preview cache's retention zone).
     pub fn invalidate(&self, indices: &[usize]) {
         if let Ok(mut r) = self.results.lock() {
             for i in indices {
