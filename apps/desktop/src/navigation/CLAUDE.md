@@ -132,10 +132,10 @@ Toggled via Navigate → Loop navigation, bare `L` key, or `loop_navigation` MCP
 `Settings::loop_navigation`. When on, Next at the last image wraps to the first and Previous at the first wraps to the
 last. The preloader's active window also wraps so wrap-side neighbours stay warm at the edges.
 
-`App::refresh_preload_window` (formerly `adjust_preload_window_for_loop`) runs on every loop toggle and sort change. It
-computes the new active window with `wrap::active_preload_indices`, calls `image_cache.retain_only(&active)` to drop
-indices that fall out of the window, then submits preload tasks for newly-in-window indices via the existing
-`submit_neighbor_preload` path. Fire-and-forget; the user doesn't wait on these decodes.
+`App::refresh_preload_window` runs on every loop toggle and sort change. It computes the new active window with
+`wrap::active_preload_indices`, calls `image_cache.retain_only(&active)` to drop indices that fall out of the window,
+then submits preload tasks for newly-in-window indices via the existing `submit_neighbor_preload` path. Fire-and-forget;
+the user doesn't wait on these decodes.
 
 ## Sort
 
