@@ -4,7 +4,10 @@ A second top-level screen for the main window. Image mode (today's wgpu viewer) 
 native AppKit screen: a folder tree on the left, a thumbnail grid on the right. The two screens **swap**, they never
 overlap.
 
-Status: spec / in progress. Built on the `image-browser` worktree.
+Status: in progress on the `image-browser` worktree. Done: Phase 0 (spike), Phase 1 (thumbnails → previews rename),
+Phase 3 (real folder tree). The left pane is now a live `NSOutlineView` source list (home + mounted volumes, lazy
+directory enumeration, path-identity nodes, arrow-key nav, selection recorded in `browser::State`). Still stubbed: the
+right-pane grid (Phase 4) and Phase 2 thumbnail plumbing. See `apps/desktop/src/browser/CLAUDE.md` for the tree details.
 
 ## Why native AppKit, not wgpu
 
@@ -146,7 +149,10 @@ re-run checks before integrating.
 2. **Thumbnail plumbing:** extract the shared, size-parameterized QuickLook generator, then add the grid request path
    and the visible-centered scheduler. Headless unit tests (TDD) for the scheduler's nearest-first ordering + scroll
    re-prioritization and for the 128 MB budget eviction.
-3. **Tree pane:** `NSOutlineView` source-list, home + volumes, lazy directory enumeration, selection → folder listing.
+3. **Tree pane** (done): `NSOutlineView` source-list (`setStyle(.SourceList)`), home + mounted volumes as **flat sibling
+   roots** (the grouped "Locations" header was the target but fights the path-keyed node model, so flat roots — see
+   `browser/CLAUDE.md`), lazy directory enumeration, path-identity `NodeObject`s, arrow-key nav driven programmatically,
+   selection → `BrowseSelectFolder` recorded in `browser::State` (+ supported-image count logged).
 4. **Grid pane:** `NSCollectionView` wired to the thumbnail cache + `DirectoryList`, selection, empty state.
 5. **Behaviors:** browse-open folder-select + scroll-to-mid + last-image select + focus; Tab; double-click/Enter →
    image; dir-arg startup; menu wiring.

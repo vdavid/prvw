@@ -126,6 +126,20 @@ pub enum AppCommand {
     /// Flip browse-mode keyboard focus between the tree and grid panes (Tab). Updates the
     /// app-tracked `browser::State::focused_pane` and the native highlight. Browse-mode only.
     ToggleBrowseFocus,
+    /// A folder was selected in the browse-mode tree. Records it in `browser::State` and logs
+    /// how many supported images it holds. Fired by the `NSOutlineView` selection delegate.
+    /// (Listing the folder's images in the grid is a later phase.)
+    #[cfg(target_os = "macos")]
+    BrowseSelectFolder(PathBuf),
+    /// Move the browse-mode tree selection (arrow keys). `+1` = Down, `-1` = Up. Drives the
+    /// `NSOutlineView` programmatically — winit keeps the keyboard, so the responder chain is
+    /// never used. Browse-mode only, ignored unless the tree pane is focused.
+    #[cfg(target_os = "macos")]
+    BrowseMoveTreeSelection(i32),
+    /// Expand (Right arrow) or collapse (Left arrow) the selected browse-mode tree row.
+    /// `true` = expand, `false` = collapse. Browse-mode only, tree pane focused.
+    #[cfg(target_os = "macos")]
+    BrowseExpandTreeSelection(bool),
 
     // ── Slideshow ────────────────────────────────────────────────────
     /// Start the slideshow if stopped, stop it if running (Slideshow →

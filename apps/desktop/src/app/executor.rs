@@ -355,6 +355,24 @@ impl App {
                     self.update_shared_state();
                 }
             }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseSelectFolder(folder) => {
+                let count = crate::browser::count_supported_images(&folder);
+                log::info!(
+                    "Browse: selected folder {} ({count} supported image(s))",
+                    folder.display()
+                );
+                self.browser.set_selected_folder(folder);
+                self.update_shared_state();
+            }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseMoveTreeSelection(delta) => {
+                self.browser.move_tree_selection(delta);
+            }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseExpandTreeSelection(expand) => {
+                self.browser.expand_tree_selection(expand);
+            }
             AppCommand::ToggleSlideshow => {
                 self.toggle_slideshow();
             }

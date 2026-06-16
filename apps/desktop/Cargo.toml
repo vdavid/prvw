@@ -66,6 +66,7 @@ objc2-app-kit = { version = "0.3", features = [
   "NSSplitView",
   "NSStackView",
   "NSSwitch",
+  "NSTableColumn",
   "NSTableView",
   "NSText",
   "NSTextField",
@@ -74,6 +75,7 @@ objc2-app-kit = { version = "0.3", features = [
   "NSView",
   "NSVisualEffectView",
   "NSWindow",
+  "NSWorkspace",
   "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3", features = [
@@ -81,6 +83,9 @@ objc2-foundation = { version = "0.3", features = [
   "NSAppleEventManager",
   "NSArray",
   "NSBundle",
+  "NSEnumerator",
+  "NSError",
+  "NSFileManager",
   "NSString",
   "NSURL",
   "objc2-core-services",

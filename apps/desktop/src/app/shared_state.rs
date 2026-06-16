@@ -69,6 +69,9 @@ pub struct SharedAppState {
     /// Which browse pane has keyboard focus: `"tree"` or `"grid"`. Only meaningful while
     /// `view_mode == "browse"`; stays at its last value otherwise.
     pub focused_pane: &'static str,
+    /// Absolute path of the folder selected in the browse-mode tree, or `None` if none picked
+    /// yet. Lets QA/tests assert tree selection without a screenshot.
+    pub browse_selected_folder: Option<String>,
 }
 
 /// Snapshot of the preview scheduler, mirrored into shared state so the
@@ -138,6 +141,7 @@ impl Default for SharedAppState {
             previews: PreviewsSnapshot::default(),
             view_mode: "image",
             focused_pane: "tree",
+            browse_selected_folder: None,
         }
     }
 }
@@ -170,6 +174,10 @@ impl App {
             crate::browser::PaneSide::Tree => "tree",
             crate::browser::PaneSide::Grid => "grid",
         };
+        state.browse_selected_folder = self
+            .browser
+            .selected_folder()
+            .map(|p| p.to_string_lossy().into_owned());
         // Cache is keyed by `PathBuf` (path-key refactor). For the QA/MCP
         // contract we still expose `cache_indices` — translate cached
         // paths back to directory indices via the current `dir_list`.

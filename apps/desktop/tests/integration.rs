@@ -1157,3 +1157,62 @@ fn screenshot_window_returns_png() {
     let img = image::load_from_memory(&bytes).expect("should decode as PNG");
     assert!(img.width() > 0 && img.height() > 0);
 }
+
+// ─── Browse mode (Phase 3: real folder tree) ───────────────────────────────
+
+#[test]
+fn enter_browse_mode_with_enter_key() {
+    let app = TestApp::start();
+    assert_eq!(app.get_state()["view_mode"].as_str(), Some("image"));
+    // Enter swaps the image viewer for the native browse screen (tree + grid).
+    app.post("/key", "Enter");
+    let state = app.get_state();
+    assert_eq!(state["view_mode"].as_str(), Some("browse"));
+    // Browse starts focused on the tree pane.
+    assert_eq!(state["focused_pane"].as_str(), Some("tree"));
+}
+
+#[test]
+fn escape_returns_from_browse_to_image() {
+    let app = TestApp::start();
+    app.post("/key", "Enter");
+    assert_eq!(app.get_state()["view_mode"].as_str(), Some("browse"));
+    // Esc in browse mode returns to the image viewer (never quits the app).
+    app.post("/key", "Escape");
+    assert_eq!(app.get_state()["view_mode"].as_str(), Some("image"));
+}
+
+#[test]
+fn tab_flips_browse_focus_between_panes() {
+    let app = TestApp::start();
+    app.post("/key", "Enter");
+    assert_eq!(app.get_state()["focused_pane"].as_str(), Some("tree"));
+    app.post("/key", "Tab");
+    assert_eq!(app.get_state()["focused_pane"].as_str(), Some("grid"));
+    app.post("/key", "Tab");
+    assert_eq!(app.get_state()["focused_pane"].as_str(), Some("tree"));
+}
+
+#[test]
+fn browse_arrow_keys_drive_tree_without_crashing() {
+    // The tree is driven programmatically (winit keeps the keyboard). Exercise the
+    // full arrow set and confirm the app stays alive and in browse mode — the real
+    // selection movement is a visual check, but this guards the command path.
+    let app = TestApp::start();
+    app.post("/key", "Enter");
+    for key in [
+        "ArrowDown",
+        "ArrowDown",
+        "ArrowRight",
+        "ArrowDown",
+        "ArrowUp",
+        "ArrowLeft",
+    ] {
+        app.post("/key", key);
+    }
+    let state = app.get_state();
+    assert_eq!(state["view_mode"].as_str(), Some("browse"));
+    // The selected-folder field is present in the state contract (null until a row
+    // is selected, a string path once the selection delegate fires).
+    assert!(state.get("browse_selected_folder").is_some());
+}

@@ -25,7 +25,13 @@
 //!   highlights whichever pane the value names. See `docs/specs/image-browser.md`.
 
 #[cfg(target_os = "macos")]
+mod outline;
+#[cfg(target_os = "macos")]
 mod split_view;
+mod tree_model;
+
+#[cfg(target_os = "macos")]
+pub use tree_model::count_supported_images;
 
 /// The two top-level screens of the main window. The viewer starts in `Image`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +90,9 @@ pub struct State {
     /// Which pane has keyboard focus in browse mode. Tab flips it (app-managed, not the
     /// native key-view loop). Entering browse starts on the tree.
     focused_pane: PaneSide,
+    /// The folder currently selected in the tree. Set by `BrowseSelectFolder`; the grid will
+    /// list its images in a later phase. `None` until the user picks a folder.
+    selected_folder: Option<std::path::PathBuf>,
     /// The native split view + its panes, built once on first entry to browse mode and kept
     /// alive for the window's lifetime thereafter. `None` until first built.
     #[cfg(target_os = "macos")]
@@ -102,9 +111,22 @@ impl State {
         Self {
             mode: ViewMode::Image,
             focused_pane: PaneSide::Tree,
+            selected_folder: None,
             #[cfg(target_os = "macos")]
             split_view: None,
         }
+    }
+
+    /// The folder currently selected in the browse-mode tree, if any.
+    #[must_use]
+    pub fn selected_folder(&self) -> Option<&std::path::Path> {
+        self.selected_folder.as_deref()
+    }
+
+    /// Record the folder selected in the tree. The grid listing lands in a later phase; for now
+    /// the app logs how many supported images it holds.
+    pub fn set_selected_folder(&mut self, folder: std::path::PathBuf) {
+        self.selected_folder = Some(folder);
     }
 
     /// The current top-level screen.
@@ -156,6 +178,34 @@ impl State {
         crate::window::set_metal_layer_hidden(window, true);
         split.set_focused_pane(self.focused_pane);
         log::info!("Entered browse mode");
+    }
+
+    /// Move the tree selection (arrow Up/Down) when the tree pane is focused. `delta` is +1
+    /// (Down) or -1 (Up). No-op if the grid pane is focused or the split view isn't built.
+    #[cfg(target_os = "macos")]
+    pub fn move_tree_selection(&self, delta: i32) {
+        if self.focused_pane != PaneSide::Tree {
+            return;
+        }
+        if let Some(split) = &self.split_view {
+            split.move_tree_selection(delta);
+        }
+    }
+
+    /// Expand (`true`, Right arrow) or collapse (`false`, Left arrow) the selected tree row,
+    /// when the tree pane is focused. No-op otherwise.
+    #[cfg(target_os = "macos")]
+    pub fn expand_tree_selection(&self, expand: bool) {
+        if self.focused_pane != PaneSide::Tree {
+            return;
+        }
+        if let Some(split) = &self.split_view {
+            if expand {
+                split.expand_tree_selection();
+            } else {
+                split.collapse_tree_selection();
+            }
+        }
     }
 
     /// Enter image mode: hide the split view (if built) and unhide the Metal layer. No-op off

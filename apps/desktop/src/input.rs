@@ -83,7 +83,17 @@ pub fn browse_key_to_command(key: Key<&str>, _modifiers: &ModifiersState) -> Opt
         }
         // Tab flips focus between the tree and grid panes.
         Key::Named(NamedKey::Tab) => Some(AppCommand::ToggleBrowseFocus),
-        // TODO Phase 3/4: arrows drive native selection in the focused pane. No-op for now.
+        // Arrows drive the focused pane's native selection. The tree (when focused): Up/Down
+        // move the selection, Left/Right collapse/expand the selected row. The executor gates
+        // these on the tree pane being focused (the grid's arrow nav lands with the grid phase).
+        #[cfg(target_os = "macos")]
+        Key::Named(NamedKey::ArrowDown) => Some(AppCommand::BrowseMoveTreeSelection(1)),
+        #[cfg(target_os = "macos")]
+        Key::Named(NamedKey::ArrowUp) => Some(AppCommand::BrowseMoveTreeSelection(-1)),
+        #[cfg(target_os = "macos")]
+        Key::Named(NamedKey::ArrowRight) => Some(AppCommand::BrowseExpandTreeSelection(true)),
+        #[cfg(target_os = "macos")]
+        Key::Named(NamedKey::ArrowLeft) => Some(AppCommand::BrowseExpandTreeSelection(false)),
         _ => None,
     }
 }
@@ -183,7 +193,14 @@ pub fn browse_qa_key_to_command(key_name: &str) -> Option<AppCommand> {
     match key_name {
         "Escape" | "Enter" => Some(AppCommand::EnterImageMode),
         "Tab" => Some(AppCommand::ToggleBrowseFocus),
-        // TODO Phase 3/4: arrows drive native selection in the focused pane. No-op for now.
+        #[cfg(target_os = "macos")]
+        "ArrowDown" => Some(AppCommand::BrowseMoveTreeSelection(1)),
+        #[cfg(target_os = "macos")]
+        "ArrowUp" => Some(AppCommand::BrowseMoveTreeSelection(-1)),
+        #[cfg(target_os = "macos")]
+        "ArrowRight" => Some(AppCommand::BrowseExpandTreeSelection(true)),
+        #[cfg(target_os = "macos")]
+        "ArrowLeft" => Some(AppCommand::BrowseExpandTreeSelection(false)),
         _ => {
             log::debug!("QA server (browse mode): unhandled key '{key_name}'");
             None

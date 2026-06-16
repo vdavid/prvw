@@ -1,34 +1,52 @@
-//! The browse-mode `NSSplitView` (Phase 0 spike).
+//! The browse-mode `NSSplitView`: a real folder-tree sidebar on the left, a grid stub on the right.
 //!
-//! Builds the split view as a sibling subview of winit's contentView, layer-backed above the
-//! Metal layer, pinned to the contentView edges, with a stable `identifier` — hidden by default.
-//! Left pane: a sidebar-ish placeholder (stub rows). Right pane: a centered "(grid)" label.
+//! Built as a sibling subview of winit's contentView, layer-backed above the Metal layer, pinned
+//! to the contentView edges, with a stable `identifier` — hidden by default (image mode is the
+//! startup screen). Same compositing pattern as `window::add_titlebar_labels`.
+//!
+//! ## Left pane: the source-list tree
+//!
+//! An `NSVisualEffectView` `.sidebar` material fills the pane (Finder-sidebar look); the real
+//! `NSOutlineView` (see `outline::BrowseTree`) sits inside it, inset `TITLE_BAR_HEIGHT` from the
+//! top so its rows clear the traffic lights. The right (grid) pane stays a centered "(grid)"
+//! stub — a later phase wires `NSCollectionView` there.
+//!
+//! ## The two spike fixes baked in here
+//!
+//! - **Divider opens at ~240pt without a drag.** `setPosition:ofDividerAtIndex:` is a no-op at
+//!   build time because the split view has no frame yet. `BrowseSplitViewInner` (an `NSSplitView`
+//!   subclass) sets the position on its first `layout` pass — the first time it has a real frame —
+//!   then latches a flag so the user can drag freely afterward.
+//! - **Sidebar clears the traffic lights.** The sidebar vibrancy fills the full pane height, but
+//!   the outline scroll view is inset `TITLE_BAR_HEIGHT` (32pt) from the top so no row sits under
+//!   the traffic-light strip — the same metric `window.rs` reserves for the title bar.
 //!
 //! ## No responder chain — keyboard is app-driven
 //!
-//! The panes are plain `NSView`s. They do **not** subclass `keyDown:` and do not depend on
-//! first-responder status, because winit keeps delivering `WindowEvent::KeyboardInput` even
-//! while this split view is up (the live spike proved it: `makeFirstResponder` returns `true`
-//! but winit re-asserts its content view, so a native pane's `keyDown:` never fires). So all
-//! browse-mode keys flow through winit → `input::browse_key_to_command` → `AppCommand`, and the
-//! split view only renders focus: `set_focused_pane` recolors the two panes so the focused one
-//! is visibly highlighted. See `docs/specs/image-browser.md` → "Input architecture".
+//! The panes are plain views; they don't subclass `keyDown:`. winit keeps delivering keyboard
+//! input even with this split view up, so browse keys flow through winit → `AppCommand` and drive
+//! the outline view programmatically (`BrowseTree::move_selection` / `expand_selected` /
+//! `collapse_selected`). `set_focused_pane` only recolors the panes for a visible focus cue.
 //!
-//! Every `Retained<>` here is either owned by the view hierarchy after `addSubview` or stored in
+//! Every `Retained<>` here is owned by the view hierarchy after `addSubview` or stored in
 //! `BrowseSplitView` (which `App` keeps for the window's life) — so nothing drops early and
 //! segfaults the autorelease pool.
 
+use std::cell::Cell;
+
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{MainThreadMarker, MainThreadOnly, msg_send};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSColor, NSLayoutAttribute, NSLayoutConstraint, NSLayoutRelation, NSSplitView, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
 };
-use objc2_foundation::{NSRect, NSString};
+use objc2_foundation::{NSObjectProtocol, NSRect, NSString};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
 use super::PaneSide;
+use super::outline::BrowseTree;
 
 /// `identifier` set on the split view so `window` helpers can find/hide it by id, exactly like
 /// the title-bar labels and vibrancy strips.
@@ -39,18 +57,58 @@ const BROWSER_SPLIT_IDENTIFIER: &str = "prvw.browser_split";
 /// transparent Metal layer rather than being occluded behind it. Matches `TITLEBAR_LABEL_Z_POSITION`.
 const BROWSER_SPLIT_Z_POSITION: f64 = 2.0;
 
-/// Initial divider position (logical px from the left). Gives the tree pane a sidebar-like width
-/// so neither pane collapses to zero on first show.
+/// Initial divider position (logical px from the left): the sidebar opens at this width on first
+/// layout, no manual drag needed. See the divider-fix note in the module docs.
 const INITIAL_DIVIDER_X: f64 = 240.0;
 
-/// Owns the split view and both panes for the window's lifetime. `App` stores this in
-/// `browser::State` so the `Retained<>`s never drop while the window lives. The view hierarchy
-/// also retains them after `addSubview`, but holding our own handles lets us hide/show and
-/// recolor the focus highlight without re-walking the subtree.
+/// Top inset for the sidebar's content (the outline scroll view), in logical px. Keeps tree rows
+/// clear of the traffic lights. Mirrors `crate::TITLE_BAR_HEIGHT`.
+const SIDEBAR_TOP_INSET: f64 = crate::TITLE_BAR_HEIGHT as f64;
+
+// ─── BrowseSplitViewInner: sets the divider on first layout ────────────────
+
+/// Ivars for [`BrowseSplitViewInner`]: a one-shot flag that latches after the first layout pass
+/// sets the initial divider position. `Cell` because `layout` takes `&self` and AppKit calls it
+/// on the main thread only.
+struct SplitInnerIvars {
+    divider_set: Cell<bool>,
+}
+
+define_class!(
+    /// `NSSplitView` subclass that sets the initial divider position on its first `layout` — the
+    /// first moment it has a real frame, since `setPosition:ofDividerAtIndex:` is a no-op on a
+    /// zero-frame split view at build time.
+    // SAFETY: NSSplitView subclass, no Drop. Main-thread only.
+    #[unsafe(super(NSSplitView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrvwBrowseSplitView"]
+    #[ivars = SplitInnerIvars]
+    struct BrowseSplitViewInner;
+
+    unsafe impl NSObjectProtocol for BrowseSplitViewInner {}
+);
+
+impl BrowseSplitViewInner {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc().set_ivars(SplitInnerIvars {
+            divider_set: Cell::new(false),
+        });
+        let this: Retained<Self> =
+            unsafe { msg_send![super(this), initWithFrame: NSRect::default()] };
+        this
+    }
+}
+
+// ─── BrowseSplitView: the owned handles ────────────────────────────────────
+
+/// Owns the split view, both panes, and the folder tree for the window's lifetime. `App` stores
+/// this in `browser::State` so the `Retained<>`s never drop while the window lives.
 pub struct BrowseSplitView {
-    split: Retained<NSSplitView>,
+    split: Retained<BrowseSplitViewInner>,
     tree_pane: Retained<NSView>,
     grid_pane: Retained<NSView>,
+    /// The folder tree the app drives for keyboard navigation.
+    tree: BrowseTree,
 }
 
 // SAFETY: All fields are AppKit objects only ever touched on the main thread (App runs the winit
@@ -66,11 +124,25 @@ impl BrowseSplitView {
         unsafe { build(mtm, ns_view) }
     }
 
-    /// Hide or show the split view.
+    /// Hide or show the split view. On the first show, set the initial divider position — by
+    /// now the split view is in the live hierarchy and has a real frame, so
+    /// `setPosition:ofDividerAtIndex:` takes (it's a no-op at build time on a zero-frame view).
+    /// We set it once and latch, so a later show won't yank a divider the user has dragged.
     pub fn set_hidden(&self, _window: &Window, hidden: bool) {
         unsafe {
-            let split: *const AnyObject = &*self.split as *const NSSplitView as *const _;
-            let _: () = msg_send![split, setHidden: hidden];
+            let _: () = msg_send![&*self.split, setHidden: hidden];
+            if !hidden && !self.split.ivars().divider_set.get() {
+                self.split.ivars().divider_set.set(true);
+                // Force the edge constraints to resolve so the split view has a real frame
+                // (they otherwise resolve on the next runloop pass, after this returns, when
+                // `setPosition:` would still see a zero frame and no-op).
+                let _: () = msg_send![&*self.split, layoutSubtreeIfNeeded];
+                let _: () = msg_send![
+                    &*self.split,
+                    setPosition: INITIAL_DIVIDER_X,
+                    ofDividerAtIndex: 0usize
+                ];
+            }
         }
     }
 
@@ -81,6 +153,21 @@ impl BrowseSplitView {
             set_pane_focus(&self.tree_pane, matches!(focused, PaneSide::Tree));
             set_pane_focus(&self.grid_pane, matches!(focused, PaneSide::Grid));
         }
+    }
+
+    /// Move the tree selection by `delta` (+1 Down, -1 Up). Driven by browse-mode arrow keys.
+    pub fn move_tree_selection(&self, delta: i32) {
+        self.tree.move_selection(delta);
+    }
+
+    /// Expand the selected tree row (Right arrow).
+    pub fn expand_tree_selection(&self) {
+        self.tree.expand_selected();
+    }
+
+    /// Collapse the selected tree row (Left arrow).
+    pub fn collapse_tree_selection(&self) {
+        self.tree.collapse_selected();
     }
 }
 
@@ -99,9 +186,8 @@ unsafe fn build(mtm: MainThreadMarker, ns_view: *const AnyObject) -> BrowseSplit
 
     unsafe {
         // ── Split view ───────────────────────────────────────────────────────────
-        let split = NSSplitView::initWithFrame(NSSplitView::alloc(mtm), NSRect::default());
+        let split = BrowseSplitViewInner::new(mtm);
         split.setVertical(true); // left | right panes side by side
-        // Identifier + layer-back + zPosition above the Metal layer, like the title-bar labels.
         let identifier = NSString::from_str(BROWSER_SPLIT_IDENTIFIER);
         let _: () = msg_send![&*split, setIdentifier: &*identifier];
         let _: () = msg_send![&*split, setTranslatesAutoresizingMaskIntoConstraints: false];
@@ -113,23 +199,65 @@ unsafe fn build(mtm: MainThreadMarker, ns_view: *const AnyObject) -> BrowseSplit
         // Hidden by default — image mode is the startup screen.
         let _: () = msg_send![&*split, setHidden: true];
 
-        // ── Left pane: sidebar-ish placeholder with a few stub rows ────────────────
-        // `NSSplitView` sizes its arranged subviews itself, so the panes must KEEP
-        // autoresizing-translation ON. The earlier spike disabled it (and gave the panes no
-        // size constraints), which collapsed both to zero and rendered the gray void. Plain
-        // layer-backed `NSView`s with a background color make the panes clearly visible.
+        // ── Left pane: sidebar vibrancy + the real folder tree ─────────────────────
+        // `NSSplitView` sizes its arranged subviews itself, so the panes KEEP autoresizing
+        // translation ON (the default). The tree's scroll view is inset below the title bar.
         let tree_pane = FlippedView::new_as_nsview(mtm);
         let _: () = msg_send![&*tree_pane, setWantsLayer: true];
-        add_stub_rows(mtm, &tree_pane);
 
-        // ── Right pane: centered "(grid)" label ────────────────────────────────────
+        // Sidebar material fills the pane (Finder-sidebar look).
+        let sidebar =
+            NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), NSRect::default());
+        sidebar.setMaterial(NSVisualEffectMaterial::Sidebar);
+        sidebar.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        sidebar.setState(NSVisualEffectState::FollowsWindowActiveState);
+        let _: () = msg_send![&*sidebar, setTranslatesAutoresizingMaskIntoConstraints: false];
+        tree_pane.addSubview(as_view::<NSVisualEffectView>(&sidebar));
+        pin_edges(as_view::<NSVisualEffectView>(&sidebar), &tree_pane, 0.0);
+
+        // The folder tree, inside its scroll view, inset from the top so rows clear the
+        // traffic lights.
+        let tree = BrowseTree::create(mtm);
+        let scroll = tree.scroll_view();
+        let _: () = msg_send![scroll, setTranslatesAutoresizingMaskIntoConstraints: false];
+        tree_pane.addSubview(as_view::<objc2_app_kit::NSScrollView>(scroll));
+        let scroll_view = as_view::<objc2_app_kit::NSScrollView>(scroll);
+        pin(
+            &tree_pane,
+            NSLayoutAttribute::Top,
+            scroll_view,
+            NSLayoutAttribute::Top,
+            -SIDEBAR_TOP_INSET,
+        );
+        pin(
+            scroll_view,
+            NSLayoutAttribute::Leading,
+            &tree_pane,
+            NSLayoutAttribute::Leading,
+            0.0,
+        );
+        pin(
+            &tree_pane,
+            NSLayoutAttribute::Trailing,
+            scroll_view,
+            NSLayoutAttribute::Trailing,
+            0.0,
+        );
+        pin(
+            &tree_pane,
+            NSLayoutAttribute::Bottom,
+            scroll_view,
+            NSLayoutAttribute::Bottom,
+            0.0,
+        );
+
+        // ── Right pane: centered "(grid)" stub (a later phase wires NSCollectionView) ─
         let grid_pane = FlippedView::new_as_nsview(mtm);
         let _: () = msg_send![&*grid_pane, setWantsLayer: true];
         let label = make_label("(grid)", 15.0, mtm);
         label.setTextColor(Some(&NSColor::secondaryLabelColor()));
         let _: () = msg_send![&*label, setTranslatesAutoresizingMaskIntoConstraints: false];
         grid_pane.addSubview(as_view::<objc2_app_kit::NSTextField>(&label));
-        // Center the label in its pane.
         center_in(&label, &grid_pane);
 
         // Add panes to the split view (order matters: index 0 = tree, 1 = grid).
@@ -137,76 +265,29 @@ unsafe fn build(mtm: MainThreadMarker, ns_view: *const AnyObject) -> BrowseSplit
         split.addSubview(&grid_pane);
 
         // ── Add the split view as a contentView sibling, pinned to all edges ───────
-        let split_obj: *const AnyObject = &*split as *const NSSplitView as *const _;
+        let split_obj: *const AnyObject = &*split as *const BrowseSplitViewInner as *const _;
         let _: () = msg_send![ns_view, addSubview: split_obj];
 
         let parent: &AnyObject = &*ns_view;
-        let make_constraint = |attr: NSLayoutAttribute, parent_attr: NSLayoutAttribute| {
+        for (attr, parent_attr) in [
+            (NSLayoutAttribute::Top, NSLayoutAttribute::Top),
+            (NSLayoutAttribute::Bottom, NSLayoutAttribute::Bottom),
+            (NSLayoutAttribute::Leading, NSLayoutAttribute::Leading),
+            (NSLayoutAttribute::Trailing, NSLayoutAttribute::Trailing),
+        ] {
             NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
                 &split, attr, NSLayoutRelation::Equal, Some(parent), parent_attr, 1.0, 0.0,
             )
-        };
-        for c in [
-            make_constraint(NSLayoutAttribute::Top, NSLayoutAttribute::Top),
-            make_constraint(NSLayoutAttribute::Bottom, NSLayoutAttribute::Bottom),
-            make_constraint(NSLayoutAttribute::Leading, NSLayoutAttribute::Leading),
-            make_constraint(NSLayoutAttribute::Trailing, NSLayoutAttribute::Trailing),
-        ] {
-            c.setActive(true);
+            .setActive(true);
         }
 
-        // Give the tree pane a sidebar width so neither side starts collapsed.
-        let _: () = msg_send![&*split, setPosition: INITIAL_DIVIDER_X, ofDividerAtIndex: 0usize];
-
-        log::debug!("Browse split view created (hidden)");
+        log::debug!("Browse split view created (hidden) with real folder tree");
 
         BrowseSplitView {
             split,
             tree_pane,
             grid_pane,
-        }
-    }
-}
-
-/// Add a few stub "folder rows" to the tree pane so it reads as a sidebar, not a blank box.
-/// SAFETY: `pane` is a live layer-backed `NSView` on the main thread.
-unsafe fn add_stub_rows(mtm: MainThreadMarker, pane: &NSView) {
-    use crate::platform::macos::ui_common::{as_view, make_label};
-    unsafe {
-        let rows = ["Pictures", "Downloads", "Desktop"];
-        let mut prev: Option<Retained<objc2_app_kit::NSTextField>> = None;
-        for text in rows {
-            let row = make_label(text, 13.0, mtm);
-            // Left-align the stub rows (the shared label factory centers by default).
-            row.setAlignment(objc2_app_kit::NSTextAlignment(0)); // NSTextAlignmentLeft = 0
-            let _: () = msg_send![&*row, setTranslatesAutoresizingMaskIntoConstraints: false];
-            pane.addSubview(as_view::<objc2_app_kit::NSTextField>(&row));
-
-            // Pin to the leading edge; stack vertically from the top.
-            pin(
-                &row,
-                NSLayoutAttribute::Leading,
-                pane,
-                NSLayoutAttribute::Leading,
-                16.0,
-            );
-            match &prev {
-                Some(p) => pin(
-                    &row,
-                    NSLayoutAttribute::Top,
-                    p,
-                    NSLayoutAttribute::Bottom,
-                    12.0,
-                ),
-                None => pin(
-                    &row,
-                    NSLayoutAttribute::Top,
-                    pane,
-                    NSLayoutAttribute::Top,
-                    16.0,
-                ),
-            }
-            prev = Some(row);
+            tree,
         }
     }
 }
@@ -221,10 +302,44 @@ unsafe fn pin(
     constant: f64,
 ) {
     unsafe {
-        let c = NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
+        NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
             item, attr, NSLayoutRelation::Equal, Some(to), to_attr, 1.0, constant,
+        )
+        .setActive(true);
+    }
+}
+
+/// Pin `item` to fill `container` (all four edges) at the given inset.
+unsafe fn pin_edges(item: &AnyObject, container: &AnyObject, inset: f64) {
+    unsafe {
+        pin(
+            item,
+            NSLayoutAttribute::Top,
+            container,
+            NSLayoutAttribute::Top,
+            inset,
         );
-        c.setActive(true);
+        pin(
+            item,
+            NSLayoutAttribute::Leading,
+            container,
+            NSLayoutAttribute::Leading,
+            inset,
+        );
+        pin(
+            container,
+            NSLayoutAttribute::Trailing,
+            item,
+            NSLayoutAttribute::Trailing,
+            inset,
+        );
+        pin(
+            container,
+            NSLayoutAttribute::Bottom,
+            item,
+            NSLayoutAttribute::Bottom,
+            inset,
+        );
     }
 }
 
@@ -248,20 +363,18 @@ unsafe fn center_in(item: &AnyObject, container: &AnyObject) {
     }
 }
 
-/// Recolor a pane's layer to show whether it's focused. Focused → a bright accent-tinted
-/// background; unfocused → a dim neutral one. Distinct enough that a human can SEE Tab switch
-/// focus (stub-level; the real panes get native selection rings later).
+/// Recolor a pane's layer to show whether it's focused. Focused → a faint accent tint; unfocused
+/// → transparent (the sidebar vibrancy / grid background shows through). Distinct enough that a
+/// human can SEE Tab switch focus; the real selection rings live in the native controls.
 /// SAFETY: `pane` is a live layer-backed `NSView` on the main thread.
 unsafe fn set_pane_focus(pane: &NSView, focused: bool) {
     let Some(layer) = pane.layer() else {
         return;
     };
     let color = if focused {
-        // System accent, lightened, so the focused pane clearly pops.
-        NSColor::controlAccentColor().colorWithAlphaComponent(0.30)
+        NSColor::controlAccentColor().colorWithAlphaComponent(0.12)
     } else {
-        // Dim neutral fill so the unfocused pane stays visible but recedes.
-        NSColor::secondaryLabelColor().colorWithAlphaComponent(0.06)
+        NSColor::clearColor()
     };
     // The typed `CGColor()` gives a real CGColorRef. Set it on the layer with a raw
     // `objc_msgSend`: `msg_send![layer, setBackgroundColor: cg]` mis-encodes the CGColorRef as
