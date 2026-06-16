@@ -667,13 +667,15 @@ impl App {
     }
 
     /// Warm the browse selection's prospective current image + its neighbors into the image cache,
-    /// so opening it is instant and arrowing left/right in image mode afterward is warm. Called when
-    /// the browse selection lands on an image (a grid click, or the seeded selection after a folder
-    /// lists). Warms by PATH via `Preloader::warm_paths` — it does NOT touch `dir_list`,
-    /// `pending_current`, or the displayed image, so pressing Esc instead of opening still shows the
-    /// previously displayed image unchanged (the cache is path-keyed, so warming arbitrary paths is
-    /// safe). A moved selection cancels the now-stale warms (`warm_paths` cancels paths that drop out
-    /// of the new set). No-op off macOS, when neighbor preloading is disabled, or with no selection.
+    /// so that when the user reveals it (Esc / Enter / double-click) the image shows instantly and
+    /// arrowing left/right in image mode afterward is warm. Called when the browse selection lands
+    /// on an image (a grid click, or the seeded selection after a folder lists). The browse
+    /// selection IS the prospective current image; `reveal_selected_image` makes it current at
+    /// reveal time. Warming runs BY PATH via `Preloader::warm_paths` (the cache is path-keyed, so
+    /// warming arbitrary paths is safe) and deliberately does NOT display the image or auto-fit the
+    /// window while browsing — doing so would resize the window behind the browse UI. A moved
+    /// selection cancels the now-stale warms (`warm_paths` cancels paths that drop out of the new
+    /// set). No-op off macOS, when neighbor preloading is disabled, or with no selection.
     #[cfg(target_os = "macos")]
     fn warm_browse_selection(&mut self) {
         if !self.navigation.preload_neighbors {
@@ -1185,19 +1187,31 @@ impl App {
 
     // ── Browse mode ──────────────────────────────────────────────────
 
-    /// Switch the main window between the image viewer and the native browse screen.
-    /// No-op when already in `target`. Entering browse shows the split view and hides the
-    /// Metal layer (the GPU goes idle — no redraws requested); entering image reverses it
-    /// and requests a redraw. Also flips the Navigate menu item's label.
-    /// Open the grid's selected image in image mode (double-click on a grid item, or Enter while
-    /// the grid pane is focused). Sets up `navigation` for the selected folder's images at the
-    /// chosen index, displays that image, and switches to image mode so arrow-key navigation works
-    /// afterward. No-op off macOS or when the grid has no selection (empty folder).
-    pub(crate) fn open_selected_grid_image(&mut self) {
+    /// Reveal the browse-selected image in image mode. **Esc and Enter both route here** (the
+    /// user's model: the image-mode current image IS whatever the browse cursor points at, even
+    /// while the Metal canvas is hidden) — there's no "Esc preserves the old image" path anymore.
+    ///
+    /// The reveal is **render-then-unhide** so there's zero stale frame: we set image-mode state
+    /// and hide the split view but keep the Metal layer hidden ([`prepare_image_reveal`]), point
+    /// `navigation` at the grid's folder + selected index, paint that image to the drawable (cache
+    /// hit → instant; miss → the grid thumbnail's QuickLook preview stretched + "Loading…", with
+    /// the sharp decode swapping in later via `poll_preloader`), render one frame synchronously,
+    /// then unhide the canvas ([`reveal_canvas`]). The first visible GPU frame is already correct.
+    ///
+    /// **No selection** (empty folder, or the tree is focused with no grid pick): degrade
+    /// gracefully — reveal image mode still showing the last valid image (whatever `dir_list`
+    /// currently holds), or a clean empty canvas if nothing was ever opened. Never a blank/stale
+    /// flash, never a crash. No-op off macOS or when already in image mode.
+    pub(crate) fn reveal_selected_image(&mut self) {
         #[cfg(target_os = "macos")]
         {
-            // Enter on the tree (or with no grid selection) just returns to image mode showing the
-            // current image — only a focused grid with a selection opens a specific image.
+            if !self.browser.is_browse() {
+                return;
+            }
+
+            // The browse selection drives the current image: only a focused grid with a live
+            // selection picks a specific image. Esc on the tree (or with no selection) keeps the
+            // currently displayed image — degrade gracefully, don't blank the canvas.
             let grid_focused = matches!(
                 self.browser.focused_pane(),
                 Some(crate::browser::PaneSide::Grid)
@@ -1207,50 +1221,72 @@ impl App {
             } else {
                 None
             };
-            let Some((path, images, index)) = target else {
-                self.set_view_mode(crate::browser::ViewMode::Image);
+
+            if let Some((path, images, index)) = target {
+                log::info!(
+                    "Browse reveal: {} (index {index} of {})",
+                    path.display(),
+                    images.len()
+                );
+                // Point navigation at the grid's folder, positioned at the selected index. The
+                // grid lists in the same `SortBy`, so `from_explicit` (which re-sorts with the
+                // same comparator) maps the grid's selected index 1:1 to the dir-list index
+                // (`resolve_reveal_index`), landing `go_by` exactly on `path`.
+                let sort_by = settings::Settings::load().sort_by;
+                let resolved =
+                    crate::browser::resolve_reveal_index(&images, index, sort_by).unwrap_or(0);
+                let mut dir_list = directory::DirectoryList::from_explicit(images, sort_by);
+                if resolved > 0 {
+                    dir_list.go_by(resolved as i32, false);
+                }
+                self.navigation.dir_list = Some(dir_list);
+
+                // Seed the preview scheduler with the new folder (placeholder support + prefetch).
+                if let Some(dir) = &self.navigation.dir_list {
+                    let paths = dir.files();
+                    let current = dir.current_index();
+                    self.previews.set_folder(paths, current);
+                }
+            } else {
+                log::info!("Browse reveal: no grid selection — keeping the current image");
+            }
+
+            // ── Render-then-unhide ──
+            // Set image-mode state + hide the split view, but keep the Metal layer hidden so the
+            // paint below lands on a still-invisible drawable.
+            let Some(win) = self.window.clone() else {
                 return;
             };
-            log::info!(
-                "Browse open: {} (index {index} of {})",
-                path.display(),
-                images.len()
-            );
+            self.browser.prepare_image_reveal(&win);
 
-            // Build the navigation list from the grid's image list (same `SortBy` as the grid, so
-            // the order matches) and position it at the chosen index. `from_explicit` re-sorts with
-            // the same comparator, so `go_by(index)` lands on `path`.
-            let sort_by = settings::Settings::load().sort_by;
-            let mut dir_list = directory::DirectoryList::from_explicit(images, sort_by);
-            if index > 0 {
-                dir_list.go_by(index as i32, false);
-            }
-            self.navigation.dir_list = Some(dir_list);
-
-            // Leave browse for image mode first so the Metal layer is visible before we paint.
-            self.set_view_mode(crate::browser::ViewMode::Image);
-
-            // Seed the preview scheduler with the new folder (placeholder support + dim prefetch).
-            if let Some(dir) = &self.navigation.dir_list {
-                let paths = dir.files();
-                let current = dir.current_index();
-                self.previews.set_folder(paths, current);
+            // Paint the selected (or current) image into the renderer — instant from cache, else a
+            // placeholder while the background decode runs. NEVER blocks the main thread on a full
+            // decode. When there's no image at all (nothing ever opened), this is a no-op and the
+            // canvas stays clean.
+            if self.navigation.dir_list.is_some() {
+                self.display_open_target();
+                // Warm neighbors so arrow-key nav is instant (cache-miss queues them after `Ready`;
+                // this covers the cache-hit case where no `Ready` fires).
+                if self.navigation.pending_current.is_none() {
+                    self.warm_initial_neighbors();
+                }
             }
 
-            // Show the image INSTANTLY: never block the main thread on a full decode. If the warmed
-            // selection already landed it in the cache (the common case — `warm_browse_selection`
-            // pre-decoded it), display from cache immediately; otherwise set `pending_current`, show
-            // a placeholder (the QuickLook preview stretched to size, "Loading…" title) and let the
-            // preloader deliver the full decode via `poll_preloader`. Same async path image-mode
-            // navigation uses for a cache miss.
-            self.display_open_target();
+            // Re-assert the title/zoom labels against the title-bar / fullscreen state (browse hid
+            // them) before the synchronous paint, so the first visible frame has the right chrome.
+            let offset = self.content_offset_y();
+            window::set_titlebar_vibrancy_visible(&win, offset.0 > 0.0);
 
-            // Warm neighbors so arrow-key nav is instant, mirroring the launch path. (When the open
-            // target was a cache miss, `poll_preloader` queues neighbors after `Ready`; this covers
-            // the cache-hit case where no `Ready` will fire.)
-            if self.navigation.pending_current.is_none() {
-                self.warm_initial_neighbors();
-            }
+            // Paint one frame to the (still-hidden) drawable, THEN unhide it — so the first visible
+            // frame is already the correct image (no ~100 ms stale flash from unhiding first).
+            self.render_frame();
+            self.needs_redraw = false;
+            self.browser.reveal_canvas(&win);
+
+            self.set_browse_menu_label();
+            // Keep render-on-demand honest: request a follow-up frame for the placeholder→sharp
+            // swap and any auto-fit settling.
+            self.request_redraw();
             self.update_shared_state();
         }
     }
@@ -1853,6 +1889,77 @@ impl App {
         if let Some(win) = &self.window {
             win.request_redraw();
         }
+    }
+
+    /// Render one frame to the wgpu drawable, returning whether it actually drew (false when the
+    /// renderer is absent or the surface wasn't ready). Builds the title labels + histogram/EXIF
+    /// overlays then calls `renderer.render`. Normally driven by `WindowEvent::RedrawRequested`,
+    /// but also called synchronously from the browse→image reveal path: it paints the selected
+    /// image to the drawable BEFORE the Metal layer is unhidden, so the first visible frame is
+    /// already correct (no ~100 ms stale-image flash). See `reveal_selected_image`.
+    fn render_frame(&mut self) -> bool {
+        let mut text_blocks = self.build_text_overlay();
+        let offset = self.content_offset_y();
+
+        // When the title bar is on (and not fullscreen), the native title/zoom labels
+        // in the glass strip own the readout. They auto-contrast in light/dark, so they
+        // replace the glyphon pills (which `build_text_overlay` skips in this case).
+        #[cfg(target_os = "macos")]
+        if self.title_bar
+            && !self.is_fullscreen()
+            && let Some(win) = &self.window
+            && let Some((title, zoom_text)) = self.titlebar_text()
+        {
+            window::set_titlebar_text(win, &title, &zoom_text);
+        }
+        // The histogram and EXIF overlays anchor to a fixed top inset (the title-bar
+        // height) rather than the content offset, so they stay put when the title bar
+        // is off instead of riding up over the zoom readout.
+        let overlay_offset = Logical(TITLE_BAR_HEIGHT);
+
+        // Build the histogram overlay if it's visible and we have data. The
+        // produced `HistogramDrawCall` borrows immutably from `self.histogram.data`
+        // for the duration of the render call.
+        let mut standalone_pills: Vec<crate::render::text::StandalonePill> = Vec::new();
+        let logical_width = self.renderer.as_ref().map(|r| r.logical_width());
+        let histogram_call: Option<crate::render::renderer::HistogramDrawCall<'_>> = if self
+            .histogram
+            .visible
+            && let (Some(width), Some(data)) = (logical_width, self.histogram.data.as_ref())
+        {
+            let build =
+                histogram::overlay::build(data, self.histogram.hover_bin, width, overlay_offset);
+            standalone_pills.extend(build.pills);
+            for tb in build.text_blocks {
+                text_blocks.push(tb);
+            }
+            Some(build.draw_call)
+        } else {
+            None
+        };
+
+        // EXIF info overlay. Hidden when the user toggled it off OR
+        // when the current image carries no EXIF — even toggled-on,
+        // a wall of "n/a" rows would just be noise.
+        if self.exif_overlay.visible
+            && let Some(width) = logical_width
+            && let Some(metadata) = self.current_exif()
+        {
+            let build = exif_overlay::overlay::build(
+                metadata,
+                width,
+                overlay_offset,
+                self.histogram.visible,
+            );
+            standalone_pills.extend(build.pills);
+            for tb in build.text_blocks {
+                text_blocks.push(tb);
+            }
+        }
+
+        self.renderer.as_mut().is_some_and(|renderer| {
+            renderer.render(&text_blocks, &standalone_pills, histogram_call, offset)
+        })
     }
 
     /// EXIF metadata of the currently displayed image, if any. The cache
@@ -2732,72 +2839,7 @@ impl ApplicationHandler<AppCommand> for App {
 
             WindowEvent::RedrawRequested if self.needs_redraw => {
                 log::trace!("Rendering frame");
-                let mut text_blocks = self.build_text_overlay();
-                let offset = self.content_offset_y();
-
-                // When the title bar is on (and not fullscreen), the native title/zoom labels
-                // in the glass strip own the readout. They auto-contrast in light/dark, so they
-                // replace the glyphon pills (which `build_text_overlay` skips in this case).
-                #[cfg(target_os = "macos")]
-                if self.title_bar
-                    && !self.is_fullscreen()
-                    && let Some(win) = &self.window
-                    && let Some((title, zoom_text)) = self.titlebar_text()
-                {
-                    window::set_titlebar_text(win, &title, &zoom_text);
-                }
-                // The histogram and EXIF overlays anchor to a fixed top inset (the title-bar
-                // height) rather than the content offset, so they stay put when the title bar
-                // is off instead of riding up over the zoom readout.
-                let overlay_offset = Logical(TITLE_BAR_HEIGHT);
-
-                // Build the histogram overlay if it's visible and we have data. The
-                // produced `HistogramDrawCall` borrows immutably from `self.histogram.data`
-                // for the duration of the render call.
-                let mut standalone_pills: Vec<crate::render::text::StandalonePill> = Vec::new();
-                let logical_width = self.renderer.as_ref().map(|r| r.logical_width());
-                let histogram_call: Option<crate::render::renderer::HistogramDrawCall<'_>> = if self
-                    .histogram
-                    .visible
-                    && let (Some(width), Some(data)) = (logical_width, self.histogram.data.as_ref())
-                {
-                    let build = histogram::overlay::build(
-                        data,
-                        self.histogram.hover_bin,
-                        width,
-                        overlay_offset,
-                    );
-                    standalone_pills.extend(build.pills);
-                    for tb in build.text_blocks {
-                        text_blocks.push(tb);
-                    }
-                    Some(build.draw_call)
-                } else {
-                    None
-                };
-
-                // EXIF info overlay. Hidden when the user toggled it off OR
-                // when the current image carries no EXIF — even toggled-on,
-                // a wall of "n/a" rows would just be noise.
-                if self.exif_overlay.visible
-                    && let Some(width) = logical_width
-                    && let Some(metadata) = self.current_exif()
-                {
-                    let build = exif_overlay::overlay::build(
-                        metadata,
-                        width,
-                        overlay_offset,
-                        self.histogram.visible,
-                    );
-                    standalone_pills.extend(build.pills);
-                    for tb in build.text_blocks {
-                        text_blocks.push(tb);
-                    }
-                }
-
-                let rendered = self.renderer.as_mut().is_some_and(|renderer| {
-                    renderer.render(&text_blocks, &standalone_pills, histogram_call, offset)
-                });
+                let rendered = self.render_frame();
                 if rendered {
                     self.needs_redraw = false;
                 } else if let Some(win) = &self.window {

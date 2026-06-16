@@ -185,9 +185,12 @@ impl BrowseSplitView {
             PaneSide::Tree => self.tree.make_first_responder(),
             PaneSide::Grid => self.grid.make_first_responder(),
         }
-        // Refresh the grid's selected-item emphasis to match the new focus (blue when focused, gray
-        // when not). The tree repaints itself on the first-responder change.
-        self.grid.refresh_focus_emphasis();
+        // Drive the grid's selected-item emphasis from `focused_pane` (blue iff the grid is the
+        // focused pane, gray otherwise) and repaint. State-driven, so a tree click grays the grid
+        // item even though the async click→`BrowseSelectFolder` flip makes the native first
+        // responder unreliable to read. The tree (a source list) repaints its own emphasis on the
+        // first-responder change.
+        self.grid.set_focused(matches!(focused, PaneSide::Grid));
     }
 
     /// Apply a completed background directory scan: store the children and reload that tree node.

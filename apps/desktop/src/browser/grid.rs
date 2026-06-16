@@ -49,7 +49,7 @@
 //! repaints visible selected items on a Tab focus flip. Single-click selects instantly (the open
 //! gesture is detected in the item's `mouseDown:` via `clickCount == 2`, so no click-delay).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -240,30 +240,36 @@ define_class!(
 
 impl GridItem {
     /// Repaint the selection emphasis to match `isSelected` and the grid's focus. Called from
-    /// `setSelected:` (AppKit) and from `BrowseGrid::refresh_focus_emphasis` on a Tab focus flip.
+    /// `setSelected:` (AppKit) and from `BrowseGrid::refresh_focus_emphasis` on a focus flip.
     /// `#[allow(dead_code)]`: reached only via the AppKit override + the grid's refresh, which the
     /// lint can't see.
     #[allow(dead_code)]
     fn refresh_emphasis(&self) {
         let selected: bool = unsafe { msg_send![self, isSelected] };
-        let focused = self.grid_is_first_responder();
+        let focused = self.grid_pane_is_focused();
         self.apply_selection_style(selected, focused);
     }
 
-    /// Whether the grid (this item's collection view) is the window's first responder — i.e. the
-    /// grid pane is the focused pane. Drives blue (focused) vs gray (unfocused) selection.
-    fn grid_is_first_responder(&self) -> bool {
+    /// Whether the grid pane is the focused pane — read from the data source's state-driven
+    /// `focused` flag (mirrored from `browser::State::focused_pane`), NOT from the native first
+    /// responder. Inferring focus from `window.firstResponder` is racy during a click→command
+    /// focus flip (the `BrowseSelectFolder` dispatch is async), which left the grid drawn blue
+    /// after a tree click. State is the single source of truth (see `grid.rs` module docs).
+    fn grid_pane_is_focused(&self) -> bool {
         unsafe {
             let cv: *const AnyObject = msg_send![self, collectionView];
             if cv.is_null() {
                 return false;
             }
-            let window: *const AnyObject = msg_send![cv, window];
-            if window.is_null() {
+            let ds: *const AnyObject = msg_send![cv, dataSource];
+            if ds.is_null() {
                 return false;
             }
-            let first_responder: *const AnyObject = msg_send![window, firstResponder];
-            std::ptr::eq(first_responder, cv)
+            let responds: bool = msg_send![ds, respondsToSelector: sel!(gridPaneIsFocused)];
+            if !responds {
+                return false;
+            }
+            msg_send![ds, gridPaneIsFocused]
         }
     }
 
@@ -315,6 +321,12 @@ struct GridDataSourceIvars {
     lister: FolderLister,
     /// QL request worker for grid thumbnails — a second path into the shared `quicklookd` cache.
     requests: RequestTable,
+    /// Whether the grid pane is the focused pane, mirrored from `browser::State::focused_pane` by
+    /// `sync_native` (via `BrowseGrid::set_focused`). The single source of truth for the grid's
+    /// selection-emphasis color: blue when focused, gray when not. We DON'T infer it from the
+    /// native first responder — the click→`BrowseSelectFolder` dispatch is async, so reading the
+    /// first responder during a focus flip is racy. State-driven matches the `sync_native` model.
+    focused: Cell<bool>,
 }
 
 define_class!(
@@ -353,6 +365,14 @@ define_class!(
             let index = index_path.item() as usize;
             self.configure_item(&item, index);
             Retained::into_raw(item)
+        }
+
+        /// State-driven focus flag for the grid items to read at paint time (see
+        /// `GridItem::grid_pane_is_focused`). Raw selector because `GridItem` dispatches it
+        /// dynamically via the collection view's `dataSource` pointer.
+        #[unsafe(method(gridPaneIsFocused))]
+        fn grid_pane_is_focused(&self) -> bool {
+            self.ivars().focused.get()
         }
 
         // ── NSCollectionViewDelegate: selection ──
@@ -404,6 +424,7 @@ impl GridDataSource {
                 || crate::commands::AppCommand::BrowseThumbnailsAvailable,
                 "prvw-gridgen",
             ),
+            focused: Cell::new(false),
         };
         let this = mtm.alloc().set_ivars(ivars);
         unsafe { msg_send![super(this), init] }
@@ -569,9 +590,20 @@ impl BrowseGrid {
         }
     }
 
-    /// Repaint the visible selected items' emphasis to match the grid's current focus (blue when
-    /// the grid is first responder, gray otherwise). Called from `apply_focus` on a Tab focus flip,
-    /// since AppKit doesn't re-run `setSelected:` just because first responder moved.
+    /// Set whether the grid pane is the focused pane (mirrored from `browser::State::focused_pane`)
+    /// and repaint the visible selected items so their emphasis matches: accent-blue when focused,
+    /// gray when not. Called by `apply_focus` on every `sync_native`, so a tree click (which moves
+    /// focus away from the grid) grays the grid item immediately — and a grid click blues it.
+    /// State-driven, not first-responder-inferred (the async click→command flip made FR-reading
+    /// racy).
+    pub fn set_focused(&self, focused: bool) {
+        self.data_source.ivars().focused.set(focused);
+        self.refresh_focus_emphasis();
+    }
+
+    /// Repaint the visible selected items' emphasis to match the grid's current focus flag (blue
+    /// when focused, gray otherwise). Called from `set_focused` on a focus flip, since AppKit
+    /// doesn't re-run `setSelected:` just because the focused pane changed.
     pub fn refresh_focus_emphasis(&self) {
         let visible = self.collection.visibleItems();
         let count = visible.count();

@@ -27,8 +27,13 @@ and Metal-layer visibility, the image labels, first responder, and emphasis from
   (`window::grow_to_browse_minimum`, ~860×560 — a small image's fit-to-window may have shrunk it), set `mode = Browse` +
   focus (grid if it has images, else tree), `sync_native`. No redraw requested — the GPU goes idle (render-on-demand).
   The min-size is enforced on browse entry only, never in image mode (so it doesn't fight fit-to-window).
-- **Browse → Image:** set `mode = Image` + `focused_pane = None`, `sync_native`, then `set_view_mode` re-asserts the
-  title-label visibility and `request_redraw()`.
+- **Browse → Image:** the user-facing exits (Esc / Enter / double-click / the menu) go through
+  `App::reveal_selected_image`, NOT `set_view_mode(Image)` — see "Esc == Enter == reveal" below. Reveal uses
+  **render-then-unhide** to avoid a stale frame: `browser::State::prepare_image_reveal` sets `mode = Image` and
+  `focused_pane = None`, hides the split view, and restores winit's first responder but **leaves the Metal layer
+  hidden**; the app then paints the target image and calls `browser::State::reveal_canvas` to unhide it. (`enter_image`
+  via the plain `set_view_mode(Image)` path — which unhides immediately through `sync_native` — survives for the
+  non-macOS build and as the underlying mode-setter; the macOS browse-exit always reveals.)
 
 The split view is a **sibling subview of winit's contentView** at `zPosition` 2.0 (above the Metal layer's 1.0), pinned
 to all four edges, identifier `prvw.browser_split`, hidden at startup. Same pattern as `window::add_titlebar_labels`. A
@@ -39,10 +44,26 @@ Commands: `ToggleBrowseMode` (menu + Enter in image mode), `EnterImageMode` (Esc
 `ToggleBrowseFocus` (Tab while browsing), `BrowseSelectFolder(PathBuf)` (tree selection — also focuses the tree pane),
 `BrowseFolderListed { folder, images }` (a background listing finished), `BrowseThumbnailsAvailable` (grid-thumbnail
 completions queued), `BrowseGridSelected(usize)` (grid click/selection — also focuses the grid pane),
-`BrowseOpenSelected` (Enter on the focused grid, or a double-click — opens the selected image, else falls back to image
-mode). Browse keys are intercepted by the focused native view's `keyDown:` override (`browser::browse_keydown_command`),
-not winit. Dispatched in `app/executor.rs`. All but
+`BrowseOpenSelected` (Enter on the focused grid, or a double-click). Browse keys are intercepted by the focused native
+view's `keyDown:` override (`browser::browse_keydown_command`), not winit. Dispatched in `app/executor.rs`. All but
 `ToggleBrowseMode`/`EnterImageMode`/`ToggleBrowseFocus`/`BrowseOpenSelected` are macOS-only.
+
+**Esc == Enter == reveal the selected image.** All three browse-exit commands (`EnterImageMode`, `BrowseOpenSelected`,
+and the Browse→image direction of `ToggleBrowseMode`) route to one place: `App::reveal_selected_image`. There's no "Esc
+preserves the previously displayed image" path — the user's model is that the image-mode current image IS whatever the
+browse cursor points at. Reveal points `navigation` at the grid's folder + selected index (`resolve_reveal_index` maps
+the grid's index 1:1 to the dir-list index, since both use the same `SortBy`), then displays it. With no grid selection
+(tree focused, or empty folder) it degrades gracefully — reveals image mode still showing the last valid image, never a
+blank/stale flash.
+
+**Render-then-unhide (zero stale frame).** Reveal paints the selected image to the wgpu drawable BEFORE unhiding the
+Metal layer, so the first visible GPU frame is already correct (the old code unhid first and painted next frame → a ~100
+ms stale-image flash). `browser::State::prepare_image_reveal` sets image-mode state + hides the split view + restores
+winit's first responder but leaves the Metal layer hidden; the app then displays the target (`display_open_target`),
+renders one frame synchronously (`App::render_frame`), and calls `browser::State::reveal_canvas` to unhide — all in the
+same event-loop callback. (We deliberately do NOT paint the selection while still browsing — that would auto-fit-resize
+the window behind the browse UI. The selection is warmed into the cache instead, see below, so the reveal paint is a
+cache hit.)
 
 ## The folder tree (Phase 3)
 
@@ -144,8 +165,12 @@ subscription.
   so arrow keys do nothing — this guarantees an anchor, fixing "Tab to the grid leaves arrows dead until you click a
   thumbnail".
 - Emphasis: the tree source list draws accent-blue while it's first responder (automatic once the responder follows
-  state); `split.apply_focus` calls `BrowseGrid::refresh_focus_emphasis` to repaint visible selected grid items
-  blue-iff-focused.
+  state); `split.apply_focus` calls `BrowseGrid::set_focused(focused == Grid)`, which stores the intended focus on the
+  grid's data source and repaints the visible selected items blue-iff-focused. **The grid item reads this state-driven
+  flag (`GridDataSource.focused`, queried via the `gridPaneIsFocused` selector), NOT the native first responder** — the
+  click→`BrowseSelectFolder`/`BrowseGridSelected` dispatch is async, so reading `window.firstResponder` during a focus
+  flip was racy and left the grid drawn blue after a tree click (every focus path funnels through `sync_native`, but the
+  emphasis still has to be derived from `focused_pane`, not inferred from the responder).
 
 **Mutation sites that funnel through `sync_native`** (each: set state fields, then `sync_native`):
 
@@ -208,13 +233,14 @@ label). The slider that live-resizes cells is a later phase — Phase 4 uses a f
   posts `BrowseFolderListed { folder, images }`; the executor calls `BrowseGrid::folder_listed`, which sorts via the
   model's `SortBy`, reloads the collection view, toggles the "(No images)" overlay, and seeds the scheduler/cache. This
   subsumes the old main-thread `count_supported_images` read — the listing returns the actual paths off-thread.
-- **Open → image mode (INSTANT, never blocks on decode).** Double-click (detected in `GridItem::mouseDown:` via
+- **Reveal → image mode (INSTANT, never blocks on decode).** Double-click (detected in `GridItem::mouseDown:` via
   `clickCount == 2` — not a click gesture recognizer, which delays the single click ~600 ms) or Enter on the focused
-  grid fires `BrowseOpenSelected`. Single click selects instantly. `App::open_selected_grid_image` builds a
+  grid fires `BrowseOpenSelected`; Esc fires `EnterImageMode`. Both — plus the Browse→image menu toggle — route to
+  `App::reveal_selected_image` (Esc == Enter == reveal). Single click selects instantly. Reveal builds a
   `DirectoryList::from_explicit` from the grid's image list (same `SortBy`, so the order matches), positions it at the
-  selected index via `go_by`, switches to image mode, seeds previews, then hands off to `App::display_open_target` — the
-  **same async display path image-mode navigation uses for a cache miss**, so the switch to image mode shows something
-  at once with zero perceptible delay:
+  selected index (`resolve_reveal_index`), seeds previews, then hands off to `App::display_open_target` — the **same
+  async display path image-mode navigation uses for a cache miss** — wrapped in the render-then-unhide dance (see "The
+  swap" above):
   - **Cache hit** (the common case — the selection was warmed, see below): display from cache immediately, then
     `warm_initial_neighbors` tops up the arrow-key window.
   - **Cache miss**: set `pending_current`, show a placeholder instantly (the grid thumbnail's QuickLook preview
@@ -222,19 +248,19 @@ label). The slider that live-resizes cells is a later phase — Phase 4 uses a f
     title, and `prioritize_target` the full decode on the preloader. The sharp image swaps in when `poll_preloader` sees
     `Ready` for `pending_current`, which also queues neighbors. **No blocking `display_image` on the main thread.**
 
-  Enter on the tree (or with no grid selection) just returns to image mode.
+  With no grid selection (Esc/Enter on the tree, or an empty folder), reveal keeps the currently displayed image.
 
-- **Warming the browse selection (so open is actually instant).** When the browse selection lands on an image — a grid
+- **Warming the browse selection (so reveal is actually instant).** When the browse selection lands on an image — a grid
   click (`BrowseGridSelected`) or the seeded selection after a folder lists (`BrowseFolderListed`) — the executor calls
   `App::warm_browse_selection`: it reads the grid's image list + selected index (`State::grid_warm_target`, focus-
   independent), computes the prospective-current + N±2 neighbor indices (`browser::browse_warm_indices`, built on
   `navigation::wrap::active_preload_indices`, clamped to the folder, no wrap), maps them to paths, and warms them into
-  the shared `navigation::image_cache` via `Preloader::warm_paths`. **Warming is by PATH and never touches `dir_list`,
-  `pending_current`, or the displayed image** — the cache is path-keyed, so warming arbitrary paths is safe. That's the
-  load-bearing constraint: pressing Esc instead of opening must still show the previously displayed image unchanged.
-  `warm_paths` cancels paths that drop out of the new set, so a moved selection cancels its stale warms (standard image-
-  mode preloader behavior). Net effect: by open time the full image is usually already cached → instant; and after
-  opening, arrowing left/right is warm.
+  the shared `navigation::image_cache` via `Preloader::warm_paths`. The browse selection IS the prospective current
+  image (reveal makes it current). **Warming runs by PATH and deliberately does NOT display the image or auto-fit the
+  window while browsing** — doing so would resize the window behind the browse UI. The cache is path-keyed, so warming
+  arbitrary paths is safe; `warm_paths` cancels paths that drop out of the new set, so a moved selection cancels its
+  stale warms. Net effect: by reveal time the full image is usually already cached → instant; and after revealing,
+  arrowing left/right is warm.
 
 ### Thumbnails: same QL worker as previews, AppKit owns the bitmaps
 

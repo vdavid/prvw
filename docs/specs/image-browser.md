@@ -59,23 +59,32 @@ under the live surface. We hide one and show the other.
 - **Entering browse** (from image mode via Enter or Navigate → Image browser): select the current image's folder in the
   tree and scroll it to roughly mid-view; list that folder's images; select the last-displayed image in the grid; focus
   the grid.
-- **Leaving browse to a specific image:** double-click or Enter on a grid item → image mode showing that image. This is
-  **instant** — opening switches to image mode and shows something at once (the warmed full image if cached, else the
-  grid thumbnail's QuickLook preview stretched to size with a "Loading…" overlay), then the sharp full decode swaps in.
-  It never blocks the main thread on a full decode; it reuses the same async cache-hit / cache-miss display path image-
-  mode navigation uses. Enter on the tree, or Navigate → Image view, also returns to image mode (showing the current
-  image).
-- **Selecting a folder** in the tree lists its images in the grid. It does not change "the displayed image" until the
-  user opens one.
-- **The browse selection is warmed.** When the selection lands on an image (grid click or arrow-key selection), the app
-  treats it as the prospective current image and decodes it + N±2 neighbors into the shared image cache via the
-  preloader, cancelling/replacing as the selection moves (standard image-mode preloader behavior). Warming is **by path
-  only** — it never changes the displayed image or `current` position, so pressing Esc still returns to image mode with
-  the image unchanged. By the time the user opens, the full image is usually already cached (instant open), and arrowing
-  in image mode afterward is warm.
+- **Esc == Enter == reveal the browse-selected image.** The user's model: the image-mode current image IS whatever the
+  browse cursor points at, even while the Metal canvas is hidden. So Esc, Enter (on the focused grid), a double-click,
+  and Navigate → Image view all do the **same** thing — reveal image mode showing the currently-selected browse image.
+  They share one path (`App::reveal_selected_image`); there's no separate "Esc preserves the previously displayed image"
+  behavior. With no grid selection (tree focused, or an empty folder), reveal degrades gracefully: it shows the last
+  valid image (whatever was current), never a blank or stale frame.
+- **The reveal is instant with zero stale frame (render-then-unhide).** Reveal points navigation at the grid's folder +
+  selected index, paints that image to the wgpu drawable **before** unhiding the Metal layer (in the same event-loop
+  callback), so the first visible GPU frame is already correct — no ~100 ms flash of the previous image. If the full
+  image is cached (the common case — the selection is warmed, see below) it shows immediately; on a cache miss the grid
+  thumbnail's QuickLook preview is stretched to size with a "Loading…" overlay, then the sharp full decode swaps in. It
+  never blocks the main thread on a full decode; it reuses the same async cache-hit / cache-miss display path image-mode
+  navigation uses.
+- **Selecting a folder** in the tree lists its images in the grid.
+- **The browse selection drives the prospective current image and is warmed.** When the selection lands on an image
+  (grid click or arrow-key selection), the app treats it as the prospective current image and warms it + N±2 neighbors
+  into the shared image cache via the preloader, cancelling/replacing as the selection moves (standard image-mode
+  preloader behavior). Warming is **by path** and does not display the image or auto-fit the window while browsing
+  (which would resize the window behind the browse UI) — the reveal makes it current and paints it. By reveal time the
+  full image is usually already cached (instant), and arrowing in image mode afterward is warm.
 - **Tab** toggles focus between tree and grid (app-managed in `browser::State`, not the native key-view loop — see
-  "Input architecture"; the grid is skipped when empty).
-- **Esc** in browse mode returns to image mode (mirrors today's exit-fullscreen-or-app feel; the current image stays).
+  "Input architecture"; the grid is skipped when empty). All focus paths (Tab, a tree click, a grid click) funnel
+  through `sync_native`, which derives the grid's selection-emphasis color from `focused_pane` state (not the native
+  first responder, which is racy during the async click→command flip) — so a tree click grays the grid item and a grid
+  click blues it, matching Tab.
+- **Esc** in browse mode reveals the selected image (see above).
 - **Enter is reassigned in image mode.** Today Enter toggles fullscreen (alongside `f`/`F11`); it now enters browse mode
   instead. `f` and `F11` keep toggling fullscreen, so the capability isn't lost — only Enter's binding moves.
 - **Menu:** new "Image browser" / "Image view" item at the **top of the Navigate menu** with a separator under it. One
@@ -123,9 +132,12 @@ So browse mode uses the AppKit responder chain, with one app-level source of tru
   routed via `crate::commands::send_command`. There is **no** winit-routed browse arrow handling.
 - **Emphasis follows focus** (set by `sync_native`). Tree: an `NSOutlineView` source list draws accent-blue selection
   when it's first responder and gray otherwise — so syncing first responder to `focused_pane` makes it correct
-  automatically. Grid: each `GridItem` draws its selection as a rounded rect — accent-blue when selected and the grid is
-  first responder, gray when selected but not, nothing when not selected. `BrowseGrid::refresh_focus_emphasis` repaints
-  visible selected items.
+  automatically. Grid: each `GridItem` draws its selection as a rounded rect — accent-blue when the grid is the focused
+  pane, gray when selected but not, nothing when not selected. The focused-or-not flag is read from
+  `browser::State::focused_pane` (mirrored onto the grid's data source by `BrowseGrid::set_focused`), **not** inferred
+  from the native first responder: the click→command focus flip is async, so reading `window.firstResponder` during it
+  is racy and left the grid drawn blue after a tree click. `set_focused` repaints the visible selected items on every
+  focus change.
 - **Mouse is fully native:** single-click selects instantly (focusing the grid), double-click opens (detected in
   `GridItem::mouseDown:` via `clickCount == 2`, so no click-delay), and scroll-wheel scrolls — all native.
 - **Restore the content view as first responder when leaving browse.** On Esc → image the hidden outline view can keep

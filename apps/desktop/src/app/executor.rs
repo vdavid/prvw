@@ -346,10 +346,24 @@ impl App {
                 self.update_histogram_hover();
             }
             AppCommand::ToggleBrowseMode => {
-                let target = self.browser.mode().toggled();
-                self.set_view_mode(target);
+                // Navigate → "Image browser"/"Image view" (and Enter in image mode). Browse→image
+                // reveals the browse-selected image exactly like Esc/Enter (render-then-unhide);
+                // image→browse goes through the normal mode switch.
+                if self.browser.is_browse() {
+                    #[cfg(target_os = "macos")]
+                    self.reveal_selected_image();
+                    #[cfg(not(target_os = "macos"))]
+                    self.set_view_mode(crate::browser::ViewMode::Image);
+                } else {
+                    self.set_view_mode(crate::browser::ViewMode::Browse);
+                }
             }
             AppCommand::EnterImageMode => {
+                // Esc in browse == Enter: reveal the browse-selected image (render-then-unhide, no
+                // stale flash). Off macOS (no native browse UI) just switch the tracked mode.
+                #[cfg(target_os = "macos")]
+                self.reveal_selected_image();
+                #[cfg(not(target_os = "macos"))]
                 self.set_view_mode(crate::browser::ViewMode::Image);
             }
             AppCommand::ToggleBrowseFocus =>
@@ -405,7 +419,10 @@ impl App {
                 self.update_shared_state();
             }
             AppCommand::BrowseOpenSelected => {
-                self.open_selected_grid_image();
+                // Enter in browse (grid focused) / double-click — reveal the selected image. Esc
+                // (`EnterImageMode`) routes to the same place: Esc == Enter == reveal.
+                #[cfg(target_os = "macos")]
+                self.reveal_selected_image();
             }
             #[cfg(target_os = "macos")]
             AppCommand::BrowseTreeChildrenLoaded { path, children } => {

@@ -178,6 +178,32 @@ pub fn browse_warm_indices(selected: usize, total: usize) -> Vec<usize> {
     )
 }
 
+/// The `DirectoryList` index a reveal lands on for the grid's `selected` index, given the grid's
+/// image list and the active sort. This is the load-bearing invariant behind "the browse selection
+/// IS the image-mode current image": `reveal_selected_image` rebuilds navigation with
+/// `DirectoryList::from_explicit(images, sort)` (which re-sorts) then `go_by(index)`. The grid
+/// already lists in the same `SortBy`, so re-sorting is idempotent and the grid's selected index
+/// maps 1:1 to the dir-list index — `Some(selected)` when in range, `None` for an empty list or an
+/// out-of-range index (graceful no-selection: the reveal keeps the current image). Pure
+/// (headless-tested); the windowed reveal reads the resolved index back from the rebuilt list.
+#[must_use]
+pub fn resolve_reveal_index(
+    images: &[std::path::PathBuf],
+    selected: usize,
+    sort_by: crate::navigation::SortBy,
+) -> Option<usize> {
+    if images.is_empty() || selected >= images.len() {
+        return None;
+    }
+    // The grid hands its images already sorted by `sort_by`; `from_explicit` re-sorts with the
+    // same comparator, so the path at `selected` keeps its position. Resolve by path to stay
+    // correct even if a caller ever passes an unsorted list.
+    let mut sorted = images.to_vec();
+    crate::navigation::sort::sort_files(&mut sorted, sort_by);
+    let target = images.get(selected)?;
+    sorted.iter().position(|p| p == target)
+}
+
 /// Per-feature browse-mode state (sibling of `zoom::State`, `navigation::State`, …). Holds the
 /// current `ViewMode` and, on macOS, the native split-view handles built lazily on first entry.
 pub struct State {
@@ -520,6 +546,33 @@ impl State {
         log::info!("Entered image mode");
     }
 
+    /// First half of a **render-then-unhide** browse→image reveal: set image-mode state, hide the
+    /// split view, restore winit's first responder, but leave the Metal layer HIDDEN. The caller
+    /// then paints the selected image to the drawable and calls [`Self::reveal_canvas`] to unhide
+    /// it — so the first visible GPU frame is already the correct image (no stale flash). Returns
+    /// the previous mode so the caller can skip the reveal dance when already in image mode.
+    /// No-op off macOS.
+    #[cfg(target_os = "macos")]
+    pub fn prepare_image_reveal(&mut self, window: &winit::window::Window) -> ViewMode {
+        let previous = self.mode;
+        self.enter_image_state();
+        // Hide the split view + image labels and hand first responder back to winit, but DON'T
+        // touch the Metal layer here — it stays hidden until `reveal_canvas`, after the paint.
+        if let Some(split) = &self.split_view {
+            split.set_hidden(window, true);
+        }
+        crate::window::restore_content_view_first_responder(window);
+        previous
+    }
+
+    /// Second half of the render-then-unhide reveal: unhide the Metal layer so the just-painted
+    /// frame becomes visible. Called immediately after the synchronous paint in the same event-loop
+    /// callback, so the user never sees the old (stale) frame. No-op off macOS.
+    #[cfg(target_os = "macos")]
+    pub fn reveal_canvas(&self, window: &winit::window::Window) {
+        crate::window::set_metal_layer_hidden(window, false);
+    }
+
     /// Pure browse-entry transition: `mode = Browse`, focus the grid when it has images else the
     /// tree (`browse_entry_pane`). Tested directly; `enter_browse` wraps it with `sync_native`.
     fn enter_browse_state(&mut self, grid_empty: bool) {
@@ -647,6 +700,54 @@ mod tests {
         let end = browse_warm_indices(9, 10);
         let end_set: std::collections::HashSet<usize> = end.iter().copied().collect();
         assert_eq!(end_set, std::collections::HashSet::from([9, 8, 7]));
+    }
+
+    #[test]
+    fn resolve_reveal_index_maps_grid_selection_to_dir_list_index() {
+        use crate::navigation::SortBy;
+        use std::path::PathBuf;
+
+        // Grid hands an already-sorted list (Name order, natural alphanumeric). The selected grid
+        // index must map 1:1 to the `from_explicit` re-sorted index, so reveal lands on the same
+        // image the user picked.
+        let images: Vec<PathBuf> = ["a.jpg", "b.jpg", "c.jpg", "d.jpg"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        for (i, _) in images.iter().enumerate() {
+            assert_eq!(resolve_reveal_index(&images, i, SortBy::Name), Some(i));
+        }
+    }
+
+    #[test]
+    fn resolve_reveal_index_resolves_by_path_when_input_is_unsorted() {
+        use crate::navigation::SortBy;
+        use std::path::PathBuf;
+
+        // Defensive: even if a caller passes an UNSORTED list, the index is resolved by the
+        // selected path's position in the SORTED order — so the reveal still lands on the picked
+        // file, not whatever happens to sit at that slot post-sort.
+        let images: Vec<PathBuf> = ["c.jpg", "a.jpg", "b.jpg"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        // selected = 0 → "c.jpg", which sorts to position 2 (a, b, c).
+        assert_eq!(resolve_reveal_index(&images, 0, SortBy::Name), Some(2));
+        // selected = 1 → "a.jpg", sorts to position 0.
+        assert_eq!(resolve_reveal_index(&images, 1, SortBy::Name), Some(0));
+    }
+
+    #[test]
+    fn resolve_reveal_index_is_none_for_empty_or_out_of_range() {
+        use crate::navigation::SortBy;
+        use std::path::PathBuf;
+
+        // Graceful no-selection: an empty folder or an out-of-range index yields `None`, so the
+        // reveal keeps the current image instead of crashing or jumping to a wrong file.
+        assert_eq!(resolve_reveal_index(&[], 0, SortBy::Name), None);
+        let images: Vec<PathBuf> = vec![PathBuf::from("only.jpg")];
+        assert_eq!(resolve_reveal_index(&images, 0, SortBy::Name), Some(0));
+        assert_eq!(resolve_reveal_index(&images, 5, SortBy::Name), None);
     }
 
     #[test]
