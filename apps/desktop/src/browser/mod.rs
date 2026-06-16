@@ -30,6 +30,16 @@ mod outline;
 mod split_view;
 pub(crate) mod tree_model;
 
+// Phase 2 thumbnail plumbing. Pure, headless-tested state machines that Phase 4's
+// `NSCollectionView` grid consumes. They compile and are unit-tested but have no
+// runtime caller until Phase 4 wires the grid — hence `#[allow(dead_code)]` on the
+// modules (not a broad crate-wide suppression). Remove the allows once Phase 4 calls
+// in. See `docs/specs/image-browser.md` → "Thumbnails".
+#[allow(dead_code)]
+pub mod grid_scheduler;
+#[allow(dead_code)]
+pub mod thumbnail_cache;
+
 #[cfg(target_os = "macos")]
 pub use tree_model::count_supported_images;
 

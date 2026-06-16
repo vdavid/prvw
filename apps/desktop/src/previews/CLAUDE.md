@@ -82,6 +82,12 @@ breaks out image cache vs. previews so the gap to RSS — GPU texture, decode bu
 
 ## QL submission threading (option A)
 
+**Shared with the browse grid.** This worker is size-parameterized (every `SubmitRequest` carries its own
+`size`/`scale`), so Phase 4's `NSCollectionView` grid reuses it as a second request path into the same `quicklookd`
+cache rather than spinning up a second engine. The only divergence is how the resulting `CGImage` is consumed: previews
+blit to RGBA8 for wgpu upload (`cg_image_to_rgba8`); the grid will add a CGImage→`NSImage` path (no Rust pixel copy).
+That seam is documented at the top of `quicklook.rs`. Previews behavior is unchanged by the generalization.
+
 `RequestTable` runs a dedicated `prvw-previewgen` worker thread that owns the
 `entries: HashMap<RequestId, Retained<QLThumbnailGenerationRequest>>` and the `QLThumbnailGenerator` singleton (created
 on that thread via `sharedGenerator`). All ops on the main thread are mpsc sends:

@@ -5,11 +5,15 @@ native AppKit screen: a folder tree on the left, a thumbnail grid on the right. 
 overlap.
 
 Status: in progress on the `image-browser` worktree. Done: Phase 0 (spike), Phase 1 (thumbnails → previews rename),
-Phase 3 (real folder tree). The left pane is now a live `NSOutlineView` source list (home + mounted volumes,
-**asynchronous** directory enumeration on a background scanner thread, path-identity nodes, arrow-key nav, selection
-recorded in `browser::State`). Still stubbed: the right-pane grid (Phase 4) and Phase 2 thumbnail plumbing. See
-`apps/desktop/src/browser/CLAUDE.md` for the tree details, including the async-load model (the data source never reads a
-directory on the main thread — a slow SMB share would otherwise freeze the whole app) and the loading overlay.
+Phase 2 (headless thumbnail plumbing), Phase 3 (real folder tree). The left pane is now a live `NSOutlineView` source
+list (home + mounted volumes, **asynchronous** directory enumeration on a background scanner thread, path-identity
+nodes, arrow-key nav, selection recorded in `browser::State`). Phase 2 added the grid's headless plumbing — the
+visible-range scheduler (`browser::grid_scheduler`) and the 128 MB byte-budget eviction state
+(`browser::thumbnail_cache`), both pure and unit-tested, plus the documented size-parameterized seam in
+`previews::quicklook` so the grid reuses the previews' QuickLook worker. Still stubbed: the right-pane grid UI (Phase 4
+wires the `NSCollectionView` to this plumbing). See `apps/desktop/src/browser/CLAUDE.md` for the tree details (including
+the async-load model — the data source never reads a directory on the main thread — and the loading overlay) and the
+grid-thumbnail-plumbing section.
 
 ## Why native AppKit, not wgpu
 

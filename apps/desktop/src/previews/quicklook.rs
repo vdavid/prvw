@@ -35,6 +35,27 @@
 //! map) lives on the worker thread, so cross-thread cancellation works
 //! without sharing `Retained<…>` (which isn't `Send`-friendly).
 //!
+//! ## Size-parameterized: one worker, two request paths
+//!
+//! This worker is **already** size-parameterized — every submission carries
+//! its own `size`/`scale` ([`SubmitRequest`]), so the previews path (requests
+//! ~512pt × Retina ≈ 1024px, used as decode placeholders) and the browse
+//! grid (Phase 4: requests `browser::thumbnail_cache::GRID_THUMBNAIL_PX`)
+//! share this one `QLThumbnailGenerator`-backed worker rather than spinning up
+//! a second engine. `QLThumbnailGenerator` *is* Finder's shared `quicklookd`
+//! cache, so a second request path is the right design — not a second cache.
+//!
+//! The one place the two paths diverge is **how the resulting `CGImage` is
+//! consumed**: previews blit it to a row-packed RGBA8 `Vec<u8>`
+//! ([`cg_image_to_rgba8`]) because they upload it to a wgpu texture. The grid
+//! has no wgpu — its cells are `NSImageView`s, so Phase 4 will add a sibling
+//! CGImage→`NSImage` consumption path (no Rust pixel copy) reusing this same
+//! submission worker. That seam is the `cg_image_to_rgba8` call inside the
+//! completion block; everything up to obtaining the `CGImage` is shared. Phase
+//! 2 intentionally leaves the live grid request path unbuilt (it needs the
+//! event loop + AppKit), shipping only the headless scheduler + cache state
+//! the grid will drive; the previews behavior here is unchanged.
+//!
 //! The completion block runs on QuickLook's internal queue (not our
 //! worker) — it pushes the delivery, wakes winit, and fires a `Forget`
 //! to the worker so `entries` doesn't grow unbounded over a long

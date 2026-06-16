@@ -2,14 +2,17 @@
 
 A second top-level screen for the main window: a native AppKit folder tree + thumbnail grid that **swaps** with the wgpu
 image viewer. The **tree is real** (Phase 3): an `NSOutlineView` source list of the home folder + mounted volumes. The
-grid is still a `(grid)` stub (a later phase wires `NSCollectionView`). Full design: `docs/specs/image-browser.md`.
+grid is still a `(grid)` stub (Phase 4 wires `NSCollectionView`), but its **headless plumbing exists** (Phase 2:
+`grid_scheduler` + `thumbnail_cache`, no UI caller yet). Full design: `docs/specs/image-browser.md`.
 
-| File            | Purpose                                                                                                                                                                                                           |
-| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mod.rs`        | `ViewMode` + `PaneSide` enums + `browser::State` (mode, focused pane, selected folder, native handles); tree-nav delegation; tests                                                                                |
-| `split_view.rs` | macOS `NSSplitView` build, hide/show, `set_focused_pane` highlight, divider + traffic-light fixes; hosts the tree                                                                                                 |
-| `outline.rs`    | macOS `NSOutlineView` source-list tree: `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + drives keyboard nav)                                                               |
-| `tree_model.rs` | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `count_supported_images`, `next_selectable_row`, the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate |
+| File                 | Purpose                                                                                                                                                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mod.rs`             | `ViewMode` + `PaneSide` enums + `browser::State` (mode, focused pane, selected folder, native handles); tree-nav delegation; tests                                                                                |
+| `split_view.rs`      | macOS `NSSplitView` build, hide/show, `set_focused_pane` highlight, divider + traffic-light fixes; hosts the tree                                                                                                 |
+| `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (Phase 2 plumbing; Phase 4 caller)                                                                                                    |
+| `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants (Phase 2 plumbing; Phase 4 caller)                                   |
+| `outline.rs`         | macOS `NSOutlineView` source-list tree: `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + drives keyboard nav)                                                               |
+| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `count_supported_images`, `next_selectable_row`, the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate |
 
 ## The swap
 
@@ -124,6 +127,31 @@ panes so the focused one is highlighted. The native views will render their own 
 state, so this app-managed focus is enough. `SharedAppState` exposes `view_mode`, `focused_pane`, and
 `browse_selected_folder` (also at `GET /state`) so QA/tests can assert the mode swap, focus flip, and tree selection
 without real keystrokes.
+
+## Grid thumbnail plumbing (Phase 2, headless)
+
+The grid's thumbnails ride **the same `QLThumbnailGenerator` worker as previews** (`previews::quicklook`), a second
+request path into Finder's shared `quicklookd` cache — not a second engine. That worker is already size-parameterized
+(each `SubmitRequest` carries its own `size`/`scale`), so the only Phase-4 addition is a CGImage→`NSImage` consumption
+path beside the previews' CGImage→RGBA8 blit; the seam is documented in `previews/quicklook.rs`. Phase 2 ships the two
+pure state machines the grid will drive, fully unit-tested but with no runtime caller yet (`#[allow(dead_code)]` on the
+two modules, removed when Phase 4 wires the `NSCollectionView`):
+
+- **`grid_scheduler::Scheduler`** — mirror of `previews::scheduler` but centered on a visible `Range<usize>` (the rows
+  on screen) instead of a single `current`. API for Phase 4: `set_folder(len, visible)`, `set_visible_range(visible)`
+  (reseed on scroll), `poll_next() -> (index, RequestId)`, `mark_ready`/`mark_failed`/`uncache`, `pause`/`resume`,
+  `status()`. Order: the visible range first (reading order), then nearest-outward to a `MARGIN` (100) each side so a
+  small scroll reveals ready cells; indices past the margin aren't enqueued (10k-image folders don't queue 10k jobs).
+- **`thumbnail_cache::ThumbnailCache`** — byte-budgeted (`THUMBNAIL_BUDGET_BYTES` = 128 MB) eviction **bookkeeping**, no
+  bitmaps (AppKit cells own those; this map stores byte sizes only). API for Phase 4: `set_visible_range`, `insert`,
+  `get` (touch/hit), `remove`, `evict_to_budget() -> Vec<usize>` (evicted indices to feed back to `Scheduler::uncache`).
+  Evicts farthest-from-visible-range first, ties broken by least-recently-touched. Fixed budget (not RAM-scaled like
+  previews) because `NSCollectionView` cell reuse is the primary residency bound — this is the backstop for the
+  small-cell worst case. Shares `grid_scheduler::distance_from_range` so scheduling and eviction agree.
+
+**Size constant (Phase 4 reuses it):** `thumbnail_cache::MAX_CELL_PT` (256pt) → `GRID_THUMBNAIL_PX` (512px = 256 × 2
+Retina). One max-size RGBA8 thumbnail is `512 × 512 × 4 ≈ 1 MB` (`EST_THUMBNAIL_BYTES`), so 128 MB ≈ 128 resident
+thumbnails. Generated **once** at this size and downscaled for smaller cells — never regenerated on resize.
 
 ## Gotchas
 
