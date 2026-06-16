@@ -75,19 +75,46 @@ use super::thumbnail_cache::{self, GRID_THUMBNAIL_PX, ThumbnailCache};
 use crate::navigation::SortBy;
 use crate::previews::quicklook::{self, RequestTable, SubmitRequest};
 
+// ─── Styling constants (tweak these for the gallery look) ───────────────────
+// All in logical points. The cell-size slider is a later phase; these tune the
+// fixed ~160pt gallery so it reads like Finder/Photos. The cell is a vertical stack:
+// a square thumbnail on top, the filename label below.
+
 /// Cell side in points. A sensible fixed gallery size; the live-resize slider is a later phase.
-const CELL_PT: f64 = 160.0;
+const CELL_PT: f64 = 168.0;
 // `CELL_IMAGE_PT` / `CELL_LABEL_PT` are only referenced from `GridItem::loadView`, an AppKit
 // override — `GridItem` is instantiated by the collection view (via `makeItemWithIdentifier:`),
 // never constructed in Rust, so the dead-code lint can't see the use. Genuinely used at runtime.
 /// The image-view side inside a cell, leaving room below for the filename label.
 #[allow(dead_code)]
-const CELL_IMAGE_PT: f64 = 132.0;
+const CELL_IMAGE_PT: f64 = 140.0;
 /// Height reserved for the filename label under the thumbnail.
 #[allow(dead_code)]
-const CELL_LABEL_PT: f64 = 24.0;
-/// Spacing between cells (both axes) and the section inset.
-const CELL_SPACING: f64 = 12.0;
+const CELL_LABEL_PT: f64 = 18.0;
+/// Vertical gap between the thumbnail and its filename label.
+#[allow(dead_code)]
+const CELL_IMAGE_LABEL_GAP_PT: f64 = 6.0;
+/// Filename label point size (small system font, like Finder icon-view labels).
+#[allow(dead_code)]
+const CELL_LABEL_FONT_PT: f64 = 11.0;
+/// Spacing between cells (both axes). A touch more than the section inset gives the
+/// grid comfortable, Photos-like breathing room.
+const CELL_SPACING: f64 = 16.0;
+/// Section inset around the whole grid (inside the gallery surface).
+const SECTION_INSET_PT: f64 = 14.0;
+
+/// Corner radius of a cell's selection ring.
+const SELECTION_CORNER_RADIUS: f64 = 8.0;
+/// Padding between the cell's content bounds and its selection ring, so the ring frames
+/// the thumbnail + label with a little air rather than hugging the cell edge.
+#[allow(dead_code)]
+const SELECTION_INSET_PT: f64 = 2.0;
+/// Alpha applied to the accent fill of a focused-pane selection (softens the saturated blue).
+const SELECTION_FOCUSED_ALPHA: f64 = 0.85;
+
+/// Point size of the centered "(No images)" empty-state label.
+const EMPTY_LABEL_FONT_PT: f64 = 15.0;
+
 /// Reuse identifier for grid items.
 const ITEM_IDENTIFIER: &str = "PrvwGridItem";
 
@@ -152,20 +179,23 @@ define_class!(
         /// is read. We make a flipped container holding a centered image view and a label.
         #[unsafe(method(loadView))]
         fn load_view(&self) {
+            use crate::platform::macos::ui_common::FlippedView;
             let mtm = MainThreadMarker::from(self);
-            let container = NSView::new(mtm);
+            // Flipped container (Y=0 at top) so the thumbnail-on-top, label-below layout reads
+            // top-down like the visual order, matching the rest of our AppKit UI.
+            let container = FlippedView::new_as_nsview(mtm);
             let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CELL_PT, CELL_PT));
             unsafe {
                 let _: () = msg_send![&*container, setFrame: frame];
                 let _: () = msg_send![&*container, setWantsLayer: true];
             }
 
-            // Image view: fills the top square area, scales proportionally up or down.
+            // Image view: a centered square at the top, scales proportionally up or down.
             let image_view = NSImageView::new(mtm);
             image_view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
             let image_frame = NSRect::new(
-                NSPoint::new(0.0, CELL_LABEL_PT),
-                NSSize::new(CELL_PT, CELL_IMAGE_PT),
+                NSPoint::new((CELL_PT - CELL_IMAGE_PT) / 2.0, 0.0),
+                NSSize::new(CELL_IMAGE_PT, CELL_IMAGE_PT),
             );
             unsafe {
                 let _: () = msg_send![&*image_view, setFrame: image_frame];
@@ -174,7 +204,7 @@ define_class!(
             }
             container.addSubview(&image_view);
 
-            // Filename label below the thumbnail, centered, single line, truncating.
+            // Filename label below the thumbnail, centered, single line, middle-truncating.
             let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
             label.setBordered(false);
             label.setDrawsBackground(false);
@@ -182,15 +212,15 @@ define_class!(
             label.setSelectable(false);
             label.setAlignment(objc2_app_kit::NSTextAlignment(2)); // center
             label.setTextColor(Some(&NSColor::secondaryLabelColor()));
-            label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(11.0)));
+            label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(CELL_LABEL_FONT_PT)));
             let label_frame = NSRect::new(
-                NSPoint::new(0.0, 0.0),
+                NSPoint::new(0.0, CELL_IMAGE_PT + CELL_IMAGE_LABEL_GAP_PT),
                 NSSize::new(CELL_PT, CELL_LABEL_PT),
             );
             unsafe {
                 let _: () = msg_send![&*label, setFrame: label_frame];
                 let _: () = msg_send![&*label, setLineBreakMode: 5isize]; // truncate middle
-                let lbl_mask = 2u64; // width-sizable
+                let lbl_mask = 2u64 | 8u64; // width-sizable | min-Y-margin-flexible (pin to top)
                 let _: () = msg_send![&*label, setAutoresizingMask: lbl_mask];
             }
             container.addSubview(&label);
@@ -282,13 +312,14 @@ impl GridItem {
         let color = if !selected {
             NSColor::clearColor()
         } else if focused {
-            NSColor::selectedContentBackgroundColor().colorWithAlphaComponent(0.85)
+            NSColor::selectedContentBackgroundColor()
+                .colorWithAlphaComponent(SELECTION_FOCUSED_ALPHA)
         } else {
             NSColor::unemphasizedSelectedContentBackgroundColor()
         };
         let layer_ptr = &*layer as *const _ as *const AnyObject;
         unsafe {
-            let _: () = msg_send![layer_ptr, setCornerRadius: 6.0f64];
+            let _: () = msg_send![layer_ptr, setCornerRadius: SELECTION_CORNER_RADIUS];
             // `setBackgroundColor:` on a CALayer wants a `CGColorRef`. A plain
             // `msg_send![layer, setBackgroundColor: cg]` mis-encodes the CGColorRef as an ObjC
             // object and panics, so fire it through a hand-typed objc_msgSend (same trap
@@ -507,10 +538,10 @@ impl BrowseGrid {
             layout.setMinimumInteritemSpacing(CELL_SPACING);
             layout.setScrollDirection(NSCollectionViewScrollDirection::Vertical);
             layout.setSectionInset(NSEdgeInsets {
-                top: CELL_SPACING,
-                left: CELL_SPACING,
-                bottom: CELL_SPACING,
-                right: CELL_SPACING,
+                top: SECTION_INSET_PT,
+                left: SECTION_INSET_PT,
+                bottom: SECTION_INSET_PT,
+                right: SECTION_INSET_PT,
             });
 
             let collection = BrowseCollectionView::new(mtm);
@@ -555,8 +586,11 @@ impl BrowseGrid {
 
             // "(No images)" overlay, hidden by default. Centered over the grid; shown only for an
             // empty folder. Plain label on a transparent view so the gallery background shows.
-            let empty_label =
-                crate::platform::macos::ui_common::make_label("(No images)", 15.0, mtm);
+            let empty_label = crate::platform::macos::ui_common::make_label(
+                "(No images)",
+                EMPTY_LABEL_FONT_PT,
+                mtm,
+            );
             empty_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
             let _: () = msg_send![&*empty_label, setHidden: true];
 

@@ -2,20 +2,20 @@
 
 A second top-level screen for the main window: a native AppKit folder tree + thumbnail grid that **swaps** with the wgpu
 image viewer. The **tree** is an `NSOutlineView` source list of the home folder + mounted volumes; the **grid** is an
-`NSCollectionView` thumbnail gallery of the selected folder's images, driven by the visible-range scheduler + byte-budget
-cache. Full design: `docs/specs/image-browser.md`.
+`NSCollectionView` thumbnail gallery of the selected folder's images, driven by the visible-range scheduler +
+byte-budget cache. Full design: `docs/specs/image-browser.md`.
 
-| File                 | Purpose                                                                                                                                                                                                                                                                                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| File                 | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mod.rs`             | `ViewMode` + `PaneSide` + `LaunchTarget` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, `pending_grid_preselect` + `pending_browse_open_focus` for browse-open, native handles); the `sync_native` render-from-state choke-point; `reveal_to_folder`; QA accessors (`grid_count`, `reveal_pending`) + the `qa_select_grid_index` test-driving hook; pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command`/`grid_preselect_index`/`classify_launch_target` + field-transition cores; tree + grid delegation; tests |
-| `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (makes the focused pane's control first responder + refreshes grid emphasis — called by `sync_native`), divider + traffic-light fixes; hosts the tree (left) and the grid (right)                                                                                                                  |
-| `grid.rs`            | macOS `NSCollectionView` grid: `BrowseCollectionView` (keyDown override), `GridItem` (cell, focus-aware selection rect + double-click in `mouseDown:`), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs/focus)                                               |
-| `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                                                                                                                                                                                  |
-| `grid_listing.rs`    | Background folder-image lister (its own OS thread + `mpsc`, like the tree scanner) + the pure `list_supported_images`                                                                                                                                                                                                                                  |
-| `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (the grid's `BrowseGrid::pump` drives it)                                                                                                                                                                                                                                  |
-| `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants                                                                                                                                                                                                           |
-| `outline.rs`         | macOS `NSOutlineView` source-list tree: `BrowseOutlineView` (keyDown override), `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + `make_first_responder` + the async `reveal_to_folder` walk)                                                                                                                                                         |
-| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `reveal_path_chain` (root-to-target reveal walk), the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate                                                                                                                                                                                       |
+| `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (makes the focused pane's control first responder + refreshes grid emphasis — called by `sync_native`), divider + traffic-light fixes; hosts the tree (left) and the grid (right)                                                                                                                                                                                                                                                                                                                                                                             |
+| `grid.rs`            | macOS `NSCollectionView` grid: `BrowseCollectionView` (keyDown override), `GridItem` (cell, focus-aware selection rect + double-click in `mouseDown:`), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs/focus)                                                                                                                                                                                                                                                                                                          |
+| `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `grid_listing.rs`    | Background folder-image lister (its own OS thread + `mpsc`, like the tree scanner) + the pure `list_supported_images`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (the grid's `BrowseGrid::pump` drives it)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `outline.rs`         | macOS `NSOutlineView` source-list tree: `BrowseOutlineView` (keyDown override), `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + `make_first_responder` + the async `reveal_to_folder` walk)                                                                                                                                                                                                                                                                                                                                                                                |
+| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `reveal_path_chain` (root-to-target reveal walk), the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## The swap
 
@@ -63,31 +63,32 @@ path" can't expand synchronously — there'd be no children yet. Instead it's a 
 - `tree_model::reveal_path_chain(roots, target)` (pure, tested) computes the root-to-target path list: the **root** is
   the longest-prefix `Root` match (a path under home reveals under Home, not the `/` volume), then every intermediate
   directory, ending at `target`. `None` when no root contains `target`.
-- `BrowseTree::reveal_to_folder(folder)` computes the chain from its own roots and starts a `RevealWalk { chain,
-  position }`. It expands `chain[0]` (the root), which makes AppKit query its children → enqueues the scan (no main-
-  thread disk read). `children_loaded` calls `advance_reveal`: when the level it's waiting on (`chain[position]`)
-  arrives, it steps `position` forward and expands the next ancestor; at the target it selects + scrolls-to-mid and
-  clears the walk. A level whose children are **already cached** (a re-reveal) advances synchronously so the walk
-  doesn't stall waiting for a scan that won't re-fire. A single-element chain (target is a root) selects immediately.
+- `BrowseTree::reveal_to_folder(folder)` computes the chain from its own roots and starts a
+  `RevealWalk { chain, position }`. It expands `chain[0]` (the root), which makes AppKit query its children → enqueues
+  the scan (no main- thread disk read). `children_loaded` calls `advance_reveal`: when the level it's waiting on
+  (`chain[position]`) arrives, it steps `position` forward and expands the next ancestor; at the target it selects +
+  scrolls-to-mid and clears the walk. A level whose children are **already cached** (a re-reveal) advances synchronously
+  so the walk doesn't stall waiting for a scan that won't re-fire. A single-element chain (target is a root) selects
+  immediately.
 - The terminal `select_and_scroll_to` fires `outlineViewSelectionDidChange:` → `BrowseSelectFolder`, so the reveal
   drives the grid listing through the normal path. `scroll_row_to_middle` centers the row in the scroll clip (vs the
   default "just make visible").
 
-**Grid preselect + grid focus on browse-open.** `browser::State` holds a one-shot `pending_grid_preselect:
-Option<PathBuf>` (the came-from image) and `pending_browse_open_focus: bool`, both set by `State::reveal_to_folder` and
-consumed by `grid_folder_listed`. When the revealed folder's images land, `BrowseGrid::folder_listed(images,
-preselect)` selects the preselect image's index (`browser::grid_preselect_index`, pure/tested — maps the came-from path
-to its slot in the SORTED list) and scrolls it into view, else index 0; and `grid_folder_listed` moves focus to the grid
-(the reveal's tree selection had focused the tree, since the grid was empty when `enter_browse` ran). An empty revealed
-folder keeps the tree focused (the grid is non-focusable).
+**Grid preselect + grid focus on browse-open.** `browser::State` holds a one-shot
+`pending_grid_preselect: Option<PathBuf>` (the came-from image) and `pending_browse_open_focus: bool`, both set by
+`State::reveal_to_folder` and consumed by `grid_folder_listed`. When the revealed folder's images land,
+`BrowseGrid::folder_listed(images, preselect)` selects the preselect image's index (`browser::grid_preselect_index`,
+pure/tested — maps the came-from path to its slot in the SORTED list) and scrolls it into view, else index 0; and
+`grid_folder_listed` moves focus to the grid (the reveal's tree selection had focused the tree, since the grid was empty
+when `enter_browse` ran). An empty revealed folder keeps the tree focused (the grid is non-focusable).
 
 **Dir-arg launch** (`main.rs` + `app.rs`). `browser::classify_launch_target(is_file, is_dir)` (pure/tested) maps a
 single CLI argument: a file → image mode (unchanged), a directory → browse mode, neither → onboarding (like no
 argument). `main.rs` detects a lone directory arg, canonicalizes it, and passes `App::new(..., launch_directory, ...)`.
-`initialize_viewer` then skips the initial-image display (no `dir_list`, the user opens one from the grid) and, after the
-window/renderer/menu/preloader are up, runs `enter_browse` + `reveal_to_folder(dir, None)` (no came-from image → grid
-preselects the first image, or the tree for an empty folder). Multiple args stay an image set; a missing/unreadable path
-falls through to onboarding.
+`initialize_viewer` then skips the initial-image display (no `dir_list`, the user opens one from the grid) and, after
+the window/renderer/menu/preloader are up, runs `enter_browse` + `reveal_to_folder(dir, None)` (no came-from image →
+grid preselects the first image, or the tree for an empty folder). Multiple args stay an image set; a missing/unreadable
+path falls through to onboarding.
 
 **Arrow-key pane isolation** is automatic from the focus model: exactly one pane is first responder (synced by
 `sync_native`/`apply_focus`), arrows fall through to `super` (native) only on that view, and the winit/QA browse key
@@ -264,9 +265,10 @@ the way the native `didSelectItemsAtIndexPaths:` delegate does (so the open path
 
 ## The thumbnail grid
 
-`grid.rs` builds the right pane: an `NSCollectionView` (`NSCollectionViewFlowLayout`, vertical scroll) of ~160pt square
-cells, each a `GridItem` (an `NSCollectionViewItem` subclass with a proportionally-scaling `NSImageView` + a filename
-label). The slider that live-resizes cells is a later phase; the grid uses a fixed cell size for now.
+`grid.rs` builds the right pane: an `NSCollectionView` (`NSCollectionViewFlowLayout`, vertical scroll) of fixed-size
+square cells (`CELL_PT`, see "Styling constants"), each a `GridItem` (an `NSCollectionViewItem` subclass with a
+proportionally-scaling `NSImageView` + a filename label). The slider that live-resizes cells is a later phase; the grid
+uses a fixed cell size for now. The grid sits on a rounded gallery surface (see `split_view.rs`).
 
 - **Where the mutable state lives.** `NSCollectionView` holds its data source/delegate weakly, so `BrowseGrid` keeps the
   `Retained<GridDataSource>` alive for the window's life. All the grid's mutable state — the `grid_model::GridModel`,
@@ -361,7 +363,29 @@ RGBA8 thumbnail is `512 × 512 × 4 ≈ 1 MB` (`EST_THUMBNAIL_BYTES`), so 128 MB
   helpers are the trap because the generic `&T` swallows the `Retained`.) Bit us building the tree cell.
 - **`NSSplitView` sizes its arranged subviews itself.** The panes KEEP `translatesAutoresizingMaskIntoConstraints` ON
   (the default). Disabling it on the arranged subviews (and giving them no size constraints) collapses both panes to
-  zero — a gray void. Set an initial divider position with `setPosition:ofDividerAtIndex:` so
-  neither pane starts collapsed.
+  zero — a gray void. Set an initial divider position with `setPosition:ofDividerAtIndex:` so neither pane starts
+  collapsed.
 - **Build on the main thread.** `BrowseSplitView::create` asserts the `MainThreadMarker`; it's only ever called from the
   winit event loop (main thread).
+
+## Styling constants (the baseline gallery look)
+
+The look is tuned via named constants so it's easy to refine; values are logical points unless noted. All colors are
+semantic `NSColor`s (light/dark adapt automatically). Tweak these, not magic numbers buried in calls.
+
+- **Grid cells** (`grid.rs`): `CELL_PT` 168 (cell side), `CELL_IMAGE_PT` 140 (centered square thumbnail),
+  `CELL_LABEL_PT` 18 + `CELL_IMAGE_LABEL_GAP_PT` 6 (filename label below), `CELL_LABEL_FONT_PT` 11 (small system font,
+  `secondaryLabelColor`, single-line middle-truncation), `CELL_SPACING` 16 (inter-cell, both axes), `SECTION_INSET_PT`
+  14 (inset inside the gallery surface). The cell container is a `FlippedView` so the thumbnail-on-top / label-below
+  layout reads top-down.
+- **Selection ring** (`grid.rs`): `SELECTION_CORNER_RADIUS` 8, `SELECTION_FOCUSED_ALPHA` 0.85 (softens the focused
+  accent fill). Focus model is unchanged: focused pane → `selectedContentBackgroundColor` (accent), unfocused →
+  `unemphasizedSelectedContentBackgroundColor` (gray), driven by `gridPaneIsFocused` (see "Selection emphasis follows
+  focus"). `SELECTION_INSET_PT` 2 is reserved for a future inset ring.
+- **Empty state** (`grid.rs`): `EMPTY_LABEL_FONT_PT` 15, `secondaryLabelColor`, centered on the gallery surface.
+- **Gallery surface** (`split_view.rs`): the grid sits on a rounded-corner `controlBackgroundColor` container inset from
+  the grid pane — `GALLERY_INSET_PT` 10 (leading/trailing/bottom), `GALLERY_TOP_INSET_PT` (= `TITLE_BAR_HEIGHT` + inset,
+  clears the traffic-light strip), `GALLERY_CORNER_RADIUS` 10 (`masksToBounds` clips the grid to the rounded corners).
+- **Sidebar rows** (`outline.rs`): `ROW_HEIGHT_PT` 24, `ICON_SIZE_PT` 16, `INDENT_PER_LEVEL_PT` 14, `ICON_LABEL_GAP_PT`
+  6, `CELL_LEADING_INSET_PT` 2, `CELL_TRAILING_INSET_PT` 4, `LABEL_FONT_PT` 13 (system font, middle-truncating). Keeps
+  the `.sidebar` vibrancy + source-list rounded-pill selection.

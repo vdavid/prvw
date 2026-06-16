@@ -66,6 +66,25 @@ use objc2_foundation::{NSNotification, NSRect, NSString};
 
 use super::tree_model::{self, ChildCache};
 
+// ─── Sidebar styling constants (tweak for a Finder-like feel) ───────────────
+// All in logical points.
+
+/// Row height for the source list. A touch taller than the default small-row height so the
+/// folder icon + label sit comfortably, like Finder's sidebar.
+const ROW_HEIGHT_PT: f64 = 24.0;
+/// Folder icon side. 16pt reads crisply at sidebar scale (the Finder sidebar metric).
+const ICON_SIZE_PT: f64 = 16.0;
+/// Indentation per disclosure level.
+const INDENT_PER_LEVEL_PT: f64 = 14.0;
+/// Gap between the folder icon and the label.
+const ICON_LABEL_GAP_PT: f64 = 6.0;
+/// Leading inset of the icon inside the cell.
+const CELL_LEADING_INSET_PT: f64 = 2.0;
+/// Trailing inset of the label inside the cell.
+const CELL_TRAILING_INSET_PT: f64 = 4.0;
+/// Label point size. The system sidebar label size.
+const LABEL_FONT_PT: f64 = 13.0;
+
 // ─── BrowseOutlineView: keyDown override for Tab/Enter/Esc ──────────────────
 
 define_class!(
@@ -470,6 +489,10 @@ fn build_cell_container(mtm: MainThreadMarker, identifier: &NSString) -> Retaine
         label.setDrawsBackground(false);
         label.setEditable(false);
         label.setSelectable(false);
+        label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(
+            LABEL_FONT_PT,
+        )));
+        let _: () = msg_send![&*label, setLineBreakMode: 5isize]; // truncate middle
         let _: () = msg_send![&*label, setTranslatesAutoresizingMaskIntoConstraints: false];
 
         let label_view: &NSView = as_nsview(&*label);
@@ -489,18 +512,18 @@ fn build_cell_container(mtm: MainThreadMarker, identifier: &NSString) -> Retaine
         let icon_size = |item: &AnyObject| {
             NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
                 item, NSLayoutAttribute::Width, NSLayoutRelation::Equal,
-                None::<&AnyObject>, NSLayoutAttribute::NotAnAttribute, 1.0, 16.0,
+                None::<&AnyObject>, NSLayoutAttribute::NotAnAttribute, 1.0, ICON_SIZE_PT,
             )
             .setActive(true);
         };
 
-        // Icon: leading edge, vertically centered, 16×16.
+        // Icon: leading edge, vertically centered, square.
         pin(
             &icon,
             NSLayoutAttribute::Leading,
             &container,
             NSLayoutAttribute::Leading,
-            2.0,
+            CELL_LEADING_INSET_PT,
         );
         pin(
             &icon,
@@ -523,7 +546,7 @@ fn build_cell_container(mtm: MainThreadMarker, identifier: &NSString) -> Retaine
             NSLayoutAttribute::Leading,
             &icon,
             NSLayoutAttribute::Trailing,
-            6.0,
+            ICON_LABEL_GAP_PT,
         );
         pin(
             label_view,
@@ -537,7 +560,7 @@ fn build_cell_container(mtm: MainThreadMarker, identifier: &NSString) -> Retaine
             NSLayoutAttribute::Trailing,
             label_view,
             NSLayoutAttribute::Trailing,
-            4.0,
+            CELL_TRAILING_INSET_PT,
         );
 
         container
@@ -614,7 +637,10 @@ impl BrowseTree {
             outline.setStyle(NSTableViewStyle::SourceList);
             let _: () = msg_send![&*outline, setHeaderView: std::ptr::null::<AnyObject>()];
             let _: () = msg_send![&*outline, setRowSizeStyle: 1isize]; // NSTableViewRowSizeStyleSmall
-            let _: () = msg_send![&*outline, setIndentationPerLevel: 14.0f64];
+            // An explicit row height (a touch taller than the small-row default) gives the icon +
+            // label comfortable, Finder-like breathing room.
+            let _: () = msg_send![&*outline, setRowHeight: ROW_HEIGHT_PT];
+            let _: () = msg_send![&*outline, setIndentationPerLevel: INDENT_PER_LEVEL_PT];
             let _: () = msg_send![&*outline, setFloatsGroupRows: false];
             // Transparent background so the sidebar vibrancy shows through.
             let _: () = msg_send![&*outline, setBackgroundColor: &*clear_color()];
@@ -691,7 +717,10 @@ impl BrowseTree {
     /// root (nothing to reveal). The public entry the app calls on browse-open / dir-arg launch.
     pub fn reveal_to_folder(&self, folder: &Path) {
         let Some(chain) = tree_model::reveal_path_chain(self._data_source.roots(), folder) else {
-            log::debug!("Tree reveal: {} is under no root, skipping", folder.display());
+            log::debug!(
+                "Tree reveal: {} is under no root, skipping",
+                folder.display()
+            );
             return;
         };
         self.reveal_path(chain);
@@ -710,7 +739,10 @@ impl BrowseTree {
         log::debug!(
             "Tree reveal start: {} level(s), target {}",
             chain.len(),
-            chain.last().map(|p| p.display().to_string()).unwrap_or_default()
+            chain
+                .last()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
         );
         // The target is the last element. If the chain is just the root, it's already a top-level
         // row — select it now, no expansion needed.
@@ -718,10 +750,7 @@ impl BrowseTree {
             self.select_and_scroll_to(&chain[0]);
             return;
         }
-        *self.reveal.borrow_mut() = Some(RevealWalk {
-            chain,
-            position: 0,
-        });
+        *self.reveal.borrow_mut() = Some(RevealWalk { chain, position: 0 });
         // Kick off the first level: expand the root so its children scan (or, if already loaded,
         // advance straight through).
         let first = self.reveal.borrow().as_ref().map(|w| w.chain[0].clone());
@@ -753,7 +782,11 @@ impl BrowseTree {
         } else {
             // Defensive: a scan landed for the target itself (only if something expanded it). Just
             // finish the reveal on the target.
-            let target = self.reveal.borrow().as_ref().and_then(|w| w.chain.last().cloned());
+            let target = self
+                .reveal
+                .borrow()
+                .as_ref()
+                .and_then(|w| w.chain.last().cloned());
             if let Some(target) = target {
                 self.select_and_scroll_to(&target);
             }
@@ -813,10 +846,12 @@ impl BrowseTree {
             // Select the row (no row in an NSIndexSet helper — build one). `selectRowIndexes:` with
             // a single index, not extending the selection.
             let index_set = objc2_foundation::NSIndexSet::indexSetWithIndex(row as usize);
-            let _: () =
-                msg_send![&*self.outline, selectRowIndexes: &*index_set, byExtendingSelection: false];
+            let _: () = msg_send![&*self.outline, selectRowIndexes: &*index_set, byExtendingSelection: false];
             self.scroll_row_to_middle(row);
-            log::debug!("Tree reveal done: selected row {row} for {}", path.display());
+            log::debug!(
+                "Tree reveal done: selected row {row} for {}",
+                path.display()
+            );
         }
     }
 
@@ -836,8 +871,8 @@ impl BrowseTree {
                 bounds.size.height
             };
             // Target origin centers the row's rect in the visible clip height, clamped at 0.
-            let target_y = (row_rect.origin.y + row_rect.size.height / 2.0 - clip_height / 2.0)
-                .max(0.0);
+            let target_y =
+                (row_rect.origin.y + row_rect.size.height / 2.0 - clip_height / 2.0).max(0.0);
             let point = objc2_foundation::NSPoint::new(0.0, target_y);
             let clip: *const AnyObject = msg_send![&*self.scroll, contentView];
             let _: () = msg_send![clip, scrollToPoint: point];
