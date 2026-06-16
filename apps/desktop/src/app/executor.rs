@@ -333,6 +333,13 @@ impl App {
                 self.last_mouse_pos = (Logical(x), Logical(y));
                 self.update_histogram_hover();
             }
+            AppCommand::ToggleBrowseMode => {
+                let target = self.browser.mode().toggled();
+                self.set_view_mode(target);
+            }
+            AppCommand::EnterImageMode => {
+                self.set_view_mode(crate::browser::ViewMode::Image);
+            }
             AppCommand::ToggleSlideshow => {
                 self.toggle_slideshow();
             }

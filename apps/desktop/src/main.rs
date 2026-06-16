@@ -15,6 +15,7 @@ mod render;
 // Features
 #[cfg(target_os = "macos")]
 mod about;
+mod browser;
 mod color;
 mod decoding;
 mod diagnostics;

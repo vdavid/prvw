@@ -48,10 +48,13 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
         Key::Character("]") => Some(AppCommand::IncreaseSlideshowSpeed),
         Key::Character("[") => Some(AppCommand::DecreaseSlideshowSpeed),
 
-        // Fullscreen
-        Key::Named(NamedKey::F11) | Key::Named(NamedKey::Enter) | Key::Character("f") => {
-            Some(AppCommand::ToggleFullscreen)
-        }
+        // Fullscreen. `f` and `F11` keep toggling fullscreen. Enter used to as well,
+        // but now enters the image browser instead (the capability isn't lost — only
+        // Enter's binding moved). In image mode no native view is first responder, so
+        // winit delivers Enter here; once in browse mode, a focused pane's `keyDown:`
+        // owns Enter (see `browser::split_view::BrowsePane`).
+        Key::Named(NamedKey::F11) | Key::Character("f") => Some(AppCommand::ToggleFullscreen),
+        Key::Named(NamedKey::Enter) => Some(AppCommand::ToggleBrowseMode),
 
         // Escape: exit fullscreen or exit app (handled specially in main.rs)
         Key::Named(NamedKey::Escape) => Some(AppCommand::Exit),
@@ -114,6 +117,8 @@ pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
         Some(AppCommand::GoToFirst)
     } else if id == &ids.go_to_last {
         Some(AppCommand::GoToLast)
+    } else if id == &ids.browse_toggle {
+        Some(AppCommand::ToggleBrowseMode)
     } else if id == &ids.slideshow_toggle {
         Some(AppCommand::ToggleSlideshow)
     } else if id == &ids.slideshow_increase_speed {
@@ -134,7 +139,8 @@ pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
         "[" => Some(AppCommand::DecreaseSlideshowSpeed),
         "Home" => Some(AppCommand::GoToFirst),
         "End" => Some(AppCommand::GoToLast),
-        "Enter" | "F11" | "f" => Some(AppCommand::ToggleFullscreen),
+        "F11" | "f" => Some(AppCommand::ToggleFullscreen),
+        "Enter" => Some(AppCommand::ToggleBrowseMode),
         "Escape" => Some(AppCommand::Exit),
         "+" | "=" => Some(AppCommand::ZoomIn),
         "-" => Some(AppCommand::ZoomOut),

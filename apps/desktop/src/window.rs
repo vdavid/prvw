@@ -826,6 +826,39 @@ pub fn push_metal_layer_above_vibrancy(window: &Window) {
     }
 }
 
+/// Hide or show the wgpu CAMetalLayer. Browse mode hides it so the native split view (a sibling
+/// at a higher `zPosition`) is the only visible content; image mode unhides it. Reuses the same
+/// `find_sublayer_responding_to(setColorspace:)` walk as `push_metal_layer_above_vibrancy` to
+/// locate the Metal layer.
+#[cfg(target_os = "macos")]
+pub fn set_metal_layer_hidden(window: &Window, hidden: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let root_layer: *const AnyObject = msg_send![ns_view, layer];
+        if root_layer.is_null() {
+            return;
+        }
+        let metal_layer = find_sublayer_responding_to(root_layer, objc2::sel!(setColorspace:));
+        if metal_layer.is_null() {
+            log::warn!("No CAMetalLayer found, can't set hidden");
+            return;
+        }
+        let _: () = msg_send![metal_layer, setHidden: hidden];
+        log::debug!("Set CAMetalLayer.hidden = {hidden}");
+    }
+}
+
 /// Clip the wgpu CAMetalLayer to a rounded rect inset from the window edge, so the
 /// full-window Liquid Glass shows through as a uniform frame around the image. The inner
 /// corners are concentric with the window (`IMAGE_CORNER_RADIUS`), and continuous-curved

@@ -27,6 +27,7 @@ pub struct MenuIds {
     pub sort_by_name: MenuId,
     pub sort_by_date: MenuId,
     pub sort_by_file_type: MenuId,
+    pub browse_toggle: MenuId,
     pub previous: MenuId,
     pub next: MenuId,
     pub go_to_first: MenuId,
@@ -69,6 +70,9 @@ pub struct AppMenu {
     /// Start/Stop slideshow. Kept so the label can flip between "Start
     /// slideshow" and "Stop slideshow" when the slideshow toggles.
     pub slideshow_toggle_item: MenuItem,
+    /// Image browser / Image view. Kept so the label can flip between "Image
+    /// browser" (in image mode) and "Image view" (in browse mode) on mode change.
+    pub browse_toggle_item: MenuItem,
 }
 
 /// macOS auto-injects text-editing items into any menu it recognizes as "Edit" (Writing
@@ -259,6 +263,12 @@ pub fn create_menu_bar() -> AppMenu {
 
     // Navigate menu
     let nav_menu = Submenu::new("Navigate", true);
+    // Top item swaps the main screen between the image viewer and the browse screen. Its label
+    // flips by mode (see `App::set_browse_menu_label`), like the slideshow Start/Stop item. The
+    // bare `Enter` shortcut is shown cosmetically (padded into the title) rather than as a real
+    // accelerator — bare-key equivalents are app-global and would hijack typing into text fields.
+    // `Enter` in image mode is handled in `input`.
+    let browse_toggle = MenuItem::new("Image browser        ⏎", true, None);
     let previous = MenuItem::new("Previous      ←", true, None);
     let next = MenuItem::new("Next            →", true, None);
     let go_to_first = MenuItem::new(
@@ -271,6 +281,8 @@ pub fn create_menu_bar() -> AppMenu {
         CheckMenuItem::new("Loop navigation", true, settings.loop_navigation, None);
     nav_menu
         .append_items(&[
+            &browse_toggle,
+            &PredefinedMenuItem::separator(),
             &previous,
             &next,
             &PredefinedMenuItem::separator(),
@@ -352,6 +364,7 @@ pub fn create_menu_bar() -> AppMenu {
     let sort_by_file_type_id = sort_by_file_type.id().clone();
     let loop_navigation_id = loop_navigation.id().clone();
     let slideshow_toggle_id = slideshow_toggle.id().clone();
+    let browse_toggle_id = browse_toggle.id().clone();
     let slideshow_increase_speed_id = slideshow_increase_speed.id().clone();
     let slideshow_decrease_speed_id = slideshow_decrease_speed.id().clone();
 
@@ -368,6 +381,7 @@ pub fn create_menu_bar() -> AppMenu {
         sort_by_file_type_item: sort_by_file_type,
         loop_navigation_item: loop_navigation,
         slideshow_toggle_item: slideshow_toggle,
+        browse_toggle_item: browse_toggle,
         _menu: menu,
         context_menu,
         #[cfg(target_os = "macos")]
@@ -395,6 +409,7 @@ pub fn create_menu_bar() -> AppMenu {
             sort_by_name: sort_by_name_id,
             sort_by_date: sort_by_date_id,
             sort_by_file_type: sort_by_file_type_id,
+            browse_toggle: browse_toggle_id,
             previous: previous.id().clone(),
             next: next.id().clone(),
             go_to_first: go_to_first.id().clone(),

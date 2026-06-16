@@ -97,6 +97,9 @@ pub(crate) struct App {
     pub(crate) histogram: histogram::State,
     pub(crate) exif_overlay: exif_overlay::State,
     pub(crate) slideshow: slideshow::State,
+    /// Browse mode (folder tree + thumbnail grid) vs image viewer. Owns the native
+    /// split-view handles on macOS. Starts in `Image`.
+    pub(crate) browser: crate::browser::State,
     #[cfg(target_os = "macos")]
     pub(crate) thumbnails: crate::thumbnails::State,
 
@@ -196,6 +199,7 @@ impl App {
             histogram: histogram::State::from_settings(&initial_settings),
             exif_overlay: exif_overlay::State::from_settings(&initial_settings),
             slideshow: slideshow::State::from_settings(&initial_settings),
+            browser: crate::browser::State::new(),
             #[cfg(target_os = "macos")]
             thumbnails: crate::thumbnails::State::new(),
             title_bar: initial_settings.title_bar,
@@ -1139,6 +1143,48 @@ impl App {
                 "Start slideshow"
             };
             menu.slideshow_toggle_item.set_text(label);
+        }
+    }
+
+    // ── Browse mode ──────────────────────────────────────────────────
+
+    /// Switch the main window between the image viewer and the native browse screen.
+    /// No-op when already in `target`. Entering browse shows the split view and hides the
+    /// Metal layer (the GPU goes idle — no redraws requested); entering image reverses it
+    /// and requests a redraw. Also flips the Navigate menu item's label.
+    pub(crate) fn set_view_mode(&mut self, target: crate::browser::ViewMode) {
+        if self.browser.mode() == target {
+            return;
+        }
+        self.browser.toggle_mode();
+
+        #[cfg(target_os = "macos")]
+        if let Some(win) = self.window.clone() {
+            match target {
+                crate::browser::ViewMode::Browse => self.browser.enter_browse(&win),
+                crate::browser::ViewMode::Image => self.browser.enter_image(&win),
+            }
+        }
+
+        self.set_browse_menu_label();
+
+        // Image mode needs a frame; browse mode goes idle (render-on-demand).
+        if matches!(target, crate::browser::ViewMode::Image) {
+            self.request_redraw();
+        }
+        self.update_shared_state();
+    }
+
+    /// Update the Navigate menu item's label to match the current mode: "Image browser" while
+    /// viewing an image (the action takes you there), "Image view" while browsing.
+    fn set_browse_menu_label(&self) {
+        if let Some(menu) = &self.app_menu {
+            let label = if self.browser.is_browse() {
+                "Image view"
+            } else {
+                "Image browser"
+            };
+            menu.browse_toggle_item.set_text(label);
         }
     }
 

@@ -112,6 +112,16 @@ pub enum AppCommand {
     /// Update the cached cursor position (used by MCP for hover-readout tests).
     SetCursorPosition { x: f64, y: f64 },
 
+    // ── Browse mode (macOS-only; native AppKit folder tree + thumbnail grid) ──
+    /// Swap between the wgpu image viewer and the native browse screen. Fired by
+    /// the Navigate → "Image browser" / "Image view" menu item and the Enter key
+    /// in image mode. Image → Browse hides the Metal layer and shows the split
+    /// view; Browse → Image reverses it.
+    ToggleBrowseMode,
+    /// Leave browse mode for the image viewer unconditionally. Fired by Esc /
+    /// Enter inside a browse pane (`browser::split_view::BrowsePane::key_down`).
+    EnterImageMode,
+
     // ── Slideshow ────────────────────────────────────────────────────
     /// Start the slideshow if stopped, stop it if running (Slideshow →
     /// Start/Stop slideshow, ⌘S).
