@@ -91,6 +91,13 @@ const DEFAULT_HEIGHT: f64 = 768.0;
 /// Minimum window dimension (logical pixels) when auto-fitting to image size.
 pub const MIN_WINDOW_DIM: f64 = 200.0;
 
+/// Minimum browse-mode content width (logical px): the 240pt sidebar plus a few grid columns.
+/// Image mode's fit-to-window may have shrunk the window for a small image; browse grows it to at
+/// least this so the gallery isn't cramped. Only enforced on browse entry, never in image mode.
+const BROWSE_MIN_WIDTH: f64 = 860.0;
+/// Minimum browse-mode content height (logical px): a few grid rows tall.
+const BROWSE_MIN_HEIGHT: f64 = 560.0;
+
 /// Maximum fraction of the monitor's work area to use when auto-fitting.
 pub const MAX_SCREEN_FRACTION: f64 = 0.9;
 
@@ -719,6 +726,17 @@ pub fn set_titlebar_vibrancy_visible(window: &Window, visible: bool) {
     set_subview_hidden_by_id(window, TITLEBAR_VIBRANCY_IDENTIFIER, !visible);
     set_subview_hidden_by_id(window, TITLEBAR_TITLE_IDENTIFIER, !visible);
     set_subview_hidden_by_id(window, TITLEBAR_ZOOM_IDENTIFIER, !visible);
+}
+
+/// Hide or show just the image title + zoom labels (not the whole title-bar strip — hiding the
+/// strip would disturb the traffic-light styling). Browse mode calls this with `hidden = true`:
+/// browse stops requesting redraws, so the per-redraw `set_titlebar_text` never runs to clear the
+/// labels, and they'd otherwise linger over the native browse UI showing the last image's title.
+/// Image mode shows them again (their text is refreshed on the next redraw).
+#[cfg(target_os = "macos")]
+pub fn set_titlebar_labels_hidden(window: &Window, hidden: bool) {
+    set_subview_hidden_by_id(window, TITLEBAR_TITLE_IDENTIFIER, hidden);
+    set_subview_hidden_by_id(window, TITLEBAR_ZOOM_IDENTIFIER, hidden);
 }
 
 /// Switch the window's appearance for fullscreen vs windowed.
@@ -1371,6 +1389,38 @@ pub fn clamp_to_screen(
         (min_y + max_y) / 2.0
     };
     (Logical(fx), Logical(fy))
+}
+
+/// Grow the window to the browse-mode minimum content size if it's currently smaller, then keep it
+/// centered on the current monitor (matching `resize_to_fit_image`'s centering). A no-op when the
+/// window already meets the minimum, in fullscreen, or larger on both axes — so it never shrinks a
+/// comfortably-sized window. Called on browse entry only; image-mode fit-to-window is untouched.
+#[cfg(target_os = "macos")]
+pub fn grow_to_browse_minimum(window: &Window) {
+    if is_fullscreen(window) {
+        return;
+    }
+    let scale_factor = window.scale_factor();
+    let (cur_w, cur_h) = from_logical_size(window.inner_size().to_logical::<f64>(scale_factor));
+    let new_w = cur_w.0.max(BROWSE_MIN_WIDTH);
+    let new_h = cur_h.0.max(BROWSE_MIN_HEIGHT);
+    if new_w <= cur_w.0 && new_h <= cur_h.0 {
+        return; // Already big enough on both axes.
+    }
+    let new_size = to_logical_size(Logical(new_w), Logical(new_h));
+    let _ = window.request_inner_size(new_size);
+    log::debug!(
+        "Grew window for browse: {}x{} -> {}x{} logical",
+        cur_w.0 as u32,
+        cur_h.0 as u32,
+        new_w as u32,
+        new_h as u32
+    );
+    if let Some(bounds) = MonitorBounds::from_window(window) {
+        let cx = Logical(bounds.x.0 + (bounds.width.0 - new_w) / 2.0);
+        let cy = Logical(bounds.y.0 + (bounds.height.0 - new_h) / 2.0);
+        window.set_outer_position(to_logical_pos(cx, cy));
+    }
 }
 
 /// Resize the window to fit the given image dimensions, then center it on screen.

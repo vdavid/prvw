@@ -7,8 +7,8 @@ driven by the Phase-2 scheduler + cache plumbing. Full design: `docs/specs/image
 
 | File                 | Purpose                                                                                                                                                                                      |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mod.rs`             | `ViewMode` + `PaneSide` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, native handles); pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command`; `apply_focus`; tree + grid delegation; tests |
-| `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (syncs native first responder + grid emphasis to `focused_pane`), divider + traffic-light fixes; hosts the tree (left) and the grid (right) |
+| `mod.rs`             | `ViewMode` + `PaneSide` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, native handles); the `sync_native` render-from-state choke-point; pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command` + field-transition cores; tree + grid delegation; tests |
+| `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (makes the focused pane's control first responder + refreshes grid emphasis — called by `sync_native`), divider + traffic-light fixes; hosts the tree (left) and the grid (right) |
 | `grid.rs`            | macOS `NSCollectionView` grid: `BrowseCollectionView` (keyDown override), `GridItem` (cell, focus-aware selection rect + double-click in `mouseDown:`), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs/focus) |
 | `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                        |
 | `grid_listing.rs`    | Background folder-image lister (its own OS thread + `mpsc`, like the tree scanner) + the pure `list_supported_images`                                                                        |
@@ -19,11 +19,17 @@ driven by the Phase-2 scheduler + cache plumbing. Full design: `docs/specs/image
 
 ## The swap
 
-`App` holds `browser: browser::State`. `App::set_view_mode` (in `app.rs`) drives it:
+`App` holds `browser: browser::State`. `App::set_view_mode` (in `app.rs`) drives it via `enter_browse` / `enter_image`,
+which set state then render through `sync_native` (see "Browse UI architecture" below — `sync_native` derives split-view
++ Metal-layer visibility, the image labels, first responder, and emphasis from `mode` + `focused_pane`):
 
-- **Image → Browse:** build the split view on first use, unhide it, `window::set_metal_layer_hidden(true)`, focus the
-  tree pane. No redraw requested — the GPU goes idle (render-on-demand).
-- **Browse → Image:** hide the split view, `set_metal_layer_hidden(false)`, `request_redraw()`.
+- **Image → Browse:** build the split view on first use, grow the window to the browse minimum if it's smaller
+  (`window::grow_to_browse_minimum`, ~860×560 — a small image's fit-to-window may have shrunk it), set
+  `mode = Browse` + focus (grid if it has images, else tree), `sync_native`. No redraw requested — the GPU goes idle
+  (render-on-demand). The min-size is enforced on browse entry only, never in image mode (so it doesn't fight
+  fit-to-window).
+- **Browse → Image:** set `mode = Image` + `focused_pane = None`, `sync_native`, then `set_view_mode` re-asserts the
+  title-label visibility and `request_redraw()`.
 
 The split view is a **sibling subview of winit's contentView** at `zPosition` 2.0 (above the Metal layer's 1.0), pinned
 to all four edges, identifier `prvw.browser_split`, hidden at startup. Same pattern as `window::add_titlebar_labels`. A
@@ -100,10 +106,10 @@ freeze is contained to the tree pane's loading state, because the main thread ne
 
 Browse mode hosts a live `NSOutlineView` that holds (or some descendant holds) the window's first responder. On Esc →
 image the hidden outline view can keep the responder, so winit never receives the next key and image-mode Enter does
-nothing (the menu still works — muda events bypass the responder chain). `browser::State::enter_image` therefore calls
-`window::restore_content_view_first_responder` (`makeFirstResponder:` the winit `ns_view`), handing the keyboard back to
-winit so the Enter → browse → Esc → image → Enter cycle repeats indefinitely. **Don't drop this call** — without it,
-Enter→browse only works once per session.
+nothing (the menu still works — muda events bypass the responder chain). `sync_native` therefore calls
+`window::restore_content_view_first_responder` (`makeFirstResponder:` the winit `ns_view`) in image mode, handing the
+keyboard back to winit so the Enter → browse → Esc → image → Enter cycle repeats indefinitely. **Don't drop this** —
+without it, Enter→browse only works once per session. (Detail in "Browse UI architecture" below.)
 
 ### Two fixes baked into `split_view.rs`
 
@@ -114,25 +120,57 @@ Enter→browse only works once per session.
 - **Sidebar clears the traffic lights.** The `.sidebar` vibrancy fills the pane, but the outline scroll view is inset
   `crate::TITLE_BAR_HEIGHT` (32pt) from the top so no row sits under the traffic-light strip.
 
-## Focus / keyboard
+## Browse UI architecture: render from state via `sync_native`
+
+**The whole browse UI is rendered from `browser::State`, the single source of truth.** No native view decides anything;
+every browse-UI change follows one rule: **mutate state → call `sync_native(window)`**. `sync_native` is the one
+idempotent choke-point ("render") that reads state and sets ALL derived native UI; it's safe to call any number of
+times. This replaced an earlier event-driven model where each event poked native views ad-hoc, which let the native
+state drift out of sync (a click updated one pane's emphasis but not the other; Tab to the grid left it first responder
+with no selection anchor so arrows were dead until you clicked). There's no observer/event-bus — the choke-point IS the
+subscription.
+
+**State (the source of truth):** `mode: ViewMode`, `focused_pane: Option<PaneSide>` (`None` in image mode), the tree's
+`selected_folder`, and the grid's `grid_selected`. Focus is **never** inferred from the native first responder.
+
+**What `sync_native` reads → sets** (`mod.rs::State::sync_native`):
+
+- `mode` → split-view visibility (shown iff Browse), the wgpu Metal layer hidden iff Browse, and the image title/zoom
+  labels hidden iff Browse (`window::set_titlebar_labels_hidden`).
+- `focused_pane` → the window's first responder: the focused pane's native control in browse (the `BrowseOutlineView`
+  for Tree, the `BrowseCollectionView` for Grid, via `split.apply_focus`), or the winit content view in image mode
+  (`window::restore_content_view_first_responder`, so winit owns the keyboard again).
+- **Grid-selection invariant:** if the grid is the focused pane and has images but no live selection, seed one
+  (`grid_selected`, else 0) before making it first responder. A focused collection view with no selection has no anchor,
+  so arrow keys do nothing — this guarantees an anchor, fixing "Tab to the grid leaves arrows dead until you click a
+  thumbnail".
+- Emphasis: the tree source list draws accent-blue while it's first responder (automatic once the responder follows
+  state); `split.apply_focus` calls `BrowseGrid::refresh_focus_emphasis` to repaint visible selected grid items
+  blue-iff-focused.
+
+**Mutation sites that funnel through `sync_native`** (each: set state fields, then `sync_native`):
+
+- `enter_browse` / `enter_image` (`set_view_mode` in `app.rs`) — set `mode` + `focused_pane`. `enter_browse` also grows
+  the window to the browse minimum first (see below).
+- `toggle_focus` (Tab) — flips the pane via `next_focused_pane`.
+- `set_grid_selected` (a grid click/selection → `BrowseGridSelected`) — `focused_pane = Grid`, `grid_selected = clicked`.
+- `set_tree_focused` (a tree selection → `BrowseSelectFolder`) — `focused_pane = Tree`.
+- `grid_folder_listed` (a background listing finished) — a listing flips the grid empty↔non-empty, so re-syncing
+  re-derives focus + the grid-selection anchor.
+
+The field-only transition cores (`enter_browse_state` / `enter_image_state` / `toggle_focus_state` / `focus_grid_state`,
+plus the pure `next_focused_pane` / `browse_entry_pane`) are headless-tested; the objc2 render in `sync_native` is
+covered by the smoke run + live QA.
 
 **Why the native responder chain works here.** In browse mode the GPU layer is hidden and the app stops requesting
 redraws, so winit is idle and does NOT re-assert first responder. The focused native view holds the window's first
-responder and handles its own keys. (The Phase 0 spike's first read — winit winning first responder — was a stub
-artifact: plain placeholder panes with redraws still firing. Verified in idle-winit browse mode: `makeFirstResponder`
-accepted, no winit re-assertion.)
+responder and handles its own keys.
 
-**Single source of truth:** `browser::State::focused_pane: Option<PaneSide>` — `None` in image mode,
-`Some(Tree)`/`Some(Grid)` in browse mode. Nothing else decides which pane is focused; it's never inferred from the native
-first responder. `apply_focus` is the sync point: it `makeFirstResponder:`s the focused pane's control (the
-`BrowseOutlineView` for Tree, the `BrowseCollectionView` for Grid) and refreshes the grid's emphasis. Called on every
-focus change.
-
-**Focus transitions.** `enter_browse` focuses the grid if the selected folder has images, else the tree
-(`browse_entry_pane`). `enter_image` sets `focused_pane = None` and restores the winit content view as first responder.
-Tab flips Tree↔Grid, skipping an empty grid (`next_focused_pane`) — an empty grid is non-focusable, so Tab stays on the
-tree. A grid click focuses Grid (`set_grid_selected`); a tree selection focuses Tree (`set_tree_focused`, from the
-`BrowseSelectFolder` executor arm). `next_focused_pane` / `browse_entry_pane` are pure and headless-tested.
+**On entering image mode**, `sync_native` hands first responder back to winit (`restore_content_view_first_responder`):
+the hidden outline view would otherwise keep the responder and swallow image-mode keys, so Enter→browse would work only
+once. **Don't drop this** — it's why the Enter → browse → Esc → image → Enter cycle repeats. (The labels' visibility is
+re-asserted by `set_view_mode` against the title-bar/fullscreen state — `sync_native` only ever *hides* them in browse,
+never forces them on, so a title-bar-off/fullscreen setting wins.)
 
 **Keys via the focused view's `keyDown:` override, not winit.** `BrowseOutlineView` and `BrowseCollectionView` subclass
 their controls and override `keyDown:` to intercept only Tab → `ToggleBrowseFocus`, Enter (Return/keypad-Enter) →
@@ -142,12 +180,6 @@ native selection/scroll stays immediate. The map is the pure `browser::browse_ke
 `crate::commands::send_command`. A defensive `input::browse_key_to_command` still maps Tab/Enter/Esc in case winit ever
 delivers a key in browse mode, but with first responder held by the native view it normally doesn't fire. **No
 winit-routed browse arrow handling exists** (arrows are native).
-
-**Emphasis follows focus.** Tree: a source-list `NSOutlineView` draws accent-blue selection when it's first responder and
-gray otherwise — so syncing first responder to `focused_pane` makes it correct for free. Grid: `GridItem::setSelected:`
-and `BrowseGrid::refresh_focus_emphasis` (called by `apply_focus` on a Tab flip) draw a rounded rect — accent-blue when
-selected and the grid is first responder, gray when selected but not, nothing when not selected. The item reads its own
-first-responder state (`grid_is_first_responder`) at paint time.
 
 `SharedAppState` exposes `view_mode`, `focused_pane` (`"tree"`/`"grid"`/`"none"`), `browse_selected_folder`, and
 `browse_grid_selected` (also at `GET /state`) so QA/tests can assert the mode swap, focus flip, tree selection, and grid

@@ -1232,20 +1232,35 @@ impl App {
         if self.browser.mode() == target {
             return;
         }
-        self.browser.toggle_mode();
 
         #[cfg(target_os = "macos")]
-        if let Some(win) = self.window.clone() {
-            match target {
+        match self.window.clone() {
+            // `enter_browse`/`enter_image` set `mode` + `focused_pane` then `sync_native` the result
+            // (the single render-from-state choke-point) — no separate `toggle_mode` here.
+            Some(win) => match target {
                 crate::browser::ViewMode::Browse => self.browser.enter_browse(&win),
                 crate::browser::ViewMode::Image => self.browser.enter_image(&win),
+            },
+            // No window yet (defensive — browse is unreachable without one): still track the mode.
+            None => {
+                self.browser.toggle_mode();
             }
         }
+        // Off macOS there's no native browse UI; just track the mode so the rest of the app agrees.
+        #[cfg(not(target_os = "macos"))]
+        self.browser.toggle_mode();
 
         self.set_browse_menu_label();
 
         // Image mode needs a frame; browse mode goes idle (render-on-demand).
         if matches!(target, crate::browser::ViewMode::Image) {
+            // Re-assert the title/zoom labels' visibility against the current title-bar / fullscreen
+            // state (browse hid them via `sync_native`). The next redraw refreshes their text.
+            #[cfg(target_os = "macos")]
+            if let Some(win) = &self.window {
+                let offset = self.content_offset_y();
+                window::set_titlebar_vibrancy_visible(win, offset.0 > 0.0);
+            }
             self.request_redraw();
         }
         self.update_shared_state();

@@ -363,10 +363,12 @@ impl App {
             #[cfg(target_os = "macos")]
             AppCommand::BrowseSelectFolder(folder) => {
                 log::info!("Browse: selected folder {}", folder.display());
-                // Selecting in the tree focuses the tree pane (single source of truth), then lists
-                // the folder's images on a background worker (never the main thread); the grid
-                // populates when `BrowseFolderListed` arrives.
-                self.browser.set_tree_focused();
+                // Selecting in the tree focuses the tree pane (single source of truth) and renders;
+                // then list the folder's images on a background worker (never the main thread); the
+                // grid populates when `BrowseFolderListed` arrives.
+                if let Some(win) = self.window.clone() {
+                    self.browser.set_tree_focused(&win);
+                }
                 self.browser.set_selected_folder(folder);
                 self.update_shared_state();
             }
@@ -377,7 +379,9 @@ impl App {
                     folder.display(),
                     images.len()
                 );
-                self.browser.grid_folder_listed(images);
+                if let Some(win) = self.window.clone() {
+                    self.browser.grid_folder_listed(images, &win);
+                }
                 self.update_shared_state();
             }
             #[cfg(target_os = "macos")]
@@ -388,7 +392,9 @@ impl App {
             }
             #[cfg(target_os = "macos")]
             AppCommand::BrowseGridSelected(index) => {
-                self.browser.set_grid_selected(index);
+                if let Some(win) = self.window.clone() {
+                    self.browser.set_grid_selected(index, &win);
+                }
                 self.update_shared_state();
             }
             AppCommand::BrowseOpenSelected => {

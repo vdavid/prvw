@@ -88,33 +88,38 @@ refines the Phase 0 spike's first read, which saw winit win first responder — 
 panes with redraws still firing. With real controls in idle-winit browse mode, the native first responder holds —
 verified: `makeFirstResponder` accepted, and no winit re-assertion during browse.)
 
-So browse mode uses the AppKit responder chain, with one app-level source of truth for focus:
+So browse mode uses the AppKit responder chain, with one app-level source of truth and a single render step:
 
-- **`browser::State.focused_pane: Option<PaneSide>` is the single source of truth.** `None` in image mode,
-  `Some(Tree)`/`Some(Grid)` in browse mode. Nothing else decides which pane is focused; focus is never inferred from the
-  native first responder in logic.
-- **`apply_focus` syncs the native first responder to `focused_pane`** (`makeFirstResponder:` the `NSOutlineView` for
-  Tree, the `NSCollectionView` for Grid) and refreshes emphasis on both panes. Called on every focus change. Keeping the
-  native first responder synced makes native selection emphasis correct for free and lets the focused view handle arrows
-  natively.
-- **Focus transitions.** `enter_browse`: focus the grid if the selected folder has images, else the tree.
-  `enter_image`: `focused_pane = None`, restore the winit content view as first responder. Tab (browse): toggle
-  Tree↔Grid, skipping an empty grid. Click in a pane: focus that pane (a grid click focuses Grid, a tree selection
-  focuses Tree).
+- **`browser::State` is the ONLY source of truth for the browse UI**: `mode`, `focused_pane: Option<PaneSide>` (`None`
+  in image mode, `Some(Tree)`/`Some(Grid)` in browse), the tree's selected folder, and the grid's selected index.
+  Nothing else decides focus/emphasis; focus is never inferred from the native first responder.
+- **One idempotent `sync_native(&self, window)` ("render") sets ALL derived native UI from state**, safe to call any
+  number of times. It derives, from `mode`: split-view visibility, the wgpu Metal layer hidden flag, and the image
+  title/zoom labels hidden flag; from `focused_pane`: the window's first responder (`makeFirstResponder:` the focused
+  pane's `NSOutlineView`/`NSCollectionView` in browse, or the winit content view in image mode) and the grid's per-item
+  emphasis (tree emphasis follows first responder automatically). It also enforces the **grid-selection invariant**: a
+  focused, non-empty grid with no live selection gets one seeded (so arrow keys always have an anchor — no "arrows dead
+  until you click").
+- **Every mutation goes through state then `sync_native`** — the one choke-point, no observer/event-bus. `enter_browse`
+  (focus the grid if the selected folder has images, else the tree; also grow the window to a sensible browse minimum if
+  it shrank for a small image), `enter_image` (`focused_pane = None`), `toggle_focus` (Tab: toggle Tree↔Grid, skipping an
+  empty grid), a grid click (focus Grid + record the index), a tree selection (focus Tree), and a completed folder
+  listing all set state then render. This structurally prevents the native UI from drifting from state (the bug an
+  earlier per-event-emphasis model had: a click updated one pane's emphasis but not the other).
 - **Keyboard via the focused view's `keyDown:` override, not winit.** `BrowseOutlineView` and `BrowseCollectionView`
   subclass their controls and override `keyDown:` to intercept only Tab → `ToggleBrowseFocus`, Enter (Return/keypad) →
   open-selected (Grid) or return-to-image (Tree), Esc → `EnterImageMode`. Everything else (arrows, page keys,
   type-select) calls `super`, so native selection/scroll stays immediate. The map is `browser::browse_keydown_command`,
   routed via `crate::commands::send_command`. There is **no** winit-routed browse arrow handling.
-- **Emphasis follows focus.** Tree: an `NSOutlineView` source list draws accent-blue selection when it's first responder
-  and gray otherwise — so syncing first responder to `focused_pane` makes it correct automatically. Grid: each
-  `GridItem` draws its selection as a rounded rect — accent-blue when selected and the grid is first responder, gray when
-  selected but not, nothing when not selected. `BrowseGrid::refresh_focus_emphasis` repaints visible selected items on a
-  Tab flip.
+- **Emphasis follows focus** (set by `sync_native`). Tree: an `NSOutlineView` source list draws accent-blue selection
+  when it's first responder and gray otherwise — so syncing first responder to `focused_pane` makes it correct
+  automatically. Grid: each `GridItem` draws its selection as a rounded rect — accent-blue when selected and the grid is
+  first responder, gray when selected but not, nothing when not selected. `BrowseGrid::refresh_focus_emphasis` repaints
+  visible selected items.
 - **Mouse is fully native:** single-click selects instantly (focusing the grid), double-click opens (detected in
   `GridItem::mouseDown:` via `clickCount == 2`, so no click-delay), and scroll-wheel scrolls — all native.
 - **Restore the content view as first responder when leaving browse.** On Esc → image the hidden outline view can keep
-  the responder, so winit never sees the next key (image-mode Enter does nothing). `browser::State::enter_image` calls
+  the responder, so winit never sees the next key (image-mode Enter does nothing). `sync_native` in image mode calls
   `window::restore_content_view_first_responder` so the Enter → browse → Esc → image → Enter cycle repeats. Don't drop
   it.
 - A defensive `input::browse_key_to_command` fallback still maps Tab/Enter/Esc in case winit ever delivers a key in

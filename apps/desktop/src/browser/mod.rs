@@ -16,13 +16,16 @@
 //! - The split view is a **sibling subview of winit's contentView** (same pattern as
 //!   `window::add_titlebar_labels`): `addSubview`, layer-backed, `zPosition` above the Metal
 //!   layer's `1.0`, pinned to the contentView edges, with a stable `identifier` for hide/show.
-//! - Entering browse: unhide the split view, hide the Metal layer
-//!   (`window::set_metal_layer_hidden`), stop requesting redraws. Entering image: reverse.
+//! - **Render from state.** `browser::State` is the single source of truth (`mode`, `focused_pane`,
+//!   selected folder, grid selection). One idempotent `sync_native` reads it and sets ALL derived
+//!   native UI — split-view + Metal-layer visibility, the image title/zoom labels, the first
+//!   responder, the grid-selection anchor, and emphasis. Every mutation funnels through it
+//!   (mutate state → `sync_native`); nothing pokes native views ad-hoc, so the native UI can't
+//!   drift from state. See `CLAUDE.md` → "Browse UI architecture".
 //! - Keyboard: in idle-winit browse mode the focused native view holds first responder and
-//!   handles its own arrows natively. `focused_pane: Option<PaneSide>` is the single source of
-//!   truth; `apply_focus` keeps the native first responder synced to it. The focused view's
-//!   `keyDown:` override handles only Tab/Enter/Esc (routed via `AppCommand`); everything else
-//!   falls through to `super` for native selection/scroll. See `docs/specs/image-browser.md`.
+//!   handles its own arrows natively. The focused view's `keyDown:` override handles only
+//!   Tab/Enter/Esc (routed via `AppCommand`); everything else falls through to `super` for native
+//!   selection/scroll. See `docs/specs/image-browser.md`.
 
 #[cfg(target_os = "macos")]
 mod grid;
@@ -158,8 +161,8 @@ pub struct State {
     /// Current top-level screen. Starts in `Image`.
     mode: ViewMode,
     /// The single source of truth for which pane is focused: `None` in image mode, `Some(Tree)` /
-    /// `Some(Grid)` in browse mode. `apply_focus` syncs the native first responder to it. Never
-    /// inferred from the native first responder.
+    /// `Some(Grid)` in browse mode. `sync_native` derives the native first responder + emphasis
+    /// from it. Never inferred from the native first responder.
     focused_pane: Option<PaneSide>,
     /// The folder currently selected in the tree. Set by `BrowseSelectFolder`; the grid lists its
     /// images. `None` until the user picks a folder.
@@ -228,13 +231,21 @@ impl State {
 
     /// Apply a completed background folder listing to the grid: populate the model, reload the
     /// collection view, toggle the empty overlay, and start thumbnail generation. Updates the
-    /// tracked grid selection. No-op if the split view isn't built.
+    /// tracked grid selection, then `sync_native`s — the listing changes the grid's
+    /// emptiness/contents, so focus + the grid-selection invariant may need re-deriving (for
+    /// example, an empty→non-empty listing must give the now-focusable grid an anchor). No-op if the
+    /// split view isn't built.
     #[cfg(target_os = "macos")]
-    pub fn grid_folder_listed(&mut self, images: Vec<std::path::PathBuf>) {
+    pub fn grid_folder_listed(
+        &mut self,
+        images: Vec<std::path::PathBuf>,
+        window: &winit::window::Window,
+    ) {
         if let Some(split) = &self.split_view {
             split.grid().folder_listed(images);
             self.grid_selected = split.grid().selected_index();
         }
+        self.sync_native(window);
     }
 
     /// Drain queued grid-thumbnail completions into the collection view's cells. No-op if the split
@@ -256,26 +267,28 @@ impl State {
     }
 
     /// Record a grid selection (native click or programmatic) and move keyboard focus to the grid
-    /// pane — a click in the grid focuses it, so a following Enter / double-click opens that image.
-    /// Mirrors the index into `State` for QA/tests.
+    /// pane, then render — a click in the grid focuses it, so a following Enter / double-click opens
+    /// that image. Mutates state (the single source of truth) then `sync_native`s the result.
     #[cfg(target_os = "macos")]
-    pub fn set_grid_selected(&mut self, index: usize) {
-        self.grid_selected = Some(index);
-        if self.focused_pane != Some(PaneSide::Grid) {
-            self.focused_pane = Some(PaneSide::Grid);
-            self.apply_focus();
-        }
+    pub fn set_grid_selected(&mut self, index: usize, window: &winit::window::Window) {
+        self.focus_grid_state(index);
+        self.sync_native(window);
     }
 
-    /// Record a click in the tree pane: move focus to the tree. The selection itself rides the
-    /// `BrowseSelectFolder` command; this just keeps `focused_pane` the single source of truth so a
-    /// click in the tree focuses it (and Tab then flips to the grid). No-op off macOS.
+    /// Pure state transition for a grid click/selection: focus the grid and record the index.
+    /// Tested directly; the windowed `set_grid_selected` wraps it with a `sync_native`.
+    fn focus_grid_state(&mut self, index: usize) {
+        self.grid_selected = Some(index);
+        self.focused_pane = Some(PaneSide::Grid);
+    }
+
+    /// Record a click/selection in the tree pane: move focus to the tree, then render. The folder
+    /// selection itself rides `BrowseSelectFolder`; this keeps `focused_pane` the single source of
+    /// truth so a tree click focuses the tree (and Tab then flips to the grid). No-op off macOS.
     #[cfg(target_os = "macos")]
-    pub fn set_tree_focused(&mut self) {
-        if self.focused_pane != Some(PaneSide::Tree) {
-            self.focused_pane = Some(PaneSide::Tree);
-            self.apply_focus();
-        }
+    pub fn set_tree_focused(&mut self, window: &winit::window::Window) {
+        self.focused_pane = Some(PaneSide::Tree);
+        self.sync_native(window);
     }
 
     /// The grid's selected image path and the full folder image list, for opening into image mode.
@@ -308,43 +321,92 @@ impl State {
         self.focused_pane
     }
 
-    /// Flip the focused pane (Tree ⇄ Grid) and sync the native first responder + emphasis via
-    /// `apply_focus`. Returns the new focused pane. The grid is skipped when empty (no images to
-    /// focus), so Tab keeps focus on the tree — the grid is non-focusable until it has content.
-    /// No-op when not in browse mode (`focused_pane` is `None`).
-    pub fn toggle_focus(&mut self, #[allow(unused)] window: &winit::window::Window) -> Option<PaneSide> {
-        let Some(current) = self.focused_pane else {
-            return None;
-        };
-        let next = next_focused_pane(current, self.grid_is_empty());
-        if next == current {
-            log::debug!("Browse focus stays on tree (grid empty)");
-            return self.focused_pane;
-        }
-        self.focused_pane = Some(next);
-        self.apply_focus();
+    /// Flip the focused pane (Tree ⇄ Grid) in state then render. Returns the new focused pane. The
+    /// grid is skipped when empty (`next_focused_pane`), so Tab keeps focus on the tree — the grid
+    /// is non-focusable until it has content. No-op when not in browse mode (`focused_pane` is
+    /// `None`).
+    pub fn toggle_focus(&mut self, window: &winit::window::Window) -> Option<PaneSide> {
+        self.toggle_focus_state(self.grid_is_empty());
         log::debug!("Browse focus → {:?}", self.focused_pane);
+        self.sync_native(window);
         self.focused_pane
     }
 
-    /// Sync the native first responder + emphasis to `focused_pane`: `makeFirstResponder:` the
-    /// focused pane's native view (the `NSOutlineView` for Tree, the `NSCollectionView` for Grid)
-    /// so it draws native selection emphasis and handles its own arrows, and refresh the focus cue
-    /// on both panes. Call on every focus change. No-op off macOS, or when `focused_pane` is `None`
-    /// (image mode owns the keyboard then).
-    #[cfg(target_os = "macos")]
-    pub fn apply_focus(&self) {
-        let Some(focused) = self.focused_pane else {
-            return;
-        };
-        if let Some(split) = &self.split_view {
-            split.apply_focus(focused);
+    /// Pure Tab transition: flip the focused pane, skipping an empty grid (`next_focused_pane`).
+    /// No-op when not in browse mode (`focused_pane` is `None`). Tested directly; `toggle_focus`
+    /// wraps it with a `sync_native`.
+    fn toggle_focus_state(&mut self, grid_empty: bool) {
+        if let Some(current) = self.focused_pane {
+            self.focused_pane = Some(next_focused_pane(current, grid_empty));
         }
     }
 
-    /// No-op off macOS (no native views to focus).
+    /// Render all derived native browse UI from `State` (the single source of truth) — the one
+    /// choke-point through which browse UI changes. Idempotent: safe to call any number of times.
+    /// Every browse mutation (`enter_browse`/`enter_image`, `toggle_focus`, grid/tree clicks, a
+    /// folder listing) funnels through here rather than poking native views ad-hoc, so the native
+    /// state can never drift from `State`. No-op off macOS.
+    ///
+    /// What it reads from state and what it sets:
+    /// - **`mode`** → split-view visibility (shown iff Browse), the wgpu Metal layer hidden iff
+    ///   Browse, and the image title/zoom labels hidden iff Browse (bug fix: in browse mode no
+    ///   redraw fires, so without this the labels keep their last image-mode text and linger).
+    /// - **`focused_pane`** → the window's first responder: the focused pane's native control in
+    ///   browse (`NSOutlineView` for Tree, `NSCollectionView` for Grid), or the winit content view
+    ///   in image mode (so winit owns the keyboard again — without it the hidden outline view keeps
+    ///   the responder and image-mode keys are swallowed).
+    /// - **Grid-selection invariant:** if the grid is the focused pane and has images but no live
+    ///   selection, select a sensible index (the tracked `grid_selected`, else 0). This guarantees
+    ///   the collection view always has a selection anchor when focused, so arrow keys work
+    ///   immediately — fixing "Tab to the grid leaves arrows dead until you click a thumbnail".
+    /// - **Emphasis:** the tree source list draws accent-blue while it's first responder
+    ///   (automatic once the responder follows state); the grid's selected item draws blue iff the
+    ///   grid is focused, gray otherwise (`refresh_focus_emphasis` repaints visible selected items).
+    #[cfg(target_os = "macos")]
+    pub fn sync_native(&self, window: &winit::window::Window) {
+        let browse = self.mode.is_browse();
+
+        // Split view + Metal layer visibility, derived from mode.
+        if let Some(split) = &self.split_view {
+            split.set_hidden(window, !browse);
+        }
+        crate::window::set_metal_layer_hidden(window, browse);
+
+        // Image title/zoom labels: hidden in browse mode (browse stops redrawing, so the per-redraw
+        // `set_titlebar_text` never runs to clear them and they'd linger over the native UI). In
+        // image mode `set_view_mode` re-asserts their visibility against the title-bar/fullscreen
+        // state, and the next redraw refreshes their text — so here we only ever hide, never force
+        // them on (which would defy a title-bar-off / fullscreen setting).
+        if browse {
+            crate::window::set_titlebar_labels_hidden(window, true);
+        }
+
+        match self.focused_pane {
+            Some(focused) => {
+                if let Some(split) = &self.split_view {
+                    // Grid-selection invariant: a focused, non-empty grid must have a selection
+                    // anchor or its arrow keys do nothing until a click. Seed it from the tracked
+                    // index (else 0) before making it first responder.
+                    if focused == PaneSide::Grid {
+                        let grid = split.grid();
+                        if !grid.is_empty() && grid.selected_index().is_none() {
+                            grid.select_index(self.grid_selected.unwrap_or(0), false);
+                        }
+                    }
+                    split.apply_focus(focused);
+                }
+            }
+            None => {
+                // Image mode owns the keyboard: hand first responder back to winit so the hidden
+                // outline view doesn't swallow keys (Enter→browse otherwise works only once).
+                crate::window::restore_content_view_first_responder(window);
+            }
+        }
+    }
+
+    /// No-op off macOS (no native views to render).
     #[cfg(not(target_os = "macos"))]
-    pub fn apply_focus(&self) {}
+    pub fn sync_native(&self, _window: &winit::window::Window) {}
 
     /// Whether the grid currently has no images (so it can't receive focus). Treated as empty when
     /// the split view isn't built yet. Off macOS the grid doesn't exist, so always empty.
@@ -360,28 +422,26 @@ impl State {
         }
     }
 
-    /// Flip the mode and return the new value. Pure — callers do the AppKit side effects
-    /// (show/hide the split view and Metal layer) based on the result.
+    /// Flip the mode and return the new value. Pure — callers (`enter_browse`/`enter_image`) update
+    /// `focused_pane` and `sync_native` from the result.
     pub fn toggle_mode(&mut self) -> ViewMode {
         self.mode = self.mode.toggled();
         self.mode
     }
 
-    /// Enter browse mode on the given winit window: build the split view on first use, unhide it,
-    /// hide the wgpu Metal layer, and focus the grid if the selected folder has images (else the
-    /// tree). `apply_focus` makes the focused native view first responder so its arrows work
-    /// natively. No-op off macOS.
+    /// Enter browse mode on the given winit window: build the split view on first use, set state
+    /// (`mode = Browse`, focus the grid if it has images else the tree), then `sync_native` to
+    /// render — show the split view, hide the Metal layer + image labels, make the focused pane
+    /// first responder (with a grid-selection anchor). Also grows the window to the browse minimum
+    /// if it's smaller (a small image may have shrunk it, leaving browse cramped). No-op off macOS.
     #[cfg(target_os = "macos")]
     pub fn enter_browse(&mut self, window: &winit::window::Window) {
         let sort_by = self.sort_by;
-        let split = self
-            .split_view
+        self.split_view
             .get_or_insert_with(|| split_view::BrowseSplitView::create(window, sort_by));
-        split.set_hidden(window, false);
-        crate::window::set_metal_layer_hidden(window, true);
-        // Focus the grid when it has images, else the tree (an empty grid is non-focusable).
-        self.focused_pane = Some(browse_entry_pane(self.grid_is_empty()));
-        self.apply_focus();
+        crate::window::grow_to_browse_minimum(window);
+        self.enter_browse_state(self.grid_is_empty());
+        self.sync_native(window);
         log::info!("Entered browse mode, focused {:?}", self.focused_pane);
     }
 
@@ -415,20 +475,28 @@ impl State {
         }
     }
 
-    /// Enter image mode: hide the split view (if built) and unhide the Metal layer. No-op off
-    /// macOS.
+    /// Enter image mode: set state (`mode = Image`, `focused_pane = None`) then `sync_native` to
+    /// render — hide the split view, unhide the Metal layer + image labels, and hand first
+    /// responder back to winit. No-op off macOS.
     #[cfg(target_os = "macos")]
     pub fn enter_image(&mut self, window: &winit::window::Window) {
-        self.focused_pane = None;
-        if let Some(split) = &self.split_view {
-            split.set_hidden(window, true);
-        }
-        crate::window::set_metal_layer_hidden(window, false);
-        // Hand the keyboard back to winit: the hidden outline view may still hold first responder,
-        // which would swallow image-mode keys (Enter does nothing). Without this, Enter→browse only
-        // works once — see `window::restore_content_view_first_responder`.
-        crate::window::restore_content_view_first_responder(window);
+        self.enter_image_state();
+        self.sync_native(window);
         log::info!("Entered image mode");
+    }
+
+    /// Pure browse-entry transition: `mode = Browse`, focus the grid when it has images else the
+    /// tree (`browse_entry_pane`). Tested directly; `enter_browse` wraps it with `sync_native`.
+    fn enter_browse_state(&mut self, grid_empty: bool) {
+        self.mode = ViewMode::Browse;
+        self.focused_pane = Some(browse_entry_pane(grid_empty));
+    }
+
+    /// Pure image-entry transition: `mode = Image`, `focused_pane = None` (image mode owns the
+    /// keyboard). Tested directly; `enter_image` wraps it with `sync_native`.
+    fn enter_image_state(&mut self) {
+        self.mode = ViewMode::Image;
+        self.focused_pane = None;
     }
 }
 
@@ -532,5 +600,68 @@ mod tests {
             next_focused_pane(PaneSide::Grid, /* grid_empty */ true),
             PaneSide::Tree
         );
+    }
+
+    // ── Render-from-state: the pure state transitions behind the windowed mutators ──
+    // These assert `State`'s fields after each browse transition (the single source of truth).
+    // The derived native side (`sync_native`) is objc2, covered by the smoke run + live QA.
+
+    #[test]
+    fn enter_browse_state_focuses_grid_with_images_else_tree() {
+        let mut state = State::new();
+        state.enter_browse_state(/* grid_empty */ false);
+        assert_eq!(state.mode(), ViewMode::Browse);
+        assert_eq!(state.focused_pane(), Some(PaneSide::Grid));
+
+        let mut empty = State::new();
+        empty.enter_browse_state(/* grid_empty */ true);
+        assert_eq!(empty.mode(), ViewMode::Browse);
+        assert_eq!(empty.focused_pane(), Some(PaneSide::Tree));
+    }
+
+    #[test]
+    fn enter_image_state_clears_focus() {
+        let mut state = State::new();
+        state.enter_browse_state(false);
+        state.enter_image_state();
+        assert_eq!(state.mode(), ViewMode::Image);
+        // Image mode owns the keyboard — no pane is focused.
+        assert_eq!(state.focused_pane(), None);
+    }
+
+    #[test]
+    fn focus_grid_state_focuses_grid_and_records_the_index() {
+        let mut state = State::new();
+        state.enter_browse_state(false); // start focused on the grid
+        state.toggle_focus_state(false); // …Tab to the tree
+        assert_eq!(state.focused_pane(), Some(PaneSide::Tree));
+        // A grid click moves focus back to the grid and records the clicked index.
+        state.focus_grid_state(7);
+        assert_eq!(state.focused_pane(), Some(PaneSide::Grid));
+        assert_eq!(state.grid_selected(), Some(7));
+    }
+
+    #[test]
+    fn toggle_focus_state_flips_panes_and_skips_an_empty_grid() {
+        let mut state = State::new();
+        state.enter_browse_state(false); // grid focused, grid non-empty
+        state.toggle_focus_state(false);
+        assert_eq!(state.focused_pane(), Some(PaneSide::Tree));
+        state.toggle_focus_state(false);
+        assert_eq!(state.focused_pane(), Some(PaneSide::Grid));
+
+        // On the tree with an empty grid, Tab stays put (the grid is non-focusable).
+        let mut empty = State::new();
+        empty.enter_browse_state(true); // tree focused, grid empty
+        empty.toggle_focus_state(true);
+        assert_eq!(empty.focused_pane(), Some(PaneSide::Tree));
+    }
+
+    #[test]
+    fn toggle_focus_state_is_a_noop_in_image_mode() {
+        // No focused pane in image mode, so Tab has nothing to flip.
+        let mut state = State::new();
+        state.toggle_focus_state(false);
+        assert_eq!(state.focused_pane(), None);
     }
 }
