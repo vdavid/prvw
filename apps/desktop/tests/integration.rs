@@ -1489,3 +1489,151 @@ fn entering_browse_from_an_image_preselects_that_image() {
         "browse-open focuses the grid when the folder has images"
     );
 }
+
+// ── Live folder sync (image mode) ────────────────────────────────────────────────────────────
+//
+// These drive the real FSEvents watcher: open an image, then mutate its folder from the shell-side
+// (the test process) and poll `/state` for the sequence to update. FSEvents has real latency, so
+// the waits are generous. macOS-only (the whole suite is).
+
+/// Write a distinct solid-color PNG at `path` (shade derived from `seed`).
+fn write_png(path: &std::path::Path, seed: u8) {
+    let shade = seed.wrapping_mul(31);
+    let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([shade, shade, shade, 255]));
+    img.save(path).unwrap();
+}
+
+#[test]
+fn live_sync_added_image_grows_the_sequence() {
+    let (dir, first) = create_multi_image_dir(3); // img-00..img-02
+    let app = TestApp::start_with_image(&first);
+    assert_eq!(app.get_state()["total_files"].as_u64(), Some(3));
+
+    // Add a 4th image to the watched folder.
+    write_png(&dir.path().join("img-03.png"), 9);
+
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["total_files"].as_u64() == Some(4)
+    });
+    assert_eq!(
+        state["total_files"].as_u64(),
+        Some(4),
+        "added image should appear in the sequence, got {state}"
+    );
+    // Current image is unchanged (still img-00, 1-based index 1).
+    assert!(state["file"].as_str().unwrap().contains("img-00"));
+    assert_eq!(state["index"].as_u64(), Some(1));
+}
+
+#[test]
+fn live_sync_delete_non_current_drops_it_and_keeps_current() {
+    let (dir, first) = create_multi_image_dir(3); // img-00 (current) .. img-02
+    let app = TestApp::start_with_image(&first);
+    assert_eq!(app.get_state()["total_files"].as_u64(), Some(3));
+
+    // Delete img-02 (not the current image).
+    std::fs::remove_file(dir.path().join("img-02.png")).unwrap();
+
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["total_files"].as_u64() == Some(2)
+    });
+    assert_eq!(state["total_files"].as_u64(), Some(2));
+    // Current image still img-00.
+    assert!(state["file"].as_str().unwrap().contains("img-00"));
+    assert_eq!(state["index"].as_u64(), Some(1));
+}
+
+#[test]
+fn live_sync_delete_current_navigates_to_next() {
+    let (dir, first) = create_multi_image_dir(3); // img-00 (current) .. img-02
+    let app = TestApp::start_with_image(&first);
+
+    // Delete the current image (img-00). Should navigate to the next (img-01).
+    std::fs::remove_file(dir.path().join("img-00.png")).unwrap();
+
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["file"]
+            .as_str()
+            .map(|f| f.contains("img-01"))
+            .unwrap_or(false)
+    });
+    assert!(
+        state["file"].as_str().unwrap().contains("img-01"),
+        "deleting the current image should navigate to the next, got {state}"
+    );
+    assert_eq!(state["total_files"].as_u64(), Some(2));
+}
+
+#[test]
+fn live_sync_delete_last_image_shows_empty_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let only = dir.path().join("only.png");
+    write_png(&only, 5);
+    let app = TestApp::start_with_image(&only);
+    assert_eq!(app.get_state()["total_files"].as_u64(), Some(1));
+
+    // Delete the only image → image-mode "(No images)" empty state.
+    std::fs::remove_file(&only).unwrap();
+
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["no_images"].as_bool() == Some(true)
+    });
+    assert_eq!(
+        state["no_images"].as_bool(),
+        Some(true),
+        "deleting the last image should enter the (No images) empty state, got {state}"
+    );
+    assert!(
+        state["file"].is_null(),
+        "empty state clears the current file"
+    );
+    assert_eq!(state["total_files"].as_u64(), Some(0));
+}
+
+#[test]
+fn live_sync_empty_state_recovers_when_an_image_appears() {
+    let dir = tempfile::tempdir().unwrap();
+    let only = dir.path().join("only.png");
+    write_png(&only, 5);
+    let app = TestApp::start_with_image(&only);
+
+    std::fs::remove_file(&only).unwrap();
+    wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["no_images"].as_bool() == Some(true)
+    });
+
+    // A new image appears in the (still-watched) folder → empty state clears, image opens.
+    write_png(&dir.path().join("fresh.png"), 7);
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["no_images"].as_bool() == Some(false) && s["total_files"].as_u64() == Some(1)
+    });
+    assert_eq!(state["no_images"].as_bool(), Some(false));
+    assert_eq!(state["total_files"].as_u64(), Some(1));
+    assert!(state["file"].as_str().unwrap().contains("fresh"));
+}
+
+#[test]
+fn live_sync_modify_current_re_decodes_in_place() {
+    let (dir, first) = create_multi_image_dir(3); // img-00 (current) .. img-02
+    let app = TestApp::start_with_image(&first);
+    // img-00 is 8x8 (create_multi_image_dir). Confirm.
+    assert_eq!(app.get_state()["image_width"].as_u64(), Some(8));
+
+    // Overwrite the current image with a different-sized image. The watcher should evict + re-decode
+    // it, and the displayed dimensions should update to the new size.
+    let img = image::RgbaImage::from_pixel(20, 12, image::Rgba([200, 100, 50, 255]));
+    img.save(dir.path().join("img-00.png")).unwrap();
+
+    let state = wait_for_state(&app, Duration::from_secs(8), |s| {
+        s["image_width"].as_u64() == Some(20)
+    });
+    assert_eq!(
+        state["image_width"].as_u64(),
+        Some(20),
+        "modifying the current image should re-decode it in place, got {state}"
+    );
+    assert_eq!(state["image_height"].as_u64(), Some(12));
+    // Same file, same count — only the pixels changed.
+    assert!(state["file"].as_str().unwrap().contains("img-00"));
+    assert_eq!(state["total_files"].as_u64(), Some(3));
+}

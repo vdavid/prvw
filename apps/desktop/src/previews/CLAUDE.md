@@ -183,10 +183,18 @@ cached indices, failed indices, paused flag, and parallelism cap.
   `RequestTable::cancel_all` fires `cancelRequest` on every live request. Individual cancellation isn't wired because
   the scheduler's queue-based model covers the common case.
 
+## File watcher integration (live folder sync)
+
+The FSEvents watcher (`crate::folder_watch`) feeds previews two ways:
+
+- **Add/remove (re-scan).** `apply_folder_rescan` calls `State::set_folder` again with the updated list — the scheduler
+  cancels orphaned requests and enqueues new ones. `set_folder` is the single entry point for the path list.
+- **Modify.** `State::forget_path(path)` drops the cached preview + scheduler `cached` entry + dim cache for that path
+  so a later request regenerates it. quicklookd keys its own on-disk cache on file content/mtime, so a fresh request
+  after the edit yields fresh pixels — we only need to evict OUR in-memory copy. Called from
+  `App::handle_folder_changed` for each `Modify`-flagged path.
+
 ## Future work
 
-- **File watcher integration.** `State::set_folder` is the single entry point for the path list. When `fsevents`
-  watching lands, it just calls `set_folder` again with the updated list — scheduler cancels orphaned requests and
-  enqueues new ones.
 - **Dedicated blur shader.** Current: linear-sampler softening on upscale. A separable Gaussian in a fragment shader
   would look nicer behind the "Loading..." overlay. Not required for correctness.

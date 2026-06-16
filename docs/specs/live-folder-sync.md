@@ -78,11 +78,16 @@ QuickLook entry (QuickLook keys on file content/mtime, so a fresh request regene
 
 1. **Mode sync** (Part 1) — small, independent; fixes the reported re-entry bug. Reuses Phase-5 positioning on every
    entry.
-2. **Watcher infrastructure** — the `folder_watch` module (`notify`, dynamic path set, debounce, `EventLoopProxy`
-   events). Headless-testable: the debounce/coalesce and the folder-diff (old list vs rescanned list → add/remove/move).
-3. **Image-mode live sync** — wire the active-folder watch to sequence updates, cache eviction, current-index recalc,
-   delete-current navigation, and the new image-mode "(No images)" empty state.
+2. **Watcher infrastructure** — DONE. The `folder_watch` module: a `notify` FSEvents watcher over a dynamic
+   non-recursive path set (`watch`/`unwatch`), a pure debounce/coalescer (`Coalescer`, ~150 ms), and an off-thread
+   `RescanLister`, posting `AppCommand::FolderChanged` / `ActiveFolderRescanned` via the `EventLoopProxy`.
+   Headless-tested: the coalescer and the folder-diff (`navigation::folder_diff`, old list vs rescanned list →
+   add/remove + delete-current outcome under each `SortBy`).
+3. **Image-mode live sync** — DONE. The active-folder watch is wired to sequence updates, cache + preview eviction,
+   current-by-path recalc, delete-current navigation (next / previous / empty), and the image-mode "(No images)" empty
+   state. See `navigation/CLAUDE.md` → "Live folder sync (image mode)".
 4. **Browse-mode live sync** — grid list + thumbnail refresh on change; tree expanded-folder watch → subfolder updates.
+   The active-folder watch infra (steps 2–3) is built to be shared by browse; only image mode is wired so far.
 5. **Tests + docs** — headless tests for the diff/debounce + integration tests (add/modify/delete in a temp folder, both
    modes, via the QA hooks); update `browser/CLAUDE.md`, `navigation/CLAUDE.md`, `architecture.md`, this spec.
 

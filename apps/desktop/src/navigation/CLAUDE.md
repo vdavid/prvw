@@ -4,13 +4,14 @@ Scan the parent directory for images, preload adjacent files in the background, 
 (SDR) or 1 GB (HDR, Phase 5). The cache auto-scales when the RAW pipeline's `hdr_output` flag flips or the display's EDR
 headroom crosses the 1.0 boundary, so preload count stays constant as we double per-pixel bytes for RAW RGBA16F.
 
-| File           | Purpose                                                                                                                                                                                                                                                |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `mod.rs`       | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `format_offset` + `format_bytes` + `NAV_DEBOUNCE` helpers |
-| `directory.rs` | `DirectoryList`: scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`; absolute jumps via `go_to_first()` / `go_to_last()`                          |
-| `preloader.rs` | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction (512 MB / 1 GB budget)                                                                                                                                                      |
-| `wrap.rs`      | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::refresh_preload_window` on loop toggle / sort change and by `navigate_by` for cache `keep` set                        |
-| `sort.rs`      | `SortBy { Name, Date, FileType }` (all ascending) + `sort_files()` comparator. Name uses natural alphanumeric (`photo_2 < photo_10`), case-insensitive. Date and FileType fall back to Name as tiebreaker                                              |
+| File             | Purpose                                                                                                                                                                                                                                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `mod.rs`         | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `format_offset` + `format_bytes` + `NAV_DEBOUNCE` helpers                                     |
+| `directory.rs`   | `DirectoryList`: scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`; absolute jumps via `go_to_first()` / `go_to_last()`; `from_sorted(files, sort_by, index)` for live-sync re-scans |
+| `folder_diff.rs` | Pure, headless-tested live-sync diff: `diff_folder(old, scanned, sort_by, current)` → adds/removes + the delete-current `CurrentOutcome` (`Unchanged`/`Navigate`/`Empty`). No I/O — the `FolderChanged` handler does the off-thread scan and applies the result                            |
+| `preloader.rs`   | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction (512 MB / 1 GB budget)                                                                                                                                                                                          |
+| `wrap.rs`        | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::refresh_preload_window` on loop toggle / sort change and by `navigate_by` for cache `keep` set                                                            |
+| `sort.rs`        | `SortBy { Name, Date, FileType }` (all ascending) + `sort_files()` comparator. Name uses natural alphanumeric (`photo_2 < photo_10`), case-insensitive. Date and FileType fall back to Name as tiebreaker                                                                                  |
 
 ## State
 
@@ -149,6 +150,35 @@ Before re-sorting, the handler cancels every in-flight preload task. The closure
 path is stable, but the slot index now points at a different file in the new ordering, which would mis-target
 `pending_current` matching in `poll_preloader`. If a cache-miss target was pending when the user changed the sort, we
 re-issue it under its new slot via `prioritize_target`.
+
+## Live folder sync (image mode)
+
+The active folder — the current image's parent — is watched live, so adds/modifies/deletes reflect without a manual
+refresh. The watcher infra lives in `crate::folder_watch` (a `notify` FSEvents watcher + a pure debounce/coalescer + an
+off-thread re-scan lister); this is the image-mode consumer.
+
+**Flow.** `App::retarget_active_folder_watch` watches the current image's folder (unwatching the previous one) on every
+active-folder change: `OpenFile`, browse reveal (`reveal_selected_image`), and a re-scan that empties the folder. A
+coalesced `AppCommand::FolderChanged { folder, modified }` arrives on the main thread; `App::handle_folder_changed`
+evicts the `modified` paths from `image_cache` (`ImageCache::remove`) and the preview cache (`previews::forget_path`),
+then enqueues an **off-thread** re-scan on `folder_watch::RescanLister` (never `read_dir` inline — a slow SMB folder
+must not block the loop). The result returns as `AppCommand::ActiveFolderRescanned`, handled by
+`App::apply_folder_rescan`.
+
+**Applying the diff** (`apply_folder_rescan` → pure `folder_diff::diff_folder`):
+
+- **`Unchanged`** — adds/removes shifted around the current image; rebuild the list via `DirectoryList::from_sorted`
+  keeping the current image **by path** (the same invariant as `set_sort_by`). If a modified path is the displayed
+  image, re-decode it via `refresh_current_after_modify` (cache was evicted → fresh bytes through the normal
+  `prioritize_target` path).
+- **`Navigate { index }`** — the current image was deleted; land on the next surviving image (or the new last if it was
+  last) via `display_after_delete` (instant from cache, else the async placeholder path).
+- **`Empty`** — the folder has no images left; `enter_no_images_state` drops `dir_list`, clears the bound texture (black
+  canvas), and flags `no_images_empty_state` so `render_frame` draws the centered "(No images)" glyphon overlay. The
+  watch stays on the folder, so a newly-added image clears the empty state and opens (`Navigate { 0 }`).
+
+`SharedAppState.no_images` (and the `/state` `no_images` field) expose the empty state to QA/tests; the integration
+tests (`live_sync_*` in `tests/integration.rs`) drive the real FSEvents watcher with a temp folder.
 
 ## Gotcha/Why: shared state on neighbour-only Ready
 

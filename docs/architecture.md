@@ -12,16 +12,17 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 
 **Infrastructure:**
 
-| Path                        | Role                                                              |
-| --------------------------- | ----------------------------------------------------------------- |
-| `main.rs`                   | Thin entry: CLI, logger, event-loop setup                         |
-| `app.rs` + `app/`           | `App`, `ApplicationHandler`, command dispatcher, `SharedAppState` |
-| `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                       |
-| `input.rs`                  | Maps keys / menu events / QA keys to `AppCommand`                 |
-| `menu.rs`                   | Native macOS menu bar via `muda`                                  |
-| `pixels.rs`                 | `Logical` / `Physical` newtypes for coordinate types              |
-| `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers)        |
-| `render.rs` + `render/`     | wgpu infrastructure: renderer, text overlay, shaders              |
+| Path                        | Role                                                                                             |
+| --------------------------- | ------------------------------------------------------------------------------------------------ |
+| `main.rs`                   | Thin entry: CLI, logger, event-loop setup                                                        |
+| `app.rs` + `app/`           | `App`, `ApplicationHandler`, command dispatcher, `SharedAppState`                                |
+| `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                                                      |
+| `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce + off-thread re-scan lister |
+| `input.rs`                  | Maps keys / menu events / QA keys to `AppCommand`                                                |
+| `menu.rs`                   | Native macOS menu bar via `muda`                                                                 |
+| `pixels.rs`                 | `Logical` / `Physical` newtypes for coordinate types                                             |
+| `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers)                                       |
+| `render.rs` + `render/`     | wgpu infrastructure: renderer, text overlay, shaders                                             |
 
 **Features:**
 
