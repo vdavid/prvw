@@ -64,10 +64,11 @@
 use crate::commands::AppCommand;
 use crate::previews::scheduler::RequestId;
 use block2::RcBlock;
-use objc2::AnyThread;
 use objc2::rc::Retained;
+use objc2::{AnyThread, MainThreadMarker};
+use objc2_app_kit::{NSBitmapImageRep, NSDeviceRGBColorSpace, NSImage};
 use objc2_core_foundation::CGSize;
-use objc2_foundation::{NSError, NSString, NSURL};
+use objc2_foundation::{NSError, NSSize, NSString, NSURL};
 use objc2_quick_look_thumbnailing::{
     QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes,
     QLThumbnailGenerator, QLThumbnailRepresentation,
@@ -128,6 +129,14 @@ enum WorkerMsg {
 /// Front-end handle owned by `previews::State` on the main thread.
 /// All operations are non-blocking from the main thread's perspective:
 /// they just shovel an `mpsc` message to the worker.
+///
+/// The browse grid (`browser::grid`) owns a **second** `RequestTable` — a
+/// second request path into the same shared `quicklookd` cache (the
+/// `QLThumbnailGenerator` singleton), not a second engine. Both worker threads
+/// call `sharedGenerator`, so they hit the same Finder cache; they differ only
+/// in the wake command they fire (`wake`) and in how the main thread consumes
+/// the delivered RGBA8 (previews blit to a wgpu texture; the grid builds an
+/// `NSImage` via [`nsimage_from_rgba8`]).
 pub struct RequestTable {
     submit_tx: mpsc::Sender<WorkerMsg>,
     pending: Arc<Mutex<VecDeque<Delivery>>>,
@@ -135,15 +144,21 @@ pub struct RequestTable {
 }
 
 impl RequestTable {
-    pub fn new() -> Self {
+    /// Spawn a submission worker. `wake` constructs the `AppCommand` the completion path fires
+    /// (only when the pending queue was empty) to nudge winit's loop into draining —
+    /// `|| PreviewsAvailable` for the previews path, `|| BrowseThumbnailsAvailable` for the grid.
+    /// It's an `fn` (not a value) because `AppCommand` isn't `Clone` (some variants hold an
+    /// `mpsc::Sender`), and the completion path needs a fresh wake event each time. `thread_name`
+    /// names the OS worker thread for logs.
+    pub fn new(wake: fn() -> AppCommand, thread_name: &'static str) -> Self {
         let (submit_tx, submit_rx) = mpsc::channel();
         let pending = Arc::new(Mutex::new(VecDeque::new()));
         let pending_for_worker = Arc::clone(&pending);
         let forget_tx = submit_tx.clone();
         let worker = thread::Builder::new()
-            .name("prvw-previewgen".into())
-            .spawn(move || worker_loop(submit_rx, pending_for_worker, forget_tx))
-            .expect("Failed to spawn preview submission worker");
+            .name(thread_name.into())
+            .spawn(move || worker_loop(submit_rx, pending_for_worker, forget_tx, wake))
+            .expect("Failed to spawn QL submission worker");
         Self {
             submit_tx,
             pending,
@@ -185,6 +200,7 @@ fn worker_loop(
     rx: mpsc::Receiver<WorkerMsg>,
     pending: Arc<Mutex<VecDeque<Delivery>>>,
     forget_tx: mpsc::Sender<WorkerMsg>,
+    wake: fn() -> AppCommand,
 ) {
     // Get the singleton generator on this thread. `sharedGenerator()`
     // is process-wide; the `Retained<>` we keep here is just a local
@@ -215,6 +231,7 @@ fn worker_loop(
                     size,
                     scale,
                     proxy,
+                    wake,
                 );
             }
             WorkerMsg::Forget(id) => {
@@ -249,6 +266,7 @@ fn worker_submit(
     size: CGSize,
     scale: f64,
     proxy: EventLoopProxy<AppCommand>,
+    wake: fn() -> AppCommand,
 ) {
     let Some(path_str) = path.to_str() else {
         push_delivery(
@@ -260,6 +278,7 @@ fn worker_submit(
                 result: Err(()),
             },
             &proxy,
+            wake,
         );
         return;
     };
@@ -323,6 +342,7 @@ fn worker_submit(
                         result,
                     },
                     &proxy_for_block,
+                    wake,
                 );
                 // Tell the worker to drop our entries[request_id] entry.
                 // Without this, `entries` grows unbounded as the user
@@ -343,6 +363,7 @@ fn push_delivery(
     pending: &Arc<Mutex<VecDeque<Delivery>>>,
     delivery: Delivery,
     proxy: &EventLoopProxy<AppCommand>,
+    wake: fn() -> AppCommand,
 ) {
     let was_empty = match pending.lock() {
         Ok(mut q) => {
@@ -353,7 +374,7 @@ fn push_delivery(
         Err(_) => return,
     };
     if was_empty {
-        let _ = proxy.send_event(AppCommand::PreviewsAvailable);
+        let _ = proxy.send_event(wake());
     }
 }
 
@@ -466,5 +487,66 @@ fn cg_image_to_rgba8(rep: &QLThumbnailRepresentation) -> Option<PreviewPixels> {
             height: height as u32,
             rgba: buffer,
         })
+    }
+}
+
+// ── RGBA8 → NSImage (the grid's consumption seam) ──────────────────────
+//
+// The previews path blits the QL `CGImage` to RGBA8 (above) because it
+// uploads to a wgpu texture. The browse grid (`browser::grid`) has no wgpu —
+// its cells are `NSImageView`s — so it consumes the **same** worker's RGBA8
+// `Delivery` and wraps it in an `NSImage` here, on the main thread (`NSImage`
+// isn't `Send`, so it can't be built on the QL queue or the worker thread).
+// This is the divergence the module-level "Size-parameterized" docs name:
+// everything up to the RGBA8 buffer is shared; only this final wrap is
+// grid-specific.
+
+/// Build an `NSImage` from a row-packed, premultiplied RGBA8 buffer (`width × height × 4`), as
+/// produced by [`PreviewPixels`]. Returns `None` if the buffer is the wrong size or AppKit refuses
+/// the bitmap. Must run on the main thread (`mtm`) — `NSImage`/`NSBitmapImageRep` are main-thread
+/// AppKit objects.
+///
+/// We allocate the bitmap rep with `planes = null` so it owns its own backing store, then copy our
+/// bytes into `rep.bitmapData()`. That avoids tying the `NSImage`'s lifetime to a Rust `Vec` (the
+/// rep would otherwise alias a freed buffer once `rgba` drops). The pixels are premultiplied-alpha
+/// RGBA in device-RGB, matching `cg_image_to_rgba8`'s `kCGImageAlphaPremultipliedLast` output.
+#[must_use]
+pub fn nsimage_from_rgba8(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    mtm: MainThreadMarker,
+) -> Option<Retained<NSImage>> {
+    let (w, h) = (width as usize, height as usize);
+    let bytes_per_row = w.checked_mul(4)?;
+    if rgba.len() != bytes_per_row.checked_mul(h)? || w == 0 || h == 0 {
+        return None;
+    }
+    let _ = mtm; // The rep + image are built below; `mtm` proves we're on the main thread.
+    unsafe {
+        // planes = null → the rep allocates and owns its backing buffer.
+        let rep = NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            width as isize,
+            height as isize,
+            8,                       // bits per sample
+            4,                       // samples per pixel (RGBA)
+            true,                    // has alpha
+            false,                   // not planar (interleaved)
+            NSDeviceRGBColorSpace,
+            bytes_per_row as isize,
+            32,                      // bits per pixel
+        )?;
+        // Copy our pixels into the rep's own buffer.
+        let dst: *mut u8 = rep.bitmapData();
+        if dst.is_null() {
+            return None;
+        }
+        std::ptr::copy_nonoverlapping(rgba.as_ptr(), dst, rgba.len());
+
+        let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(w as f64, h as f64));
+        image.addRepresentation(&rep);
+        Some(image)
     }
 }

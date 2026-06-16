@@ -136,7 +136,10 @@ impl State {
             current: 0,
             folder_generation: 0,
             #[cfg(target_os = "macos")]
-            requests: quicklook::RequestTable::new(),
+            requests: quicklook::RequestTable::new(
+                || crate::commands::AppCommand::PreviewsAvailable,
+                "prvw-previewgen",
+            ),
         }
     }
 

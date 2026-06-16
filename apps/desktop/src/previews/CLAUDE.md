@@ -82,13 +82,15 @@ breaks out image cache vs. previews so the gap to RSS — GPU texture, decode bu
 
 ## QL submission threading (option A)
 
-**Shared with the browse grid.** This worker is size-parameterized (every `SubmitRequest` carries its own
-`size`/`scale`), so Phase 4's `NSCollectionView` grid reuses it as a second request path into the same `quicklookd`
-cache rather than spinning up a second engine. The only divergence is how the resulting `CGImage` is consumed: previews
-blit to RGBA8 for wgpu upload (`cg_image_to_rgba8`); the grid will add a CGImage→`NSImage` path (no Rust pixel copy).
-That seam is documented at the top of `quicklook.rs`. Previews behavior is unchanged by the generalization.
+**Shared with the browse grid.** `RequestTable::new(wake, thread_name)` is parameterized on the wake `AppCommand`
+constructor and worker-thread name, so the browse grid (`browser::grid`) owns a **second** `RequestTable` — a second
+request path into the same shared `quicklookd` cache (`QLThumbnailGenerator` singleton), not a second engine. Both
+deliver RGBA8 (`cg_image_to_rgba8`); they differ only in the wake command (`PreviewsAvailable` vs
+`BrowseThumbnailsAvailable`) and how the main thread consumes the bytes: previews blit to a wgpu texture, the grid wraps
+them in an `NSImage` via `quicklook::nsimage_from_rgba8` (the documented seam at the top of `quicklook.rs`). Previews
+behavior is unchanged.
 
-`RequestTable` runs a dedicated `prvw-previewgen` worker thread that owns the
+`RequestTable` runs a dedicated worker thread (`prvw-previewgen` for previews, `prvw-gridgen` for the grid) that owns the
 `entries: HashMap<RequestId, Retained<QLThumbnailGenerationRequest>>` and the `QLThumbnailGenerator` singleton (created
 on that thread via `sharedGenerator`). All ops on the main thread are mpsc sends:
 
