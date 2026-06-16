@@ -1,4 +1,5 @@
-//! The browse-mode `NSSplitView`: a real folder-tree sidebar on the left, a grid stub on the right.
+//! The browse-mode `NSSplitView`: a real folder-tree sidebar on the left, a thumbnail grid on the
+//! right.
 //!
 //! Built as a sibling subview of winit's contentView, layer-backed above the Metal layer, pinned
 //! to the contentView edges, with a stable `identifier` — hidden by default (image mode is the
@@ -8,8 +9,12 @@
 //!
 //! An `NSVisualEffectView` `.sidebar` material fills the pane (Finder-sidebar look); the real
 //! `NSOutlineView` (see `outline::BrowseTree`) sits inside it, inset `TITLE_BAR_HEIGHT` from the
-//! top so its rows clear the traffic lights. The right (grid) pane stays a centered "(grid)"
-//! stub — a later phase wires `NSCollectionView` there.
+//! top so its rows clear the traffic lights.
+//!
+//! ## Right pane: the thumbnail grid
+//!
+//! The `NSCollectionView` gallery (see `grid::BrowseGrid`) fills the pane, with the grid's
+//! "(No images)" overlay centered on top (shown only for an empty folder).
 //!
 //! ## The two spike fixes baked in here
 //!
@@ -47,7 +52,9 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
 use super::PaneSide;
+use super::grid::BrowseGrid;
 use super::outline::BrowseTree;
+use crate::navigation::SortBy;
 
 /// `identifier` set on the split view so `window` helpers can find/hide it by id, exactly like
 /// the title-bar labels and vibrancy strips.
@@ -110,6 +117,8 @@ pub struct BrowseSplitView {
     grid_pane: Retained<NSView>,
     /// The folder tree the app drives for keyboard navigation.
     tree: BrowseTree,
+    /// The thumbnail grid the app drives (listing, selection, thumbnail generation).
+    grid: BrowseGrid,
     /// Translucent "Loading…" overlay covering the tree pane. Hidden by default; shown when a
     /// directory scan the user is waiting on outlives `LOADING_OVERLAY_DELAY` (slow SMB share).
     loading_overlay: Retained<NSView>,
@@ -121,11 +130,18 @@ unsafe impl Send for BrowseSplitView {}
 
 impl BrowseSplitView {
     /// Build the split view and add it (hidden) as a sibling subview of winit's contentView.
-    pub fn create(window: &Window) -> Self {
+    /// `sort_by` is the order the grid lists folder images in.
+    pub fn create(window: &Window, sort_by: SortBy) -> Self {
         let mtm = MainThreadMarker::new().expect("create() must run on the main thread");
         let ns_view = content_view_ptr(window).expect("winit window must have an AppKit view");
+        let scale = window.scale_factor();
 
-        unsafe { build(mtm, ns_view) }
+        unsafe { build(mtm, ns_view, sort_by, scale) }
+    }
+
+    /// The thumbnail grid, for the app to drive (folder listing, thumbnails, selection, open).
+    pub fn grid(&self) -> &BrowseGrid {
+        &self.grid
     }
 
     /// Hide or show the split view. On the first show, set the initial divider position — by
@@ -207,7 +223,12 @@ fn content_view_ptr(window: &Window) -> Option<*const AnyObject> {
 
 /// Build the split view + panes and wire them into the contentView. SAFETY: `ns_view` is winit's
 /// live contentView on the main thread (`mtm`).
-unsafe fn build(mtm: MainThreadMarker, ns_view: *const AnyObject) -> BrowseSplitView {
+unsafe fn build(
+    mtm: MainThreadMarker,
+    ns_view: *const AnyObject,
+    sort_by: SortBy,
+    scale: f64,
+) -> BrowseSplitView {
     use crate::platform::macos::ui_common::{FlippedView, as_view, make_label};
 
     unsafe {
@@ -300,14 +321,29 @@ unsafe fn build(mtm: MainThreadMarker, ns_view: *const AnyObject) -> BrowseSplit
         tree_pane.addSubview(&loading_overlay);
         pin_edges(&loading_overlay, &tree_pane, 0.0);
 
-        // ── Right pane: centered "(grid)" stub (a later phase wires NSCollectionView) ─
+        // ── Right pane: the real NSCollectionView thumbnail grid ───────────────────
         let grid_pane = FlippedView::new_as_nsview(mtm);
         let _: () = msg_send![&*grid_pane, setWantsLayer: true];
-        let label = make_label("(grid)", 15.0, mtm);
-        label.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        let _: () = msg_send![&*label, setTranslatesAutoresizingMaskIntoConstraints: false];
-        grid_pane.addSubview(as_view::<objc2_app_kit::NSTextField>(&label));
-        center_in(&label, &grid_pane);
+
+        let grid = BrowseGrid::create(mtm, sort_by, scale);
+        let grid_scroll = grid.scroll_view();
+        let _: () = msg_send![grid_scroll, setTranslatesAutoresizingMaskIntoConstraints: false];
+        grid_pane.addSubview(as_view::<objc2_app_kit::NSScrollView>(grid_scroll));
+        pin_edges(
+            as_view::<objc2_app_kit::NSScrollView>(grid_scroll),
+            &grid_pane,
+            0.0,
+        );
+
+        // The "(No images)" overlay (owned by the grid), centered over the grid pane, hidden until
+        // a folder lists empty.
+        let empty_label = grid.empty_label();
+        let _: () = msg_send![empty_label, setTranslatesAutoresizingMaskIntoConstraints: false];
+        grid_pane.addSubview(as_view::<objc2_app_kit::NSTextField>(empty_label));
+        center_in(
+            as_view::<objc2_app_kit::NSTextField>(empty_label),
+            &grid_pane,
+        );
 
         // Add panes to the split view (order matters: index 0 = tree, 1 = grid).
         split.addSubview(&tree_pane);
@@ -337,6 +373,7 @@ unsafe fn build(mtm: MainThreadMarker, ns_view: *const AnyObject) -> BrowseSplit
             tree_pane,
             grid_pane,
             tree,
+            grid,
             loading_overlay,
         }
     }

@@ -209,6 +209,7 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "view_mode": s.view_mode,
         "focused_pane": s.focused_pane,
         "browse_selected_folder": s.browse_selected_folder,
+        "browse_grid_selected": s.browse_grid_selected,
         "cache_indices": s.cache_indices,
         "window_x": s.window_x,
         "window_y": s.window_y,

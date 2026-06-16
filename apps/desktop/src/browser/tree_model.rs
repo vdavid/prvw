@@ -7,8 +7,6 @@
 //!   unreadable entries skipped, sorted case-insensitively by name. Runs on the background
 //!   scanner thread (never the main thread — slow filesystems would freeze the UI).
 //! - [`enumerate_roots`]: the source-list roots — the home folder plus every mounted volume.
-//! - [`count_supported_images`]: how many decodable images a folder holds (reuses
-//!   `decoding::is_supported_extension`), logged when a folder is selected.
 //! - [`next_selectable_row`]: the Up/Down arrow-key target row in a flat list of visible rows.
 //! - [`ChildCache`]: the per-path load-state machine (`NotLoaded` → `InFlight` → `Loaded`) the
 //!   data source serves children from. The data source NEVER reads a directory inline; it only
@@ -160,28 +158,6 @@ pub fn child_directories(dir: &Path) -> Vec<PathBuf> {
 
     sort_by_name(&mut dirs);
     dirs
-}
-
-/// Count the supported image files directly inside `folder` (non-recursive).
-///
-/// Reuses `decoding::is_supported_extension` so the count tracks exactly what the viewer can
-/// open. Returns 0 for an unreadable folder. This is the number logged on folder selection
-/// (the grid that lists them lands in a later phase).
-#[must_use]
-pub fn count_supported_images(folder: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(crate::decoding::is_supported_extension)
-        })
-        .count()
 }
 
 /// Assemble the source-list roots from a home directory and the enumerated volumes.
@@ -398,23 +374,6 @@ mod tests {
             .collect();
         // Natural order: trip_2 before trip_10 (not alphabetic).
         assert_eq!(names, vec!["trip_1", "trip_2", "trip_10"]);
-    }
-
-    #[test]
-    fn count_supported_images_counts_only_supported() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        for name in ["a.jpg", "b.PNG", "c.webp", "readme.txt", "data.json"] {
-            fs::write(root.join(name), b"x").unwrap();
-        }
-        fs::create_dir(root.join("subdir")).unwrap();
-        // 3 images (jpg, png case-insensitive, webp); txt/json and the subdir don't count.
-        assert_eq!(count_supported_images(root), 3);
-    }
-
-    #[test]
-    fn count_supported_images_unreadable_is_zero() {
-        assert_eq!(count_supported_images(Path::new("/no/such/folder/prvw")), 0);
     }
 
     #[test]

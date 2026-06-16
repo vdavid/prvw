@@ -1,18 +1,21 @@
 # Browser (browse mode)
 
 A second top-level screen for the main window: a native AppKit folder tree + thumbnail grid that **swaps** with the wgpu
-image viewer. The **tree is real** (Phase 3): an `NSOutlineView` source list of the home folder + mounted volumes. The
-grid is still a `(grid)` stub (Phase 4 wires `NSCollectionView`), but its **headless plumbing exists** (Phase 2:
-`grid_scheduler` + `thumbnail_cache`, no UI caller yet). Full design: `docs/specs/image-browser.md`.
+image viewer. Both panes are real now: the **tree** (Phase 3) is an `NSOutlineView` source list of the home folder +
+mounted volumes; the **grid** (Phase 4) is an `NSCollectionView` thumbnail gallery of the selected folder's images,
+driven by the Phase-2 scheduler + cache plumbing. Full design: `docs/specs/image-browser.md`.
 
-| File                 | Purpose                                                                                                                                                                                                           |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mod.rs`             | `ViewMode` + `PaneSide` enums + `browser::State` (mode, focused pane, selected folder, native handles); tree-nav delegation; tests                                                                                |
-| `split_view.rs`      | macOS `NSSplitView` build, hide/show, `set_focused_pane` highlight, divider + traffic-light fixes; hosts the tree                                                                                                 |
-| `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (Phase 2 plumbing; Phase 4 caller)                                                                                                    |
-| `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants (Phase 2 plumbing; Phase 4 caller)                                   |
-| `outline.rs`         | macOS `NSOutlineView` source-list tree: `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + drives keyboard nav)                                                               |
-| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `count_supported_images`, `next_selectable_row`, the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate |
+| File                 | Purpose                                                                                                                                                                                      |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mod.rs`             | `ViewMode` + `PaneSide` enums + `browser::State` (mode, focused pane, selected folder, grid selection, sort, native handles); tree + grid delegation; tests                                  |
+| `split_view.rs`      | macOS `NSSplitView` build, hide/show, `set_focused_pane` highlight, divider + traffic-light fixes; hosts the tree (left) and the grid (right)                                                |
+| `grid.rs`            | macOS `NSCollectionView` grid: `GridItem` (cell), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs) |
+| `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                        |
+| `grid_listing.rs`    | Background folder-image lister (its own OS thread + `mpsc`, like the tree scanner) + the pure `list_supported_images`                                                                        |
+| `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (the grid's `BrowseGrid::pump` drives it)                                                                        |
+| `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants                                                 |
+| `outline.rs`         | macOS `NSOutlineView` source-list tree: `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + drives keyboard nav)                                          |
+| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `next_selectable_row`, the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate      |
 
 ## The swap
 
@@ -27,10 +30,13 @@ to all four edges, identifier `prvw.browser_split`, hidden at startup. Same patt
 transparent Metal pixel occludes content behind it, so the native UI must sit in front, not behind — hence
 hide-one-show-the-other, not compositing.
 
-Commands: `ToggleBrowseMode` (menu + Enter in image mode), `EnterImageMode` (Esc/Enter while browsing),
+Commands: `ToggleBrowseMode` (menu + Enter in image mode), `EnterImageMode` (Esc while browsing; Enter on the tree),
 `ToggleBrowseFocus` (Tab while browsing), `BrowseSelectFolder(PathBuf)` (tree selection), `BrowseMoveTreeSelection(i32)`
-(Up/Down), `BrowseExpandTreeSelection(bool)` (Right/Left). Dispatched in `app/executor.rs`. The `BrowseSelectFolder`,
-`BrowseMoveTreeSelection`, and `BrowseExpandTreeSelection` variants are macOS-only.
+(Up/Down), `BrowseExpandTreeSelection(bool)` (Right/Left), `BrowseFolderListed { folder, images }` (a background listing
+finished), `BrowseThumbnailsAvailable` (grid-thumbnail completions queued), `BrowseGridSelected(usize)` (grid
+click/selection), `BrowseOpenSelected` (Enter on the focused grid, or a double-click — opens the selected image, else
+falls back to image mode). Dispatched in `app/executor.rs`. All but `ToggleBrowseMode`/`EnterImageMode`/
+`ToggleBrowseFocus`/`BrowseOpenSelected` are macOS-only.
 
 ## The folder tree (Phase 3)
 
@@ -53,9 +59,10 @@ directory on the main thread).
 - **Arrow keys drive the view programmatically** (winit owns the keyboard — see below): `BrowseTree::move_selection`
   (`selectRowIndexes:` after `next_selectable_row` math), `expand_selected` / `collapse_selected` (`expandItem:` /
   `collapseItem:`, Left on a leaf collapses the parent). `browser::State` gates these on the tree pane being focused.
-- **Selection → app state.** `outlineViewSelectionDidChange:` sends `BrowseSelectFolder(path)`; the executor stores it
-  in `State::selected_folder` and logs the supported-image count (`tree_model::count_supported_images`). The grid that
-  lists those images is a later phase.
+- **Selection → app state → grid listing.** `outlineViewSelectionDidChange:` sends `BrowseSelectFolder(path)`; the
+  executor stores it in `State::selected_folder` and kicks off a background listing of that folder's images for the grid
+  (`grid_listing::FolderLister`). It never reads the directory on the main thread — a slow folder selection must not
+  freeze the UI (mirrors the tree's async fix).
 
 ### Children load asynchronously — never read a directory on the main thread
 
@@ -116,48 +123,88 @@ AppKit responder chain.
 **The input model:** all keys flow through winit → `input` → `AppCommand`, **branched by mode**. The
 `WindowEvent::KeyboardInput` handler (`app.rs`) and the QA `SendKey` handler (`app/executor.rs`) both call
 `input::browse_key_to_command` / `input::browse_qa_key_to_command` when `browser.is_browse()`, else the image-mode
-mappings (image mode is byte-for-byte unchanged). Browse keys: Esc/Enter → `EnterImageMode`; Tab → `ToggleBrowseFocus`;
-Up/Down → `BrowseMoveTreeSelection(∓1)`; Right/Left → `BrowseExpandTreeSelection(true/false)`. The `main.rs`/executor
-Esc special-case (fullscreen-or-quit, `AppCommand::Exit`) is never reached in browse mode because Esc maps to
-`EnterImageMode` before it, so Esc returns to image mode and never quits.
+mappings (image mode is byte-for-byte unchanged). Browse keys: Esc → `EnterImageMode`; Enter → `BrowseOpenSelected`
+(opens the selected image when the grid is focused, else falls back to image mode — so Enter on the tree returns to the
+viewer); Tab → `ToggleBrowseFocus`; Up/Down → `BrowseMoveTreeSelection(∓1)`; Right/Left → `BrowseExpandTreeSelection`.
+The `main.rs`/executor Esc special-case (fullscreen-or-quit, `AppCommand::Exit`) is never reached in browse mode because
+Esc maps to `EnterImageMode` before it, so Esc returns to image mode and never quits.
 
 **Focused pane is app-tracked,** not the native key-view loop: `browser::State::focused_pane`
 (`PaneSide::{Tree, Grid}`). `ToggleBrowseFocus` flips it and calls `split_view::set_focused_pane`, which recolors the
-panes so the focused one is highlighted. The native views will render their own selection regardless of first-responder
-state, so this app-managed focus is enough. `SharedAppState` exposes `view_mode`, `focused_pane`, and
-`browse_selected_folder` (also at `GET /state`) so QA/tests can assert the mode swap, focus flip, and tree selection
-without real keystrokes.
+panes so the focused one is highlighted. **An empty grid is non-focusable:** `toggle_focus` skips a Grid target when the
+grid has no images, so Tab stays on the tree (spec requirement). A grid click also focuses the grid (`set_grid_selected`
+flips `focused_pane`), so a following Enter/double-click opens the clicked image. `SharedAppState` exposes `view_mode`,
+`focused_pane`, `browse_selected_folder`, and `browse_grid_selected` (also at `GET /state`) so QA/tests can assert the
+mode swap, focus flip, tree selection, and grid selection without real keystrokes.
 
-## Grid thumbnail plumbing (Phase 2, headless)
+## The thumbnail grid (Phase 4)
 
-The grid's thumbnails ride **the same `QLThumbnailGenerator` worker as previews** (`previews::quicklook`), a second
-request path into Finder's shared `quicklookd` cache — not a second engine. That worker is already size-parameterized
-(each `SubmitRequest` carries its own `size`/`scale`), so the only Phase-4 addition is a CGImage→`NSImage` consumption
-path beside the previews' CGImage→RGBA8 blit; the seam is documented in `previews/quicklook.rs`. Phase 2 ships the two
-pure state machines the grid will drive, fully unit-tested but with no runtime caller yet (`#[allow(dead_code)]` on the
-two modules, removed when Phase 4 wires the `NSCollectionView`):
+`grid.rs` builds the right pane: an `NSCollectionView` (`NSCollectionViewFlowLayout`, vertical scroll) of ~160pt square
+cells, each a `GridItem` (an `NSCollectionViewItem` subclass with a proportionally-scaling `NSImageView` + a filename
+label). The slider that live-resizes cells is a later phase — Phase 4 uses a fixed cell size.
 
-- **`grid_scheduler::Scheduler`** — mirror of `previews::scheduler` but centered on a visible `Range<usize>` (the rows
-  on screen) instead of a single `current`. API for Phase 4: `set_folder(len, visible)`, `set_visible_range(visible)`
-  (reseed on scroll), `poll_next() -> (index, RequestId)`, `mark_ready`/`mark_failed`/`uncache`, `pause`/`resume`,
-  `status()`. Order: the visible range first (reading order), then nearest-outward to a `MARGIN` (100) each side so a
-  small scroll reveals ready cells; indices past the margin aren't enqueued (10k-image folders don't queue 10k jobs).
-- **`thumbnail_cache::ThumbnailCache`** — byte-budgeted (`THUMBNAIL_BUDGET_BYTES` = 128 MB) eviction **bookkeeping**, no
-  bitmaps (AppKit cells own those; this map stores byte sizes only). API for Phase 4: `set_visible_range`, `insert`,
-  `get` (touch/hit), `remove`, `evict_to_budget() -> Vec<usize>` (evicted indices to feed back to `Scheduler::uncache`).
-  Evicts farthest-from-visible-range first, ties broken by least-recently-touched. Fixed budget (not RAM-scaled like
-  previews) because `NSCollectionView` cell reuse is the primary residency bound — this is the backstop for the
-  small-cell worst case. Shares `grid_scheduler::distance_from_range` so scheduling and eviction agree.
+- **Where the mutable state lives.** `NSCollectionView` holds its data source/delegate weakly, so `BrowseGrid` keeps the
+  `Retained<GridDataSource>` alive for the window's life. All the grid's mutable state — the `grid_model::GridModel`,
+  the `grid_scheduler::Scheduler`, the `thumbnail_cache::ThumbnailCache`, the generated-`NSImage` map, the
+  `grid_listing::FolderLister`, and the grid's `quicklook::RequestTable` — lives in `RefCell` ivars on `GridDataSource`
+  (main-thread only; AppKit calls re-entrantly). `BrowseGrid`'s methods delegate into the data source.
+- **Raw-selector data source.** `GridDataSource` implements `numberOfItemsInSection:`,
+  `itemForRepresentedObjectAtIndexPath:`, `didSelectItemsAtIndexPaths:`, and `prefetchItemsAtIndexPaths:` as raw
+  `#[unsafe(method(...))]` arms (like `outline::TreeDataSource`), **not** the typed protocol traits — a `define_class!`
+  method can't return `Retained<T>` (no `Encode`) the way `NSCollectionViewDataSource` demands. It's registered via raw
+  `setDataSource:`/`setDelegate:`/`setPrefetchDataSource:` passing the object as `&AnyObject`; AppKit only sends the
+  selectors, it doesn't check Rust conformance.
+- **Async folder listing.** Selecting a folder in the tree starts a background listing on `grid_listing::FolderLister`
+  (its own OS thread + `mpsc`, like the tree scanner — newest request wins). The worker reads the dir off-thread and
+  posts `BrowseFolderListed { folder, images }`; the executor calls `BrowseGrid::folder_listed`, which sorts via the
+  model's `SortBy`, reloads the collection view, toggles the "(No images)" overlay, and seeds the scheduler/cache. This
+  subsumes the old main-thread `count_supported_images` read — the listing returns the actual paths off-thread.
+- **Open → image mode.** Double-click (a 2-click `NSClickGestureRecognizer` on the collection view) or Enter on the
+  focused grid fires `BrowseOpenSelected`. `App::open_selected_grid_image` builds a `DirectoryList::from_explicit` from
+  the grid's image list (same `SortBy`, so the order matches), positions it at the selected index via `go_by`, switches
+  to image mode, seeds previews, displays the image, and warms neighbors (`warm_initial_neighbors`, shared with launch)
+  — so arrow-key nav works immediately. Enter on the tree (or with no grid selection) just returns to image mode.
 
-**Size constant (Phase 4 reuses it):** `thumbnail_cache::MAX_CELL_PT` (256pt) → `GRID_THUMBNAIL_PX` (512px = 256 × 2
-Retina). One max-size RGBA8 thumbnail is `512 × 512 × 4 ≈ 1 MB` (`EST_THUMBNAIL_BYTES`), so 128 MB ≈ 128 resident
-thumbnails. Generated **once** at this size and downscaled for smaller cells — never regenerated on resize.
+### Thumbnails: same QL worker as previews, AppKit owns the bitmaps
+
+Grid thumbnails ride a **second `quicklook::RequestTable`** — a second request path into Finder's shared `quicklookd`
+cache (the `QLThumbnailGenerator` singleton), not a second engine. `RequestTable::new` takes the wake `AppCommand`
+constructor (`|| BrowseThumbnailsAvailable`) and a worker-thread name (`prvw-gridgen`); everything else is shared with
+previews. The worker delivers RGBA8 (`cg_image_to_rgba8`); the grid's consumption seam is
+`quicklook::nsimage_from_rgba8` (main-thread RGBA8 → `NSImage` via `NSBitmapImageRep`, because `NSImage` isn't `Send`).
+
+- **Scroll → scheduler/cache.** `App::about_to_wait` calls `BrowseGrid::pump_visible_range` while browsing: it reads the
+  collection view's visible item range (widened by `PREFETCH_MARGIN`), feeds it to `Scheduler::set_visible_range` +
+  `ThumbnailCache::set_visible_range`, and pumps `Scheduler::poll_next` into the QL worker at `GRID_THUMBNAIL_PX`.
+  Native scrolling routes through the same run loop, so `about_to_wait` fires after a scroll; the scheduler dedups, so
+  the pump is cheap when nothing changed. `NSCollectionViewPrefetching` widens the range further ahead/behind.
+- **Completion → cell.** `BrowseThumbnailsAvailable` → `BrowseGrid::thumbnails_available`: drops stale-generation
+  deliveries (the model's folder generation guards them), wraps RGBA8 in an `NSImage`, stores it in the map + the
+  cache's byte bookkeeping, then **feeds `evict_to_budget()`'s returned indices to `Scheduler::uncache`** (Phase 2's
+  invariant) and drops their `NSImage`s, and reloads the affected items so cells pick up their image.
+- **Pure plumbing.** `grid_scheduler::Scheduler` (visible-range-centered order, `MARGIN` = 100 cap) and
+  `thumbnail_cache::ThumbnailCache` (128 MB byte budget, farthest-from-range eviction, ties by least-recently-touched)
+  stay pure and unit-tested; `grid.rs` is their runtime caller. Both share `grid_scheduler::distance_from_range` so
+  scheduling and eviction agree.
+
+**Size constant:** `thumbnail_cache::MAX_CELL_PT` (256pt) → `GRID_THUMBNAIL_PX` (512px = 256 × 2 Retina). One max-size
+RGBA8 thumbnail is `512 × 512 × 4 ≈ 1 MB` (`EST_THUMBNAIL_BYTES`), so 128 MB ≈ 128 resident thumbnails. Generated
+**once** at this size; smaller cells downscale the cached bitmap — never regenerated on resize.
 
 ## Gotchas
 
-- **`Retained<>` must outlive the window.** `BrowseSplitView` stores the split view, both panes, and the `BrowseTree`
-  (which owns the outline view + the `TreeDataSource`, since `setDataSource:`/`setDelegate:` are weak `assign`).
-  Dropping early segfaults the autorelease pool (no compile-time check) — see `platform/macos/CLAUDE.md`.
+- **`Retained<>` must outlive the window.** `BrowseSplitView` stores the split view, both panes, the `BrowseTree`, and
+  the `BrowseGrid` (each owns its view + its `TreeDataSource`/`GridDataSource`, since `setDataSource:`/`setDelegate:`/
+  `setPrefetchDataSource:` are weak `assign`). Dropping early segfaults the autorelease pool (no compile-time check) —
+  see `platform/macos/CLAUDE.md`.
+- **Register the grid item class via `GridItem::class()`, not a name lookup.**
+  `objc2::runtime::AnyClass::get(c"PrvwGridItem")` returns `None` until the `define_class!` type is first referenced
+  (registration is lazy), so it panics at grid-build time. `GridItem::class()` forces registration and hands back the
+  class. Bit us on first browse entry.
+- **A `define_class!` method can't return `Retained<T>`** (no `Encode` impl) and `#[unsafe(method_family = ...)]` isn't
+  supported alongside `#[unsafe(method(...))]` there. So `GridDataSource` implements the collection-view protocol
+  selectors as raw methods returning `*mut NSCollectionViewItem` (via `Retained::into_raw`) rather than conforming to
+  the typed `NSCollectionViewDataSource` trait, and gets wired with raw `setDataSource:` sends.
 - **Never pass `&Retained<T>` to the `as_view`/`as_nsview` pointer cast — deref first (`&*x`).** Those helpers do a raw
   `*const T as *const NSView` cast; handed `&Retained<NSTextField>` they reinterpret the smart-pointer struct's memory
   as an NSView, so AppKit messages a garbage isa and aborts with `objc[...]: Attempt to use unknown class 0x…`. (Method

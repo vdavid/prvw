@@ -1183,14 +1183,35 @@ fn escape_returns_from_browse_to_image() {
 }
 
 #[test]
-fn tab_flips_browse_focus_between_panes() {
+fn tab_keeps_focus_on_tree_when_grid_is_empty() {
+    // No folder has been selected, so the grid has no images and is non-focusable: Tab keeps
+    // focus on the tree (spec: an empty grid can't receive focus). Once a folder with images is
+    // listed, Tab moves to the grid — that flip is exercised by live QA, since the harness can't
+    // yet drive a tree-folder selection by path.
     let app = TestApp::start();
     app.post("/key", "Enter");
     assert_eq!(app.get_state()["focused_pane"].as_str(), Some("tree"));
     app.post("/key", "Tab");
-    assert_eq!(app.get_state()["focused_pane"].as_str(), Some("grid"));
-    app.post("/key", "Tab");
-    assert_eq!(app.get_state()["focused_pane"].as_str(), Some("tree"));
+    assert_eq!(
+        app.get_state()["focused_pane"].as_str(),
+        Some("tree"),
+        "Tab on an empty grid stays on the tree (grid non-focusable)"
+    );
+}
+
+#[test]
+fn enter_on_tree_returns_to_image_mode() {
+    // Enter maps to "open the selected grid image", but with the tree focused (the default on
+    // entering browse) and no grid selection, it falls back to returning to image mode showing the
+    // current image — never a stray open.
+    let app = TestApp::start();
+    app.post("/key", "Enter"); // image → browse
+    assert_eq!(app.get_state()["view_mode"].as_str(), Some("browse"));
+    app.post("/key", "Enter"); // tree-focused Enter → back to image mode
+    let state = app.get_state();
+    assert_eq!(state["view_mode"].as_str(), Some("image"));
+    // The grid-selection field is part of the state contract (null until the grid has a selection).
+    assert!(state.get("browse_grid_selected").is_some());
 }
 
 #[test]

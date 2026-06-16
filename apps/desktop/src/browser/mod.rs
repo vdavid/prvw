@@ -25,23 +25,26 @@
 //!   highlights whichever pane the value names. See `docs/specs/image-browser.md`.
 
 #[cfg(target_os = "macos")]
+mod grid;
+#[cfg(target_os = "macos")]
+mod grid_listing;
+pub(crate) mod grid_model;
+#[cfg(target_os = "macos")]
 mod outline;
 #[cfg(target_os = "macos")]
 mod split_view;
 pub(crate) mod tree_model;
 
-// Phase 2 thumbnail plumbing. Pure, headless-tested state machines that Phase 4's
-// `NSCollectionView` grid consumes. They compile and are unit-tested but have no
-// runtime caller until Phase 4 wires the grid — hence `#[allow(dead_code)]` on the
-// modules (not a broad crate-wide suppression). Remove the allows once Phase 4 calls
-// in. See `docs/specs/image-browser.md` → "Thumbnails".
+// The grid's headless plumbing (Phase 2): the visible-range scheduler and the byte-budget
+// eviction state. Both pure and unit-tested; the `NSCollectionView` grid (`grid`) drives them.
+// `#[allow(dead_code)]` covers the slice of their API the grid doesn't call yet — `Scheduler`'s
+// `pause`/`resume`/`status`/`visible_range` and the `ThumbnailCache` inspectors are for the
+// browse-behaviors + QA phases (the scheduler pause mirrors previews'; `status` feeds the MCP
+// snapshot). The methods the grid drives today are exercised; these round out the API.
 #[allow(dead_code)]
 pub mod grid_scheduler;
 #[allow(dead_code)]
 pub mod thumbnail_cache;
-
-#[cfg(target_os = "macos")]
-pub use tree_model::count_supported_images;
 
 /// The two top-level screens of the main window. The viewer starts in `Image`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,9 +103,16 @@ pub struct State {
     /// Which pane has keyboard focus in browse mode. Tab flips it (app-managed, not the
     /// native key-view loop). Entering browse starts on the tree.
     focused_pane: PaneSide,
-    /// The folder currently selected in the tree. Set by `BrowseSelectFolder`; the grid will
-    /// list its images in a later phase. `None` until the user picks a folder.
+    /// The folder currently selected in the tree. Set by `BrowseSelectFolder`; the grid lists its
+    /// images. `None` until the user picks a folder.
     selected_folder: Option<std::path::PathBuf>,
+    /// The grid's selected image index within `selected_folder`, mirrored here for QA/tests. The
+    /// authoritative selection lives in the grid model; this tracks it. `None` when the grid is
+    /// empty / nothing picked.
+    grid_selected: Option<usize>,
+    /// The sort order the grid lists folder images in. Read from settings at startup so the grid
+    /// and image-mode `DirectoryList` agree (opening a grid item lands on the matching index).
+    sort_by: crate::navigation::SortBy,
     /// The native split view + its panes, built once on first entry to browse mode and kept
     /// alive for the window's lifetime thereafter. `None` until first built.
     #[cfg(target_os = "macos")]
@@ -122,9 +132,23 @@ impl State {
             mode: ViewMode::Image,
             focused_pane: PaneSide::Tree,
             selected_folder: None,
+            grid_selected: None,
+            sort_by: crate::navigation::SortBy::default(),
             #[cfg(target_os = "macos")]
             split_view: None,
         }
+    }
+
+    /// Set the sort order the grid lists folder images in. Called at startup from the persisted
+    /// setting so the grid and image-mode `DirectoryList` use the same ordering.
+    pub fn set_sort_by(&mut self, sort_by: crate::navigation::SortBy) {
+        self.sort_by = sort_by;
+    }
+
+    /// The grid's selected image index, mirrored from the grid model. `None` when empty.
+    #[must_use]
+    pub fn grid_selected(&self) -> Option<usize> {
+        self.grid_selected
     }
 
     /// The folder currently selected in the browse-mode tree, if any.
@@ -133,10 +157,70 @@ impl State {
         self.selected_folder.as_deref()
     }
 
-    /// Record the folder selected in the tree. The grid listing lands in a later phase; for now
-    /// the app logs how many supported images it holds.
+    /// Record the folder selected in the tree and begin listing its images for the grid on the
+    /// background worker (the result arrives as `AppCommand::BrowseFolderListed`). Never reads the
+    /// disk here — a slow folder selection must not freeze the UI.
     pub fn set_selected_folder(&mut self, folder: std::path::PathBuf) {
-        self.selected_folder = Some(folder);
+        self.selected_folder = Some(folder.clone());
+        #[cfg(target_os = "macos")]
+        if let Some(split) = &self.split_view {
+            split.grid().list_folder(folder);
+        }
+    }
+
+    /// Apply a completed background folder listing to the grid: populate the model, reload the
+    /// collection view, toggle the empty overlay, and start thumbnail generation. Updates the
+    /// tracked grid selection. No-op if the split view isn't built.
+    #[cfg(target_os = "macos")]
+    pub fn grid_folder_listed(&mut self, images: Vec<std::path::PathBuf>) {
+        if let Some(split) = &self.split_view {
+            split.grid().folder_listed(images);
+            self.grid_selected = split.grid().selected_index();
+        }
+    }
+
+    /// Drain queued grid-thumbnail completions into the collection view's cells. No-op if the split
+    /// view isn't built.
+    #[cfg(target_os = "macos")]
+    pub fn grid_thumbnails_available(&self, mtm: objc2::MainThreadMarker) {
+        if let Some(split) = &self.split_view {
+            split.grid().thumbnails_available(mtm);
+        }
+    }
+
+    /// Feed the grid's current visible range to its scheduler/cache and pump generation. Called on
+    /// scroll. No-op if the split view isn't built or the grid is empty.
+    #[cfg(target_os = "macos")]
+    pub fn grid_pump_visible_range(&self) {
+        if let Some(split) = &self.split_view {
+            split.grid().pump_visible_range();
+        }
+    }
+
+    /// Record a grid selection (native click or programmatic) and move keyboard focus to the grid
+    /// pane — a click in the grid focuses it, so a following Enter / double-click opens that image.
+    /// Mirrors the index into `State` for QA/tests.
+    #[cfg(target_os = "macos")]
+    pub fn set_grid_selected(&mut self, index: usize) {
+        self.grid_selected = Some(index);
+        if self.focused_pane != PaneSide::Grid {
+            self.focused_pane = PaneSide::Grid;
+            if let Some(split) = &self.split_view {
+                split.set_focused_pane(PaneSide::Grid);
+            }
+        }
+    }
+
+    /// The grid's selected image path and the full folder image list, for opening into image mode.
+    /// `None` when nothing is selected (empty grid). No-op off macOS.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn grid_open_target(&self) -> Option<(std::path::PathBuf, Vec<std::path::PathBuf>, usize)> {
+        let split = self.split_view.as_ref()?;
+        let grid = split.grid();
+        let selected = grid.selected_index()?;
+        let path = grid.selected_path()?;
+        Some((path, grid.images(), selected))
     }
 
     /// The current top-level screen.
@@ -157,16 +241,38 @@ impl State {
         self.focused_pane
     }
 
-    /// Flip the focused pane (Tree ⇄ Grid) and apply the new highlight to the native
-    /// views. Returns the new focused pane. No-op off macOS for the native side.
+    /// Flip the focused pane (Tree ⇄ Grid) and apply the new highlight to the native views.
+    /// Returns the new focused pane. The grid is skipped when empty (no images to focus), so Tab
+    /// keeps focus on the tree — the grid is non-focusable until it has content. No-op off macOS
+    /// for the native side.
     pub fn toggle_focus(&mut self, #[allow(unused)] window: &winit::window::Window) -> PaneSide {
-        self.focused_pane = self.focused_pane.toggled();
+        let target = self.focused_pane.toggled();
+        // Don't move focus into an empty grid; stay on the tree.
+        if matches!(target, PaneSide::Grid) && self.grid_is_empty() {
+            log::debug!("Browse focus stays on tree (grid empty)");
+            return self.focused_pane;
+        }
+        self.focused_pane = target;
         #[cfg(target_os = "macos")]
         if let Some(split) = &self.split_view {
             split.set_focused_pane(self.focused_pane);
         }
         log::debug!("Browse focus → {:?}", self.focused_pane);
         self.focused_pane
+    }
+
+    /// Whether the grid currently has no images (so it can't receive focus). Treated as empty when
+    /// the split view isn't built yet. Off macOS the grid doesn't exist, so always empty.
+    #[must_use]
+    fn grid_is_empty(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.split_view.as_ref().is_none_or(|s| s.grid().is_empty())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            true
+        }
     }
 
     /// Flip the mode and return the new value. Pure — callers do the AppKit side effects
@@ -181,9 +287,10 @@ impl State {
     #[cfg(target_os = "macos")]
     pub fn enter_browse(&mut self, window: &winit::window::Window) {
         self.focused_pane = PaneSide::Tree;
+        let sort_by = self.sort_by;
         let split = self
             .split_view
-            .get_or_insert_with(|| split_view::BrowseSplitView::create(window));
+            .get_or_insert_with(|| split_view::BrowseSplitView::create(window, sort_by));
         split.set_hidden(window, false);
         crate::window::set_metal_layer_hidden(window, true);
         split.set_focused_pane(self.focused_pane);

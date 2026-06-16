@@ -77,10 +77,12 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
 /// swallowed, not forwarded to image-mode handlers).
 pub fn browse_key_to_command(key: Key<&str>, _modifiers: &ModifiersState) -> Option<AppCommand> {
     match key {
-        // Esc or Enter leaves browse mode (Enter later opens the selected image instead).
-        Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
-            Some(AppCommand::EnterImageMode)
-        }
+        // Esc leaves browse mode for image mode (showing the current image).
+        Key::Named(NamedKey::Escape) => Some(AppCommand::EnterImageMode),
+        // Enter opens the selected image when the grid is focused; on the tree it returns to image
+        // mode. The executor branches on the focused pane (`BrowseOpenSelected` falls back to
+        // `EnterImageMode` when the grid isn't focused or has no selection).
+        Key::Named(NamedKey::Enter) => Some(AppCommand::BrowseOpenSelected),
         // Tab flips focus between the tree and grid panes.
         Key::Named(NamedKey::Tab) => Some(AppCommand::ToggleBrowseFocus),
         // Arrows drive the focused pane's native selection. The tree (when focused): Up/Down
@@ -191,7 +193,8 @@ pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
 /// so tests drive the same browse routing as real keystrokes.
 pub fn browse_qa_key_to_command(key_name: &str) -> Option<AppCommand> {
     match key_name {
-        "Escape" | "Enter" => Some(AppCommand::EnterImageMode),
+        "Escape" => Some(AppCommand::EnterImageMode),
+        "Enter" => Some(AppCommand::BrowseOpenSelected),
         "Tab" => Some(AppCommand::ToggleBrowseFocus),
         #[cfg(target_os = "macos")]
         "ArrowDown" => Some(AppCommand::BrowseMoveTreeSelection(1)),

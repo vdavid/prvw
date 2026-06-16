@@ -33,6 +33,18 @@ pub fn send_command(command: AppCommand) -> bool {
         .is_some()
 }
 
+/// Clone of the global event loop proxy. Used by the browse grid's QL submission path
+/// (`browser::grid`), which has no `App` reference to borrow the proxy from. Panics if called
+/// before `resumed()` set the proxy — the grid only submits after the window exists, so the proxy
+/// is always present by then.
+#[cfg(target_os = "macos")]
+pub fn event_loop_proxy() -> EventLoopProxy<AppCommand> {
+    EVENT_LOOP_PROXY
+        .get()
+        .expect("event loop proxy must be set before the grid submits thumbnail requests")
+        .clone()
+}
+
 /// Commands that drive all app behavior. Keyboard, mouse, menu, QA server, and MCP all
 /// map their inputs to these commands. `App::execute_command` is the single place where
 /// each command's effect is implemented.
@@ -150,6 +162,29 @@ pub enum AppCommand {
         path: PathBuf,
         children: Vec<PathBuf>,
     },
+    /// A background folder listing finished. The grid NEVER reads a directory on the main thread (a
+    /// slow SMB share would freeze the app), so the selected folder's images arrive here: the
+    /// executor populates the grid model + reloads the collection view. Posted by the grid lister
+    /// thread via the global `EventLoopProxy`. `images` is unsorted (the grid model sorts).
+    #[cfg(target_os = "macos")]
+    BrowseFolderListed {
+        folder: PathBuf,
+        images: Vec<PathBuf>,
+    },
+    /// One or more grid-thumbnail QL completions are queued (the grid's `quicklook::RequestTable`).
+    /// Fired only when the queue was empty (see `quicklook::push_delivery`) so a burst of N
+    /// completions sends 1–2 events, not N. The executor drains them, builds `NSImage`s, and
+    /// reloads the affected cells.
+    #[cfg(target_os = "macos")]
+    BrowseThumbnailsAvailable,
+    /// The grid selection changed to `index` (native click or programmatic). Records it in the grid
+    /// model + `browser::State` for QA/tests. Browse-mode only.
+    #[cfg(target_os = "macos")]
+    BrowseGridSelected(usize),
+    /// Open the grid's selected image in image mode (double-click on a grid item, or Enter while
+    /// the grid pane is focused). Sets up `navigation` for the selected folder at the chosen index,
+    /// displays that image, and switches to image mode so arrow-key nav works afterward.
+    BrowseOpenSelected,
 
     // ── Slideshow ────────────────────────────────────────────────────
     /// Start the slideshow if stopped, stop it if running (Slideshow →

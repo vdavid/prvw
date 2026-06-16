@@ -551,6 +551,9 @@ impl App {
 
         // Build the navigation list
         let initial_sort_by = settings::Settings::load().sort_by;
+        // The browse grid lists folder images in the same order, so opening a grid item lands on
+        // the matching image-mode index.
+        self.browser.set_sort_by(initial_sort_by);
         self.navigation.dir_list = if let Some(files) = self.explicit_files.take() {
             Some(directory::DirectoryList::from_explicit(
                 files,
@@ -592,31 +595,7 @@ impl App {
         let initial_path = self.file_path.clone();
         self.display_initial_image(&initial_path);
 
-        if let Some(dir) = &self.navigation.dir_list {
-            let current_index = dir.current_index();
-            let total = dir.len();
-
-            if self.navigation.preload_neighbors {
-                // Startup direction is unknown — warm both sides symmetrically.
-                let to_preload: Vec<(usize, PathBuf)> = dir
-                    .preload_range(
-                        preloader::preload_count(),
-                        directory::Direction::Unknown,
-                        self.navigation.loop_navigation,
-                    )
-                    .iter()
-                    .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
-                    .collect();
-
-                if !to_preload.is_empty()
-                    && let Some(preloader) = &mut self.navigation.preloader
-                {
-                    preloader.request_neighbor_preload(to_preload, current_index, total);
-                }
-            } else {
-                log::info!("Preload neighbors disabled — skipping startup preload");
-            }
-        }
+        self.warm_initial_neighbors();
 
         // Pause the preview scheduler while the initial primary decode is
         // running (the async RAW path leaves `pending_current` set). The full
@@ -658,6 +637,35 @@ impl App {
     /// `pending_current`, size the window from ImageIO dims (no decode), show
     /// the "Loading…" title, and let the preloader's prioritized target ship a
     /// `Preview` then a `Ready` that `poll_preloader` displays.
+    /// Warm the preloader's neighbor window around the current image (both sides, since the
+    /// direction is unknown at this point). Used by the launch path and by opening an image from
+    /// the browse grid. No-op when neighbor preloading is disabled (a benchmark setting).
+    fn warm_initial_neighbors(&mut self) {
+        let Some(dir) = &self.navigation.dir_list else {
+            return;
+        };
+        if !self.navigation.preload_neighbors {
+            log::info!("Preload neighbors disabled — skipping neighbor warm-up");
+            return;
+        }
+        let current_index = dir.current_index();
+        let total = dir.len();
+        let to_preload: Vec<(usize, PathBuf)> = dir
+            .preload_range(
+                preloader::preload_count(),
+                directory::Direction::Unknown,
+                self.navigation.loop_navigation,
+            )
+            .iter()
+            .filter_map(|&i| dir.get(i).map(|p| (i, p.to_path_buf())))
+            .collect();
+        if !to_preload.is_empty()
+            && let Some(preloader) = &mut self.navigation.preloader
+        {
+            preloader.request_neighbor_preload(to_preload, current_index, total);
+        }
+    }
+
     fn display_initial_image(&mut self, path: &Path) {
         let is_raw = path
             .extension()
@@ -1152,6 +1160,74 @@ impl App {
     /// No-op when already in `target`. Entering browse shows the split view and hides the
     /// Metal layer (the GPU goes idle — no redraws requested); entering image reverses it
     /// and requests a redraw. Also flips the Navigate menu item's label.
+    /// Open the grid's selected image in image mode (double-click on a grid item, or Enter while
+    /// the grid pane is focused). Sets up `navigation` for the selected folder's images at the
+    /// chosen index, displays that image, and switches to image mode so arrow-key navigation works
+    /// afterward. No-op off macOS or when the grid has no selection (empty folder).
+    pub(crate) fn open_selected_grid_image(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            // Enter on the tree (or with no grid selection) just returns to image mode showing the
+            // current image — only a focused grid with a selection opens a specific image.
+            let grid_focused =
+                matches!(self.browser.focused_pane(), crate::browser::PaneSide::Grid);
+            let target = if grid_focused {
+                self.browser.grid_open_target()
+            } else {
+                None
+            };
+            let Some((path, images, index)) = target else {
+                self.set_view_mode(crate::browser::ViewMode::Image);
+                return;
+            };
+            log::info!(
+                "Browse open: {} (index {index} of {})",
+                path.display(),
+                images.len()
+            );
+
+            // Build the navigation list from the grid's image list (same `SortBy` as the grid, so
+            // the order matches) and position it at the chosen index. `from_explicit` re-sorts with
+            // the same comparator, so `go_by(index)` lands on `path`.
+            let sort_by = settings::Settings::load().sort_by;
+            let mut dir_list = directory::DirectoryList::from_explicit(images, sort_by);
+            if index > 0 {
+                dir_list.go_by(index as i32, false);
+            }
+            self.navigation.dir_list = Some(dir_list);
+
+            // Leave browse for image mode first so the Metal layer is visible before we paint.
+            self.set_view_mode(crate::browser::ViewMode::Image);
+
+            // Seed the preview scheduler with the new folder (placeholder support + dim prefetch).
+            if let Some(dir) = &self.navigation.dir_list {
+                let paths = dir.files();
+                let current = dir.current_index();
+                self.previews.set_folder(paths, current);
+            }
+
+            // Display the chosen image (synchronous decode — a user-initiated open, like launch).
+            self.display_image(&path);
+            if let Some((dir_index, total)) = self
+                .navigation
+                .dir_list
+                .as_ref()
+                .map(|d| (d.current_index(), d.len()))
+                && let Some(win) = &self.window
+            {
+                window::set_title_keeping_buttons(
+                    win,
+                    &window::window_title_with_position(&path, dir_index, total),
+                );
+            }
+
+            // Warm neighbors so arrow-key nav is instant, mirroring the launch path.
+            self.warm_initial_neighbors();
+            self.pump_preview_requests();
+            self.update_shared_state();
+        }
+    }
+
     pub(crate) fn set_view_mode(&mut self, target: crate::browser::ViewMode) {
         if self.browser.mode() == target {
             return;
@@ -2479,6 +2555,15 @@ impl ApplicationHandler<AppCommand> for App {
         // delay, hide it when scans finish. No-op outside browse mode / off macOS.
         #[cfg(target_os = "macos")]
         self.browser.refresh_loading_overlay();
+
+        // Browse-mode grid: feed the collection view's current visible range to the thumbnail
+        // scheduler/cache and pump generation. Native scrolling routes through this run loop, so
+        // `about_to_wait` fires after a scroll; the scheduler dedups already-cached/in-flight
+        // indices, so this is cheap when nothing changed. No-op outside browse mode / off macOS.
+        #[cfg(target_os = "macos")]
+        if self.browser.is_browse() {
+            self.browser.grid_pump_visible_range();
+        }
 
         // Set the next wakeup from whatever's still pending (nav debounce,
         // slideshow timer, crossfade frames, tree-scan overlay), or idle.

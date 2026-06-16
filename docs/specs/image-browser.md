@@ -5,15 +5,17 @@ native AppKit screen: a folder tree on the left, a thumbnail grid on the right. 
 overlap.
 
 Status: in progress on the `image-browser` worktree. Done: Phase 0 (spike), Phase 1 (thumbnails → previews rename),
-Phase 2 (headless thumbnail plumbing), Phase 3 (real folder tree). The left pane is now a live `NSOutlineView` source
-list (home + mounted volumes, **asynchronous** directory enumeration on a background scanner thread, path-identity
-nodes, arrow-key nav, selection recorded in `browser::State`). Phase 2 added the grid's headless plumbing — the
-visible-range scheduler (`browser::grid_scheduler`) and the 128 MB byte-budget eviction state
-(`browser::thumbnail_cache`), both pure and unit-tested, plus the documented size-parameterized seam in
-`previews::quicklook` so the grid reuses the previews' QuickLook worker. Still stubbed: the right-pane grid UI (Phase 4
-wires the `NSCollectionView` to this plumbing). See `apps/desktop/src/browser/CLAUDE.md` for the tree details (including
-the async-load model — the data source never reads a directory on the main thread — and the loading overlay) and the
-grid-thumbnail-plumbing section.
+Phase 2 (headless thumbnail plumbing), Phase 3 (real folder tree), Phase 4 (real thumbnail grid). The left pane is a
+live `NSOutlineView` source list (home + mounted volumes, **asynchronous** directory enumeration, path-identity nodes,
+arrow-key nav, selection recorded in `browser::State`). The right pane is now a live `NSCollectionView` thumbnail
+gallery (`browser::grid`): selecting a folder lists its supported images **on a background worker**
+(`browser::grid_listing`, never the main thread), the grid populates and shows QuickLook thumbnails generated via a
+second `previews::quicklook` request path (RGBA8 → `NSImage` through `quicklook::nsimage_from_rgba8`), driven by the
+Phase-2 visible-range scheduler + 128 MB byte-budget cache. Native click selects; double-click or Enter (grid focused)
+opens that image in image mode (sets up `navigation`, switches mode); an empty folder shows "(No images)" and is
+non-focusable so Tab stays on the tree. Still to do: Phase 5 (browse-open positioning, dir-arg startup, the arrow-key
+routing nuance between panes), Phase 6 (styling), Phase 7 (full QA tooling + tests + arch docs). See
+`apps/desktop/src/browser/CLAUDE.md` for the tree, grid, and thumbnail details.
 
 ## Why native AppKit, not wgpu
 
@@ -164,7 +166,10 @@ re-run checks before integrating.
    roots** (the grouped "Locations" header was the target but fights the path-keyed node model, so flat roots — see
    `browser/CLAUDE.md`), lazy directory enumeration, path-identity `NodeObject`s, arrow-key nav driven programmatically,
    selection → `BrowseSelectFolder` recorded in `browser::State` (+ supported-image count logged).
-4. **Grid pane:** `NSCollectionView` wired to the thumbnail cache + `DirectoryList`, selection, empty state.
+4. **Grid pane** (done): `NSCollectionView` wired to the thumbnail scheduler + cache, async folder listing
+   (`grid_listing`), the RGBA8→`NSImage` seam (`quicklook::nsimage_from_rgba8`), native + programmatic selection,
+   double-click/Enter open-to-image hand-off, and the "(No images)" empty state (grid non-focusable when empty). See
+   `browser/CLAUDE.md`.
 5. **Behaviors:** browse-open folder-select + scroll-to-mid + last-image select + focus; Tab; double-click/Enter →
    image; dir-arg startup; menu wiring.
 6. **Styling pass:** the "beautiful gallery" look — reviewed visually with David.

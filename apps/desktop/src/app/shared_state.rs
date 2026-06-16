@@ -72,6 +72,9 @@ pub struct SharedAppState {
     /// Absolute path of the folder selected in the browse-mode tree, or `None` if none picked
     /// yet. Lets QA/tests assert tree selection without a screenshot.
     pub browse_selected_folder: Option<String>,
+    /// The grid's selected image index within the listed folder, or `None` when the grid is empty.
+    /// Lets QA/tests assert grid selection and the open-to-image hand-off.
+    pub browse_grid_selected: Option<usize>,
 }
 
 /// Snapshot of the preview scheduler, mirrored into shared state so the
@@ -142,6 +145,7 @@ impl Default for SharedAppState {
             view_mode: "image",
             focused_pane: "tree",
             browse_selected_folder: None,
+            browse_grid_selected: None,
         }
     }
 }
@@ -178,6 +182,7 @@ impl App {
             .browser
             .selected_folder()
             .map(|p| p.to_string_lossy().into_owned());
+        state.browse_grid_selected = self.browser.grid_selected();
         // Cache is keyed by `PathBuf` (path-key refactor). For the QA/MCP
         // contract we still expose `cache_indices` — translate cached
         // paths back to directory indices via the current `dir_list`.

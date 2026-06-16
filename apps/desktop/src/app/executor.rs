@@ -288,6 +288,11 @@ impl App {
 
                 log::info!("Sort by: {new:?}");
 
+                // Keep the browse grid's listing order in sync (it re-sorts on the next folder
+                // listing). macOS-only — that's where the grid exists.
+                #[cfg(target_os = "macos")]
+                self.browser.set_sort_by(new);
+
                 // Cancel all in-flight preload tasks: their captured slot
                 // index now points at a different file in the new ordering,
                 // which would mis-target `pending_current` matching in
@@ -357,13 +362,35 @@ impl App {
             }
             #[cfg(target_os = "macos")]
             AppCommand::BrowseSelectFolder(folder) => {
-                let count = crate::browser::count_supported_images(&folder);
-                log::info!(
-                    "Browse: selected folder {} ({count} supported image(s))",
-                    folder.display()
-                );
+                log::info!("Browse: selected folder {}", folder.display());
+                // Lists the folder's images on a background worker (never the main thread); the
+                // grid populates when `BrowseFolderListed` arrives.
                 self.browser.set_selected_folder(folder);
                 self.update_shared_state();
+            }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseFolderListed { folder, images } => {
+                log::info!(
+                    "Browse: folder listed {} ({} image(s))",
+                    folder.display(),
+                    images.len()
+                );
+                self.browser.grid_folder_listed(images);
+                self.update_shared_state();
+            }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseThumbnailsAvailable => {
+                if let Some(mtm) = objc2::MainThreadMarker::new() {
+                    self.browser.grid_thumbnails_available(mtm);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseGridSelected(index) => {
+                self.browser.set_grid_selected(index);
+                self.update_shared_state();
+            }
+            AppCommand::BrowseOpenSelected => {
+                self.open_selected_grid_image();
             }
             #[cfg(target_os = "macos")]
             AppCommand::BrowseMoveTreeSelection(delta) => {
