@@ -53,11 +53,21 @@ view's `keyDown:` override (`browser::browse_keydown_command`), not winit. Dispa
 
 ## Browse-open positioning + dir-arg launch
 
-**Entering browse opens already showing where you are.** When the user enters browse from an image (Enter or Navigate →
-Image browser), `set_view_mode(Browse)` runs `enter_browse` then `App::reveal_current_image_in_browse`: it reveals +
-selects the current image's folder in the tree and preselects that image in the grid. So Esc/Enter right after opening
-round-trips to the same image (verified: Enter → browse preselects the came-from image's grid index, Esc reveals it
-back). Empty / no-image cases fall back gracefully (first image, or the tree for an empty folder).
+**Every browse entry re-anchors to the live current image.** On **each** entry into browse from an image (Enter or
+Navigate → Image browser), `set_view_mode(Browse)` runs `enter_browse` then `App::reveal_current_image_in_browse`: it
+reveals + selects the current image's folder in the tree and preselects that image in the grid, scrolling both into
+view. The anchor target (the image's parent folder + the image) is computed by the pure `browser::browse_anchor_target`.
+This runs on every entry, not just the first — so after navigating in image mode (arrow keys) and pressing Enter, browse
+shows the image you're _currently_ viewing, never the stale selection from the last time you browsed
+(`docs/specs/live-folder-sync.md` Part 1). Esc/Enter right after opening round-trips to the same image. Empty / no-image
+cases fall back gracefully to the last browse state (first image, or the tree for an empty folder).
+
+**Re-reveal into the already-selected folder.** When the current image's folder is already the one selected in the tree
+(re-entering browse without changing folders), `select_and_scroll_to`'s `selectRowIndexes:` is a no-op, so
+`outlineViewSelectionDidChange:` never fires and the grid would keep its stale selection. So `select_and_scroll_to`
+detects the already-selected row and dispatches `BrowseSelectFolder` directly, forcing a re-list that consumes the
+pending preselect and re-anchors the grid to the current image (scrolling it into view). This is what makes the
+re-anchor hold even when only the _image within the folder_ changed.
 
 **The async reveal-path walk** (`outline::BrowseTree`). Child directories load on the background scanner, so "reveal a
 path" can't expand synchronously — there'd be no children yet. Instead it's a pending walk advanced by

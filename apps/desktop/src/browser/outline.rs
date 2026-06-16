@@ -834,6 +834,15 @@ impl BrowseTree {
     /// walk. The selection fires `outlineViewSelectionDidChange:` → `BrowseSelectFolder`, which
     /// lists the folder's images in the grid (so the reveal drives the grid listing). Scrolls via
     /// the enclosing scroll view's clip so the row lands centered rather than just barely visible.
+    ///
+    /// **Re-reveal into the already-selected folder** (re-entering browse on the same folder you
+    /// last browsed): `selectRowIndexes:` is a no-op when the row is already selected, so
+    /// `outlineViewSelectionDidChange:` never fires — the grid would keep its stale selection and the
+    /// pending preselect (the live current image) would never be consumed. So when the target row is
+    /// already selected, dispatch `BrowseSelectFolder` directly: that re-lists the folder, which
+    /// consumes the pending preselect to re-anchor the grid to the current image and scroll it into
+    /// view. This is what makes "every browse entry re-anchors to the current image" hold even when
+    /// the folder didn't change.
     fn select_and_scroll_to(&self, path: &Path) {
         let node = self._data_source.node_for_path(path.to_path_buf());
         unsafe {
@@ -843,13 +852,24 @@ impl BrowseTree {
                 log::debug!("Tree reveal: row not found for {}", path.display());
                 return;
             }
+            let already_selected: bool = {
+                let selected: isize = msg_send![&*self.outline, selectedRow];
+                selected == row
+            };
             // Select the row (no row in an NSIndexSet helper — build one). `selectRowIndexes:` with
             // a single index, not extending the selection.
             let index_set = objc2_foundation::NSIndexSet::indexSetWithIndex(row as usize);
             let _: () = msg_send![&*self.outline, selectRowIndexes: &*index_set, byExtendingSelection: false];
             self.scroll_row_to_middle(row);
+            if already_selected {
+                // No `selectionDidChange` fired — drive the grid re-list ourselves so the reveal's
+                // pending preselect re-anchors the grid to the current image (and scrolls to it).
+                crate::commands::send_command(crate::commands::AppCommand::BrowseSelectFolder(
+                    path.to_path_buf(),
+                ));
+            }
             log::debug!(
-                "Tree reveal done: selected row {row} for {}",
+                "Tree reveal done: selected row {row} for {} (already_selected={already_selected})",
                 path.display()
             );
         }

@@ -726,27 +726,29 @@ impl App {
         }
     }
 
-    /// Browse-open positioning: reveal + select the current image's folder in the tree (async
-    /// expand-walk) and preselect the current image in the grid. Called right after `enter_browse`
-    /// so browse mode opens already showing where you are. The current image is `dir_list`'s
-    /// current entry; its folder is that path's parent. The reveal's tree selection lists the
-    /// folder, and the stored preselect then blues the came-from image — so Esc/Enter right after
-    /// open reveals the same image. No current image (nothing opened) → nothing to reveal. No-op
-    /// off macOS.
+    /// Re-anchor browse mode to the live current image: reveal + select that image's folder in the
+    /// tree (async expand-walk) and preselect the image in the grid, scrolling both into view. Runs
+    /// on **every** entry into browse (right after `enter_browse`), not just first entry — so
+    /// re-entering browse after navigating in image mode always shows the image you're currently
+    /// viewing, never the stale selection from the last time you browsed. The current image is
+    /// `dir_list`'s current entry; the anchor target (its folder + the image) is computed by the
+    /// pure `browser::browse_anchor_target`. The reveal's tree selection lists the folder, and the
+    /// stored preselect then anchors + scrolls the grid to the came-from image — so Esc/Enter right
+    /// after open reveals the same image. When the folder is already the selected one,
+    /// `select_and_scroll_to` still drives a re-list so the grid re-anchors (see its docs). No
+    /// current image (nothing opened) → nothing to reveal; browse falls back to the last folder /
+    /// home. No-op off macOS.
     #[cfg(target_os = "macos")]
     fn reveal_current_image_in_browse(&mut self) {
-        let Some(current) = self
+        let current = self
             .navigation
             .dir_list
             .as_ref()
-            .map(|d| d.current().to_path_buf())
-        else {
+            .map(|d| d.current().to_path_buf());
+        let Some((folder, image)) = crate::browser::browse_anchor_target(current.as_deref()) else {
             return;
         };
-        let Some(folder) = current.parent().map(std::path::Path::to_path_buf) else {
-            return;
-        };
-        self.browser.reveal_to_folder(&folder, Some(current));
+        self.browser.reveal_to_folder(&folder, Some(image));
     }
 
     fn display_initial_image(&mut self, path: &Path) {

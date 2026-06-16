@@ -223,6 +223,22 @@ pub fn grid_preselect_index(
     images.iter().position(|p| p == current)
 }
 
+/// The browse-entry anchor target for a current image: the folder to reveal/select (the image's
+/// parent) plus the image itself to preselect in the grid. `None` when there's no current image
+/// (nothing open) or the path has no parent — the caller then falls back to today's behavior (the
+/// last browse state / home). This is the load-bearing rule behind "every browse entry re-anchors
+/// to the live current image": the caller hands the result to `State::reveal_to_folder(folder,
+/// Some(image))`, and `grid_preselect_index` then maps the image to its grid slot. Pure
+/// (headless-tested); the objc2 reveal/scroll is covered by the smoke run + live QA.
+#[must_use]
+pub fn browse_anchor_target(
+    current_image: Option<&std::path::Path>,
+) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let image = current_image?;
+    let folder = image.parent()?;
+    Some((folder.to_path_buf(), image.to_path_buf()))
+}
+
 /// What a launch argument resolves to, deciding the startup screen. Computed purely from a path's
 /// kind (`is_file` / `is_dir`) so the dir-vs-file branch is unit-testable without spinning up the
 /// app.
@@ -912,6 +928,25 @@ mod tests {
             grid_preselect_index(&[], Some(std::path::Path::new("a.jpg"))),
             None
         );
+    }
+
+    #[test]
+    fn browse_anchor_target_is_the_current_images_folder_and_the_image() {
+        use std::path::{Path, PathBuf};
+        // A current image → reveal its parent folder and preselect the image itself. This is the
+        // "every browse entry re-anchors to the live current image" target.
+        assert_eq!(
+            browse_anchor_target(Some(Path::new("/photos/trip/b.jpg"))),
+            Some((
+                PathBuf::from("/photos/trip"),
+                PathBuf::from("/photos/trip/b.jpg")
+            ))
+        );
+        // No current image (nothing open) → no anchor; caller falls back to the last folder / home.
+        assert_eq!(browse_anchor_target(None), None);
+        // A path with no parent (a bare root) → no anchor (degenerate, can't happen for a real
+        // image path, but stays graceful rather than panicking).
+        assert_eq!(browse_anchor_target(Some(Path::new("/"))), None);
     }
 
     #[test]
