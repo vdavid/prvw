@@ -347,7 +347,7 @@ impl App {
             }
             AppCommand::ToggleBrowseMode => {
                 // Navigate → "Image browser"/"Image view" (and Enter in image mode). Browse→image
-                // reveals the browse-selected image exactly like Esc/Enter (render-then-unhide);
+                // reveals the browse-selected image exactly like Esc/Enter (black-not-stale);
                 // image→browse goes through the normal mode switch.
                 if self.browser.is_browse() {
                     #[cfg(target_os = "macos")]
@@ -359,7 +359,7 @@ impl App {
                 }
             }
             AppCommand::EnterImageMode => {
-                // Esc in browse == Enter: reveal the browse-selected image (render-then-unhide, no
+                // Esc in browse == Enter: reveal the browse-selected image (black-not-stale, no
                 // stale flash). Off macOS (no native browse UI) just switch the tracked mode.
                 #[cfg(target_os = "macos")]
                 self.reveal_selected_image();

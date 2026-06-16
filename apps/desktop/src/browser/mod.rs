@@ -689,30 +689,25 @@ impl State {
         log::info!("Entered image mode");
     }
 
-    /// First half of a **render-then-unhide** browse→image reveal: set image-mode state, hide the
-    /// split view, restore winit's first responder, but leave the Metal layer HIDDEN. The caller
-    /// then paints the selected image to the drawable and calls [`Self::reveal_canvas`] to unhide
-    /// it — so the first visible GPU frame is already the correct image (no stale flash). Returns
-    /// the previous mode so the caller can skip the reveal dance when already in image mode.
-    /// No-op off macOS.
+    /// Switch to image mode for a browse→image reveal: set image-mode state, hide the split view,
+    /// restore winit's first responder, and UNHIDE the Metal layer. The caller then synchronously
+    /// paints the target image (or a placeholder / black) into the now-visible drawable.
+    ///
+    /// **Why unhide first, not last.** Presenting to a hidden `CAMetalLayer` doesn't commit, so the
+    /// old "paint-while-hidden then unhide" left the layer showing its last-VISIBLE frame for
+    /// ~100 ms before the correct image landed. We instead guarantee that last-visible frame is
+    /// black (made so on browse entry — `App::set_view_mode` clears the image and paints one frame
+    /// while still visible), so the worst the user can see between unhide and paint is a brief
+    /// black, never the stale stretched previous image. No-op off macOS.
     #[cfg(target_os = "macos")]
-    pub fn prepare_image_reveal(&mut self, window: &winit::window::Window) -> ViewMode {
-        let previous = self.mode;
+    pub fn reveal_image_canvas(&mut self, window: &winit::window::Window) {
         self.enter_image_state();
-        // Hide the split view + image labels and hand first responder back to winit, but DON'T
-        // touch the Metal layer here — it stays hidden until `reveal_canvas`, after the paint.
+        // Hide the split view + image labels, hand first responder back to winit, and unhide the
+        // Metal layer so the caller's synchronous paint is immediately visible.
         if let Some(split) = &self.split_view {
             split.set_hidden(window, true);
         }
         crate::window::restore_content_view_first_responder(window);
-        previous
-    }
-
-    /// Second half of the render-then-unhide reveal: unhide the Metal layer so the just-painted
-    /// frame becomes visible. Called immediately after the synchronous paint in the same event-loop
-    /// callback, so the user never sees the old (stale) frame. No-op off macOS.
-    #[cfg(target_os = "macos")]
-    pub fn reveal_canvas(&self, window: &winit::window::Window) {
         crate::window::set_metal_layer_hidden(window, false);
     }
 
@@ -941,6 +936,25 @@ mod tests {
             classify_launch_target(/* is_file */ true, /* is_dir */ true),
             LaunchTarget::Image
         );
+    }
+
+    #[test]
+    fn browse_warm_indices_always_includes_the_focused_index_first() {
+        // Pre-warm guarantee: the focused (selected) image itself must be in the warm set, and
+        // first, so revealing it is a cache hit (black → image, near-instant) rather than a
+        // cache-miss placeholder. Holds at the edges and the interior alike.
+        for (selected, total) in [(0, 1), (0, 10), (5, 10), (9, 10), (3, 4)] {
+            let warm = browse_warm_indices(selected, total);
+            assert_eq!(
+                warm.first().copied(),
+                Some(selected),
+                "focused index {selected} (total {total}) must warm first"
+            );
+            assert!(
+                warm.contains(&selected),
+                "focused index {selected} (total {total}) must be in the warm set"
+            );
+        }
     }
 
     #[test]

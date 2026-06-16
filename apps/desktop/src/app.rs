@@ -1243,12 +1243,14 @@ impl App {
     /// user's model: the image-mode current image IS whatever the browse cursor points at, even
     /// while the Metal canvas is hidden) — there's no "Esc preserves the old image" path anymore.
     ///
-    /// The reveal is **render-then-unhide** so there's zero stale frame: we set image-mode state
-    /// and hide the split view but keep the Metal layer hidden ([`prepare_image_reveal`]), point
-    /// `navigation` at the grid's folder + selected index, paint that image to the drawable (cache
-    /// hit → instant; miss → the grid thumbnail's QuickLook preview stretched + "Loading…", with
-    /// the sharp decode swapping in later via `poll_preloader`), render one frame synchronously,
-    /// then unhide the canvas ([`reveal_canvas`]). The first visible GPU frame is already correct.
+    /// The reveal is **black-not-stale**, never the previous image. The Metal layer's last-visible
+    /// frame was made black on browse entry (`set_view_mode` clears the image + paints once while
+    /// visible), because presenting to a hidden layer doesn't commit. So we unhide the canvas
+    /// ([`browser::State::reveal_image_canvas`]), point `navigation` at the grid's folder + selected
+    /// index, then synchronously paint that image (cache hit → correct image in one frame; miss →
+    /// the grid thumbnail's correct-aspect QuickLook preview + "Loading…", or clean black if no
+    /// preview is cached, with the sharp decode swapping in later via `poll_preloader`). The worst
+    /// the user can see is a brief black → correct image, never the stale stretched previous image.
     ///
     /// **No selection** (empty folder, or the tree is focused with no grid pick): degrade
     /// gracefully — reveal image mode still showing the last valid image (whatever `dir_list`
@@ -1303,18 +1305,22 @@ impl App {
                 log::info!("Browse reveal: no grid selection — keeping the current image");
             }
 
-            // ── Render-then-unhide ──
-            // Set image-mode state + hide the split view, but keep the Metal layer hidden so the
-            // paint below lands on a still-invisible drawable.
+            // ── Unhide, then render (black-not-stale) ──
+            // Set image-mode state + hide the split view + unhide the Metal layer. Presenting to a
+            // hidden `CAMetalLayer` doesn't commit, so painting while hidden then unhiding (the old
+            // "render-then-unhide") didn't work — the layer kept its last-VISIBLE frame for ~100 ms.
+            // Instead the layer's last-visible frame was made black on browse entry (`set_view_mode`
+            // → `clear_image` + paint), so the worst case here is a brief black, never the stale
+            // stretched previous image. We unhide first, then synchronously paint the target.
             let Some(win) = self.window.clone() else {
                 return;
             };
-            self.browser.prepare_image_reveal(&win);
+            self.browser.reveal_image_canvas(&win);
 
             // Paint the selected (or current) image into the renderer — instant from cache, else a
-            // placeholder while the background decode runs. NEVER blocks the main thread on a full
-            // decode. When there's no image at all (nothing ever opened), this is a no-op and the
-            // canvas stays clean.
+            // correct-aspect placeholder (or clean black) while the background decode runs. NEVER
+            // blocks the main thread on a full decode. With no image at all (nothing ever opened),
+            // the renderer's black image-area fill keeps the canvas clean — never stale.
             if self.navigation.dir_list.is_some() {
                 self.display_open_target();
                 // Warm neighbors so arrow-key nav is instant (cache-miss queues them after `Ready`;
@@ -1329,11 +1335,10 @@ impl App {
             let offset = self.content_offset_y();
             window::set_titlebar_vibrancy_visible(&win, offset.0 > 0.0);
 
-            // Paint one frame to the (still-hidden) drawable, THEN unhide it — so the first visible
-            // frame is already the correct image (no ~100 ms stale flash from unhiding first).
+            // Paint the now-visible drawable: a cache hit lands the correct image in this one frame
+            // (black → image), a miss lands a correct-aspect placeholder or clean black.
             self.render_frame();
             self.needs_redraw = false;
-            self.browser.reveal_canvas(&win);
 
             self.set_browse_menu_label();
             // Keep render-on-demand honest: request a follow-up frame for the placeholder→sharp
@@ -1391,10 +1396,17 @@ impl App {
             self.on_primary_decode_started();
             self.on_preview_current_changed(index);
             // The grid thumbnail's QuickLook preview is the same cache the image-mode placeholder
-            // reads, so the stretched preview shows at once; fall back to a metadata-only auto-fit
-            // if no preview is cached yet.
+            // reads, so the correct-aspect preview shows at once; fall back to a metadata-only
+            // auto-fit if no preview is cached yet. With NO placeholder we must drop any
+            // still-bound image so the renderer fills the (newly auto-fit) image area with black
+            // rather than stretching the previous image's texture to the new geometry — the
+            // distorted stale-frame look. `clear_image` on browse entry already dropped it; this
+            // is the belt-and-suspenders guarantee for any path that reaches here with a texture.
             if !self.display_preview_placeholder(index) {
                 self.apply_preview_auto_fit(index);
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.clear_image();
+                }
             }
             self.needs_redraw = true;
             if let Some(preloader) = &mut self.navigation.preloader {
@@ -1415,6 +1427,17 @@ impl App {
             // (the single render-from-state choke-point) — no separate `toggle_mode` here.
             Some(win) => match target {
                 crate::browser::ViewMode::Browse => {
+                    // Make the Metal layer's LAST-VISIBLE composited frame black BEFORE browse
+                    // hides it. Presenting to a hidden `CAMetalLayer` doesn't commit, so when a
+                    // later reveal unhides it the layer shows whatever it last composited while
+                    // visible. By clearing the bound image and painting one frame now (still
+                    // visible), that last frame is opaque black — so the worst a reveal can show
+                    // is black, never the stale stretched previous image. The split view covers
+                    // the canvas immediately on `enter_browse`, so this black frame isn't seen.
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.clear_image();
+                    }
+                    self.render_frame();
                     self.browser.enter_browse(&win);
                     // Browse-open positioning: reveal + select the current image's folder in the
                     // tree (async walk) and preselect that image in the grid, so browse opens

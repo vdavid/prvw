@@ -32,9 +32,11 @@ under the live surface. We hide one and show the other.
 - The browse UI is an `NSSplitView` added as a **sibling subview of winit's contentView** (same pattern as
   `window::add_titlebar_labels`: `addSubview`, layer-backed, `zPosition` raised above the Metal layer's `1.0`), pinned
   to the contentView edges with Auto Layout, with a stable `identifier` for lookup + hide/show.
-- **Enter browse:** unhide the split view, hide the `CAMetalLayer` (`setHidden: true` via the existing
-  `find_metal_layer` walk), stop requesting redraws. Render-on-demand means the GPU goes fully idle.
-- **Enter image:** hide the split view, unhide the Metal layer, `request_redraw()`.
+- **Enter browse:** clear the bound image and paint one black frame while the Metal layer is still visible (so its
+  last-composited frame is black, see "the reveal is instant and black-not-stale" below), unhide the split view, hide
+  the `CAMetalLayer` (`setHidden: true` via the existing `find_metal_layer` walk), stop requesting redraws.
+  Render-on-demand means the GPU goes fully idle.
+- **Enter image (reveal):** hide the split view, unhide the Metal layer, then synchronously paint the target image.
 - Every `Retained<>` (split view, both scroll views, outline view, collection view, data sources, delegates) is owned by
   the view hierarchy / a `Vec` that outlives the window (no early drop → no autorelease segfault). These are subviews,
   not a modal session, so the "no AppKit modals in the winit loop" rule does not apply.
@@ -71,13 +73,18 @@ under the live surface. We hide one and show the other.
   They share one path (`App::reveal_selected_image`); there's no separate "Esc preserves the previously displayed image"
   behavior. With no grid selection (tree focused, or an empty folder), reveal degrades gracefully: it shows the last
   valid image (whatever was current), never a blank or stale frame.
-- **The reveal is instant with zero stale frame (render-then-unhide).** Reveal points navigation at the grid's folder +
-  selected index, paints that image to the wgpu drawable **before** unhiding the Metal layer (in the same event-loop
-  callback), so the first visible GPU frame is already correct — no ~100 ms flash of the previous image. If the full
-  image is cached (the common case — the selection is warmed, see below) it shows immediately; on a cache miss the grid
-  thumbnail's QuickLook preview is stretched to size with a "Loading…" overlay, then the sharp full decode swaps in. It
-  never blocks the main thread on a full decode; it reuses the same async cache-hit / cache-miss display path image-mode
-  navigation uses.
+- **The reveal is instant and black-not-stale — never the previous image.** Two compositor facts shape this: presenting
+  a frame to a HIDDEN `CAMetalLayer` doesn't commit (it keeps its last-visible frame until ~100 ms later), so painting
+  while hidden then unhiding can't kill the stale frame; and a new image's auto-fit geometry must never composite the
+  old texture (it would stretch it distorted). So: on entering browse, the app clears the bound image and paints one
+  BLACK frame while the layer is still visible (the split view covers it instantly, so it's unseen) — making the layer's
+  last-visible content black. On reveal, the app points navigation at the grid's folder + selected index, UNHIDES the
+  layer, then synchronously paints the target. If the full image is cached (the common case — the selection is warmed,
+  see below) the correct image lands in that one frame (black → image); on a cache miss the grid thumbnail's correct-
+  aspect QuickLook preview shows with a "Loading…" overlay (or clean black if no preview is cached) and the sharp full
+  decode swaps in via the preloader. The renderer fills the image area with opaque black whenever no image is bound, so
+  the worst the user ever sees is a brief black, never the stale stretched previous image. It never blocks the main
+  thread on a full decode; it reuses the same async cache-hit / cache-miss display path image-mode navigation uses.
 - **Selecting a folder** in the tree lists its images in the grid.
 - **The browse selection drives the prospective current image and is warmed.** When the selection lands on an image
   (grid click or arrow-key selection), the app treats it as the prospective current image and warms it + N±2 neighbors

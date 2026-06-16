@@ -89,6 +89,11 @@ pub struct Renderer {
     text_renderer: GlyphonRenderer,
     overlay_pipeline: wgpu::RenderPipeline,
     overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
+    /// Dedicated overlay buffer + bind group for the opaque-black image-area
+    /// fill drawn when no image is bound (browse→image reveal with no ready
+    /// target). Separate from `overlay_buffers` so the pill draw loop can't
+    /// clobber it.
+    black_fill: (wgpu::Buffer, wgpu::BindGroup),
     histogram_shader: wgpu::ShaderModule,
     histogram_pipeline_layout: wgpu::PipelineLayout,
     histogram_pipeline: wgpu::RenderPipeline,
@@ -442,6 +447,21 @@ impl Renderer {
             })
             .collect();
 
+        // Dedicated buffer + bind group for the opaque-black image-area fill.
+        let black_fill_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("black fill uniform"),
+            contents: bytemuck::bytes_of(&empty_uniform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let black_fill_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("black fill bind group"),
+            layout: &overlay_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: black_fill_buffer.as_entire_binding(),
+            }],
+        });
+
         let overlay_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("overlay pipeline layout"),
@@ -558,6 +578,7 @@ impl Renderer {
             text_renderer,
             overlay_pipeline,
             overlay_buffers,
+            black_fill: (black_fill_buffer, black_fill_bind_group),
             histogram_shader,
             histogram_pipeline_layout,
             histogram_pipeline,
@@ -732,6 +753,25 @@ impl Renderer {
     /// Whether an image is currently loaded (has a bind group to draw).
     pub fn has_image(&self) -> bool {
         self.bind_group.is_some()
+    }
+
+    /// Drop the currently-bound image so the next `render` draws nothing in the
+    /// image area (which `render` then fills with opaque black instead of the
+    /// transparent clear). Releases the bind group and destroys the texture's
+    /// backing, so a stale image can never composite under a new image's
+    /// geometry. Used by the browse→image reveal when the target isn't ready
+    /// and no usable placeholder exists — the user sees clean black, never the
+    /// previous image stretched to the new transform. No-op if no image is set.
+    pub fn clear_image(&mut self) {
+        self.bind_group = None;
+        if let Some(old) = self.image_texture.take() {
+            old.destroy();
+        }
+        // Any in-flight crossfade references the now-gone image; drop it too so
+        // `render` doesn't blend against a destroyed outgoing texture.
+        if let Some(cf) = self.crossfade.take() {
+            cf.prev_texture.destroy();
+        }
     }
 
     /// Start a slideshow crossfade. Takes ownership of the currently-displayed
@@ -911,6 +951,35 @@ impl Renderer {
             pill_count += 1;
         }
 
+        // When no image is bound, fill the image area with opaque black (written
+        // here, drawn in the pass) so a reveal never shows the stale pre-browse
+        // frame bleeding through the transparent clear. Skipped entirely when an
+        // image IS bound (the image quad covers the area).
+        let black_fill_active = self.bind_group.is_none();
+        if black_fill_active {
+            let offset_px = (content_offset_y.0 as f64 * self.scale_factor) as f32;
+            let uniform = OverlayUniform {
+                // Cover the full width, from the title-bar strip's bottom down.
+                pos: [
+                    0.0,
+                    offset_px,
+                    self.config.width as f32,
+                    (self.config.height as f32 - offset_px).max(0.0),
+                ],
+                // Opaque black. Alpha 1.0 over the transparent clear reads as black.
+                color: [0.0, 0.0, 0.0, 1.0],
+                // No rounding — a plain rect over the image area.
+                params: [
+                    0.0,
+                    self.config.width as f32,
+                    self.config.height as f32,
+                    0.0,
+                ],
+            };
+            self.queue
+                .write_buffer(&self.black_fill.0, 0, bytemuck::bytes_of(&uniform));
+        }
+
         // Stream the histogram counts + uniform if a draw call is present.
         if let Some(draw) = histogram.as_ref() {
             let mut counts = [0u32; HISTOGRAM_BIN_COUNT];
@@ -988,6 +1057,18 @@ impl Renderer {
                 pass.draw(0..6, 0..1);
                 // Reset viewport to full surface for pills and text
                 pass.set_viewport(0.0, 0.0, sw, sh, 0.0, 1.0);
+            } else {
+                // No image bound: fill the image area (below the title-bar strip)
+                // with OPAQUE black instead of leaving the transparent clear, which
+                // would show whatever the compositor last had behind the Metal layer
+                // (the stale pre-browse frame on a reveal). The title-bar strip stays
+                // transparent so its vibrancy still shows through. Black-fill was
+                // already written before the pass began (see `black_fill_active`).
+                if black_fill_active {
+                    pass.set_pipeline(&self.overlay_pipeline);
+                    pass.set_bind_group(0, &self.black_fill.1, &[]);
+                    pass.draw(0..6, 0..1);
+                }
             }
 
             // Draw pill backgrounds (between image and text), each with its own bind group

@@ -23,17 +23,20 @@ byte-budget cache. Full design: `docs/specs/image-browser.md`.
 which set state then render through `sync_native` (see "Browse UI architecture" below — `sync_native` derives split-view
 and Metal-layer visibility, the image labels, first responder, and emphasis from `mode` + `focused_pane`):
 
-- **Image → Browse:** build the split view on first use, grow the window to the browse minimum if it's smaller
-  (`window::grow_to_browse_minimum`, ~860×560 — a small image's fit-to-window may have shrunk it), set `mode = Browse` +
-  focus (grid if it has images, else tree), `sync_native`. No redraw requested — the GPU goes idle (render-on-demand).
-  The min-size is enforced on browse entry only, never in image mode (so it doesn't fight fit-to-window).
+- **Image → Browse:** clear the bound image and paint ONE black frame while the Metal layer is still VISIBLE (so its
+  last-composited frame is black — see "Black-not-stale reveal" below), build the split view on first use, grow the
+  window to the browse minimum if it's smaller (`window::grow_to_browse_minimum`, ~860×560 — a small image's
+  fit-to-window may have shrunk it), set `mode = Browse` + focus (grid if it has images, else tree), `sync_native`
+  (which hides the Metal layer). No further redraw requested — the GPU goes idle (render-on-demand). The min-size is
+  enforced on browse entry only, never in image mode (so it doesn't fight fit-to-window).
 - **Browse → Image:** the user-facing exits (Esc / Enter / double-click / the menu) go through
-  `App::reveal_selected_image`, NOT `set_view_mode(Image)` — see "Esc == Enter == reveal" below. Reveal uses
-  **render-then-unhide** to avoid a stale frame: `browser::State::prepare_image_reveal` sets `mode = Image` and
-  `focused_pane = None`, hides the split view, and restores winit's first responder but **leaves the Metal layer
-  hidden**; the app then paints the target image and calls `browser::State::reveal_canvas` to unhide it. (`enter_image`
-  via the plain `set_view_mode(Image)` path — which unhides immediately through `sync_native` — survives for the
-  non-macOS build and as the underlying mode-setter; the macOS browse-exit always reveals.)
+  `App::reveal_selected_image`, NOT `set_view_mode(Image)` — see "Esc == Enter == reveal" below. Reveal is
+  **black-not-stale**: `browser::State::reveal_image_canvas` sets `mode = Image` + `focused_pane = None`, hides the
+  split view, restores winit's first responder, and UNHIDES the Metal layer; the app then synchronously paints the
+  target. The worst the user can see is the black-left-behind frame briefly, never the stale previous image (see
+  "Black-not-stale reveal"). (`enter_image` via the plain `set_view_mode(Image)` path — which unhides immediately
+  through `sync_native` — survives for the non-macOS build and as the underlying mode-setter; the macOS browse-exit
+  always reveals.)
 
 The split view is a **sibling subview of winit's contentView** at `zPosition` 2.0 (above the Metal layer's 1.0), pinned
 to all four edges, identifier `prvw.browser_split`, hidden at startup. Same pattern as `window::add_titlebar_labels`. A
@@ -103,14 +106,33 @@ the grid's index 1:1 to the dir-list index, since both use the same `SortBy`), t
 (tree focused, or empty folder) it degrades gracefully — reveals image mode still showing the last valid image, never a
 blank/stale flash.
 
-**Render-then-unhide (zero stale frame).** Reveal paints the selected image to the wgpu drawable BEFORE unhiding the
-Metal layer, so the first visible GPU frame is already correct (the old code unhid first and painted next frame → a ~100
-ms stale-image flash). `browser::State::prepare_image_reveal` sets image-mode state + hides the split view + restores
-winit's first responder but leaves the Metal layer hidden; the app then displays the target (`display_open_target`),
-renders one frame synchronously (`App::render_frame`), and calls `browser::State::reveal_canvas` to unhide — all in the
-same event-loop callback. (We deliberately do NOT paint the selection while still browsing — that would auto-fit-resize
-the window behind the browse UI. The selection is warmed into the cache instead, see below, so the reveal paint is a
-cache hit.)
+**Black-not-stale reveal (never the previous image).** The reveal never shows the old image. Two facts force the design:
+
+1. **Presenting to a hidden `CAMetalLayer` doesn't commit.** Painting a frame while the layer is `hidden` then unhiding
+   it does NOT update what's shown — the layer keeps its last-VISIBLE composited frame, and the new frame only lands
+   ~100 ms later on the next compositor pass. So "paint-while-hidden then unhide" can't eliminate the stale frame.
+2. **A new image's geometry must never composite the old texture.** On a cache miss with no usable placeholder, the new
+   image's auto-fit sets a new transform; with the previous image's texture still bound, the renderer would stretch that
+   texture to the new geometry — the distorted stale-frame look.
+
+The fix has three parts:
+
+- **Make the last-VISIBLE frame black on browse entry.** `App::set_view_mode(Browse)` calls `renderer.clear_image()`
+  (drops the bound texture + destroys its backing) and paints ONE `render_frame()` while the Metal layer is still
+  visible, THEN `enter_browse` hides it. The split view covers the canvas immediately, so this black frame isn't seen on
+  the image→browse transition — but it's now the layer's last-composited content.
+- **The renderer never composites a stale texture.** When no image is bound, `Renderer::render` fills the image area
+  (below the title-bar strip) with OPAQUE black via the overlay pipeline instead of leaving the transparent clear (which
+  would show the compositor's last frame bleeding through). The title-bar strip stays transparent so its vibrancy still
+  shows. `display_open_target`'s cache-miss-with-no-placeholder branch also calls `renderer.clear_image()` after the
+  auto-fit, so the new geometry shows clean black, never the previous image stretched.
+- **Reveal unhides first, then paints.** `browser::State::reveal_image_canvas` sets image-mode state + hides the split
+  view + restores winit's first responder + UNHIDES the Metal layer; the app then displays the target
+  (`display_open_target`) and renders one frame synchronously (`App::render_frame`) — all in the same event-loop
+  callback. Because the last-visible frame was black, the worst the user sees is a brief black → correct image, never
+  the stale stretched previous image. (We deliberately do NOT paint the selection while still browsing — that would
+  auto-fit-resize the window behind the browse UI. The selection is warmed into the cache instead, see below, so the
+  reveal paint is usually a cache hit and lands the correct image in that one frame.)
 
 ## The folder tree
 
@@ -292,14 +314,16 @@ uses a fixed cell size for now. The grid sits on a rounded gallery surface (see 
   `App::reveal_selected_image` (Esc == Enter == reveal). Single click selects instantly. Reveal builds a
   `DirectoryList::from_explicit` from the grid's image list (same `SortBy`, so the order matches), positions it at the
   selected index (`resolve_reveal_index`), seeds previews, then hands off to `App::display_open_target` — the **same
-  async display path image-mode navigation uses for a cache miss** — wrapped in the render-then-unhide dance (see "The
+  async display path image-mode navigation uses for a cache miss** — wrapped in the black-not-stale reveal (see "The
   swap" above):
   - **Cache hit** (the common case — the selection was warmed, see below): display from cache immediately, then
     `warm_initial_neighbors` tops up the arrow-key window.
-  - **Cache miss**: set `pending_current`, show a placeholder instantly (the grid thumbnail's QuickLook preview
-    stretched to size via `display_preview_placeholder`, else a metadata-only `apply_preview_auto_fit`) + a "Loading…"
-    title, and `prioritize_target` the full decode on the preloader. The sharp image swaps in when `poll_preloader` sees
-    `Ready` for `pending_current`, which also queues neighbors. **No blocking `display_image` on the main thread.**
+  - **Cache miss**: set `pending_current`, show a correct-aspect placeholder instantly (the grid thumbnail's QuickLook
+    preview via `display_preview_placeholder`, else a metadata-only `apply_preview_auto_fit` followed by
+    `renderer.clear_image()` so the new geometry shows clean BLACK rather than the previous image stretched to it) + a
+    "Loading…" title, and `prioritize_target` the full decode on the preloader. The sharp image swaps in when
+    `poll_preloader` sees `Ready` for `pending_current`, which also queues neighbors. **No blocking `display_image` on
+    the main thread.**
 
   With no grid selection (Esc/Enter on the tree, or an empty folder), reveal keeps the currently displayed image.
 
