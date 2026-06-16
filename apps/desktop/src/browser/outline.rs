@@ -658,6 +658,14 @@ impl BrowseTree {
         &self.scroll
     }
 
+    /// True while an async reveal walk is in flight (browse-open positioning is expanding ancestors
+    /// toward the target folder; see [`RevealWalk`]). Cleared the instant the walk selects its
+    /// target. Exposed so QA/tests can wait for the reveal to settle before asserting the landed
+    /// folder/grid — a poll on `browse_reveal_pending == false` is the non-flaky barrier.
+    pub fn reveal_pending(&self) -> bool {
+        self.reveal.borrow().is_some()
+    }
+
     /// Apply a completed background scan: store the children in the cache, then reload that node so
     /// the outline view re-queries it and shows the rows. Called from the executor on
     /// `AppCommand::BrowseTreeChildrenLoaded`. A `None` node (path never shown, or a stale scan)

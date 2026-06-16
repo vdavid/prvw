@@ -422,6 +422,68 @@ pub(super) fn handle_post_show_settings(
     }
 }
 
+/// Select a folder in the browse-mode tree by absolute path (the same effect as clicking the row).
+/// Lists that folder's images into the grid on the background worker. Test-only driving hook:
+/// integration tests can't synthesize a native outline-view click, so they drive tree selection
+/// here. macOS-only (`BrowseSelectFolder` doesn't exist off macOS); a no-op stub elsewhere.
+pub(super) fn handle_post_browse_select_folder(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    let path_str = body.trim();
+    if path_str.is_empty() {
+        return write_response(stream, 400, "text/plain", b"Missing folder path in body", &[]);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let folder = PathBuf::from(path_str);
+        send_and_wait_http(stream, proxy, AppCommand::BrowseSelectFolder(folder), state)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (proxy, state);
+        write_response(stream, 400, "text/plain", b"Browse mode is macOS-only", &[])
+    }
+}
+
+/// Select a grid item by index, the way a native click would (updates the grid model so the open
+/// path reads it, focuses the grid, warms the selection). Test-only driving hook: the QA server
+/// can't synthesize a native collection-view click. macOS-only; a no-op stub elsewhere.
+pub(super) fn handle_post_browse_select_grid(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    let index: usize = match body.trim().parse() {
+        Ok(i) => i,
+        Err(_) => {
+            return write_response(stream, 400, "text/plain", b"Body must be a grid index", &[]);
+        }
+    };
+    #[cfg(target_os = "macos")]
+    {
+        send_and_wait_http(stream, proxy, AppCommand::BrowseQaSelectGrid(index), state)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (index, proxy, state);
+        write_response(stream, 400, "text/plain", b"Browse mode is macOS-only", &[])
+    }
+}
+
+/// Open the grid's selected image into image mode (the same effect as Enter on the focused grid or
+/// a double-click). Test-only driving hook for the browse → image round-trip.
+pub(super) fn handle_post_browse_open(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    send_and_wait_http(stream, proxy, AppCommand::BrowseOpenSelected, state)
+}
+
 pub(super) fn handle_get_settings(stream: &mut std::net::TcpStream) -> Result<(), String> {
     let s = settings::Settings::load();
     let settings_json = json!({

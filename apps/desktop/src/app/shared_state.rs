@@ -75,6 +75,14 @@ pub struct SharedAppState {
     /// The grid's selected image index within the listed folder, or `None` when the grid is empty.
     /// Lets QA/tests assert grid selection and the open-to-image hand-off.
     pub browse_grid_selected: Option<usize>,
+    /// How many images the browse grid currently lists (the selected folder's supported-image
+    /// count). `0` for an empty folder or before any folder is picked. Lets QA/tests assert a folder
+    /// listing landed and an empty folder shows zero.
+    pub browse_grid_count: usize,
+    /// Whether the tree's async reveal walk (browse-open positioning) is still in flight. Tests poll
+    /// for this to drop to `false` before asserting the landed folder/grid — the non-flaky barrier
+    /// for the reveal settling.
+    pub browse_reveal_pending: bool,
 }
 
 /// Snapshot of the preview scheduler, mirrored into shared state so the
@@ -146,6 +154,8 @@ impl Default for SharedAppState {
             focused_pane: "none",
             browse_selected_folder: None,
             browse_grid_selected: None,
+            browse_grid_count: 0,
+            browse_reveal_pending: false,
         }
     }
 }
@@ -184,6 +194,8 @@ impl App {
             .selected_folder()
             .map(|p| p.to_string_lossy().into_owned());
         state.browse_grid_selected = self.browser.grid_selected();
+        state.browse_grid_count = self.browser.grid_count();
+        state.browse_reveal_pending = self.browser.reveal_pending();
         // Cache is keyed by `PathBuf` (path-key refactor). For the QA/MCP
         // contract we still expose `cache_indices` — translate cached
         // paths back to directory indices via the current `dir_list`.

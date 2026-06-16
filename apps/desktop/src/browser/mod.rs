@@ -7,11 +7,10 @@
 //! the other (see the "Native AppKit views over/around the wgpu Metal layer" gotcha in
 //! `platform/macos/CLAUDE.md`).
 //!
-//! This is the Phase 0 **spike**: the split view, both panes, and the focus/keyboard plumbing
-//! are stubs proving the AppKit-in-the-winit-loop mechanics. The real tree/grid content lands
-//! in later phases. See `docs/specs/image-browser.md`.
+//! See `docs/specs/image-browser.md` for the full design and `browser/CLAUDE.md` for the module
+//! map.
 //!
-//! ## What the spike establishes
+//! ## Architecture at a glance
 //!
 //! - The split view is a **sibling subview of winit's contentView** (same pattern as
 //!   `window::add_titlebar_labels`): `addSubview`, layer-backed, `zPosition` above the Metal
@@ -323,6 +322,41 @@ impl State {
         self.grid_selected
     }
 
+    /// How many images the grid currently lists (the selected folder's supported-image count). `0`
+    /// when the grid is empty or the split view isn't built. Exposed in the QA snapshot so tests can
+    /// assert a folder listing landed without a screenshot. Off macOS the grid doesn't exist → `0`.
+    #[must_use]
+    pub fn grid_count(&self) -> usize {
+        #[cfg(target_os = "macos")]
+        {
+            self.split_view
+                .as_ref()
+                .map_or(0, |s| s.grid().images().len())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            0
+        }
+    }
+
+    /// True while the tree's async reveal walk is in flight (browse-open positioning expands
+    /// ancestors toward the target folder). `false` when idle or the split view isn't built. Lets
+    /// QA/tests poll for the reveal to settle before asserting the landed folder/grid. Off macOS
+    /// there's no native tree → always `false`.
+    #[must_use]
+    pub fn reveal_pending(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.split_view
+                .as_ref()
+                .is_some_and(split_view::BrowseSplitView::reveal_pending)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
     /// The folder currently selected in the browse-mode tree, if any.
     #[must_use]
     pub fn selected_folder(&self) -> Option<&std::path::Path> {
@@ -416,6 +450,21 @@ impl State {
     pub fn set_grid_selected(&mut self, index: usize, window: &winit::window::Window) {
         self.focus_grid_state(index);
         self.sync_native(window);
+    }
+
+    /// Select grid item `index` the way a native click would: update the grid model's selection
+    /// (so the open path reads the right image) AND record it in state + focus the grid. The native
+    /// `didSelectItemsAtIndexPaths:` delegate does both halves; this drives the same effect for the
+    /// QA server (which has no way to synthesize a native click on a collection-view item). No-op if
+    /// the split view isn't built or `index` is out of range.
+    #[cfg(target_os = "macos")]
+    pub fn qa_select_grid_index(&mut self, index: usize, window: &winit::window::Window) {
+        if let Some(split) = &self.split_view {
+            // Update the model + native selection first, then record state. Mirrors the native
+            // click order (`set_selected` in the delegate, then `BrowseGridSelected`).
+            split.grid().select_index(index, /* scroll */ true);
+        }
+        self.set_grid_selected(index, window);
     }
 
     /// Pure state transition for a grid click/selection: focus the grid and record the index.

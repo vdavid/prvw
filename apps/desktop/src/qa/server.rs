@@ -169,6 +169,13 @@ fn handle_request(
         ("POST", "/zoom-in") => http::handle_post_zoom_in(stream, proxy, state),
         ("POST", "/zoom-out") => http::handle_post_zoom_out(stream, proxy, state),
         ("POST", "/refresh") => http::handle_post_refresh(stream, proxy, state),
+        ("POST", "/browse/select-folder") => {
+            http::handle_post_browse_select_folder(stream, proxy, &body, state)
+        }
+        ("POST", "/browse/select-grid") => {
+            http::handle_post_browse_select_grid(stream, proxy, &body, state)
+        }
+        ("POST", "/browse/open") => http::handle_post_browse_open(stream, proxy, state),
         ("POST", "/show-settings") => http::handle_post_show_settings(stream, proxy, &body, state),
         ("POST", "/close-settings") => http::handle_post_close_settings(stream, proxy, state),
         ("GET", "/settings") => http::handle_get_settings(stream),
@@ -210,6 +217,8 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "focused_pane": s.focused_pane,
         "browse_selected_folder": s.browse_selected_folder,
         "browse_grid_selected": s.browse_grid_selected,
+        "browse_grid_count": s.browse_grid_count,
+        "browse_reveal_pending": s.browse_reveal_pending,
         "cache_indices": s.cache_indices,
         "window_x": s.window_x,
         "window_y": s.window_y,

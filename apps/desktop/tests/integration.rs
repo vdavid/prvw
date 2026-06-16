@@ -27,6 +27,20 @@ impl TestApp {
 
     /// Start the app with a custom image file.
     fn start_with_image(image_path: &std::path::Path) -> Self {
+        Self::start_with_arg_and_home(image_path, None)
+    }
+
+    /// Start the app pointing at a directory (dir-arg launch → browse mode), with `HOME` set to
+    /// `home` so the browse tree's home root contains the directory and the reveal walk is a short,
+    /// deterministic chain. Used by the browse integration tests.
+    fn start_browse_dir(dir: &std::path::Path, home: &std::path::Path) -> Self {
+        Self::start_with_arg_and_home(dir, Some(home))
+    }
+
+    /// Start the app with a single CLI argument (a file or directory) and an optional `HOME`
+    /// override. The `HOME` override scopes the browse tree's home root so dir-arg-launch reveal
+    /// walks are short and deterministic (the target sits directly under home).
+    fn start_with_arg_and_home(arg: &std::path::Path, home: Option<&std::path::Path>) -> Self {
         // Find a free port by binding to :0, then closing the listener
         let port = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -36,16 +50,25 @@ impl TestApp {
         // Fresh per-test settings dir — no cross-test leakage.
         let data_dir = tempfile::tempdir().expect("Couldn't create temp data dir");
 
-        let child = Command::new(env!("CARGO_BIN_EXE_prvw"))
-            .arg(image_path)
+        let mut command = Command::new(env!("CARGO_BIN_EXE_prvw"));
+        command
+            .arg(arg)
             .env("PRVW_QA_PORT", port.to_string())
             .env("PRVW_DATA_DIR", data_dir.path())
             // Open the window unfocused and behind everything so a run's swarm of test
             // windows doesn't grab the developer's keystrokes. Tests drive the app via
             // the QA HTTP server, not OS input, so this changes nothing they observe.
-            .env("PRVW_BACKGROUND_WINDOW", "1")
-            .spawn()
-            .expect("Failed to start prvw");
+            .env("PRVW_BACKGROUND_WINDOW", "1");
+        if let Some(home) = home {
+            // Canonicalize HOME so it matches the launch arg's canonical form. On macOS `$TMPDIR`
+            // lives under `/var/folders/...`, a symlink to `/private/var/...`; `main.rs`
+            // canonicalizes the launch path, so an un-canonicalized HOME wouldn't string-prefix-match
+            // it and the tree's reveal walk would pick the `/` root (a deep, slow walk) instead of
+            // the home root. Canonicalizing both makes the home root the longest-prefix match.
+            let canonical_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+            command.env("HOME", canonical_home);
+        }
+        let child = command.spawn().expect("Failed to start prvw");
 
         let base_url = format!("http://127.0.0.1:{port}");
         let client = reqwest::blocking::Client::builder()
@@ -1236,4 +1259,233 @@ fn browse_arrow_keys_drive_tree_without_crashing() {
     // The selected-folder field is present in the state contract (null until a row
     // is selected, a string path once the selection delegate fires).
     assert!(state.get("browse_selected_folder").is_some());
+}
+
+// ─── Browse mode (Phase 7: end-to-end flow driven through the QA server) ─────
+//
+// These drive the full browse picture headlessly via the QA browse hooks (`/browse/select-folder`,
+// `/browse/select-grid`, `/browse/open`) and assert the new `/state` fields (`browse_grid_count`,
+// `browse_reveal_pending`, `browse_selected_folder`, `browse_grid_selected`). They stay hermetic:
+// each builds its own temp `HOME` so the tree's home root contains the test folders, and polls
+// `/state` with a bounded wait (folder listing + tree reveal are async) rather than sleeping a
+// fixed time.
+
+/// Build a temp `HOME` with a subfolder of `n` distinct PNGs and an empty subfolder. Returns
+/// `(home_tempdir, images_folder, empty_folder)`. The folders sit directly under home so a reveal
+/// walk is a short, deterministic chain.
+fn create_browse_home(n: u32) -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+    let home = tempfile::tempdir().unwrap();
+    let images = home.path().join("pics");
+    let empty = home.path().join("empty");
+    std::fs::create_dir(&images).unwrap();
+    std::fs::create_dir(&empty).unwrap();
+    for i in 0..n {
+        let path = images.join(format!("img-{i:02}.png"));
+        let shade = (i as u8).wrapping_mul(23);
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([shade, shade, shade, 255]));
+        img.save(&path).unwrap();
+    }
+    (home, images, empty)
+}
+
+/// Wait until the browse reveal walk settles (`browse_reveal_pending == false`) AND the grid has
+/// listed `expected_count` images. Returns the settled state. The reveal walk and the folder
+/// listing are both async, so this is the non-flaky barrier the browse tests gate on.
+fn wait_for_browse_listed(
+    app: &TestApp,
+    expected_count: u64,
+    timeout: Duration,
+) -> serde_json::Value {
+    wait_for_state(app, timeout, |s| {
+        s["browse_reveal_pending"].as_bool() == Some(false)
+            && s["browse_grid_count"].as_u64() == Some(expected_count)
+    })
+}
+
+#[test]
+fn dir_arg_launch_boots_into_browse_with_folder_revealed() {
+    // A directory argument boots into browse mode with that directory revealed + selected in the
+    // tree and its images listed in the grid.
+    let (home, images, _empty) = create_browse_home(4);
+    let app = TestApp::start_browse_dir(&images, home.path());
+
+    let state = wait_for_browse_listed(&app, 4, Duration::from_secs(8));
+    assert_eq!(
+        state["view_mode"].as_str(),
+        Some("browse"),
+        "a directory argument boots into browse mode"
+    );
+    assert_eq!(
+        state["browse_grid_count"].as_u64(),
+        Some(4),
+        "the revealed folder's four images are listed"
+    );
+    let selected = state["browse_selected_folder"]
+        .as_str()
+        .expect("the revealed folder is selected in the tree");
+    assert!(
+        selected.ends_with("pics"),
+        "the selected folder is the launch directory, got {selected}"
+    );
+    // The grid preselects the first image (dir-arg launch has no came-from image).
+    assert_eq!(state["browse_grid_selected"].as_u64(), Some(0));
+}
+
+#[test]
+fn selecting_a_folder_lists_its_images() {
+    // Selecting a folder in the tree (driven by path) lists its images: the grid count reflects the
+    // folder's supported-image count.
+    let (home, images, empty) = create_browse_home(3);
+    let app = TestApp::start_browse_dir(&empty, home.path());
+
+    // Launched into the empty folder → zero images, tree focused (grid non-focusable).
+    let state = wait_for_browse_listed(&app, 0, Duration::from_secs(8));
+    assert_eq!(state["browse_grid_count"].as_u64(), Some(0));
+    assert_eq!(state["focused_pane"].as_str(), Some("tree"));
+
+    // Select the images folder by path → it lists three images.
+    app.post("/browse/select-folder", images.to_str().unwrap());
+    let state = wait_for_state(&app, Duration::from_secs(5), |s| {
+        s["browse_grid_count"].as_u64() == Some(3)
+    });
+    assert_eq!(
+        state["browse_grid_count"].as_u64(),
+        Some(3),
+        "selecting the images folder lists its three images"
+    );
+    let selected = state["browse_selected_folder"].as_str().unwrap();
+    assert!(selected.ends_with("pics"), "got {selected}");
+}
+
+#[test]
+fn empty_folder_lists_zero_and_grid_stays_non_focusable() {
+    // An empty folder → zero images, "(No images)", grid non-focusable: Tab stays on the tree.
+    let (home, _images, empty) = create_browse_home(2);
+    let app = TestApp::start_browse_dir(&empty, home.path());
+
+    let state = wait_for_browse_listed(&app, 0, Duration::from_secs(8));
+    assert_eq!(state["browse_grid_count"].as_u64(), Some(0));
+    assert_eq!(state["browse_grid_selected"].as_u64(), None);
+    assert_eq!(
+        state["focused_pane"].as_str(),
+        Some("tree"),
+        "an empty folder leaves focus on the tree"
+    );
+
+    // Tab toward the empty grid stays on the tree (the grid can't take focus).
+    app.post("/key", "Tab");
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(
+        app.get_state()["focused_pane"].as_str(),
+        Some("tree"),
+        "Tab on an empty grid stays on the tree"
+    );
+}
+
+#[test]
+fn tab_flips_focus_to_grid_when_it_has_images() {
+    // With a non-empty grid, Tab flips focus tree ⇄ grid, reflected in `focused_pane`.
+    let (home, images, _empty) = create_browse_home(3);
+    let app = TestApp::start_browse_dir(&images, home.path());
+
+    // Dir-arg launch into a non-empty folder focuses the grid once images land.
+    let state = wait_for_browse_listed(&app, 3, Duration::from_secs(8));
+    assert_eq!(
+        state["focused_pane"].as_str(),
+        Some("grid"),
+        "launching into a non-empty folder focuses the grid"
+    );
+
+    // Tab → tree.
+    app.post("/key", "Tab");
+    let state = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["focused_pane"].as_str() == Some("tree")
+    });
+    assert_eq!(state["focused_pane"].as_str(), Some("tree"));
+
+    // Tab → back to grid.
+    app.post("/key", "Tab");
+    let state = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["focused_pane"].as_str() == Some("grid")
+    });
+    assert_eq!(state["focused_pane"].as_str(), Some("grid"));
+}
+
+#[test]
+fn grid_selection_drives_open_round_trip() {
+    // The grid selection drives the image-mode current: selecting a grid index then opening
+    // (Esc == Enter == reveal) lands image mode on that exact image. Round-trip: re-entering browse
+    // preselects the same image.
+    let (home, images, _empty) = create_browse_home(5);
+    let app = TestApp::start_browse_dir(&images, home.path());
+    wait_for_browse_listed(&app, 5, Duration::from_secs(8));
+
+    // Select grid index 3 (the way a native click would).
+    app.post("/browse/select-grid", "3");
+    let state = wait_for_state(&app, Duration::from_secs(2), |s| {
+        s["browse_grid_selected"].as_u64() == Some(3)
+    });
+    assert_eq!(state["browse_grid_selected"].as_u64(), Some(3));
+
+    // Open the selection → image mode, showing that image (1-based index 4 of 5).
+    app.post("/browse/open", "");
+    let state = wait_for_state(&app, Duration::from_secs(5), |s| {
+        s["view_mode"].as_str() == Some("image") && s["index"].as_u64() == Some(4)
+    });
+    assert_eq!(state["view_mode"].as_str(), Some("image"));
+    assert_eq!(
+        state["index"].as_u64(),
+        Some(4),
+        "open lands image mode on the grid-selected image (index 3 → 1-based 4)"
+    );
+    assert_eq!(state["total_files"].as_u64(), Some(5));
+    let file = state["file"].as_str().unwrap();
+    assert!(
+        file.ends_with("img-03.png"),
+        "open shows the selected image, got {file}"
+    );
+
+    // Round-trip: re-enter browse from this image — the grid preselects the same image.
+    app.post("/key", "Enter");
+    let state = wait_for_browse_listed(&app, 5, Duration::from_secs(5));
+    assert_eq!(state["view_mode"].as_str(), Some("browse"));
+    assert_eq!(
+        state["browse_grid_selected"].as_u64(),
+        Some(3),
+        "re-entering browse from an image preselects that image in the grid"
+    );
+}
+
+#[test]
+fn entering_browse_from_an_image_preselects_that_image() {
+    // Entering browse from a multi-image folder (in image mode) reveals that folder and preselects
+    // the displayed image — even when it's not the first image. HOME is scoped to the folder's
+    // parent so the reveal walk is a short, deterministic chain.
+    let (home, images, _empty) = create_browse_home(5);
+    let first = images.join("img-00.png");
+    let app = TestApp::start_with_arg_and_home(&first, Some(home.path()));
+
+    // Navigate to the third image (1-based index 3) in image mode.
+    for _ in 0..2 {
+        app.post("/navigate", "next");
+    }
+    let state = wait_for_state(&app, Duration::from_secs(3), |s| {
+        s["index"].as_u64() == Some(3)
+    });
+    assert_eq!(state["index"].as_u64(), Some(3));
+
+    // Enter browse — the grid reveals the folder and preselects the came-from image (index 2).
+    app.post("/key", "Enter");
+    let state = wait_for_browse_listed(&app, 5, Duration::from_secs(8));
+    assert_eq!(state["view_mode"].as_str(), Some("browse"));
+    assert_eq!(
+        state["browse_grid_selected"].as_u64(),
+        Some(2),
+        "entering browse preselects the displayed image (1-based 3 → grid index 2)"
+    );
+    assert_eq!(
+        state["focused_pane"].as_str(),
+        Some("grid"),
+        "browse-open focuses the grid when the folder has images"
+    );
 }

@@ -172,6 +172,12 @@ pub enum AppCommand {
     /// model + `browser::State` for QA/tests. Browse-mode only.
     #[cfg(target_os = "macos")]
     BrowseGridSelected(usize),
+    /// Select grid item `index` programmatically, the way a native click would (updates the grid
+    /// model's selection so the open path reads the right image, focuses the grid, warms the
+    /// selection). QA/test-only: the QA server can't synthesize a native collection-view click, so
+    /// this is how integration tests drive grid selection. Browse-mode only.
+    #[cfg(target_os = "macos")]
+    BrowseQaSelectGrid(usize),
     /// Open the grid's selected image in image mode (double-click on a grid item, or Enter while
     /// the grid pane is focused). Sets up `navigation` for the selected folder at the chosen index,
     /// displays that image, and switches to image mode so arrow-key nav works afterward.

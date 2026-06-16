@@ -418,6 +418,17 @@ impl App {
                 self.warm_browse_selection();
                 self.update_shared_state();
             }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseQaSelectGrid(index) => {
+                // QA/test-only: drive a grid selection by index the way a native click would
+                // (updates the grid model so the open path reads it). Mirrors `BrowseGridSelected`'s
+                // warm + state-sync side effects.
+                if let Some(win) = self.window.clone() {
+                    self.browser.qa_select_grid_index(index, &win);
+                }
+                self.warm_browse_selection();
+                self.update_shared_state();
+            }
             AppCommand::BrowseOpenSelected => {
                 // Enter in browse (grid focused) / double-click — reveal the selected image. Esc
                 // (`EnterImageMode`) routes to the same place: Esc == Enter == reveal.

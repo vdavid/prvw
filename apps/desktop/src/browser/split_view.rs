@@ -149,6 +149,12 @@ impl BrowseSplitView {
         &self.grid
     }
 
+    /// True while the tree's async reveal walk is in flight (browse-open positioning). Exposed for
+    /// the QA snapshot so tests can poll for the reveal to settle.
+    pub fn reveal_pending(&self) -> bool {
+        self.tree.reveal_pending()
+    }
+
     /// Hide or show the split view. On the first show, set the initial divider position — by
     /// now the split view is in the live hierarchy and has a real frame, so
     /// `setPosition:ofDividerAtIndex:` takes (it's a no-op at build time on a zero-frame view).
