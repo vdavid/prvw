@@ -68,6 +68,9 @@ See `platform/macos/CLAUDE.md` for the full list. Short version:
 - **`Retained<>` outlives the window.** Store every objc2 `Retained<...>` in a `Vec` that outlives the window. No
   compile-time check.
 - **Finder file opens need ObjC method injection** into winit's delegate. See `platform/macos/open_handler.rs`.
+- **Native AppKit views over/around the wgpu Metal layer** (sidebar, labels, any window chrome): they must be siblings
+  of the `CAMetalLayer` at a higher `zPosition` (a transparent Metal pixel still occludes content behind it), and added
+  on both window paths. Read the full gotcha in `platform/macos/CLAUDE.md` before building such UI.
 - **`zune-jpeg` in debug builds.** SIMD unusably slow without optimizations. The **workspace-root** `Cargo.toml` sets
   `[profile.dev.package.zune-jpeg] opt-level = 3` (Cargo ignores `[profile.*]` in member manifests).
 

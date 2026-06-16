@@ -121,6 +121,10 @@ follow the same pattern exactly.
 
 ## Future (not in this change): file-tree sidebar via the tiled model
 
+Before building this, read the cross-cutting gotcha **"Native AppKit views over/around the wgpu Metal layer"** in
+`apps/desktop/src/platform/macos/CLAUDE.md` — it distills the two traps this change hit (transparent-Metal occlusion →
+sibling-layer `zPosition`, and the both-window-paths requirement).
+
 A file tree is `NSOutlineView` in an `NSScrollView` — native disclosure, selection, keyboard nav, scrolling,
 accessibility. It must **not** go through glyphon. Use the **tiled** model, not an overlay: a persistent structural pane
 shouldn't float over the image, and we shouldn't keep allocating full-window GPU pixels behind it.

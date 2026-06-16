@@ -29,7 +29,8 @@ auto-contrast in light and dark mode — glyphon white-on-glass was unreadable i
 subviews composited above the wgpu Metal layer via `zPosition` (a transparent Metal pixel occludes in-window content
 behind it, so they can't sit inside the title-bar vibrancy strip), and they're created on both the Liquid Glass and
 legacy window paths. `App::titlebar_text` is the single source for both paths' strings. The centered "Loading…" overlay
-stays glyphon in both cases.
+stays glyphon in both cases. The general rule behind the `zPosition` / both-paths handling — for any native AppKit view
+over the Metal layer — is in `platform/macos/CLAUDE.md` ("Native AppKit views over/around the wgpu Metal layer").
 
 ## Gotchas
 

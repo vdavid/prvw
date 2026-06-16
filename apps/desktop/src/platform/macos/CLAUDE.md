@@ -53,3 +53,18 @@ aspect-fit; `aspect_fit_rect` is the pure, unit-tested core.
   but BEFORE `run_app()`. Later = too late (Apple Events fire during `finishLaunching`).
 - **FlippedView.** winit's contentView is flipped (Y=0 at top). When you add custom subviews, use
   `FlippedView::new_as_nsview` so layout math matches.
+- **Native AppKit views over/around the wgpu Metal layer** (read before adding any native chrome — labels, a sidebar, a
+  toolbar — to the viewer window):
+  - A transparent Metal pixel still **occludes** in-window content behind it; only the server-composited `BehindWindow`
+    vibrancy blur bleeds through. So a native view _layered over_ the image area must be a **sibling of the
+    `CAMetalLayer` with a higher `zPosition`** — the Metal layer sits at `1.0`
+    (`window::push_metal_layer_above_vibrancy`), so the view goes at `2.0`. Putting it behind the layer, or raising a
+    _parent_ vibrancy view's own `zPosition`, won't surface it: the parent's `zPosition` does not carry its subviews
+    above the sibling Metal layer. For a **tiled** region like a folder-browser sidebar, prefer bounding the Metal layer
+    to the image pane (no overlap to fight) — see the `NSSplitView` render-pane sketch in
+    `docs/specs/native-title-overlay.md`.
+  - Add window chrome in `window::configure_macos_window` **unconditionally**. `add_titlebar_vibrancy` (the legacy
+    strip) is gated behind `!liquid_glass_available()`, so hanging new views off it silently skips them on macOS 26+
+    Liquid Glass.
+  - Worked example: the native title/zoom labels (`window::add_titlebar_labels`) and
+    `docs/specs/native-title-overlay.md`.
