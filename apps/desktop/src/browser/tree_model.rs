@@ -445,8 +445,7 @@ mod tests {
     #[test]
     fn reveal_path_chain_under_home_walks_root_to_target() {
         let roots = roots_home_and_volume();
-        let chain =
-            reveal_path_chain(&roots, Path::new("/Users/dave/Pictures/Trip/2024")).unwrap();
+        let chain = reveal_path_chain(&roots, Path::new("/Users/dave/Pictures/Trip/2024")).unwrap();
         // Root-to-target order, starting at the Home root (NOT the `/` volume — longest prefix).
         assert_eq!(
             chain,

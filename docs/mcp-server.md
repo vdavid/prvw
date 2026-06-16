@@ -70,28 +70,28 @@ both a text confirmation and a `state` field with the current app state as JSON.
 All endpoints also available as simple HTTP for cURL debugging. POST endpoints return the updated app state as JSON
 (`application/json`) after the command completes. GET `/state` also returns JSON.
 
-| Method | Path             | Body                                                      | Response         |
-| ------ | ---------------- | --------------------------------------------------------- | ---------------- |
-| GET    | /state           | -                                                         | State JSON       |
-| GET    | /settings        | -                                                         | Settings JSON    |
-| GET    | /menu            | -                                                         | Menu text        |
-| GET    | /screenshot      | -                                                         | PNG bytes        |
-| GET    | /diagnostics     | -                                                         | Diagnostics text |
-| POST   | /key             | key name                                                  | State JSON       |
-| POST   | /navigate        | "next", "prev", "forward", or "backward"                  | State JSON       |
-| POST   | /zoom            | "fit", "actual", or float                                 | State JSON       |
-| POST   | /zoom-in         | -                                                         | State JSON       |
-| POST   | /zoom-out        | -                                                         | State JSON       |
-| POST   | /scroll-zoom     | JSON: `{"delta": 1.0, "cursor_x": 400, "cursor_y": 300}`  | State JSON       |
-| POST   | /fullscreen      | "on", "off", "toggle"                                     | State JSON       |
-| POST   | /open            | file path                                                 | State JSON       |
-| POST   | /auto-fit        | "on" or "off"                                             | State JSON       |
-| POST   | /enlarge-small   | "on" or "off"                                             | State JSON       |
-| POST   | /window-geometry | JSON: `{"x": 100, "y": 100, "width": 800, "height": 600}` | State JSON       |
-| POST   | /refresh         | -                                                         | State JSON       |
-| POST   | /browse/select-folder | absolute folder path (test-only, macOS)              | State JSON       |
-| POST   | /browse/select-grid | grid index (test-only, macOS)                          | State JSON       |
-| POST   | /browse/open     | - (open the selected grid image; test-only, macOS)        | State JSON       |
+| Method | Path                  | Body                                                      | Response         |
+| ------ | --------------------- | --------------------------------------------------------- | ---------------- |
+| GET    | /state                | -                                                         | State JSON       |
+| GET    | /settings             | -                                                         | Settings JSON    |
+| GET    | /menu                 | -                                                         | Menu text        |
+| GET    | /screenshot           | -                                                         | PNG bytes        |
+| GET    | /diagnostics          | -                                                         | Diagnostics text |
+| POST   | /key                  | key name                                                  | State JSON       |
+| POST   | /navigate             | "next", "prev", "forward", or "backward"                  | State JSON       |
+| POST   | /zoom                 | "fit", "actual", or float                                 | State JSON       |
+| POST   | /zoom-in              | -                                                         | State JSON       |
+| POST   | /zoom-out             | -                                                         | State JSON       |
+| POST   | /scroll-zoom          | JSON: `{"delta": 1.0, "cursor_x": 400, "cursor_y": 300}`  | State JSON       |
+| POST   | /fullscreen           | "on", "off", "toggle"                                     | State JSON       |
+| POST   | /open                 | file path                                                 | State JSON       |
+| POST   | /auto-fit             | "on" or "off"                                             | State JSON       |
+| POST   | /enlarge-small        | "on" or "off"                                             | State JSON       |
+| POST   | /window-geometry      | JSON: `{"x": 100, "y": 100, "width": 800, "height": 600}` | State JSON       |
+| POST   | /refresh              | -                                                         | State JSON       |
+| POST   | /browse/select-folder | absolute folder path (test-only, macOS)                   | State JSON       |
+| POST   | /browse/select-grid   | grid index (test-only, macOS)                             | State JSON       |
+| POST   | /browse/open          | - (open the selected grid image; test-only, macOS)        | State JSON       |
 
 The three `/browse/*` endpoints are test-only driving hooks: the QA path can't synthesize native outline/collection-view
 clicks, so integration tests drive tree selection, grid selection, and open through them. macOS-only (browse mode is);

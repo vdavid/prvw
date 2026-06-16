@@ -78,5 +78,5 @@ aspect-fit; `aspect_fit_rect` is the pure, unit-tested core.
   click→command focus flip is async, so reading `window.firstResponder` during it is racy (it left the grid drawn blue
   after a tree click). The browse grid draws each item's selection blue-iff-focused from a state-driven flag
   (`browser::State::focused_pane`, mirrored onto the grid via `set_focused`), repainted on every focus change. (A source
-  list — the tree — is the exception: AppKit repaints its own accent-blue selection when it's first responder, so syncing
-  the responder to state is enough there.)
+  list — the tree — is the exception: AppKit repaints its own accent-blue selection when it's first responder, so
+  syncing the responder to state is enough there.)

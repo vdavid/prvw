@@ -9,12 +9,13 @@ Status: shipped (functionally complete). The left pane is a live `NSOutlineView`
 right pane is a live `NSCollectionView` thumbnail gallery (`browser::grid`): selecting a folder lists its supported
 images **on a background worker** (`browser::grid_listing`, never the main thread), the grid populates and shows
 QuickLook thumbnails generated via a second `previews::quicklook` request path (RGBA8 → `NSImage` through
-`quicklook::nsimage_from_rgba8`), driven by the visible-range scheduler + 128 MB byte-budget cache. Native click selects;
-double-click or Enter (grid focused) opens that image in image mode (sets up `navigation`, switches mode); an empty
-folder shows "(No images)" and is non-focusable so Tab stays on the tree. Browse-open positioning, the async reveal-path
-walk, dir-arg startup, and arrow-key pane isolation are all in place; the QA `/state` snapshot and integration tests
-assert the full flow. Remaining: the dedicated styling pass (the "beautiful gallery" look), reviewed visually with David.
-See `apps/desktop/src/browser/CLAUDE.md` for the tree, grid, thumbnail, and browse-open positioning details.
+`quicklook::nsimage_from_rgba8`), driven by the visible-range scheduler + 128 MB byte-budget cache. Native click
+selects; double-click or Enter (grid focused) opens that image in image mode (sets up `navigation`, switches mode); an
+empty folder shows "(No images)" and is non-focusable so Tab stays on the tree. Browse-open positioning, the async
+reveal-path walk, dir-arg startup, and arrow-key pane isolation are all in place; the QA `/state` snapshot and
+integration tests assert the full flow. Remaining: the dedicated styling pass (the "beautiful gallery" look), reviewed
+visually with David. See `apps/desktop/src/browser/CLAUDE.md` for the tree, grid, thumbnail, and browse-open positioning
+details.
 
 ## Why native AppKit, not wgpu
 
@@ -104,9 +105,8 @@ under the live surface. We hide one and show the other.
 
 A per-feature `browser::State` (sibling of `zoom::State`, `navigation::State`, etc.) holding the current
 `ViewMode { Image, Browse }`, `focused_pane`, the tree's selected folder, the grid's selected index, and the native view
-handles (behind macOS `cfg`). `App` delegates to it. The grid's selection and
-`navigation::DirectoryList::current_index` are kept coherent so switching modes lands on the right image and the
-existing preloader warms neighbors.
+handles (behind macOS `cfg`). `App` delegates to it. The grid's selection and `navigation::DirectoryList::current_index`
+are kept coherent so switching modes lands on the right image and the existing preloader warms neighbors.
 
 **QA observability.** `SharedAppState` (read by the QA server at `GET /state`) mirrors the browse picture so tests and
 tools can assert it without keystrokes or screenshots: `view_mode`, `focused_pane` (`"tree"`/`"grid"`/`"none"`),
@@ -230,14 +230,13 @@ visually with David.
 
 ## Test plan
 
-- **Headless unit tests:** the scheduler's nearest-first ordering + scroll re-prioritization, the 128 MB cache
-  eviction, and the pure browse logic (reveal chain, launch classification, grid-preselect/reveal index, focus
-  transitions).
+- **Headless unit tests:** the scheduler's nearest-first ordering + scroll re-prioritization, the 128 MB cache eviction,
+  and the pure browse logic (reveal chain, launch classification, grid-preselect/reveal index, focus transitions).
 - **Integration tests** (`tests/integration.rs`, driven through the QA server, macOS-only): mode switch (Enter/Esc),
-  dir-arg launch booting into browse with the folder revealed + listed, selecting a folder by path lists its images,
-  the empty-folder zero-count + non-focusable grid, Tab focus flips reflected in `focused_pane`, the grid-selection →
-  open round-trip, and entering browse from an image preselecting it. They poll `/state`
-  (`browse_reveal_pending == false` + `browse_grid_count`) for a non-flaky barrier, each with its own temp `HOME` so
-  the tree's home root scopes a short reveal walk.
+  dir-arg launch booting into browse with the folder revealed + listed, selecting a folder by path lists its images, the
+  empty-folder zero-count + non-focusable grid, Tab focus flips reflected in `focused_pane`, the grid-selection → open
+  round-trip, and entering browse from an image preselecting it. They poll `/state` (`browse_reveal_pending == false` +
+  `browse_grid_count`) for a non-flaky barrier, each with its own temp `HOME` so the tree's home root scopes a short
+  reveal walk.
 - **Manual:** focus/Tab/keyboard, dir-arg launch, empty folder, very large folder scrolling, and the styling review.
 - `./scripts/check.sh` (all checks) green before every commit.

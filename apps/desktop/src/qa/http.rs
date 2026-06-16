@@ -434,7 +434,13 @@ pub(super) fn handle_post_browse_select_folder(
 ) -> Result<(), String> {
     let path_str = body.trim();
     if path_str.is_empty() {
-        return write_response(stream, 400, "text/plain", b"Missing folder path in body", &[]);
+        return write_response(
+            stream,
+            400,
+            "text/plain",
+            b"Missing folder path in body",
+            &[],
+        );
     }
     #[cfg(target_os = "macos")]
     {

@@ -49,11 +49,10 @@ An in-process HTTP server for automated QA: used by E2E tests, agent-driven work
 
 ## Browse-mode observability + driving hooks
 
-`GET /state` mirrors the full browse picture (so tests/tools assert it without keystrokes or screenshots):
-`view_mode` (`"image"`/`"browse"`), `focused_pane` (`"tree"`/`"grid"`/`"none"`), `browse_selected_folder`,
-`browse_grid_selected`, `browse_grid_count` (the listed folder's supported-image count), and `browse_reveal_pending`
-(the tree's async reveal walk is in flight — the barrier integration tests poll on before asserting the landed
-folder/grid).
+`GET /state` mirrors the full browse picture (so tests/tools assert it without keystrokes or screenshots): `view_mode`
+(`"image"`/`"browse"`), `focused_pane` (`"tree"`/`"grid"`/`"none"`), `browse_selected_folder`, `browse_grid_selected`,
+`browse_grid_count` (the listed folder's supported-image count), and `browse_reveal_pending` (the tree's async reveal
+walk is in flight — the barrier integration tests poll on before asserting the landed folder/grid).
 
 Three **test-only driving hooks** let integration tests drive browse headlessly, since the QA path can't synthesize a
 native outline/collection-view click (and `SendKey` in browse maps only Tab/Enter/Esc — arrows are native):
