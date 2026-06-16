@@ -307,6 +307,24 @@ impl State {
         self.scheduler.mark_failed(index);
     }
 
+    /// Drop the cached preview for `path` (if this folder holds it) so a later request regenerates
+    /// it from the now-modified file. Used by live folder sync on a `Modify` event: quicklookd
+    /// keys its own on-disk cache on file content/mtime, so a fresh request after the edit yields
+    /// fresh pixels — but our in-memory cache and the scheduler's `cached` set would otherwise pin
+    /// the stale preview, so we evict both. Re-enqueues `path` for regeneration when it's inside
+    /// the active generation window. No-op if `path` isn't in this folder.
+    pub fn forget_path(&mut self, path: &Path) {
+        let Some(index) = self.paths.iter().position(|p| p == path) else {
+            return;
+        };
+        self.cache.remove(&index);
+        // Let the scheduler re-queue it (it skips already-`cached` indices otherwise).
+        self.scheduler.uncache(index);
+        self.dim_prefetcher.invalidate(&[index]);
+        // Re-warm the dim cache for the modified file (dimensions may have changed on a re-save).
+        self.dim_prefetcher.enqueue(index, path.to_path_buf());
+    }
+
     /// Return the path for an index, if valid.
     pub fn path(&self, index: usize) -> Option<&Path> {
         self.paths.get(index).map(|p| p.as_path())

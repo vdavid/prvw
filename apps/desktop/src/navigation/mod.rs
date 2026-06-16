@@ -1,6 +1,7 @@
 //! Image navigation: directory scanning + background preloading + LRU cache.
 
 pub mod directory;
+pub mod folder_diff;
 pub mod preloader;
 pub mod sort;
 pub mod wrap;

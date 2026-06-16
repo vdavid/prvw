@@ -151,6 +151,24 @@ pub(crate) struct App {
     pub(crate) shared_state: Arc<Mutex<SharedAppState>>,
     pub(crate) event_loop_proxy: EventLoopProxy<AppCommand>,
     _qa_handle: Option<std::thread::JoinHandle<()>>,
+    /// Live folder-sync watcher (FSEvents-backed). Watches the active folder — the current image's
+    /// folder in image mode — so adds/modifies/deletes reflect without a manual refresh. `None`
+    /// when the platform watcher couldn't start (live sync just stays off). See
+    /// `crate::folder_watch` and `App::retarget_active_folder_watch`.
+    pub(crate) folder_watcher: Option<crate::folder_watch::FolderWatcher>,
+    /// The folder currently being watched by `folder_watcher`, so a re-target can unwatch the old
+    /// one before watching the new one. `None` before the first watch or in the empty state.
+    pub(crate) watched_folder: Option<PathBuf>,
+    /// True when image mode is showing the "(No images)" empty state (the active folder has no
+    /// images — e.g. the last one was deleted). Drives a clean black canvas + centered overlay.
+    /// Cleared when an image is displayed (leaving the folder, or one appears).
+    pub(crate) no_images_empty_state: bool,
+    /// Background worker that re-scans the active folder off the main thread on a `FolderChanged`,
+    /// posting `ActiveFolderRescanned` back. `None` until the viewer initializes.
+    pub(crate) rescan_lister: Option<crate::folder_watch::RescanLister>,
+    /// Paths flagged `Modify` by the latest `FolderChanged`, carried across the async re-scan so
+    /// `apply_folder_rescan` can re-decode a modified currently-displayed image. Cleared on apply.
+    pub(crate) pending_modified: Vec<PathBuf>,
 
     // ── Preview placeholder tracking ─────────────────────────────
     /// True while the image texture holds a preview placeholder
@@ -223,6 +241,11 @@ impl App {
             shared_state,
             event_loop_proxy,
             _qa_handle: None,
+            folder_watcher: None,
+            watched_folder: None,
+            no_images_empty_state: false,
+            rescan_lister: None,
+            pending_modified: Vec::new(),
             #[cfg(target_os = "macos")]
             placeholder_active: false,
             #[cfg(target_os = "macos")]
@@ -631,6 +654,17 @@ impl App {
             );
         }
 
+        // Start the live folder-sync watcher + the off-thread rescan worker, and point the watch at
+        // the active folder (the current image's folder). A directory launch has no current image
+        // yet — the watch starts when the user opens one from the grid
+        // (`reveal_selected_image` re-targets).
+        self.folder_watcher =
+            crate::folder_watch::FolderWatcher::start(self.event_loop_proxy.clone());
+        self.rescan_lister = Some(crate::folder_watch::RescanLister::start(
+            self.event_loop_proxy.clone(),
+        ));
+        self.retarget_active_folder_watch();
+
         #[cfg(target_os = "macos")]
         if settings::Settings::load().auto_update {
             updater::check_and_update();
@@ -808,6 +842,267 @@ impl App {
         // The window/surface exist, but nothing has painted yet. Request a
         // redraw so the "Loading…" overlay shows immediately, before the first
         // `Preview`/`Ready` arrives.
+        self.request_redraw();
+    }
+
+    /// Point the live folder-sync watcher at the current image's folder, unwatching the previously
+    /// watched one. Call after the active folder changes — open a file/dir, reveal from browse,
+    /// re-scan that empties the folder. No current image (empty state) leaves nothing watched.
+    /// No-op when the watcher couldn't start. The watch set is shareable with browse mode later;
+    /// for now only image mode drives it.
+    pub(crate) fn retarget_active_folder_watch(&mut self) {
+        let new_folder = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.current())
+            .and_then(|p| p.parent())
+            .map(Path::to_path_buf);
+
+        if new_folder == self.watched_folder {
+            return;
+        }
+
+        if let Some(watcher) = &self.folder_watcher {
+            if let Some(old) = self.watched_folder.take() {
+                watcher.unwatch(old);
+            }
+            if let Some(new) = &new_folder {
+                watcher.watch(new.clone());
+            }
+        }
+        self.watched_folder = new_folder;
+    }
+
+    /// Handle a coalesced filesystem change for `folder`. When `folder` is the active (watched)
+    /// folder, re-scan it OFF the main thread (a slow SMB folder must never block here — reuse the
+    /// background `grid_listing::FolderLister` worker) and finish in `apply_folder_rescan` once the
+    /// listing posts back as `BrowseFolderListed`. `modified` paths are evicted from the image and
+    /// preview caches right away (cheap, no I/O) so nothing stale is served; a modified
+    /// currently-displayed image is re-decoded after the re-scan lands. Changes to other folders
+    /// are ignored (only the active folder is wired in this pass).
+    pub(crate) fn handle_folder_changed(&mut self, folder: &Path, modified: &[PathBuf]) {
+        if self.watched_folder.as_deref() != Some(folder) {
+            return;
+        }
+        log::debug!(
+            "Active folder changed: {} ({} modified) — re-scanning off-thread",
+            folder.display(),
+            modified.len()
+        );
+
+        // Evict modified paths from the image cache so a re-decode picks up fresh bytes. (The
+        // preview cache eviction is macOS-only; see below.) Cheap, no I/O — safe inline.
+        for path in modified {
+            self.navigation.image_cache.remove(path);
+        }
+        #[cfg(target_os = "macos")]
+        for path in modified {
+            self.previews.forget_path(path);
+        }
+
+        // Stash the modified set so `apply_folder_rescan` knows which paths to re-decode/repaint
+        // once the off-thread listing returns.
+        self.pending_modified = modified.to_vec();
+
+        // Re-scan off the main thread; the result arrives as `AppCommand::ActiveFolderRescanned`,
+        // where `apply_folder_rescan` diffs it against the live list. The rescan lister is a
+        // dedicated background worker (`std::thread` + `mpsc`, never reads the directory on the main
+        // thread — a slow SMB folder would freeze the UI otherwise).
+        if let Some(lister) = &self.rescan_lister {
+            lister.list(folder.to_path_buf());
+        }
+    }
+
+    /// Apply a completed off-thread re-scan to the live `DirectoryList`. Diffs the fresh list
+    /// against the current one (pure `folder_diff`), then:
+    /// - inserts adds / drops removes at the right sorted positions,
+    /// - keeps the current image pointed-to by path (existing re-sort-by-path behavior),
+    /// - on a deleted current, navigates to the next image (or previous if last), or enters the
+    ///   "(No images)" empty state if the folder is now imageless,
+    /// - re-decodes + repaints a modified currently-displayed image (from `pending_modified`).
+    ///
+    /// Called from the `BrowseFolderListed` arm when a re-scan (not a browse folder selection) is
+    /// outstanding, and directly off macOS. Never blocks: the only decode here is the
+    /// currently-displayed image via the normal display path (cache hit after eviction → async
+    /// re-decode), matching the spec's "re-decode + repaint seamlessly".
+    pub(crate) fn apply_folder_rescan(&mut self, folder: &Path, images: Vec<PathBuf>) {
+        // Ignore a stale re-scan for a folder we've since navigated away from.
+        if self.watched_folder.as_deref() != Some(folder) {
+            self.pending_modified.clear();
+            return;
+        }
+
+        let sort_by = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.sort_by())
+            .unwrap_or_default();
+        let old: Vec<PathBuf> = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.files_ref().to_vec())
+            .unwrap_or_default();
+        let current = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| d.current().to_path_buf());
+
+        let modified = std::mem::take(&mut self.pending_modified);
+        let current_path_modified = current
+            .as_ref()
+            .is_some_and(|c| modified.iter().any(|m| m == c));
+
+        let diff =
+            crate::navigation::folder_diff::diff_folder(&old, images, sort_by, current.as_deref());
+
+        use crate::navigation::folder_diff::CurrentOutcome;
+        match diff.current {
+            CurrentOutcome::Empty => {
+                log::info!("Active folder emptied — entering image-mode (No images) state");
+                self.enter_no_images_state();
+                self.update_shared_state();
+            }
+            CurrentOutcome::Unchanged { index } => {
+                let list_changed = !diff.list_unchanged();
+                self.navigation.dir_list =
+                    Some(crate::navigation::directory::DirectoryList::from_sorted(
+                        diff.sorted,
+                        sort_by,
+                        index,
+                    ));
+                self.no_images_empty_state = false;
+                // The index map shifted (adds/removes around the current image), so re-seed the
+                // preview folder + refresh the preload window against the new list.
+                self.reseed_after_rescan(index);
+                if current_path_modified {
+                    // The displayed image's bytes changed — re-decode + repaint via the normal
+                    // path. The cache entry was evicted above, so this re-reads from disk.
+                    self.refresh_current_after_modify(index);
+                } else if list_changed {
+                    self.request_redraw();
+                }
+                self.update_shared_state();
+            }
+            CurrentOutcome::Navigate { index } => {
+                // Current image was deleted → land on the chosen successor/previous via the normal
+                // display path (instant from cache, else async decode with a placeholder).
+                self.navigation.dir_list =
+                    Some(crate::navigation::directory::DirectoryList::from_sorted(
+                        diff.sorted,
+                        sort_by,
+                        index,
+                    ));
+                self.no_images_empty_state = false;
+                self.navigation.pending_current = None;
+                self.navigation.last_direction = crate::navigation::directory::Direction::Unknown;
+                self.reseed_after_rescan(index);
+                self.display_after_delete(index);
+                self.update_shared_state();
+            }
+        }
+    }
+
+    /// Re-seed the preview scheduler with the post-rescan folder + refresh the preloader's active
+    /// window. Shared by the add/remove and delete-current paths.
+    fn reseed_after_rescan(&mut self, current_index: usize) {
+        #[cfg(target_os = "macos")]
+        if let Some(dir) = &self.navigation.dir_list {
+            let paths = dir.files();
+            self.previews.set_folder(paths, current_index);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = current_index;
+        self.refresh_preload_window();
+    }
+
+    /// Re-decode + repaint the currently-displayed image after its file changed on disk. The cache
+    /// entry was already evicted, so this goes through the normal display path: a cache miss shows
+    /// the (now-stale-evicted) preview placeholder briefly, the async decode swaps in the fresh
+    /// pixels. Mirrors `display_open_target` for the current index.
+    fn refresh_current_after_modify(&mut self, index: usize) {
+        let Some((path, total)) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| (d.current().to_path_buf(), d.len()))
+        else {
+            return;
+        };
+        log::info!(
+            "Current image modified on disk — re-decoding {}",
+            path.display()
+        );
+        self.navigation.pending_current = Some(index);
+        self.request_times.insert(index, Instant::now());
+        if let Some(win) = &self.window {
+            window::set_title_keeping_buttons(win, &window::window_title_loading(index, total));
+        }
+        if let Some(preloader) = &mut self.navigation.preloader {
+            preloader.prioritize_target(index, path, total);
+        }
+        self.request_redraw();
+    }
+
+    /// Display the image at `index` after the current one was deleted. Instant from cache, else the
+    /// async placeholder path — never blocks the main thread. Mirrors the cache-hit/miss branches
+    /// of `display_open_target` without the browse-specific bits.
+    fn display_after_delete(&mut self, index: usize) {
+        let Some((path, total)) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| (d.current().to_path_buf(), d.len()))
+        else {
+            return;
+        };
+        self.request_times.insert(index, Instant::now());
+        if self.navigation.image_cache.contains(&path) {
+            self.navigation.pending_current = None;
+            if let Some(win) = &self.window {
+                window::set_title_keeping_buttons(
+                    win,
+                    &window::window_title_with_position(&path, index, total),
+                );
+            }
+            self.display_from_cache(index);
+        } else {
+            self.navigation.pending_current = Some(index);
+            if let Some(win) = &self.window {
+                window::set_title_keeping_buttons(win, &window::window_title_loading(index, total));
+            }
+            #[cfg(target_os = "macos")]
+            if !self.display_preview_placeholder(index) {
+                self.apply_preview_auto_fit(index);
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.clear_image();
+                }
+            }
+            self.request_redraw();
+            if let Some(preloader) = &mut self.navigation.preloader {
+                preloader.prioritize_target(index, path, total);
+            }
+        }
+    }
+
+    /// Enter the image-mode "(No images)" empty state: clear the bound image (so the canvas fills
+    /// with opaque black), drop the directory list (nothing to navigate), and flag the empty state
+    /// so `render_frame` draws the centered "(No images)" overlay. The watch stays on the folder so
+    /// a newly-added image reappears.
+    fn enter_no_images_state(&mut self) {
+        self.navigation.dir_list = None;
+        self.navigation.pending_current = None;
+        self.navigation.current_image_size = None;
+        self.no_images_empty_state = true;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.clear_image();
+        }
+        if let Some(win) = &self.window {
+            window::set_title_keeping_buttons(win, "Prvw");
+        }
         self.request_redraw();
     }
 
@@ -1324,12 +1619,15 @@ impl App {
             // blocks the main thread on a full decode. With no image at all (nothing ever opened),
             // the renderer's black image-area fill keeps the canvas clean — never stale.
             if self.navigation.dir_list.is_some() {
+                self.no_images_empty_state = false;
                 self.display_open_target();
                 // Warm neighbors so arrow-key nav is instant (cache-miss queues them after `Ready`;
                 // this covers the cache-hit case where no `Ready` fires).
                 if self.navigation.pending_current.is_none() {
                     self.warm_initial_neighbors();
                 }
+                // Live folder sync: watch the revealed image's folder (re-target off the old one).
+                self.retarget_active_folder_watch();
             }
 
             // Re-assert the title/zoom labels against the title-bar / fullscreen state (browse hid
@@ -1983,6 +2281,31 @@ impl App {
     fn render_frame(&mut self) -> bool {
         let mut text_blocks = self.build_text_overlay();
         let offset = self.content_offset_y();
+
+        // Image-mode "(No images)" empty state: a centered overlay on the clean black canvas
+        // (`enter_no_images_state` cleared the bound image, so the renderer fills the image area
+        // with opaque black). Built here, not in `build_text_overlay`, because that early-returns
+        // when there's no current image — exactly the empty-state case. Same glyphon pill styling
+        // as the "Loading…" overlay.
+        if self.no_images_empty_state
+            && let Some(rend) = &self.renderer
+        {
+            let logical_width = rend.logical_width();
+            let logical_height = rend.logical_height();
+            let line_height = 18.0_f32;
+            let center_x = Logical(logical_width.0 / 2.0);
+            let center_y = Logical((logical_height.0 - line_height) / 2.0);
+            let mut empty = text::TextBlock::new("(No images)", center_x, center_y);
+            empty.font_size = 14.0;
+            empty.line_height = line_height;
+            empty = empty.bold().align_center().pill(
+                [0.0, 0.0, 0.0, 0.55],
+                Logical(11.0),
+                Logical(5.0),
+                Logical(7.0),
+            );
+            text_blocks.push(empty);
+        }
 
         // When the title bar is on (and not fullscreen), the native title/zoom labels
         // in the glass strip own the readout. They auto-contrast in light/dark, so they

@@ -83,6 +83,10 @@ pub struct SharedAppState {
     /// for this to drop to `false` before asserting the landed folder/grid — the non-flaky barrier
     /// for the reveal settling.
     pub browse_reveal_pending: bool,
+    /// Whether image mode is in the "(No images)" empty state (the active folder has no images,
+    /// e.g. the last one was deleted via live folder sync). Lets QA/tests assert the empty state
+    /// without a screenshot.
+    pub no_images: bool,
 }
 
 /// Snapshot of the preview scheduler, mirrored into shared state so the
@@ -156,6 +160,7 @@ impl Default for SharedAppState {
             browse_grid_selected: None,
             browse_grid_count: 0,
             browse_reveal_pending: false,
+            no_images: false,
         }
     }
 }
@@ -236,7 +241,14 @@ impl App {
             state.current_file = Some(dir.current().to_path_buf());
             state.current_index = dir.current_index();
             state.total_files = dir.len();
+        } else if self.no_images_empty_state {
+            // Image-mode "(No images)" empty state — the active folder has no images. Clear the
+            // stale current image so `/state` reflects it for QA/tests.
+            state.current_file = None;
+            state.current_index = 0;
+            state.total_files = 0;
         }
+        state.no_images = self.no_images_empty_state;
 
         if let Some((iw, ih)) = self.navigation.current_image_size {
             state.image_width = iw;

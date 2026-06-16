@@ -76,6 +76,20 @@ impl DirectoryList {
         }
     }
 
+    /// Rebuild from an already-sorted file list, positioned at `current_index`. Used by live
+    /// folder sync: the `folder_diff` re-scan produces the new sorted list and the index to land
+    /// on (current-by-path, or the next/previous after a delete-current), so this just installs
+    /// them. `current_index` is clamped to a valid slot; callers never pass an out-of-range index
+    /// for a non-empty list, but the clamp keeps a bug from panicking on `current()`.
+    pub fn from_sorted(files: Vec<PathBuf>, sort_by: SortBy, current_index: usize) -> Self {
+        let current_index = current_index.min(files.len().saturating_sub(1));
+        Self {
+            files,
+            current_index,
+            sort_by,
+        }
+    }
+
     /// Re-sort by a new column. Preserves the current image by tracking its
     /// path across the re-sort. Idempotent.
     pub fn set_sort_by(&mut self, sort_by: SortBy) {

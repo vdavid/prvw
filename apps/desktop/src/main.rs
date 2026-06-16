@@ -6,6 +6,7 @@
 // Infrastructure
 mod app;
 mod commands;
+mod folder_watch;
 mod input;
 mod menu;
 mod pixels;

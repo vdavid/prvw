@@ -308,7 +308,9 @@ impl ImageCache {
         self.access_order.push(path.to_path_buf());
     }
 
-    fn remove(&mut self, path: &Path) {
+    /// Evict a single path from the cache. Used by live folder sync on a `Modify`/delete so a
+    /// re-decode reads fresh bytes and a deleted image stops squatting in RAM.
+    pub fn remove(&mut self, path: &Path) {
         if let Some(entry) = self.entries.remove(path) {
             self.memory_used = self.memory_used.saturating_sub(entry.memory_cost);
             self.access_order.retain(|p| p != path);

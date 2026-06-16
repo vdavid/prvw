@@ -496,6 +496,12 @@ impl App {
                 s.save();
                 self.apply_custom_dcp_dir_change(dir.as_deref());
             }
+            AppCommand::FolderChanged { folder, modified } => {
+                self.handle_folder_changed(&folder, &modified);
+            }
+            AppCommand::ActiveFolderRescanned { folder, images } => {
+                self.apply_folder_rescan(&folder, images);
+            }
             #[cfg(target_os = "macos")]
             AppCommand::DisplayChanged => {
                 self.handle_display_changed();
@@ -583,7 +589,10 @@ impl App {
                     .map(|d| d.sort_by())
                     .unwrap_or_default();
                 self.navigation.dir_list = directory::DirectoryList::from_file(&resolved, sort_by);
+                self.no_images_empty_state = false;
                 self.display_image(&resolved);
+                // Live folder sync: watch the newly opened file's folder.
+                self.retarget_active_folder_watch();
 
                 if let Some(dir) = &self.navigation.dir_list
                     && let Some(win) = &self.window

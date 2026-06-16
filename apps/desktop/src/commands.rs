@@ -208,6 +208,25 @@ pub enum AppCommand {
     /// falls back to Adobe Camera Raw + the bundled collection.
     SetCustomDcpDir(Option<String>),
 
+    // ── File watching (live folder sync) ─────────────────────────────
+    /// A watched folder changed on disk. Posted by the `folder_watch` worker after it
+    /// coalesces a ~150 ms burst of raw `notify` events into one event per affected folder.
+    /// The consumer re-scans `folder` off the main thread (adds/removes are discovered by the
+    /// re-scan, so they aren't listed here) and reloads `modified` (paths flagged `Modify`) so a
+    /// re-saved image re-decodes. See `crate::folder_watch`.
+    FolderChanged {
+        folder: PathBuf,
+        modified: Vec<PathBuf>,
+    },
+    /// A background re-scan of the active folder finished (triggered by `FolderChanged`). The
+    /// executor diffs `images` against the live `DirectoryList` and applies adds/removes, the
+    /// delete-current navigation, and the "(No images)" empty state. `images` is unsorted (the
+    /// diff sorts by the active `SortBy`). Posted by the `folder_watch::RescanLister` worker.
+    ActiveFolderRescanned {
+        folder: PathBuf,
+        images: Vec<PathBuf>,
+    },
+
     // ── Color management ─────────────────────────────────────────────
     /// The window moved to a different display — re-query the display ICC profile.
     #[cfg(target_os = "macos")]
