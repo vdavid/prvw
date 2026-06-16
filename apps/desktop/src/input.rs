@@ -69,6 +69,25 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
     }
 }
 
+/// Map a keyboard key press to an `AppCommand` **while browse mode is active**.
+///
+/// Browse mode does not use the AppKit responder chain: winit keeps delivering
+/// `WindowEvent::KeyboardInput` even with the native split view up, so the keyboard is routed
+/// here instead of `key_to_command`. Returns `None` for keys with no browse action (they're
+/// swallowed, not forwarded to image-mode handlers).
+pub fn browse_key_to_command(key: Key<&str>, _modifiers: &ModifiersState) -> Option<AppCommand> {
+    match key {
+        // Esc or Enter leaves browse mode (Enter later opens the selected image instead).
+        Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+            Some(AppCommand::EnterImageMode)
+        }
+        // Tab flips focus between the tree and grid panes.
+        Key::Named(NamedKey::Tab) => Some(AppCommand::ToggleBrowseFocus),
+        // TODO Phase 3/4: arrows drive native selection in the focused pane. No-op for now.
+        _ => None,
+    }
+}
+
 /// Map a menu event to an `AppCommand`, using the menu's ID table.
 pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
     let id = event.id();
@@ -152,6 +171,21 @@ pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
         "r" => Some(AppCommand::Refresh),
         _ => {
             log::debug!("QA server: unhandled key '{key_name}'");
+            None
+        }
+    }
+}
+
+/// Map a QA server key name to an `AppCommand` **while browse mode is active** — the QA-path
+/// twin of `browse_key_to_command`. The `SendKey` handler picks this when `browser.is_browse()`
+/// so tests drive the same browse routing as real keystrokes.
+pub fn browse_qa_key_to_command(key_name: &str) -> Option<AppCommand> {
+    match key_name {
+        "Escape" | "Enter" => Some(AppCommand::EnterImageMode),
+        "Tab" => Some(AppCommand::ToggleBrowseFocus),
+        // TODO Phase 3/4: arrows drive native selection in the focused pane. No-op for now.
+        _ => {
+            log::debug!("QA server (browse mode): unhandled key '{key_name}'");
             None
         }
     }

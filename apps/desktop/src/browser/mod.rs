@@ -18,9 +18,11 @@
 //!   layer's `1.0`, pinned to the contentView edges, with a stable `identifier` for hide/show.
 //! - Entering browse: unhide the split view, hide the Metal layer
 //!   (`window::set_metal_layer_hidden`), stop requesting redraws. Entering image: reverse.
-//! - Focus: on entering browse, `makeFirstResponder:` the left pane. Tab toggles focus between
-//!   the panes via the native key-view loop. Esc / Enter in browse return to image mode through
-//!   a `define_class!` container that overrides `keyDown:` and sends `AppCommand`s.
+//! - Keyboard: winit keeps delivering `WindowEvent::KeyboardInput` even while the native split
+//!   view is up, so browse-mode keys flow through winit → `input::browse_key_to_command` →
+//!   `AppCommand`, branched by mode (Tab → `ToggleBrowseFocus`, Esc/Enter → `EnterImageMode`).
+//!   Focus is the app-tracked `focused_pane`, not the native key-view loop; the split view just
+//!   highlights whichever pane the value names. See `docs/specs/image-browser.md`.
 
 #[cfg(target_os = "macos")]
 mod split_view;
@@ -51,11 +53,37 @@ impl ViewMode {
     }
 }
 
+/// Which of the two browse panes has keyboard focus. Tab flips it. Tracked here
+/// (app-managed), not via the AppKit key-view loop — winit keeps the keyboard even
+/// while the native split view is up, so focus has to be a value we own and drive the
+/// native views from. See `docs/specs/image-browser.md` → "Input architecture".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneSide {
+    /// The folder tree (left pane).
+    Tree,
+    /// The thumbnail grid (right pane).
+    Grid,
+}
+
+impl PaneSide {
+    /// The other pane. Tab toggles between the two.
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            PaneSide::Tree => PaneSide::Grid,
+            PaneSide::Grid => PaneSide::Tree,
+        }
+    }
+}
+
 /// Per-feature browse-mode state (sibling of `zoom::State`, `navigation::State`, …). Holds the
 /// current `ViewMode` and, on macOS, the native split-view handles built lazily on first entry.
 pub struct State {
     /// Current top-level screen. Starts in `Image`.
     mode: ViewMode,
+    /// Which pane has keyboard focus in browse mode. Tab flips it (app-managed, not the
+    /// native key-view loop). Entering browse starts on the tree.
+    focused_pane: PaneSide,
     /// The native split view + its panes, built once on first entry to browse mode and kept
     /// alive for the window's lifetime thereafter. `None` until first built.
     #[cfg(target_os = "macos")]
@@ -73,6 +101,7 @@ impl State {
     pub fn new() -> Self {
         Self {
             mode: ViewMode::Image,
+            focused_pane: PaneSide::Tree,
             #[cfg(target_os = "macos")]
             split_view: None,
         }
@@ -90,6 +119,24 @@ impl State {
         self.mode.is_browse()
     }
 
+    /// Which pane currently has keyboard focus in browse mode.
+    #[must_use]
+    pub fn focused_pane(&self) -> PaneSide {
+        self.focused_pane
+    }
+
+    /// Flip the focused pane (Tree ⇄ Grid) and apply the new highlight to the native
+    /// views. Returns the new focused pane. No-op off macOS for the native side.
+    pub fn toggle_focus(&mut self, #[allow(unused)] window: &winit::window::Window) -> PaneSide {
+        self.focused_pane = self.focused_pane.toggled();
+        #[cfg(target_os = "macos")]
+        if let Some(split) = &self.split_view {
+            split.set_focused_pane(self.focused_pane);
+        }
+        log::debug!("Browse focus → {:?}", self.focused_pane);
+        self.focused_pane
+    }
+
     /// Flip the mode and return the new value. Pure — callers do the AppKit side effects
     /// (show/hide the split view and Metal layer) based on the result.
     pub fn toggle_mode(&mut self) -> ViewMode {
@@ -101,12 +148,13 @@ impl State {
     /// hide the wgpu Metal layer, and focus the tree pane. No-op off macOS.
     #[cfg(target_os = "macos")]
     pub fn enter_browse(&mut self, window: &winit::window::Window) {
+        self.focused_pane = PaneSide::Tree;
         let split = self
             .split_view
             .get_or_insert_with(|| split_view::BrowseSplitView::create(window));
         split.set_hidden(window, false);
         crate::window::set_metal_layer_hidden(window, true);
-        split.focus_tree(window);
+        split.set_focused_pane(self.focused_pane);
         log::info!("Entered browse mode");
     }
 
@@ -148,5 +196,18 @@ mod tests {
         assert!(state.is_browse());
         assert_eq!(state.toggle_mode(), ViewMode::Image);
         assert!(!state.is_browse());
+    }
+
+    #[test]
+    fn pane_side_toggles_between_tree_and_grid() {
+        assert_eq!(PaneSide::Tree.toggled(), PaneSide::Grid);
+        assert_eq!(PaneSide::Grid.toggled(), PaneSide::Tree);
+        assert_eq!(PaneSide::Tree.toggled().toggled(), PaneSide::Tree);
+    }
+
+    #[test]
+    fn state_starts_focused_on_the_tree_pane() {
+        let state = State::new();
+        assert_eq!(state.focused_pane(), PaneSide::Tree);
     }
 }

@@ -2610,9 +2610,16 @@ impl ApplicationHandler<AppCommand> for App {
             }
 
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if let Some(command) =
-                    input::key_to_command(event.logical_key.as_ref(), &self.modifiers)
-                {
+                // Branch by mode: winit keeps delivering keyboard input even with the native
+                // browse split view up, so browse mode gets its own key mapping. Image mode is
+                // unchanged. See `docs/specs/image-browser.md` → "Input architecture".
+                let key = event.logical_key.as_ref();
+                let command = if self.browser.is_browse() {
+                    input::browse_key_to_command(key, &self.modifiers)
+                } else {
+                    input::key_to_command(key, &self.modifiers)
+                };
+                if let Some(command) = command {
                     self.execute_command(event_loop, command);
                 }
             }

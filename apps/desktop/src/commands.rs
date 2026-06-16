@@ -118,9 +118,14 @@ pub enum AppCommand {
     /// in image mode. Image → Browse hides the Metal layer and shows the split
     /// view; Browse → Image reverses it.
     ToggleBrowseMode,
-    /// Leave browse mode for the image viewer unconditionally. Fired by Esc /
-    /// Enter inside a browse pane (`browser::split_view::BrowsePane::key_down`).
+    /// Leave browse mode for the image viewer unconditionally. Fired by Esc / Enter while
+    /// browsing — keys flow through winit → `input::browse_key_to_command`, branched by mode,
+    /// never the AppKit responder chain (winit keeps the keyboard even while the split view is
+    /// up).
     EnterImageMode,
+    /// Flip browse-mode keyboard focus between the tree and grid panes (Tab). Updates the
+    /// app-tracked `browser::State::focused_pane` and the native highlight. Browse-mode only.
+    ToggleBrowseFocus,
 
     // ── Slideshow ────────────────────────────────────────────────────
     /// Start the slideshow if stopped, stop it if running (Slideshow →

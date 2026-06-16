@@ -52,7 +52,8 @@ under the live surface. We hide one and show the other.
   the tree, or Navigate → Image view, also returns to image mode (showing the current image).
 - **Selecting a folder** in the tree lists its images in the grid. It does not change "the displayed image" until the
   user opens one.
-- **Tab** toggles focus between tree and grid (native key-view loop; the grid is skipped when empty).
+- **Tab** toggles focus between tree and grid (app-managed in `browser::State`, not the native key-view loop — see
+  "Input architecture"; the grid is skipped when empty).
 - **Esc** in browse mode returns to image mode (mirrors today's exit-fullscreen-or-app feel; the current image stays).
 - **Enter is reassigned in image mode.** Today Enter toggles fullscreen (alongside `f`/`F11`); it now enters browse mode
   instead. `f` and `F11` keep toggling fullscreen, so the capability isn't lost — only Enter's binding moves.
@@ -67,6 +68,31 @@ A new per-feature `browser::State` (sibling of `zoom::State`, `navigation::State
 `ViewMode { Image, Browse }`, the tree's selected folder, the grid's selected index, and the native view handles (behind
 macOS `cfg`). `App` delegates to it. The grid's selection and `navigation::DirectoryList::current_index` are kept
 coherent so switching modes lands on the right image and the existing preloader warms neighbors.
+
+## Input architecture (spike finding)
+
+The Phase 0 spike established how the keyboard behaves when the native browse UI is shown, and it is the opposite of the
+initial assumption: **winit keeps delivering `WindowEvent::KeyboardInput` even while the native split view is up.**
+Proof — in browse mode, Esc reached the app's Exit path and the native pane's `keyDown:` override never fired, even
+though `makeFirstResponder` returned `true` (winit re-asserts its own content view as first responder, so a native view
+can't reliably hold the keyboard).
+
+So browse mode does **not** use the AppKit responder chain for keys:
+
+- **All keyboard flows through winit → `input` → `AppCommand`, branched by mode.** When `browser.is_browse()`, keys map
+  to browse actions (Tab → toggle focused pane, arrows → move selection in the focused native view, Enter → open the
+  selected image, Esc → image mode) instead of image-viewer actions. Image mode is unchanged. The `main.rs` Esc
+  special-case (fullscreen-or-quit) must also branch: Esc in browse returns to image mode, never quits.
+- **Browse-mode keys drive the native views programmatically** (`NSOutlineView` expand/collapse + row selection,
+  `NSCollectionView` selection + scroll-to-visible). The views render selection highlight regardless of first-responder
+  state, so app-managed focus is enough.
+- **Mouse is fully native:** click, double-click-to-open, and scroll-wheel are handled by `NSOutlineView` /
+  `NSCollectionView` directly — those work without the responder-chain caveat.
+- The spike's `BrowsePane` `keyDown:` subclass is dropped; panes are plain scroll views hosting the native controls.
+- Focused pane (for Tab) is tracked in `browser::State`, not the native key-view loop.
+
+More input-routing code than leaning on the native key loop, but deterministic and it doesn't fight winit for first
+responder.
 
 ## Thumbnails: rename first, reuse QuickLook, let AppKit own the memory
 

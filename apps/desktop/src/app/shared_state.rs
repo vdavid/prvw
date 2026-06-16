@@ -64,6 +64,11 @@ pub struct SharedAppState {
     /// Thumbnail scheduler status, mirrored from `thumbnails::State::status()`.
     /// Macos-only; on other platforms stays at defaults.
     pub thumbnails: ThumbnailsSnapshot,
+    /// Current top-level screen: `"image"` or `"browse"`.
+    pub view_mode: &'static str,
+    /// Which browse pane has keyboard focus: `"tree"` or `"grid"`. Only meaningful while
+    /// `view_mode == "browse"`; stays at its last value otherwise.
+    pub focused_pane: &'static str,
 }
 
 /// Snapshot of the thumbnail scheduler, mirrored into shared state so the
@@ -131,6 +136,8 @@ impl Default for SharedAppState {
             cache_indices: Vec::new(),
             diagnostics_text: String::new(),
             thumbnails: ThumbnailsSnapshot::default(),
+            view_mode: "image",
+            focused_pane: "tree",
         }
     }
 }
@@ -154,6 +161,15 @@ impl App {
         state.exif_visible = self.exif_overlay.visible;
         state.exif_present = self.current_image_has_exif();
         state.loop_navigation = self.navigation.loop_navigation;
+        state.view_mode = if self.browser.is_browse() {
+            "browse"
+        } else {
+            "image"
+        };
+        state.focused_pane = match self.browser.focused_pane() {
+            crate::browser::PaneSide::Tree => "tree",
+            crate::browser::PaneSide::Grid => "grid",
+        };
         // Cache is keyed by `PathBuf` (path-key refactor). For the QA/MCP
         // contract we still expose `cache_indices` — translate cached
         // paths back to directory indices via the current `dir_list`.

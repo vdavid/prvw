@@ -20,7 +20,14 @@ impl App {
     pub(super) fn execute_command(&mut self, event_loop: &ActiveEventLoop, command: AppCommand) {
         match command {
             AppCommand::SendKey(key_name) => {
-                if let Some(cmd) = input::qa_key_to_command(&key_name) {
+                // Branch by mode, mirroring the winit keyboard handler: browse mode routes
+                // through the browse QA mapping so tests drive the same paths as real keys.
+                let cmd = if self.browser.is_browse() {
+                    input::browse_qa_key_to_command(&key_name)
+                } else {
+                    input::qa_key_to_command(&key_name)
+                };
+                if let Some(cmd) = cmd {
                     self.execute_command(event_loop, cmd);
                 }
             }
@@ -339,6 +346,14 @@ impl App {
             }
             AppCommand::EnterImageMode => {
                 self.set_view_mode(crate::browser::ViewMode::Image);
+            }
+            AppCommand::ToggleBrowseFocus =>
+            {
+                #[cfg(target_os = "macos")]
+                if let Some(win) = self.window.clone() {
+                    self.browser.toggle_focus(&win);
+                    self.update_shared_state();
+                }
             }
             AppCommand::ToggleSlideshow => {
                 self.toggle_slideshow();
