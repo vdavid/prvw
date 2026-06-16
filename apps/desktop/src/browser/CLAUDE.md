@@ -285,6 +285,13 @@ native selection/scroll stays immediate. The map is the pure `browser::browse_ke
 delivers a key in browse mode, but with first responder held by the native view it normally doesn't fire. **No
 winit-routed browse arrow handling exists** (arrows are native).
 
+**Don't route browse keys through winit.** The native `keyDown:` override IS the browse key path; winit is idle in
+browse (layer hidden, no redraws) so it doesn't re-assert first responder and the focused control keeps it. An early
+spike appeared to show "winit keeps receiving all keys in browse mode," but that was a stub artifact (the spike never
+handed first responder to a native view) — it does NOT describe the shipped model. So don't grow
+`input::browse_key_to_command` into a real browse keymap or add winit-side arrow handling; that would fight the native
+responder, not help it. Keep the winit map a Tab/Enter/Esc safety net only.
+
 `SharedAppState` exposes the full browse picture at `GET /state` so QA/tests can assert it without keystrokes or
 screenshots: `view_mode`, `focused_pane` (`"tree"`/`"grid"`/`"none"`), `browse_selected_folder`, `browse_grid_selected`,
 `browse_grid_count` (the listed folder's supported-image count), and `browse_reveal_pending` (the tree's async reveal
@@ -473,3 +480,19 @@ semantic `NSColor`s (light/dark adapt automatically). Tweak these, not magic num
 - **Sidebar rows** (`outline.rs`): `ROW_HEIGHT_PT` 24, `ICON_SIZE_PT` 16, `INDENT_PER_LEVEL_PT` 14, `ICON_LABEL_GAP_PT`
   6, `CELL_LEADING_INSET_PT` 2, `CELL_TRAILING_INSET_PT` 4, `LABEL_FONT_PT` 13 (system font, middle-truncating). Keeps
   the `.sidebar` vibrancy + source-list rounded-pill selection.
+
+## Deferred work + known limitations
+
+- **Bottom thumbnail-size slider — deferred (not built).** A slider at the window bottom to live-resize grid cells is
+  the one piece of the original design not shipped. The sizing rule already supports it with zero new generation:
+  thumbnails are generated **once** at `MAX_CELL_PT × 2` px (see "Size constant"), so a smaller cell just downscales the
+  cached bitmap — a future slider changes the flow-layout item size only, never re-requests QuickLook.
+  `SELECTION_INSET_PT` and `CELL_PT` are fixed for now. Build it in a styling pass if it earns its place; the constraint
+  to keep is "generate at the max, downscale below it" so adding the slider stays regeneration-free.
+- **Browse mode is macOS-only.** The whole feature is AppKit (`NSSplitView`/`NSOutlineView`/`NSCollectionView`). On
+  non-macOS the mode-toggle commands exist but no native UI does; `enter_image` via plain `set_view_mode(Image)` is the
+  cross-platform fallback path. A cross-platform browse mode would be a wgpu reimplementation — explicitly out of scope
+  (see `docs/specs/image-browser.md` → "Why native AppKit").
+- **Far-jump thumbnail repopulation.** Same trade-off as previews: scrolling far past the cached window shows brief
+  placeholders while the visible-centered scheduler regenerates from Finder's warm QuickLook cache (~150 ms each on a
+  revisit). Expected, matches Finder/Photos.

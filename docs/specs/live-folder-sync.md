@@ -4,7 +4,8 @@ Keep the image sequence and the browse UI correct and live: re-anchor browse mod
 and watch the filesystem so adds/modifies/deletes reflect in both modes without a manual refresh. Builds on the image
 browser (`docs/specs/image-browser.md`).
 
-Status: spec / in progress. Same `image-browser` worktree + branch.
+Status: shipped. Parts 1 and 2 (mode sync, image-mode + browse-mode file watching, tree-structure watch) are all built
+and checks-green. Same `image-browser` worktree + branch.
 
 ## Part 1 — Mode sync: browse always re-anchors to the current image — DONE
 

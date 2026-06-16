@@ -176,8 +176,8 @@ soft placeholders during decode, not grid thumbnails. The work splits cleanly:
 
 1. **Rename `thumbnails` → `previews`** across the codebase (module/dir, types `Thumbnail`/`ThumbnailEvent`/…, fns
    `display_thumbnail_placeholder`/`pump_thumbnail_requests`/…, the `AppCommand::ThumbnailsAvailable` variant, the
-   `previews_status` QA tool, fields, comments, docs, `thumbnail-preload.md`, the colocated `CLAUDE.md`). Apple names
-   stay verbatim (`QLThumbnailGenerator`, `QLThumbnailGenerationRequest`,
+   `previews_status` QA tool, fields, comments, docs, `preview-preload.md`, the colocated `CLAUDE.md`). Apple names stay
+   verbatim (`QLThumbnailGenerator`, `QLThumbnailGenerationRequest`,
    `QLThumbnailGenerationRequestRepresentationTypes::Thumbnail`, the `objc2-quick-look-thumbnailing` crate, ImageIO
    keys). Pure refactor, zero behavior change — full check suite stays green. A precise ~150-site inventory exists from
    the planning pass.
