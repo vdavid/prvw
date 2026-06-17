@@ -5,6 +5,67 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] - 2026-06-17
+
+Browse mode: a native folder tree and thumbnail gallery to flip through a folder's photos, plus live folder sync so the
+viewer and browser follow changes on disk.
+
+### Added
+
+- Browse mode: press Enter to open a native folder sidebar and thumbnail gallery, flip through a folder's photos, and
+  open one back into the viewer. Arrow keys move through the tree and grid, Tab switches panes, double-click or Enter
+  opens, and Esc returns to the image you came from. Thumbnails stream in from QuickLook, and the tree and grid load off
+  the main thread so even a slow network share never freezes the UI
+  ([7328c461](https://github.com/vdavid/prvw/commit/7328c461),
+  [59e19ebc](https://github.com/vdavid/prvw/commit/59e19ebc),
+  [3a48c9e0](https://github.com/vdavid/prvw/commit/3a48c9e0),
+  [4acfca79](https://github.com/vdavid/prvw/commit/4acfca79),
+  [27c497a6](https://github.com/vdavid/prvw/commit/27c497a6),
+  [a0fe94fc](https://github.com/vdavid/prvw/commit/a0fe94fc),
+  [a20f861b](https://github.com/vdavid/prvw/commit/a20f861b),
+  [f81d2474](https://github.com/vdavid/prvw/commit/f81d2474),
+  [de873204](https://github.com/vdavid/prvw/commit/de873204),
+  [0ffa5bba](https://github.com/vdavid/prvw/commit/0ffa5bba),
+  [c4fc7f48](https://github.com/vdavid/prvw/commit/c4fc7f48))
+- Launch straight into a folder: pass a directory on the command line and Prvw boots into browse at that folder
+  ([32ee7e22](https://github.com/vdavid/prvw/commit/32ee7e22))
+- Live folder sync: the viewer and browser follow changes on disk with no manual refresh — newly added images appear,
+  edits re-decode in place, and deleting the image you're on navigates to the next (or shows an empty state when the
+  folder runs out) ([f88f3760](https://github.com/vdavid/prvw/commit/f88f3760),
+  [e6f54379](https://github.com/vdavid/prvw/commit/e6f54379),
+  [68418f2f](https://github.com/vdavid/prvw/commit/68418f2f),
+  [f7384a2e](https://github.com/vdavid/prvw/commit/f7384a2e))
+
+### Fixed
+
+- Keep the image title and zoom readout readable in macOS Light mode — they were white text that vanished on the light
+  glass title bar ([a598857d](https://github.com/vdavid/prvw/commit/a598857d))
+
+### Non-app
+
+- Rename the internal `thumbnails` module to `previews`, freeing the name for the new grid-thumbnail cache
+  ([1f5d358a](https://github.com/vdavid/prvw/commit/1f5d358a))
+- Share the QuickLook worker through a second request path and add the headless grid-thumbnail plumbing behind the
+  browse grid ([87729a9b](https://github.com/vdavid/prvw/commit/87729a9b),
+  [fec427a1](https://github.com/vdavid/prvw/commit/fec427a1))
+- Make browse fully observable from the QA server and cover the flow with end-to-end integration tests
+  ([de7602df](https://github.com/vdavid/prvw/commit/de7602df))
+- Capture the native-AppKit-over-Metal layering gotcha and consolidate the browse-mode docs to shipped state
+  ([5ea7f0bb](https://github.com/vdavid/prvw/commit/5ea7f0bb),
+  [0691865f](https://github.com/vdavid/prvw/commit/0691865f),
+  [e700eb9c](https://github.com/vdavid/prvw/commit/e700eb9c),
+  [d0151a33](https://github.com/vdavid/prvw/commit/d0151a33),
+  [9718cd0e](https://github.com/vdavid/prvw/commit/9718cd0e))
+- Upgrade the website to Astro 6, ESLint 10, and TypeScript 6, plus in-range dependency bumps
+  ([6378682c](https://github.com/vdavid/prvw/commit/6378682c),
+  [c67d2996](https://github.com/vdavid/prvw/commit/c67d2996))
+- Gate Renovate dependency updates behind a 14-day release age to blunt supply-chain attacks
+  ([8a9ec7bc](https://github.com/vdavid/prvw/commit/8a9ec7bc))
+- Introduce CodeGraph code intelligence: gitignore its local index and document its call-graph reliability for prvw
+  ([fce9f5ef](https://github.com/vdavid/prvw/commit/fce9f5ef),
+  [700dacfa](https://github.com/vdavid/prvw/commit/700dacfa))
+- Gitignore `.claude/worktrees/` ([db459776](https://github.com/vdavid/prvw/commit/db459776))
+
 ## [0.14.1] - 2026-06-15
 
 Window-chrome polish: the traffic lights stay put, the title bar fits on one line and zooms on double-click, and zoom
