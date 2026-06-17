@@ -877,6 +877,7 @@ pub fn restore_content_view_first_responder(window: &Window) {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub fn set_metal_layer_hidden(window: &Window, hidden: bool) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
