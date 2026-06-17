@@ -1708,6 +1708,7 @@ impl App {
     /// gracefully — reveal image mode still showing the last valid image (whatever `dir_list`
     /// currently holds), or a clean empty canvas if nothing was ever opened. Never a blank/stale
     /// flash, never a crash. No-op off macOS or when already in image mode.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS browse exits call this
     pub(crate) fn reveal_selected_image(&mut self) {
         #[cfg(target_os = "macos")]
         {

@@ -26,6 +26,13 @@
 //!   Tab/Enter/Esc (routed via `AppCommand`); everything else falls through to `super` for native
 //!   selection/scroll. See `docs/specs/image-browser.md`.
 
+// Browse mode is a macOS-only feature: the native AppKit submodules are `#[cfg(target_os =
+// "macos")]`-gated, and the cross-platform pure logic (`grid_model`, `tree_model`, the pane/reveal/
+// warm helpers below) is consumed only by that gated native code. So on non-macOS every one of
+// these is unused. Keep them compiled cross-platform (their unit tests still run on every host) but
+// silence the unused warnings the non-macOS build would otherwise raise under `-D warnings`.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 #[cfg(target_os = "macos")]
 mod grid;
 #[cfg(target_os = "macos")]

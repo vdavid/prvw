@@ -94,8 +94,10 @@ pub const MIN_WINDOW_DIM: f64 = 200.0;
 /// Minimum browse-mode content width (logical px): the 240pt sidebar plus a few grid columns.
 /// Image mode's fit-to-window may have shrunk the window for a small image; browse grows it to at
 /// least this so the gallery isn't cramped. Only enforced on browse entry, never in image mode.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // browse (the only consumer) is macOS-only
 const BROWSE_MIN_WIDTH: f64 = 860.0;
 /// Minimum browse-mode content height (logical px): a few grid rows tall.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // browse (the only consumer) is macOS-only
 const BROWSE_MIN_HEIGHT: f64 = 560.0;
 
 /// Maximum fraction of the monitor's work area to use when auto-fitting.

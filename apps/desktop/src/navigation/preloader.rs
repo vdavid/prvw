@@ -536,6 +536,7 @@ impl Preloader {
     /// in the same `image_cache` the viewer reads regardless of the slot.
     /// Re-calling with a new set cancels the paths that dropped out (the
     /// move-cancellation the browse selection needs).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only macOS browse warming calls this
     pub fn warm_paths(&mut self, tasks: Vec<(usize, PathBuf)>, total: usize) {
         let requested: std::collections::HashSet<PathBuf> =
             tasks.iter().map(|(_, p)| p.clone()).collect();
