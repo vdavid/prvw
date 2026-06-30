@@ -1,6 +1,6 @@
 [tools]
 go = "1.26"
-node = "25"
+node = "26"
 # `npm:pnpm` backend, not the default `aqua:pnpm/pnpm`: pnpm switched their
 # GitHub release assets from `pnpm-linux-x64.tar.gz` archives to raw binaries
 # (`pnpm-linux-x64`), which the aqua resolver can't find. The npm registry
