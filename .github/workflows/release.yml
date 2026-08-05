@@ -11,7 +11,15 @@ permissions:
 jobs:
   build:
     name: Build (${{ matrix.arch }})
-    runs-on: [self-hosted, macOS, ARM64]
+    # Two runners can build this: GitHub's hosted macOS images, and David's self-hosted M3 MBP
+    # (`[self-hosted, macOS, ARM64]`). GitHub-hosted is the ACTIVE one; the repo is public, so
+    # hosted macOS minutes are free. Switching back is this one line, plus re-enabling the runner
+    # service on the Mac.
+    runs-on: macos-latest
+    # Generous because most of it is Apple's, not ours: the staple step below retries for up to
+    # two hours waiting on Apple's CDN. A hosted runner also pays a cold cargo compile every run
+    # (the self-hosted runner's warm cache made that part near-free), but the three arch jobs run
+    # in PARALLEL on hosted rather than queueing on one machine.
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -172,7 +180,10 @@ jobs:
         if: always()
         run: |
           security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true
-          # Ensure login keychain is in the search list (self-hosted runner protection)
+          # Restore the login keychain to the search list. A no-op on a hosted runner (the whole
+          # VM is discarded), but it MUST stay: the import step above replaces the search list,
+          # and on the self-hosted Mac skipping this leaves the real login keychain out of it,
+          # breaking `gh` and every other keychain-backed tool until the next login.
           security list-keychains -d user -s ~/Library/Keychains/login.keychain-db
           echo "Keychain search list restored:"
           security list-keychains -d user

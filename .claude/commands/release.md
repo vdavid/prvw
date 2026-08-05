@@ -20,22 +20,13 @@ Prepare a release based on docs/guides/releasing.md.
    commit and tag created, and the working tree clean — push without asking. The push is part of the release flow the
    user already authorized by running the script. Only pause to confirm if something is off: checks were skipped or
    force-passed, the working tree has unexpected changes, or the script reported a problem.
-6. **After pushing**, confirm the self-hosted runner picked up the build:
+6. **After pushing**, confirm the build started:
    - Wait ~30 seconds, then run `gh run view <release-run-id> --json jobs` and check the `Build (...)` jobs.
-   - At least one `Build (...)` job should be `in_progress` (the self-hosted runner serializes the three matrix jobs, so
-     the others stay `queued` — that's normal).
-   - **If all three are still `queued` after ~30s, the self-hosted runner is down.** Follow the recovery procedure in
-     [docs/guides/releasing.md § Runner-up sanity check](../../docs/guides/releasing.md#runner-up-sanity-check-during-a-release):
-     `launchctl list | grep prvw` to confirm, then `cd ~/actions-runner-prvw && ./svc.sh start`, falling back to
-     `launchctl bootout` + `bootstrap` if `svc.sh` errors with "Load failed: 5: Input/output error". Re-check after
-     another 30s. The queued jobs pick up automatically once the runner reports in — no need to re-trigger or re-tag.
+   - All three should go `in_progress` together — they run in parallel on GitHub-hosted `macos-latest` runners.
+   - Builds run on GitHub's infrastructure, so there's no runner to babysit and **no need to keep the laptop awake**.
+     If the jobs sit `queued` for minutes, that's GitHub capacity, not something to fix locally; check
+     [githubstatus.com](https://www.githubstatus.com/) rather than touching `~/actions-runner-prvw`.
 7. **Then start monitoring the CI build**:
-   - Remind the user not to close their laptop for ~15-25 minutes while the self-hosted runner builds (three archs
-     sequentially).
-   - **Start `caffeinate -i &` to prevent idle sleep**, capture the PID, and `kill` it once the polling loop exits
-     (success OR failure). The build runs on the user's MacBook via the self-hosted runner; if it sleeps, jobs stall.
-     Use `caffeinate -i` (idle-sleep only, screen can still dim) — not `-d`. Don't use `caffeinate -w <pid>` against a
-     backgrounded poll loop unless you've confirmed the PID is the actual long-living process.
    - Poll `gh run view` every few minutes in the background and report progress (which jobs are done, which are still
      running).
    - Report when all jobs complete (success or failure). If a job fails, show the failure details, and advise how to

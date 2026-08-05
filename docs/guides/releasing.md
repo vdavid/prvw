@@ -8,8 +8,8 @@ How to release a new version of Prvw. Use the `/release` command to start.
   - `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` (code signing)
   - `APPLE_SIGNING_IDENTITY` (`Developer ID Application: Rymdskottkarra AB (83H6YAQMNP)`)
   - `APPLE_API_KEY`, `APPLE_API_KEY_BASE64`, `APPLE_API_ISSUER` (notarization)
-- Self-hosted runner tagged `[self-hosted, macOS, ARM64]` running on David's M3 MacBook Pro (see
-  [Self-hosted runner](#self-hosted-runner) below)
+- Nothing machine-specific: the build runs on GitHub-hosted `macos-latest` (see
+  [Which runner builds the release](#which-runner-builds-the-release) below)
 - `CHANGELOG.md` `[Unreleased]` section populated per [docs/guides/changelog.md](changelog.md) (entries concise +
   commit-linked, validated by the `changelog-links` check)
 
@@ -25,72 +25,43 @@ How to release a new version of Prvw. Use the `/release` command to start.
 
 ## Expected timing
 
-The single self-hosted runner builds the three architectures sequentially. As of v0.11.0, each `Build (...)` job takes
-~7 minutes 30 seconds (compile + sign + notarise + staple), so the three together come in around **22 - 23 minutes**
-before the final `Release` job creates the GitHub Release. The app keeps growing — RAW pipeline, LensFun database,
-bundled DCPs — so this number trends up over time. Re-measure when it feels off, don't trust older estimates here.
+The three `Build (...)` jobs run in parallel on separate hosted runners, so wall-clock is roughly one build, not three.
+Each is ephemeral and pays a cold compile, plus sign, notarise, and staple. Apple's notarisation dominates the tail and
+varies from minutes to hours, which is why `timeout-minutes` is 150.
 
-## Keep the Mac awake during the build
+The numbers previously recorded here (~7m30s per job, ~22 minutes total) were measured on the self-hosted runner with a
+warm cargo cache and don't transfer. Re-measure on the next release rather than trusting an estimate here.
 
-The self-hosted runner lives on David's MacBook. If the Mac idle-sleeps during the ~22-minute build, GitHub Actions
-drops the runner connection and every in-flight job fails with
-`The self-hosted runner lost communication with the server`. Holding the Mac awake is the `/release` agent's job —
-`scripts/release.sh` does not do it.
+## Which runner builds the release
 
-Arm a dedicated, long-lived `caffeinate -i` right after pushing the tag, and `kill` it once the build finishes (success
-or failure):
+Two runners can build Prvw, and the choice is one line in `release.yml` (`build.runs-on`).
 
-```bash
-caffeinate -i &        # idle-sleep only; the display can still dim. NOT -d.
-CAFFEINATE_PID=$!
-# ... monitor the build ...
-kill "$CAFFEINATE_PID" # once the Release run is `completed`
-```
+**GitHub-hosted (`macos-latest`) is what runs today.** The self-hosted Mac at `~/actions-runner-prvw/` (registered as
+`actions.runner.vdavid-prvw.Davids-M3-MBP-prvw`, a per-user `launchd` LaunchAgent) is registered but not the target.
 
-Use `-i` (idle only), not `-d` — there's no reason to keep the display lit. **Don't be fooled by short-lived
-`caffeinate -i -t <seconds>` processes** that the Claude Code harness spawns per tool call: they expire mid-build, so a
-plain `pgrep caffeinate` hit doesn't mean the build is covered. Arm your own untimed one and track its PID.
+- **Why hosted won**: releases stop depending on one laptop being awake, online, and un-slept for the whole build. The
+  self-hosted runner dropped its connection whenever the Mac idle-slept, failing every in-flight job with
+  `The self-hosted runner lost communication with the server`, so every release needed a babysat `caffeinate`. Hosted
+  runners also sidestep the Finder/TCC Automation gate that unstyles DMGs (see the DMG troubleshooting section below).
+  The repo is public, so hosted macOS minutes are free.
+- **What hosted costs**: every job is ephemeral, so each pays a cold cargo compile instead of reusing a warm cache.
+  Partly offset by the three arch jobs running in parallel rather than queueing on one machine.
 
-## Self-hosted runner
-
-The release workflow targets a self-hosted ARM64 macOS runner installed on David's M3 MacBook Pro at
-`~/actions-runner-prvw/` (registered as `actions.runner.vdavid-prvw.Davids-M3-MBP-prvw`). It runs as a per-user
-`launchd` LaunchAgent so it survives reboots and login.
-
-### Runner-up sanity check during a release
-
-After pushing the tag, the three `Build (...)` jobs should leave `queued` within ~10 seconds. **If they're still
-`queued` after 10-15 seconds, the runner is not up on the Mac.** Don't wait it out — the agent should fix it
-immediately:
+**To switch back**: set `runs-on: [self-hosted, macOS, ARM64]` and restart the service with
+`cd ~/actions-runner-prvw && ./svc.sh start`. If that fails with `Load failed: 5: Input/output error` the LaunchAgent is
+stuck; clear it with a bootout + bootstrap pair:
 
 ```bash
-# 1) Confirm it's down: PID column will be `-` and the last exit code is non-zero (often -9).
-launchctl list | grep prvw
-# Expected when up:    65420   0   actions.runner.vdavid-prvw.Davids-M3-MBP-prvw
-# When down:           -      -9   actions.runner.vdavid-prvw.Davids-M3-MBP-prvw
-
-# 2) Try the bundled service script first.
-cd ~/actions-runner-prvw && ./svc.sh start
-
-# 3) If that fails with "Load failed: 5: Input/output error", the LaunchAgent is in a stuck state.
-#    Bootout + bootstrap to clear it:
 PLIST=~/Library/LaunchAgents/actions.runner.vdavid-prvw.Davids-M3-MBP-prvw.plist
 UID_=$(id -u)
 launchctl bootout gui/$UID_/actions.runner.vdavid-prvw.Davids-M3-MBP-prvw 2>/dev/null
 launchctl bootstrap gui/$UID_ "$PLIST"
-
-# 4) Verify it's listening.
-launchctl list | grep prvw          # PID > 0, last exit 0
-tail ~/actions-runner-prvw/_diag/Runner_*.log | tail -5
-# Last line should read: "Listening for Jobs"
+launchctl list | grep prvw   # PID > 0, last exit 0
 ```
 
-The queued release jobs will pick up automatically once the runner reports in — no need to re-trigger or re-tag.
-
-### Why it sometimes goes down
-
-The MacBook sleeping or restarting can leave the LaunchAgent loaded but its worker process exited. macOS doesn't
-auto-restart from a stuck `Input/output error` state — the bootout + bootstrap pair clears it.
+The workflow still carries its self-hosted-specific guards (the stale-`/Volumes/Prvw` detach, the keychain search-list
+restore), so nothing else has to change. Restore the `caffeinate` discipline in `/release` too, or sleep will keep
+killing builds.
 
 ## Troubleshooting
 
@@ -152,10 +123,12 @@ A failed `docker build` here is what keeps the site on the old version. One caus
 ### Release ships an unstyled DMG (or stalls in the DMG step)
 
 `scripts/create-dmg.sh` styles the DMG with `create-dmg`, which drives Finder through `osascript`, and falls back to a
-plain `hdiutil` DMG when Finder isn't reachable. On the self-hosted runner the bundled `node` / `osascript` is a TCC
-client macOS may not have authorized; the first "control Finder" prompt blocks (and times out if no one clicks Allow),
-after which create-dmg degrades to the unstyled fallback. If releases start shipping unstyled DMGs, trigger the prompt
-once while you're at the keyboard and click Allow:
+plain `hdiutil` DMG when Finder isn't reachable.
+
+**This is a self-hosted-only failure — hosted images have no TCC gate.** On the self-hosted runner the bundled `node` /
+`osascript` is a TCC client macOS may not have authorized; the first "control Finder" prompt blocks (and times out if
+no one clicks Allow), after which create-dmg degrades to the unstyled fallback. If releases start shipping unstyled
+DMGs while running self-hosted, trigger the prompt once while you're at the keyboard and click Allow:
 
 ```bash
 NODE=~/actions-runner-prvw/externals/node20/bin/node
