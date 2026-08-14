@@ -1,3 +1,9 @@
+# Set explicitly because Compose otherwise derives the project name from the directory basename,
+# which here is `website` — exactly what the getcmdr.com stack in /opt/cmdr/apps/website derives on
+# the same host. Two projects sharing one name means each sees the other's containers as orphans, so
+# a `docker compose down --remove-orphans` in either would take out the other site.
+name: prvw-website
+
 services:
   getprvw-static:
     build:

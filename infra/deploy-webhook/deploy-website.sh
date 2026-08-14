@@ -24,6 +24,13 @@ docker compose build --no-cache
 
 echo "Swapping containers..."
 docker compose down
+
+# `container_name` is fixed (Caddy routes to `getprvw-static` by name), and `compose down` only
+# clears containers belonging to THIS compose project. Anything else still holding that name would
+# make `up` fail with a name conflict, so drop it explicitly. Normally a no-op: `down` just removed
+# it.
+docker rm -f getprvw-static 2>/dev/null || true
+
 docker compose up -d
 
 echo "Verifying container is running..."
