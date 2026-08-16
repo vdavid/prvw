@@ -23,8 +23,8 @@ Prepare a release based on docs/guides/releasing.md.
 6. **After pushing**, confirm the build started:
    - Wait ~30 seconds, then run `gh run view <release-run-id> --json jobs` and check the `Build (...)` jobs.
    - All three should go `in_progress` together — they run in parallel on GitHub-hosted `macos-latest` runners.
-   - Builds run on GitHub's infrastructure, so there's no runner to babysit and **no need to keep the laptop awake**.
-     If the jobs sit `queued` for minutes, that's GitHub capacity, not something to fix locally; check
+   - Builds run on GitHub's infrastructure, so there's no runner to babysit and **no need to keep the laptop awake**. If
+     the jobs sit `queued` for minutes, that's GitHub capacity, not something to fix locally; check
      [githubstatus.com](https://www.githubstatus.com/) rather than touching `~/actions-runner-prvw`.
 7. **Then start monitoring the CI build**:
    - Poll `gh run view` every few minutes in the background and report progress (which jobs are done, which are still

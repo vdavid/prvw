@@ -126,9 +126,9 @@ A failed `docker build` here is what keeps the site on the old version. One caus
 plain `hdiutil` DMG when Finder isn't reachable.
 
 **This is a self-hosted-only failure — hosted images have no TCC gate.** On the self-hosted runner the bundled `node` /
-`osascript` is a TCC client macOS may not have authorized; the first "control Finder" prompt blocks (and times out if
-no one clicks Allow), after which create-dmg degrades to the unstyled fallback. If releases start shipping unstyled
-DMGs while running self-hosted, trigger the prompt once while you're at the keyboard and click Allow:
+`osascript` is a TCC client macOS may not have authorized; the first "control Finder" prompt blocks (and times out if no
+one clicks Allow), after which create-dmg degrades to the unstyled fallback. If releases start shipping unstyled DMGs
+while running self-hosted, trigger the prompt once while you're at the keyboard and click Allow:
 
 ```bash
 NODE=~/actions-runner-prvw/externals/node20/bin/node
