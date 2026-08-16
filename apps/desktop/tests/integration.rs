@@ -292,6 +292,57 @@ fn fullscreen_respects_enlarge_setting_even_with_auto_fit_on() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn fullscreen_state_survives_a_round_trip_appkit_drove() {
+    // Fullscreen transitions go through AppKit (`toggleFullScreen:`), not `winit`, because the
+    // green traffic light can start one too and `winit` never un-remembers those: its cached
+    // state reads "fullscreen" for a restored window. Reading that cache dressed the restored
+    // window as fullscreen — no title-bar strip, black background, two mismatched corner radii
+    // — and inverted the next F. So the state has to come from AppKit, and it has to stay right
+    // across a round trip and keep the keyboard toggle working.
+    //
+    // The green button itself can't drive this test: `/click-zoom-button` zooms rather than
+    // going fullscreen for the harness's background, non-key window. The transition below takes
+    // the same AppKit path the button takes.
+    // Fullscreen transitions build and tear down a Space, which crawls when the whole suite is
+    // running its apps in parallel.
+    const FULLSCREEN_WAIT: Duration = Duration::from_secs(45);
+
+    let app = TestApp::start();
+    assert_eq!(app.get_state()["fullscreen"].as_bool(), Some(false));
+
+    app.post("/fullscreen", "on");
+    let entered = wait_for_state(&app, FULLSCREEN_WAIT, |s| {
+        s["fullscreen"].as_bool() == Some(true)
+    });
+    assert_eq!(entered["fullscreen"].as_bool(), Some(true));
+
+    app.post("/fullscreen", "off");
+    let left = wait_for_state(&app, FULLSCREEN_WAIT, |s| {
+        s["fullscreen"].as_bool() == Some(false)
+    });
+    assert_eq!(
+        left["fullscreen"].as_bool(),
+        Some(false),
+        "the window must not be left believing it's fullscreen after leaving"
+    );
+
+    app.post("/key", "f");
+    let toggled = wait_for_state(&app, FULLSCREEN_WAIT, |s| {
+        s["fullscreen"].as_bool() == Some(true)
+    });
+    assert_eq!(
+        toggled["fullscreen"].as_bool(),
+        Some(true),
+        "F must still enter fullscreen after an AppKit-driven round trip"
+    );
+    app.post("/key", "f");
+    wait_for_state(&app, FULLSCREEN_WAIT, |s| {
+        s["fullscreen"].as_bool() == Some(false)
+    });
+}
+
+#[test]
 fn enabling_auto_fit_refits_zoom_to_resized_window() {
     // With auto-fit off, the window can be a very different size than the image's auto-fit
     // target. Enabling auto-fit resizes the window AND must re-fit zoom against the NEW

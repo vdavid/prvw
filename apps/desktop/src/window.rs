@@ -26,6 +26,10 @@
 //!   which observes each button's `NSViewFrameDidChangeNotification` and re-places all three
 //!   whenever AppKit resets them. The offset moves the buttons themselves, so what you click
 //!   and what you see stay together.
+//! - **Fullscreen state comes from AppKit, not `winit`.** `is_fullscreen` reads the window's
+//!   style mask and `set_fullscreen` calls `toggleFullScreen:` directly, because the green
+//!   traffic light can start a transition `winit` never learns to un-remember. See the gotcha
+//!   below.
 //! - **Title-bar double-click.** Forwarded to the native window `zoom:` (`zoom_window`) so the
 //!   title bar fills/restores the screen like any macOS app. Our content view covers the title
 //!   bar, so AppKit never sees the click — `app.rs` routes title-bar double-clicks here.
@@ -59,6 +63,17 @@
 //! - **Fullscreen appearance hand-off.** Toggling fullscreen triggers a `Resized` event
 //!   which calls `set_fullscreen_appearance` to swap the background (vibrancy → solid
 //!   black in fullscreen).
+//! - **`winit`'s cached fullscreen state goes stale, so never read it.** On macOS 26 the green
+//!   traffic light takes the window fullscreen; `winit` notices the entry but not the exit
+//!   (its bookkeeping only runs for a transition it started), and then reports "fullscreen"
+//!   for a restored window — which showed up as a window with no title bar, a black
+//!   background, and two mismatched corner radii. `Window::set_fullscreen` is just as unusable:
+//!   it no-ops when the value you ask for matches that stale cache, so F would toggle the wrong
+//!   way. `is_fullscreen` / `set_fullscreen` talk to AppKit directly instead.
+//! - **Don't mark the window `fullScreenNone` to make the green button zoom instead.** It
+//!   works, but AppKit then draws the legacy zoom widget: a "+" glyph in place of the
+//!   fullscreen arrows, at different metrics, out of line with the other two lights. The green
+//!   button should do whatever the running macOS does with it.
 //! - **Title-bar labels must be click-through.** The app forwards title-bar mouse events
 //!   through winit (`App::pointer_in_title_bar` → `zoom_window` for the double-click), so the
 //!   strip's subviews must not capture them. The labels are `ClickThroughLabel`s whose
@@ -161,13 +176,15 @@ fn configure_macos_window(window: &Window) {
         // NSWindowTabbingMode.disallowed = 2
         let _: () = msg_send![ns_window, setTabbingMode: 2i64];
 
-        // Remove native fullscreen from collection behavior.
-        // This removes the system "Enter Full Screen" menu item.
-        // We keep our own borderless fullscreen via winit (F / Enter / F11).
-        let behavior: u64 = msg_send![ns_window, collectionBehavior];
+        // Declare that this window does fullscreen. `toggleFullScreen:` is refused without it
+        // (AppKit ignores the request outright, which left F doing nothing), and the green
+        // traffic light keeps whatever behavior the running macOS gives it — fullscreen on
+        // macOS 26 — which is what a Mac user expects of it. The system "Enter Full Screen"
+        // menu item that comes with the flag is pruned in `platform::macos::menu_cleanup`,
+        // since we offer fullscreen through F / F11.
         // NSWindowCollectionBehavior.fullScreenPrimary = 1 << 7 = 128
-        let new_behavior = behavior & !(1 << 7);
-        let _: () = msg_send![ns_window, setCollectionBehavior: new_behavior];
+        let behavior: u64 = msg_send![ns_window, collectionBehavior];
+        let _: () = msg_send![ns_window, setCollectionBehavior: behavior | (1 << 7)];
 
         // Transparent titlebar: content extends behind the title bar, giving the frosted
         // glass look that apps like Finder and Safari use.
@@ -1051,16 +1068,45 @@ unsafe fn round_window_frame_to_glass(content_view: *const objc2::runtime::AnyOb
 #[cfg(target_os = "macos")]
 thread_local! {
     static PLACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// A placement is already queued for the end of this run-loop turn; coalesces the burst of
+    /// notifications one relayout produces into a single pass.
+    static PLACEMENT_QUEUED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Where AppKit puts each traffic light when left alone, captured once before the first nudge.
-/// The offsets are applied against these, so re-applying is idempotent — reading the button's
-/// current origin instead would stack a second offset on every relayout.
+/// Queue `place_traffic_lights` for the end of the current run-loop turn.
+///
+/// Placing straight from the notification isn't enough: AppKit's titlebar layout keeps going
+/// after it posts, and it moves the zoom button back without posting again — so a synchronous
+/// re-place is silently undone for that one button. Running after the whole pass lands last.
+/// It's still the same turn, so the window draws once, already nudged.
 #[cfg(target_os = "macos")]
-static TRAFFIC_LIGHT_DEFAULTS: std::sync::OnceLock<[(f64, f64); 3]> = std::sync::OnceLock::new();
+fn queue_traffic_light_placement(window_addr: usize) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
 
-/// Move the three traffic lights to their nudged position: AppKit's default plus the offset.
-/// Idempotent, so it's safe to call from every relayout.
+    if PLACEMENT_QUEUED.with(|q| q.replace(true)) {
+        return;
+    }
+    let handler = block2::RcBlock::new(move || {
+        PLACEMENT_QUEUED.with(|q| q.set(false));
+        unsafe { place_traffic_lights(window_addr as *const AnyObject) };
+    });
+    unsafe {
+        let queue: *const AnyObject = msg_send![objc2::class!(NSOperationQueue), mainQueue];
+        let _: () = msg_send![queue, addOperationWithBlock: &*handler];
+    }
+}
+
+/// The nudged origin we last wrote for each traffic light. Anything else AppKit puts there is
+/// its own idea of where the button goes, which we re-anchor to — so if AppKit changes the
+/// default (it lays the buttons out differently when, say, a button's shape changes), the
+/// offset follows instead of pinning the button to a stale spot.
+#[cfg(target_os = "macos")]
+static TRAFFIC_LIGHT_TARGETS: std::sync::Mutex<[Option<(f64, f64)>; 3]> =
+    std::sync::Mutex::new([None; 3]);
+
+/// Move the three traffic lights to their nudged position: AppKit's own placement plus the
+/// offset. Idempotent, so it's safe to call from every relayout.
 ///
 /// The offset goes on the buttons themselves, never on the SwiftUI views they host. AppKit
 /// hit-tests the button, so moving only its drawing (which is what macOS 26 relays out) would
@@ -1071,33 +1117,40 @@ unsafe fn place_traffic_lights(ns_window: *const objc2::runtime::AnyObject) {
     use objc2::runtime::AnyObject;
     use objc2_foundation::{NSPoint, NSRect};
 
+    /// Frames land on whole or half points; anything closer than this is the same spot.
+    const EPSILON: f64 = 0.01;
+
     unsafe {
         if PLACING.with(|g| g.get()) {
             return;
         }
-        let buttons: [*mut AnyObject; 3] = std::array::from_fn(|kind| {
-            let button: *mut AnyObject = msg_send![ns_window, standardWindowButton: kind as u64];
-            button
-        });
-        if buttons.iter().any(|b| b.is_null()) {
+        let Ok(mut targets) = TRAFFIC_LIGHT_TARGETS.lock() else {
             return;
-        }
-        let defaults = TRAFFIC_LIGHT_DEFAULTS.get_or_init(|| {
-            std::array::from_fn(|i| {
-                let frame: NSRect = msg_send![buttons[i], frame];
-                (frame.origin.x, frame.origin.y)
-            })
-        });
+        };
 
         PLACING.with(|g| g.set(true));
-        for (button, (default_x, default_y)) in buttons.iter().zip(defaults) {
-            let (dx, dy) = traffic_light_delta(*button);
-            let target = NSPoint::new(default_x + dx, default_y + dy);
-            let frame: NSRect = msg_send![*button, frame];
-            if (frame.origin.x - target.x).abs() > 0.01 || (frame.origin.y - target.y).abs() > 0.01
-            {
-                let _: () = msg_send![*button, setFrameOrigin: target];
+        for kind in 0..3 {
+            let button: *mut AnyObject = msg_send![ns_window, standardWindowButton: kind as u64];
+            if button.is_null() {
+                continue;
             }
+            let frame: NSRect = msg_send![button, frame];
+            let (x, y) = (frame.origin.x, frame.origin.y);
+            // Already where we put it: AppKit hasn't touched this one.
+            if targets[kind]
+                .is_some_and(|(tx, ty)| (x - tx).abs() < EPSILON && (y - ty).abs() < EPSILON)
+            {
+                continue;
+            }
+            let (dx, dy) = traffic_light_delta(button);
+            let target = NSPoint::new(x + dx, y + dy);
+            targets[kind] = Some((target.x, target.y));
+            log::trace!(
+                "place[{kind}]: ({x:.1},{y:.1}) -> ({:.1},{:.1})",
+                target.x,
+                target.y
+            );
+            let _: () = msg_send![button, setFrameOrigin: target];
         }
         PLACING.with(|g| g.set(false));
     }
@@ -1172,7 +1225,7 @@ pub fn register_traffic_light_keeper(window: &Window) {
                     // Notifications are delivered on the main thread, and the window outlives
                     // the process's UI. `place_traffic_lights` is idempotent, so the frame
                     // change it makes settles instead of looping.
-                    place_traffic_lights(window_addr as *const AnyObject);
+                    queue_traffic_light_placement(window_addr);
                 });
                 let token: *const AnyObject = msg_send![
                     center,
@@ -1253,17 +1306,42 @@ pub fn window_title_loading(current: usize, total: usize) -> String {
 
 /// Toggle fullscreen on the window.
 pub fn toggle_fullscreen(window: &Window) {
-    if window.fullscreen().is_some() {
-        log::debug!("Fullscreen: borderless -> windowed");
-        window.set_fullscreen(None);
-    } else {
-        log::debug!("Fullscreen: windowed -> borderless");
-        window.set_fullscreen(Some(Fullscreen::Borderless(None)));
-    }
+    set_fullscreen(window, !is_fullscreen(window));
 }
 
-/// Set fullscreen on or off directly.
+/// Set fullscreen on or off.
+///
+/// Normally `winit` drives the transition: it queues a request made while another transition
+/// is still animating (AppKit drops those), which keeps a fast double-press of F honest.
+///
+/// It can only drive it while its cached fullscreen state matches reality, though. The cache
+/// tracks transitions `winit` started, so it reads "fullscreen" forever after the user leaves
+/// a fullscreen AppKit started (the green traffic light starts one on macOS 26). With the cache
+/// stale, `Window::set_fullscreen` no-ops on the value we ask for — F did nothing, or toggled
+/// the wrong way. So when the cache disagrees with AppKit, we ask AppKit ourselves; that also
+/// resyncs the cache, since `winit` picks the state back up from the transition's notification.
 pub fn set_fullscreen(window: &Window, on: bool) {
+    let actually_fullscreen = is_fullscreen(window);
+    if actually_fullscreen == on {
+        return;
+    }
+    log::debug!(
+        "Fullscreen: {} -> {}",
+        if on { "windowed" } else { "borderless" },
+        if on { "borderless" } else { "windowed" }
+    );
+
+    #[cfg(target_os = "macos")]
+    if window.fullscreen().is_some() != actually_fullscreen {
+        log::debug!("Fullscreen: winit's cached state is stale, asking AppKit directly");
+        with_ns_window(window, |ns_window| unsafe {
+            use objc2::msg_send;
+            let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+            let _: () = msg_send![ns_window, toggleFullScreen: nil];
+        });
+        return;
+    }
+
     if on {
         window.set_fullscreen(Some(Fullscreen::Borderless(None)));
     } else {
@@ -1271,9 +1349,49 @@ pub fn set_fullscreen(window: &Window, on: bool) {
     }
 }
 
+/// Run `f` with the window's `NSWindow`, if there is one.
+#[cfg(target_os = "macos")]
+fn with_ns_window(window: &Window, f: impl FnOnce(*const objc2::runtime::AnyObject)) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(RawWindowHandle::AppKit(handle)) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let ns_window: *const AnyObject = msg_send![ns_view, window];
+        if !ns_window.is_null() {
+            f(ns_window);
+        }
+    }
+}
+
 /// Check if the window is currently fullscreen.
+///
+/// On macOS this reads the `NSWindow`'s own style mask instead of `winit`'s cached state: the
+/// cache only tracks transitions `winit` itself started, so it reports "fullscreen" forever
+/// after the user leaves a fullscreen AppKit started (the green traffic light). Everything
+/// downstream — the title-bar strip, the window background, the zoom rules — then dresses a
+/// restored window as if it were still fullscreen. The style mask is always the truth.
 pub fn is_fullscreen(window: &Window) -> bool {
-    window.fullscreen().is_some()
+    #[cfg(target_os = "macos")]
+    {
+        // NSWindowStyleMask.fullScreen = 1 << 14
+        const FULL_SCREEN: u64 = 1 << 14;
+        let mut fullscreen = false;
+        with_ns_window(window, |ns_window| unsafe {
+            use objc2::msg_send;
+            let mask: u64 = msg_send![ns_window, styleMask];
+            fullscreen = mask & FULL_SCREEN != 0;
+        });
+        fullscreen
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.fullscreen().is_some()
+    }
 }
 
 /// Monitor work area in logical pixels.

@@ -52,9 +52,10 @@ pub fn dump(window: &Window) -> String {
                 let _ = writeln!(out, "standardWindowButton[{name}] = nil");
                 continue;
             }
+            let posts: bool = msg_send![button, postsFrameChangedNotifications];
             let _ = writeln!(
                 out,
-                "standardWindowButton[{name}] {}",
+                "standardWindowButton[{name}] posts={posts} {}",
                 describe_view(button, content_view)
             );
         }
