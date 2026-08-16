@@ -68,6 +68,12 @@ aspect-fit; `aspect_fit_rect` is the pure, unit-tested core.
     Liquid Glass.
   - Worked example: the native title/zoom labels (`window::add_titlebar_labels`) and
     `docs/specs/native-title-overlay.md`.
+- **Window chrome: nudge the traffic-light buttons, never the SwiftUI views inside them, and keep AppKit out of
+  fullscreen.** Two macOS 26 traps, both handled in `window.rs` — read its module docs before touching window chrome.
+  Moving a button's `_NSCoreHostingView<ThemeWidgetView>` child moves the drawing but not the clickable rect, and AppKit
+  resets the buttons' own frames through a path `setFrame:`/`setFrameOrigin:` swizzles never see (use
+  `NSViewFrameDidChangeNotification`). Separately, the green traffic light goes fullscreen instead of zooming unless the
+  window is marked `fullScreenNone`, and an AppKit-started transition desyncs `winit`'s cached fullscreen state.
 - **In idle-winit browse mode the focused native view holds the window's first responder.** Browse mode hides the Metal
   layer and stops requesting redraws, so winit goes idle and does NOT re-assert first responder — the focused
   `NSOutlineView`/`NSCollectionView` keeps it and handles its own keys (arrows, type-select) natively. So a native

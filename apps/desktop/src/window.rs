@@ -23,9 +23,9 @@
 //! - **Window corner radius.** `round_window_frame_to_glass` rounds the window's own frame
 //!   view to match the glass so the system's default-radius corner stroke can't peek out.
 //! - **Traffic lights.** Nudged off the rounded corner by `register_traffic_light_keeper`,
-//!   which swizzles `NSView`'s frame setters so the offset is baked into the position AppKit
-//!   itself commits — gated to the main window's three buttons. See that function for why
-//!   re-nudging after the fact loses a race during live resize.
+//!   which observes each button's `NSViewFrameDidChangeNotification` and re-places all three
+//!   whenever AppKit resets them. The offset moves the buttons themselves, so what you click
+//!   and what you see stay together.
 //! - **Title-bar double-click.** Forwarded to the native window `zoom:` (`zoom_window`) so the
 //!   title bar fills/restores the screen like any macOS app. Our content view covers the title
 //!   bar, so AppKit never sees the click — `app.rs` routes title-bar double-clicks here.
@@ -46,18 +46,16 @@
 //!
 //! - **`request_inner_size` is async on macOS.** After calling it, `inner_size()` still
 //!   returns the OLD value. That's why `resize_to_fit_image` returns the computed size.
-//! - **Re-nudging the traffic lights after a relayout loses to AppKit.** During a live resize
-//!   AppKit's button layout runs last and overwrites any offset applied from a `Resized`
-//!   handler or a frame-change notification, so the buttons sit at the default until the next
-//!   redraw. The fix swizzles the frame setters so the offset rides along with AppKit's own
-//!   positioning — see `register_traffic_light_keeper`.
-//! - **macOS 26 (Liquid Glass) renders the traffic lights as SwiftUI views.** They live in
-//!   `_NSCoreHostingView<ThemeWidgetView>`, not the legacy `_NSThemeCloseWidget` that
-//!   `standardWindowButton:` still returns. So positioning the standard button moves nothing
-//!   during a live resize — you must offset the SwiftUI hosting views (matched by class name).
-//!   Their superview is also flipped (top-left origin), so the vertical nudge sign flips vs.
-//!   the legacy bottom-left buttons. Both quirks are handled in `register_traffic_light_keeper`
-//!   / `traffic_light_delta`.
+//! - **Nudge the traffic-light buttons, never the SwiftUI views inside them.** On macOS 26 each
+//!   `_NSThemeCloseWidget` (what `standardWindowButton:` returns, and what AppKit hit-tests)
+//!   hosts a `_NSCoreHostingView<ThemeWidgetView>` that does the drawing. Offsetting the child
+//!   moves the pixels only, leaving the clickable circle 6 pt up-left of the visible one —
+//!   clicks near the edge of the button then land nowhere.
+//! - **AppKit resets the button frames through a path `setFrame:` can't see.** Swizzling
+//!   `NSView`'s frame setters catches AppKit laying out the SwiftUI child, but the button's own
+//!   frame returns to the default without either setter running, so a swizzle-based nudge
+//!   silently stops applying. `NSViewFrameDidChangeNotification` (opt-in per view via
+//!   `setPostsFrameChangedNotifications:`) does see it — that's what the keeper observes.
 //! - **Fullscreen appearance hand-off.** Toggling fullscreen triggers a `Resized` event
 //!   which calls `set_fullscreen_appearance` to swap the background (vibrancy → solid
 //!   black in fullscreen).
@@ -1047,65 +1045,69 @@ unsafe fn round_window_frame_to_glass(content_view: *const objc2::runtime::AnyOb
     }
 }
 
-/// The main viewer window, captured so the swizzled setters know which window's traffic
-/// lights to nudge. Stored as a raw pointer compared by identity — never dereferenced.
-#[cfg(target_os = "macos")]
-static MAIN_WINDOW: std::sync::atomic::AtomicPtr<objc2::runtime::AnyObject> =
-    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-
-/// The original `NSView` `setFrameOrigin:` / `setFrame:` implementations, saved when we
-/// swizzle them so the replacements can chain to the real behavior.
-#[cfg(target_os = "macos")]
-static ORIGINAL_SET_FRAME_ORIGIN: std::sync::OnceLock<objc2::runtime::Imp> =
-    std::sync::OnceLock::new();
-#[cfg(target_os = "macos")]
-static ORIGINAL_SET_FRAME: std::sync::OnceLock<objc2::runtime::Imp> = std::sync::OnceLock::new();
-
-// Guards against applying the offset twice when `setFrame:` chains into `setFrameOrigin:`
-// internally: the outer setter adds the offset, the inner one sees the guard and passes
-// through unchanged.
+// Guards `place_traffic_lights` against recursing into itself: the origin it sets posts
+// another frame-change notification, and the guard makes that delivery a no-op instead of a
+// second pass.
 #[cfg(target_os = "macos")]
 thread_local! {
-    static NUDGING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PLACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// True when `view` is one of the main window's three traffic-light buttons — the only views
-/// whose frame we want to nudge. Checked on every `setFrameOrigin:` / `setFrame:`, so it must
-/// be cheap and exact: we gate on the stored main window, then compare against its standard
-/// buttons. Everything else (other windows, other views) passes through untouched.
+/// Where AppKit puts each traffic light when left alone, captured once before the first nudge.
+/// The offsets are applied against these, so re-applying is idempotent — reading the button's
+/// current origin instead would stack a second offset on every relayout.
 #[cfg(target_os = "macos")]
-unsafe fn is_main_traffic_light(view: *const objc2::runtime::AnyObject) -> bool {
+static TRAFFIC_LIGHT_DEFAULTS: std::sync::OnceLock<[(f64, f64); 3]> = std::sync::OnceLock::new();
+
+/// Move the three traffic lights to their nudged position: AppKit's default plus the offset.
+/// Idempotent, so it's safe to call from every relayout.
+///
+/// The offset goes on the buttons themselves, never on the SwiftUI views they host. AppKit
+/// hit-tests the button, so moving only its drawing (which is what macOS 26 relays out) would
+/// leave the clickable circle behind the visible one.
+#[cfg(target_os = "macos")]
+unsafe fn place_traffic_lights(ns_window: *const objc2::runtime::AnyObject) {
     use objc2::msg_send;
     use objc2::runtime::AnyObject;
-    use std::sync::atomic::Ordering;
+    use objc2_foundation::{NSPoint, NSRect};
 
-    let win: *const AnyObject = unsafe { msg_send![view, window] };
-    if win.is_null() || !std::ptr::eq(win, MAIN_WINDOW.load(Ordering::Acquire)) {
-        return false;
-    }
-    if liquid_glass_available() {
-        // macOS 26 (Liquid Glass) renders the traffic lights as SwiftUI views hosted in
-        // `_NSCoreHostingView<ThemeWidgetView>` — those are what AppKit repositions on every
-        // relayout, not the legacy `_NSThemeCloseWidget` that `standardWindowButton:` returns.
-        // Match by class name (it embeds the Swift type name "ThemeWidgetView").
-        let cls: *const objc2::runtime::AnyClass = unsafe { msg_send![view, class] };
-        let name = unsafe { (*cls).name() };
-        name.to_bytes().windows(15).any(|w| w == b"ThemeWidgetView")
-    } else {
-        // Older macOS: nudge the three standard window buttons directly.
-        // NSWindowButton: close = 0, miniaturize = 1, zoom = 2.
-        (0u64..3).any(|kind| {
-            let button: *const AnyObject = unsafe { msg_send![win, standardWindowButton: kind] };
-            std::ptr::eq(button, view)
-        })
+    unsafe {
+        if PLACING.with(|g| g.get()) {
+            return;
+        }
+        let buttons: [*mut AnyObject; 3] = std::array::from_fn(|kind| {
+            let button: *mut AnyObject = msg_send![ns_window, standardWindowButton: kind as u64];
+            button
+        });
+        if buttons.iter().any(|b| b.is_null()) {
+            return;
+        }
+        let defaults = TRAFFIC_LIGHT_DEFAULTS.get_or_init(|| {
+            std::array::from_fn(|i| {
+                let frame: NSRect = msg_send![buttons[i], frame];
+                (frame.origin.x, frame.origin.y)
+            })
+        });
+
+        PLACING.with(|g| g.set(true));
+        for (button, (default_x, default_y)) in buttons.iter().zip(defaults) {
+            let (dx, dy) = traffic_light_delta(*button);
+            let target = NSPoint::new(default_x + dx, default_y + dy);
+            let frame: NSRect = msg_send![*button, frame];
+            if (frame.origin.x - target.x).abs() > 0.01 || (frame.origin.y - target.y).abs() > 0.01
+            {
+                let _: () = msg_send![*button, setFrameOrigin: target];
+            }
+        }
+        PLACING.with(|g| g.set(false));
     }
 }
 
-/// The (dx, dy) to add to a traffic-light view's frame origin. X is always rightward.
-/// `TRAFFIC_LIGHT_Y_OFFSET` expresses the vertical nudge as "down in bottom-left coordinates"
-/// (the legacy window-button path), so it's negated when the view's superview is flipped
-/// (top-left origin, y growing downward) — as the Liquid Glass SwiftUI titlebar's hosting
-/// views are — to keep the visual direction (downward) the same in both coordinate systems.
+/// The (dx, dy) to add to a traffic-light button's default frame origin. X is always rightward.
+/// `TRAFFIC_LIGHT_Y_OFFSET` expresses the vertical nudge as "down in bottom-left coordinates",
+/// which is what the buttons' superview (`NSTitlebarView`) uses; it's negated for a flipped
+/// superview (top-left origin, y growing downward) so the visual direction stays downward
+/// either way.
 #[cfg(target_os = "macos")]
 unsafe fn traffic_light_delta(view: *const objc2::runtime::AnyObject) -> (f64, f64) {
     use objc2::msg_send;
@@ -1121,27 +1123,23 @@ unsafe fn traffic_light_delta(view: *const objc2::runtime::AnyObject) -> (f64, f
     (TRAFFIC_LIGHT_X_OFFSET, dy)
 }
 
-/// Keep the traffic lights nudged off the rounded corner across every relayout, flicker-free.
+/// Keep the traffic lights nudged off the rounded corner across every relayout.
 ///
-/// macOS repositions the standard window buttons to their default spot on every relayout
-/// (resize, fullscreen, title change). Re-nudging them *after the fact* (on the `Resized`
-/// event or a frame-change notification) loses a race: during a live resize AppKit's layout
-/// runs last and overwrites the offset, so the buttons sit at the default until the next
-/// redraw. Instead we swizzle `NSView`'s `setFrameOrigin:` / `setFrame:` and add the offset
-/// *as AppKit positions the buttons* — so the offset is baked into the value AppKit itself
-/// commits, and nothing runs after to undo it. Gated precisely to the main window's three
-/// traffic lights (see `is_main_traffic_light`), so no other view or window is affected.
+/// macOS puts the standard window buttons back at their default spot on every relayout (resize,
+/// zoom, title change), through a path that neither `setFrame:` nor `setFrameOrigin:` sees — a
+/// swizzle of those setters catches AppKit repositioning the SwiftUI view *inside* each button
+/// but never the button itself. What does see it is `NSViewFrameDidChangeNotification`, which
+/// NSView posts synchronously whenever the frame lands, whatever moved it. We opt each button
+/// into that notification and re-place all three from the handler, so the offset is restored in
+/// the same run-loop turn AppKit reset it, before anything draws.
 ///
-/// Call once per process, after the main window exists. The swizzle is installed once; later
-/// calls just refresh the stored main-window pointer.
+/// Call once per process, after the main window exists.
 #[cfg(target_os = "macos")]
 pub fn register_traffic_light_keeper(window: &Window) {
     use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-    use objc2::sel;
-    use objc2_foundation::{NSPoint, NSRect};
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
     use std::sync::OnceLock;
-    use std::sync::atomic::Ordering;
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     let Ok(RawWindowHandle::AppKit(handle)) = window.window_handle().map(|h| h.as_raw()) else {
@@ -1154,80 +1152,42 @@ pub fn register_traffic_light_keeper(window: &Window) {
         if ns_window.is_null() {
             return;
         }
-        MAIN_WINDOW.store(ns_window as *mut AnyObject, Ordering::Release);
+        static OBSERVING: OnceLock<()> = OnceLock::new();
+        OBSERVING.get_or_init(|| {
+            let center: *const AnyObject =
+                msg_send![objc2::class!(NSNotificationCenter), defaultCenter];
+            let name = NSString::from_str("NSViewFrameDidChangeNotification");
+            let nil: *const AnyObject = std::ptr::null();
+            let window_addr = ns_window as usize;
 
-        let close_button: *const AnyObject = msg_send![ns_window, standardWindowButton: 0u64];
-        if close_button.is_null() {
-            return;
-        }
-
-        static SWIZZLED: OnceLock<()> = OnceLock::new();
-        SWIZZLED.get_or_init(|| {
-            // `setFrameOrigin:` / `setFrame:` resolve to `NSView`'s implementation (the
-            // buttons don't override them), so swizzling the methods reachable from the
-            // button's class swizzles them for all views — the gate keeps the effect to our
-            // three buttons.
-            let btn_class: &AnyClass = {
-                let cls: *const AnyClass = msg_send![close_button, class];
-                &*cls
-            };
-
-            unsafe extern "C-unwind" fn set_frame_origin(
-                this: *mut AnyObject,
-                cmd: Sel,
-                mut origin: NSPoint,
-            ) {
-                unsafe {
-                    let adjust = !NUDGING.with(|g| g.get()) && is_main_traffic_light(this);
-                    if adjust {
-                        NUDGING.with(|g| g.set(true));
-                        let (dx, dy) = traffic_light_delta(this);
-                        origin.x += dx;
-                        origin.y += dy;
-                    }
-                    let orig: unsafe extern "C-unwind" fn(*mut AnyObject, Sel, NSPoint) =
-                        std::mem::transmute(*ORIGINAL_SET_FRAME_ORIGIN.get().unwrap());
-                    orig(this, cmd, origin);
-                    if adjust {
-                        NUDGING.with(|g| g.set(false));
-                    }
+            for kind in 0u64..3 {
+                let button: *mut AnyObject = msg_send![ns_window, standardWindowButton: kind];
+                if button.is_null() {
+                    continue;
                 }
-            }
+                // NSView only posts the notification when asked to.
+                let _: () = msg_send![button, setPostsFrameChangedNotifications: true];
 
-            unsafe extern "C-unwind" fn set_frame(
-                this: *mut AnyObject,
-                cmd: Sel,
-                mut frame: NSRect,
-            ) {
-                unsafe {
-                    let adjust = !NUDGING.with(|g| g.get()) && is_main_traffic_light(this);
-                    if adjust {
-                        NUDGING.with(|g| g.set(true));
-                        let (dx, dy) = traffic_light_delta(this);
-                        frame.origin.x += dx;
-                        frame.origin.y += dy;
-                    }
-                    let orig: unsafe extern "C-unwind" fn(*mut AnyObject, Sel, NSRect) =
-                        std::mem::transmute(*ORIGINAL_SET_FRAME.get().unwrap());
-                    orig(this, cmd, frame);
-                    if adjust {
-                        NUDGING.with(|g| g.set(false));
-                    }
-                }
+                let handler = block2::RcBlock::new(move |_notification: *mut AnyObject| {
+                    // Notifications are delivered on the main thread, and the window outlives
+                    // the process's UI. `place_traffic_lights` is idempotent, so the frame
+                    // change it makes settles instead of looping.
+                    place_traffic_lights(window_addr as *const AnyObject);
+                });
+                let token: *const AnyObject = msg_send![
+                    center,
+                    addObserverForName: &*name,
+                    object: button,
+                    queue: nil,
+                    usingBlock: &*handler,
+                ];
+                // The observer must outlive the window; it's released when the process exits.
+                let _: *const AnyObject = msg_send![token, retain];
             }
-
-            if let Some(method) = btn_class.instance_method(sel!(setFrameOrigin:)) {
-                let new: Imp = std::mem::transmute(set_frame_origin as *const std::ffi::c_void);
-                let old = method.set_implementation(new);
-                let _ = ORIGINAL_SET_FRAME_ORIGIN.set(old);
-            }
-            if let Some(method) = btn_class.instance_method(sel!(setFrame:)) {
-                let new: Imp = std::mem::transmute(set_frame as *const std::ffi::c_void);
-                let old = method.set_implementation(new);
-                let _ = ORIGINAL_SET_FRAME.set(old);
-            }
-            log::debug!("Swizzled NSView frame setters for the traffic-light keeper");
+            log::debug!("Observing traffic-light frame changes");
         });
+
+        place_traffic_lights(ns_window);
     }
 }
 
