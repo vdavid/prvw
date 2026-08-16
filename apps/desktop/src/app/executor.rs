@@ -711,6 +711,27 @@ impl App {
                 let number = self.main_window_number().unwrap_or(0);
                 let _ = sender.send(number);
             }
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            AppCommand::WindowDiagnostics(sender) => {
+                let text = self
+                    .window
+                    .as_ref()
+                    .map(|win| crate::platform::macos::window_diagnostics::dump(win))
+                    .unwrap_or_else(|| "(no window)".to_string());
+                let _ = sender.send(text);
+            }
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            AppCommand::ZoomWindow => {
+                if let Some(win) = &self.window {
+                    window::zoom_window(win);
+                }
+            }
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            AppCommand::ClickZoomButton => {
+                if let Some(win) = &self.window {
+                    crate::platform::macos::window_diagnostics::click_zoom_button(win);
+                }
+            }
             AppCommand::Sync(sender) => {
                 self.update_shared_state();
                 let _ = sender.send(());

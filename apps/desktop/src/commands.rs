@@ -296,6 +296,18 @@ pub enum AppCommand {
     /// receives 0 if the window doesn't exist yet.
     #[cfg(all(debug_assertions, target_os = "macos"))]
     GetWindowNumber(mpsc::Sender<u32>),
+    /// Dump the main window's AppKit view/layer tree (debug-only `GET /window-diagnostics`).
+    /// Runs on the event loop because it talks to AppKit.
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    WindowDiagnostics(mpsc::Sender<String>),
+    /// Perform the native window `zoom:` — what the green traffic light does. Debug-only
+    /// driving hook: the QA path can't synthesize a real click on the button.
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    ZoomWindow,
+    /// Send `performClick:` to the green traffic light itself, so the zoom runs through the
+    /// button's own action rather than a direct `zoom:`. Debug-only driving hook.
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    ClickZoomButton,
     /// Synchronization barrier — sends () back to confirm all prior commands were processed.
     Sync(mpsc::Sender<()>),
 

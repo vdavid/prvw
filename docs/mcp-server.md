@@ -88,10 +88,23 @@ All endpoints also available as simple HTTP for cURL debugging. POST endpoints r
 | POST   | /auto-fit             | "on" or "off"                                             | State JSON       |
 | POST   | /enlarge-small        | "on" or "off"                                             | State JSON       |
 | POST   | /window-geometry      | JSON: `{"x": 100, "y": 100, "width": 800, "height": 600}` | State JSON       |
+| GET    | /window-diagnostics   | -                                                         | Text (debug)     |
+| POST   | /zoom-window          | -                                                         | State JSON       |
+| POST   | /click-zoom-button    | -                                                         | State JSON       |
 | POST   | /refresh              | -                                                         | State JSON       |
 | POST   | /browse/select-folder | absolute folder path (test-only, macOS)                   | State JSON       |
 | POST   | /browse/select-grid   | grid index (test-only, macOS)                             | State JSON       |
 | POST   | /browse/open          | - (open the selected grid image; test-only, macOS)        | State JSON       |
+
+The last three endpoints above are debug-build, macOS-only window-chrome hooks (they don't exist in release):
+
+- `GET /window-diagnostics` dumps the window's AppKit view/layer tree — every titlebar view's frame in window
+  coordinates, the standard window buttons, `styleMask`, `collectionBehavior`, and the corner-radius/mask geometry. It's
+  the tool for "where does AppKit think the traffic lights are, and where do they draw?" and for checking the window's
+  appearance state after a zoom or fullscreen round trip.
+- `POST /zoom-window` performs the native `zoom:`; `POST /click-zoom-button` sends `performClick:` to the green traffic
+  light. The two differ (the button's action, not `zoom:`, is what macOS 26 routes through fullscreen), so use the
+  button one to exercise what a real click does.
 
 The three `/browse/*` endpoints are test-only driving hooks: the QA path can't synthesize native outline/collection-view
 clicks, so integration tests drive tree selection, grid selection, and open through them. macOS-only (browse mode is);

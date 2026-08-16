@@ -133,6 +133,43 @@ pub(super) fn handle_get_diagnostics(
     write_response(stream, 200, "text/plain", text.as_bytes(), &[])
 }
 
+/// Dump the AppKit view/layer tree of the main window. Debug-only diagnostic for window
+/// chrome bugs (traffic-light placement, corner radius after a zoom).
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(super) fn handle_get_window_diagnostics(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+) -> Result<(), String> {
+    let (tx, rx) = mpsc::channel();
+    proxy
+        .send_event(AppCommand::WindowDiagnostics(tx))
+        .map_err(|e| format!("Event loop closed: {e}"))?;
+    let text = rx
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|e| format!("Diagnostics timeout: {e}"))?;
+    write_response(stream, 200, "text/plain", text.as_bytes(), &[])
+}
+
+/// Trigger the native window `zoom:` — the green traffic light's action.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(super) fn handle_post_zoom_window(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    send_and_wait_http(stream, proxy, AppCommand::ZoomWindow, state)
+}
+
+/// Click the green traffic light via `performClick:` (debug-only driving hook).
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(super) fn handle_post_click_zoom_button(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    send_and_wait_http(stream, proxy, AppCommand::ClickZoomButton, state)
+}
+
 pub(super) fn handle_post_key(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,

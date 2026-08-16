@@ -10,3 +10,6 @@ pub mod menu_cleanup;
 pub mod open_handler;
 pub mod print;
 pub mod ui_common;
+/// Debug-only AppKit view/layer tree dump, served by the QA server.
+#[cfg(debug_assertions)]
+pub mod window_diagnostics;

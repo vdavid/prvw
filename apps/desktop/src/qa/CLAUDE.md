@@ -47,6 +47,19 @@ An in-process HTTP server for automated QA: used by E2E tests, agent-driven work
   the const inside `http.rs` because the HTTP endpoint is its primary home; MCP reaches across for the same string
   rather than duplicating.
 
+## Window-chrome diagnostics (debug builds, macOS)
+
+`GET /window-diagnostics` returns a text dump of the main window's AppKit view and layer tree: each titlebar view's
+frame in window coordinates, the three standard window buttons, `styleMask`, `collectionBehavior`, and the layer corner
+radii/masks. `POST /zoom-window` (native `zoom:`) and `POST /click-zoom-button` (`performClick:` on the green traffic
+light) drive the two window-zoom paths without synthesizing OS mouse input. All three are gated by
+`#[cfg(all(debug_assertions, target_os = "macos"))]`, like `screenshot_window`.
+
+They exist because window-chrome bugs are invisible to `/state`: the traffic lights' clickable rect drifting away from
+their drawing, or a window keeping its fullscreen appearance after a restore, only show up in the AppKit geometry.
+`windowed_mode_blocks_appkit_from_starting_a_fullscreen_transition` (in `tests/integration.rs`) reads
+`collectionBehavior` out of this dump.
+
 ## Browse-mode observability + driving hooks
 
 `GET /state` mirrors the full browse picture (so tests/tools assert it without keystrokes or screenshots): `view_mode`

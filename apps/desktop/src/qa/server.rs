@@ -151,6 +151,12 @@ fn handle_request(
         ("GET", "/menu") => http::handle_get_menu(stream),
         ("GET", "/screenshot") => http::handle_get_screenshot(stream, proxy),
         ("GET", "/diagnostics") => http::handle_get_diagnostics(stream, state),
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        ("GET", "/window-diagnostics") => http::handle_get_window_diagnostics(stream, proxy),
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        ("POST", "/zoom-window") => http::handle_post_zoom_window(stream, proxy, state),
+        #[cfg(all(debug_assertions, target_os = "macos"))]
+        ("POST", "/click-zoom-button") => http::handle_post_click_zoom_button(stream, proxy, state),
         ("POST", "/key") => http::handle_post_key(stream, proxy, &body, state),
         ("POST", "/navigate") => http::handle_post_navigate(stream, proxy, &body, state),
         ("POST", "/zoom") => http::handle_post_zoom(stream, proxy, &body, state),
