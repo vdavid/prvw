@@ -26,6 +26,10 @@ fullscreen round trip.
   semver-compatible crate updates, each at least three days old
   ([41a330aa](https://github.com/vdavid/prvw/commit/41a330aa),
   [f00bbab8](https://github.com/vdavid/prvw/commit/f00bbab8))
+- Take the dependency majors too: `nom-exif` 3.6 (its API moved under us: no more `parse_jpeg_exif`, rationals became a
+  struct, `EntryValue::Time` became `DateTime`), `muda` 0.19, `moxcms` 0.9, and `base64` 0.23 on the app; Astro 7 and
+  `eslint-plugin-astro` 3 on the website ([a201f1ca](https://github.com/vdavid/prvw/commit/a201f1ca),
+  [880e9cbb](https://github.com/vdavid/prvw/commit/880e9cbb))
 - Add debug-only QA endpoints that dump the window's AppKit view and layer tree and drive both window-zoom paths, so
   window-chrome bugs can be inspected rather than guessed at
   ([61eed499](https://github.com/vdavid/prvw/commit/61eed499))
