@@ -5,6 +5,42 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Window-chrome fixes for macOS 26: the traffic lights click where you see them, and the window comes back whole after a
+fullscreen round trip.
+
+### Fixed
+
+- The traffic lights are clickable where they're drawn. The offset that keeps them clear of the rounded corner was
+  moving only their drawing on macOS 26, leaving the clickable circle 6 pt up and to the left, so anything but a
+  dead-centre click on the red button did nothing ([cc2f5be3](https://github.com/vdavid/prvw/commit/cc2f5be3))
+- Leaving fullscreen from the green traffic light no longer leaves the window dressed as fullscreen: the title bar came
+  back missing, the background stayed black, and the corner drew as a double cutout at two radii until the next resize.
+  The F key no longer toggles the wrong way afterwards either
+  ([e56d08fe](https://github.com/vdavid/prvw/commit/e56d08fe))
+
+### Non-app
+
+- Refresh the toolchain and dependency floor: pnpm 11.22.0, Node 26.7.0, in-range website bumps, and ~197
+  semver-compatible crate updates, each at least three days old
+  ([41a330aa](https://github.com/vdavid/prvw/commit/41a330aa),
+  [f00bbab8](https://github.com/vdavid/prvw/commit/f00bbab8))
+- Add debug-only QA endpoints that dump the window's AppKit view and layer tree and drive both window-zoom paths, so
+  window-chrome bugs can be inspected rather than guessed at
+  ([61eed499](https://github.com/vdavid/prvw/commit/61eed499))
+- Build releases on GitHub-hosted runners, so a release no longer depends on the laptop staying awake and the three
+  architecture builds run in parallel ([19716866](https://github.com/vdavid/prvw/commit/19716866))
+- Stop a stray `--remove-orphans` in the website deploy from taking down the getcmdr.com site, by giving this stack its
+  own Compose project name ([85a1f090](https://github.com/vdavid/prvw/commit/85a1f090))
+- Relax the Renovate dependency cooldown from 14 days to 3, matching the pnpm install-side gate
+  ([c68c44f4](https://github.com/vdavid/prvw/commit/c68c44f4))
+- Answer pnpm 11.22's new build-script prompt for `sharp` with "don't run it", matching what the deploy image has done
+  since the pnpm 11 move ([3edac64f](https://github.com/vdavid/prvw/commit/3edac64f))
+- Restore the non-macOS (Linux CI) build broken by browse mode and clear the dead-code errors it exposed
+  ([9d3faddd](https://github.com/vdavid/prvw/commit/9d3faddd),
+  [0f202122](https://github.com/vdavid/prvw/commit/0f202122))
+
 ## [0.15.0] - 2026-06-17
 
 Browse mode: a native folder tree and thumbnail gallery to flip through a folder's photos, plus live folder sync so the
