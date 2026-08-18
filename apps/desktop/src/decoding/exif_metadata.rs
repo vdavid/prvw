@@ -265,9 +265,10 @@ fn value_to_u32(v: &EntryValue) -> Option<u32> {
 fn rational_to_f64(v: &EntryValue) -> Option<f64> {
     match v {
         EntryValue::URational(r) => Some(rational_pair_to_f64(r.numerator(), r.denominator())),
-        EntryValue::URationalArray(arr) if !arr.is_empty() => {
-            Some(rational_pair_to_f64(arr[0].numerator(), arr[0].denominator()))
-        }
+        EntryValue::URationalArray(arr) if !arr.is_empty() => Some(rational_pair_to_f64(
+            arr[0].numerator(),
+            arr[0].denominator(),
+        )),
         EntryValue::F32(n) => Some(*n as f64),
         EntryValue::F64(n) => Some(*n),
         _ => None,
@@ -287,7 +288,9 @@ fn signed_rational_to_f64(v: &EntryValue) -> Option<f64> {
 fn rational_pair(v: &EntryValue) -> Option<(u32, u32)> {
     match v {
         EntryValue::URational(r) => Some((r.numerator(), r.denominator().max(1))),
-        EntryValue::URationalArray(arr) if !arr.is_empty() => Some((arr[0].numerator(), arr[0].denominator().max(1))),
+        EntryValue::URationalArray(arr) if !arr.is_empty() => {
+            Some((arr[0].numerator(), arr[0].denominator().max(1)))
+        }
         _ => None,
     }
 }

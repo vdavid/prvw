@@ -2,9 +2,11 @@ packages:
   - apps/*
 
 # pnpm 11 makes every package with an install script an explicit decision, and errors
-# out until it gets one. `sharp` (Astro's image service) ships prebuilt binaries, so its
-# build script isn't needed for the site build — the deploy image has skipped it since
-# the pnpm 11 move (see `--ignore-scripts` in apps/website/Dockerfile) and the output is
-# identical. Keeping it off here matches that, and keeps install-time code execution out.
+# out until it gets one. `sharp` (Astro's image service) and `esbuild` both ship prebuilt
+# binaries, so their build scripts aren't needed for the site build — the deploy image has
+# skipped them since the pnpm 11 move (see `--ignore-scripts` in apps/website/Dockerfile)
+# and the output is identical. Keeping them off here matches that, and keeps install-time
+# code execution out.
 allowBuilds:
+  esbuild: false
   sharp: false
