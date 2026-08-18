@@ -20,6 +20,10 @@ fullscreen round trip.
   The F key no longer toggles the wrong way afterwards either
   ([e56d08fe](https://github.com/vdavid/prvw/commit/e56d08fe))
 
+- Fullscreen no longer gets stuck when you toggle it twice quickly: AppKit drops a transition asked for while one is
+  still animating, so the second F (or green-button click) did nothing. Requests made mid-transition now wait their turn
+  ([7ffe621b](https://github.com/vdavid/prvw/commit/7ffe621b))
+
 ### Non-app
 
 - Refresh the toolchain and dependency floor: pnpm 11.22.0, Node 26.7.0, in-range website bumps, and ~197
