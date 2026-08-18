@@ -11,5 +11,5 @@ node = "26"
 # floating `"11"` would drift to a newer 11.x than `packageManager`, and pnpm
 # refuses to run when its version doesn't match that field. Bump all three
 # together.
-"npm:pnpm" = "11.1.2"
+"npm:pnpm" = "11.22.0"
 # Rust is managed by rustup via rust-toolchain.toml

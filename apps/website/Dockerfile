@@ -6,7 +6,7 @@ WORKDIR /app
 # Match the `packageManager` field in the root package.json. Corepack honors
 # that field over whatever we prepare here, so keep them aligned to avoid
 # surprises.
-RUN corepack enable && corepack prepare pnpm@11.1.2 --activate
+RUN corepack enable && corepack prepare pnpm@11.22.0 --activate
 
 # Copy workspace config and lockfile
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
