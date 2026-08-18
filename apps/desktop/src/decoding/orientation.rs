@@ -14,10 +14,9 @@ pub(super) fn parse_exif_orientation(bytes: &[u8], filename: &str) -> u16 {
         let mut parser = MediaParser::new();
         let cursor = Cursor::new(bytes);
         let ms = MediaSource::seekable(cursor).ok()?;
-        if !ms.has_exif() {
-            return None;
-        }
-        let iter: nom_exif::ExifIter = parser.parse(ms).ok()?;
+        // No `has_exif()` pre-check in nom-exif 3 — `parse_exif` reports a file without an
+        // EXIF segment as an error, which is the same "no orientation" for us.
+        let iter: nom_exif::ExifIter = parser.parse_exif(ms).ok()?;
         let exif: nom_exif::Exif = iter.into();
         let value = exif.get(ExifTag::Orientation)?;
         match value {

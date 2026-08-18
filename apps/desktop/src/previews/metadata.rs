@@ -215,30 +215,23 @@ fn read_jpeg_with_orientation(path: &Path) -> Option<Dimensions> {
         image::ImageReader::with_format(std::io::BufReader::new(cursor), image::ImageFormat::Jpeg);
     let (mut w, mut h) = reader.into_dimensions().ok()?;
 
-    // Pure-Rust EXIF parse from the same buffer.
-    //
-    // `parse_jpeg_exif` is deprecated in nom-exif 2.0 in favour of the
-    // `MediaParser` / `MediaSource` API which reuses internal buffers
-    // across multiple files. We're intentionally using the simpler
-    // function here — buffer reuse is irrelevant when we already have
-    // a 64 KB buffer in hand and parse a single file at a time. If
-    // upstream removes this function we'll migrate; until then the
-    // deprecation note doesn't apply to our usage.
-    let cursor_for_exif = Cursor::new(&bytes);
-    #[allow(deprecated)]
-    let orient = nom_exif::parse_jpeg_exif(cursor_for_exif)
-        .ok()
-        .flatten()
-        .and_then(|exif| {
-            exif.get(nom_exif::ExifTag::Orientation)
-                .and_then(|v| match v {
-                    nom_exif::EntryValue::U16(n) => Some(*n),
-                    nom_exif::EntryValue::I16(n) => u16::try_from(*n).ok(),
-                    nom_exif::EntryValue::U32(n) => u16::try_from(*n).ok(),
-                    _ => None,
-                })
-        })
-        .unwrap_or(1);
+    // Pure-Rust EXIF parse from the same buffer, through nom-exif's `MediaParser` /
+    // `MediaSource` API. The parser reuses internal buffers across files, which buys us
+    // nothing for a single 64 KB buffer, but it's the only API left: nom-exif 3 dropped the
+    // one-shot `parse_jpeg_exif`.
+    let orient = (|| -> Option<u16> {
+        let mut parser = nom_exif::MediaParser::new();
+        let ms = nom_exif::MediaSource::seekable(Cursor::new(&bytes)).ok()?;
+        let iter: nom_exif::ExifIter = parser.parse_exif(ms).ok()?;
+        let exif: nom_exif::Exif = iter.into();
+        match exif.get(nom_exif::ExifTag::Orientation)? {
+            nom_exif::EntryValue::U16(n) => Some(*n),
+            nom_exif::EntryValue::I16(n) => u16::try_from(*n).ok(),
+            nom_exif::EntryValue::U32(n) => u16::try_from(*n).ok(),
+            _ => None,
+        }
+    })()
+    .unwrap_or(1);
 
     if (5..=8).contains(&orient) {
         std::mem::swap(&mut w, &mut h);

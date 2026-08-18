@@ -63,10 +63,9 @@ pub fn parse_exif_metadata(bytes: &[u8]) -> Option<ExifMetadata> {
     let mut parser = MediaParser::new();
     let cursor = Cursor::new(bytes);
     let ms = MediaSource::seekable(cursor).ok()?;
-    if !ms.has_exif() {
-        return None;
-    }
-    let iter: ExifIter = parser.parse(ms).ok()?;
+    // No `has_exif()` pre-check in nom-exif 3 — `parse_exif` reports a file without an EXIF
+    // segment as an error, which is the same `None` for us.
+    let iter: ExifIter = parser.parse_exif(ms).ok()?;
     let exif: nom_exif::Exif = iter.into();
 
     let lat_ref = exif.get(ExifTag::GPSLatitudeRef).and_then(text);
@@ -235,14 +234,14 @@ fn nonempty(s: String) -> Option<String> {
 
 /// Extract an EXIF date/time tag as a normalized `YYYY-MM-DD HH:MM:SS`
 /// string. `nom-exif` decodes `DateTimeOriginal` / `CreateDate` /
-/// `ModifyDate` into typed `Time` / `NaiveDateTime` variants, never `Text`,
+/// `ModifyDate` into typed `DateTime` / `NaiveDateTime` variants, never `Text`,
 /// so `text()` would silently drop the date on every JPEG / HEIC / WebP.
 /// We handle both typed variants (dropping any timezone offset to show the
 /// camera's wall-clock time) and keep a `Text` fallback for the rare
 /// encoder that writes the date as a raw string.
 fn date_text(v: &EntryValue) -> Option<String> {
     match v {
-        EntryValue::Time(dt) => Some(dt.naive_local().format("%Y-%m-%d %H:%M:%S").to_string()),
+        EntryValue::DateTime(dt) => Some(dt.naive_local().format("%Y-%m-%d %H:%M:%S").to_string()),
         EntryValue::NaiveDateTime(dt) => Some(dt.format("%Y-%m-%d %H:%M:%S").to_string()),
         EntryValue::Text(s) => nonempty(s.trim().to_string()).map(normalize_exif_date),
         _ => None,
@@ -265,9 +264,9 @@ fn value_to_u32(v: &EntryValue) -> Option<u32> {
 
 fn rational_to_f64(v: &EntryValue) -> Option<f64> {
     match v {
-        EntryValue::URational(r) => Some(rational_pair_to_f64(r.0, r.1)),
+        EntryValue::URational(r) => Some(rational_pair_to_f64(r.numerator(), r.denominator())),
         EntryValue::URationalArray(arr) if !arr.is_empty() => {
-            Some(rational_pair_to_f64(arr[0].0, arr[0].1))
+            Some(rational_pair_to_f64(arr[0].numerator(), arr[0].denominator()))
         }
         EntryValue::F32(n) => Some(*n as f64),
         EntryValue::F64(n) => Some(*n),
@@ -277,14 +276,8 @@ fn rational_to_f64(v: &EntryValue) -> Option<f64> {
 
 fn signed_rational_to_f64(v: &EntryValue) -> Option<f64> {
     match v {
-        EntryValue::IRational(r) => {
-            if r.1 == 0 {
-                None
-            } else {
-                Some(r.0 as f64 / r.1 as f64)
-            }
-        }
-        EntryValue::URational(r) => Some(rational_pair_to_f64(r.0, r.1)),
+        EntryValue::IRational(r) => r.to_f64(),
+        EntryValue::URational(r) => Some(rational_pair_to_f64(r.numerator(), r.denominator())),
         EntryValue::F32(n) => Some(*n as f64),
         EntryValue::F64(n) => Some(*n),
         _ => None,
@@ -293,8 +286,8 @@ fn signed_rational_to_f64(v: &EntryValue) -> Option<f64> {
 
 fn rational_pair(v: &EntryValue) -> Option<(u32, u32)> {
     match v {
-        EntryValue::URational(r) => Some((r.0, r.1.max(1))),
-        EntryValue::URationalArray(arr) if !arr.is_empty() => Some((arr[0].0, arr[0].1.max(1))),
+        EntryValue::URational(r) => Some((r.numerator(), r.denominator().max(1))),
+        EntryValue::URationalArray(arr) if !arr.is_empty() => Some((arr[0].numerator(), arr[0].denominator().max(1))),
         _ => None,
     }
 }
@@ -304,9 +297,9 @@ fn rational_array_to_dms(v: &EntryValue) -> Option<f64> {
         EntryValue::URationalArray(a) if a.len() >= 3 => a,
         _ => return None,
     };
-    let d = rational_pair_to_f64(arr[0].0, arr[0].1);
-    let m = rational_pair_to_f64(arr[1].0, arr[1].1);
-    let s = rational_pair_to_f64(arr[2].0, arr[2].1);
+    let d = rational_pair_to_f64(arr[0].numerator(), arr[0].denominator());
+    let m = rational_pair_to_f64(arr[1].numerator(), arr[1].denominator());
+    let s = rational_pair_to_f64(arr[2].numerator(), arr[2].denominator());
     Some(d + m / 60.0 + s / 3600.0)
 }
 
@@ -449,8 +442,8 @@ mod tests {
     }
 
     #[test]
-    fn date_text_from_time_strips_offset() {
-        // With an OffsetTime tag present, `nom-exif` decodes into `Time`. We
+    fn date_text_from_offset_datetime_strips_offset() {
+        // With an OffsetTime tag present, `nom-exif` decodes into `DateTime`. We
         // show the wall-clock time the camera recorded, dropping the offset.
         use chrono::{FixedOffset, TimeZone};
         let dt = FixedOffset::east_opt(8 * 3600)
@@ -458,7 +451,7 @@ mod tests {
             .with_ymd_and_hms(2023, 7, 9, 20, 36, 33)
             .unwrap();
         assert_eq!(
-            date_text(&EntryValue::Time(dt)).as_deref(),
+            date_text(&EntryValue::DateTime(dt)).as_deref(),
             Some("2023-07-09 20:36:33")
         );
     }
