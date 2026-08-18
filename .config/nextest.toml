@@ -7,3 +7,14 @@
 # pass in isolation; retries absorb the contention flakes without serializing the run
 # (thread count stays at the default, one per core).
 retries = 2
+
+# macOS fullscreen is a Space transition, and several running at once crawl: with the
+# suite at full parallelism the transitions took over 45 s and the fullscreen tests timed
+# out. Retries don't help — the next attempt is just as loaded. Run them one at a time
+# instead; there are only two, so the wall-clock cost is small.
+[test-groups]
+fullscreen = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(/fullscreen/)'
+test-group = 'fullscreen'

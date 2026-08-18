@@ -304,18 +304,27 @@ fn fullscreen_state_survives_a_round_trip_appkit_drove() {
     // The green button itself can't drive this test: `/click-zoom-button` zooms rather than
     // going fullscreen for the harness's background, non-key window. The transition below takes
     // the same AppKit path the button takes.
-    // Fullscreen transitions build and tear down a Space, which crawls when the whole suite is
-    // running its apps in parallel.
-    const FULLSCREEN_WAIT: Duration = Duration::from_secs(45);
+    // Fullscreen transitions build and tear down a Space, which takes a moment even with the
+    // `fullscreen` nextest group keeping them from overlapping.
+    const FULLSCREEN_WAIT: Duration = Duration::from_secs(30);
 
     let app = TestApp::start();
+    let windowed_width = app.get_state()["window_width"].as_u64().unwrap();
     assert_eq!(app.get_state()["fullscreen"].as_bool(), Some(false));
 
+    // Wait for the window to actually fill the screen, not just for the state to flip: the
+    // style mask carries the fullscreen bit from the moment the transition *starts*, and
+    // AppKit drops a request to leave that arrives while it's still animating (`winit` queues
+    // one, and only replays it once the entry finishes).
     app.post("/fullscreen", "on");
     let entered = wait_for_state(&app, FULLSCREEN_WAIT, |s| {
         s["fullscreen"].as_bool() == Some(true)
+            && s["window_width"]
+                .as_u64()
+                .is_some_and(|w| w > windowed_width)
     });
     assert_eq!(entered["fullscreen"].as_bool(), Some(true));
+    assert!(entered["window_width"].as_u64().unwrap() > windowed_width);
 
     app.post("/fullscreen", "off");
     let left = wait_for_state(&app, FULLSCREEN_WAIT, |s| {
@@ -330,6 +339,9 @@ fn fullscreen_state_survives_a_round_trip_appkit_drove() {
     app.post("/key", "f");
     let toggled = wait_for_state(&app, FULLSCREEN_WAIT, |s| {
         s["fullscreen"].as_bool() == Some(true)
+            && s["window_width"]
+                .as_u64()
+                .is_some_and(|w| w > windowed_width)
     });
     assert_eq!(
         toggled["fullscreen"].as_bool(),

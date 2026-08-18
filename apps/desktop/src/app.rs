@@ -574,6 +574,9 @@ impl App {
             // Keep the traffic lights nudged across relayouts (resize, fullscreen) without a
             // frame of flicker — re-applies the offset synchronously when macOS resets them.
             window::register_traffic_light_keeper(&win);
+            // Watch AppKit's fullscreen transitions, so a request made during one isn't
+            // dropped and a transition we didn't start still leaves our state right.
+            window::register_fullscreen_observer(&win);
             // Allow the title bar area to show vibrancy through the transparent clear.
             display_profile::set_metal_layer_transparent(&win);
             // Push the wgpu Metal layer above the vibrancy views via zPosition so the

@@ -1311,16 +1311,26 @@ pub fn toggle_fullscreen(window: &Window) {
 
 /// Set fullscreen on or off.
 ///
-/// Normally `winit` drives the transition: it queues a request made while another transition
-/// is still animating (AppKit drops those), which keeps a fast double-press of F honest.
+/// Two things make this more than a call into `winit`:
 ///
-/// It can only drive it while its cached fullscreen state matches reality, though. The cache
-/// tracks transitions `winit` started, so it reads "fullscreen" forever after the user leaves
-/// a fullscreen AppKit started (the green traffic light starts one on macOS 26). With the cache
-/// stale, `Window::set_fullscreen` no-ops on the value we ask for — F did nothing, or toggled
-/// the wrong way. So when the cache disagrees with AppKit, we ask AppKit ourselves; that also
-/// resyncs the cache, since `winit` picks the state back up from the transition's notification.
+/// - **`winit`'s cached fullscreen state goes stale.** It tracks transitions `winit` started,
+///   so it reads "fullscreen" forever after the user leaves a fullscreen AppKit started (the
+///   green traffic light starts one on macOS 26). `Window::set_fullscreen` then no-ops on the
+///   value we ask for, and F does nothing or toggles the wrong way. When the cache disagrees
+///   with AppKit we ask AppKit ourselves, which also resyncs the cache: `winit` picks the state
+///   back up from the transition's notification.
+/// - **AppKit drops a transition request made during a transition.** Mash F and the second
+///   press would be swallowed, leaving the window stuck. Requests that land mid-flight are held
+///   in `PENDING_FULLSCREEN` and applied when the current transition finishes (see
+///   `register_fullscreen_observer`).
 pub fn set_fullscreen(window: &Window, on: bool) {
+    #[cfg(target_os = "macos")]
+    if FULLSCREEN_IN_TRANSITION.load(std::sync::atomic::Ordering::Acquire) {
+        log::debug!("Fullscreen: transition in flight, queuing {on}");
+        PENDING_FULLSCREEN.store(if on { 1 } else { 2 }, std::sync::atomic::Ordering::Release);
+        return;
+    }
+
     let actually_fullscreen = is_fullscreen(window);
     if actually_fullscreen == on {
         return;
@@ -1335,9 +1345,7 @@ pub fn set_fullscreen(window: &Window, on: bool) {
     if window.fullscreen().is_some() != actually_fullscreen {
         log::debug!("Fullscreen: winit's cached state is stale, asking AppKit directly");
         with_ns_window(window, |ns_window| unsafe {
-            use objc2::msg_send;
-            let nil: *const objc2::runtime::AnyObject = std::ptr::null();
-            let _: () = msg_send![ns_window, toggleFullScreen: nil];
+            toggle_native_fullscreen(ns_window)
         });
         return;
     }
@@ -1346,6 +1354,118 @@ pub fn set_fullscreen(window: &Window, on: bool) {
         window.set_fullscreen(Some(Fullscreen::Borderless(None)));
     } else {
         window.set_fullscreen(None);
+    }
+}
+
+/// True while AppKit is animating into or out of fullscreen. Requests that arrive in this
+/// window are queued rather than sent, because AppKit silently drops them.
+#[cfg(target_os = "macos")]
+static FULLSCREEN_IN_TRANSITION: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The fullscreen state asked for during a transition, applied once it ends.
+/// 0 = nothing queued, 1 = fullscreen, 2 = windowed.
+#[cfg(target_os = "macos")]
+static PENDING_FULLSCREEN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Watch AppKit's fullscreen transitions so `set_fullscreen` knows when one is in flight, and
+/// so a request queued during one still happens.
+///
+/// Observing AppKit rather than routing everything through `winit` is what makes this correct
+/// for transitions we didn't start — the green traffic light's, on macOS 26.
+///
+/// Call once per process, after the main window exists.
+#[cfg(target_os = "macos")]
+pub fn register_fullscreen_observer(window: &Window) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::NSString;
+    use std::sync::OnceLock;
+    use std::sync::atomic::Ordering;
+
+    static OBSERVING: OnceLock<()> = OnceLock::new();
+
+    with_ns_window(window, |ns_window| {
+        OBSERVING.get_or_init(|| {
+            let window_addr = ns_window as usize;
+            unsafe {
+                let center: *const AnyObject =
+                    msg_send![objc2::class!(NSNotificationCenter), defaultCenter];
+                let nil: *const AnyObject = std::ptr::null();
+
+                let observe = |name: &str, starting: bool| {
+                    let handler = block2::RcBlock::new(move |_notification: *mut AnyObject| {
+                        FULLSCREEN_IN_TRANSITION.store(starting, Ordering::Release);
+                        if starting {
+                            return;
+                        }
+                        // Transition done: honour whatever was asked for while it ran.
+                        let pending = PENDING_FULLSCREEN.swap(0, Ordering::AcqRel);
+                        let ns_window = window_addr as *const AnyObject;
+                        let wanted = match pending {
+                            1 => true,
+                            2 => false,
+                            _ => return,
+                        };
+                        if wanted != ns_window_is_fullscreen(ns_window) {
+                            log::debug!("Fullscreen: applying queued request ({wanted})");
+                            // Next run-loop turn, not here: AppKit ignores `toggleFullScreen:`
+                            // called from inside its own transition notification.
+                            let toggle = block2::RcBlock::new(move || {
+                                let ns_window = window_addr as *const AnyObject;
+                                if wanted != ns_window_is_fullscreen(ns_window) {
+                                    toggle_native_fullscreen(ns_window);
+                                }
+                            });
+                            let queue: *const AnyObject =
+                                msg_send![objc2::class!(NSOperationQueue), mainQueue];
+                            let _: () = msg_send![queue, addOperationWithBlock: &*toggle];
+                        }
+                    });
+                    let ns_name = NSString::from_str(name);
+                    let token: *const AnyObject = msg_send![
+                        center,
+                        addObserverForName: &*ns_name,
+                        object: ns_window,
+                        queue: nil,
+                        usingBlock: &*handler,
+                    ];
+                    // The observer must outlive the window; released when the process exits.
+                    let _: *const AnyObject = msg_send![token, retain];
+                };
+
+                observe("NSWindowWillEnterFullScreenNotification", true);
+                observe("NSWindowWillExitFullScreenNotification", true);
+                observe("NSWindowDidEnterFullScreenNotification", false);
+                observe("NSWindowDidExitFullScreenNotification", false);
+                observe("NSWindowDidFailToEnterFullScreenNotification", false);
+            }
+            log::debug!("Observing fullscreen transitions");
+        });
+    });
+}
+
+/// Ask AppKit to flip the window's fullscreen state.
+#[cfg(target_os = "macos")]
+unsafe fn toggle_native_fullscreen(ns_window: *const objc2::runtime::AnyObject) {
+    use objc2::msg_send;
+    unsafe {
+        let nil: *const objc2::runtime::AnyObject = std::ptr::null();
+        let _: () = msg_send![ns_window, toggleFullScreen: nil];
+    }
+}
+
+/// Whether the window carries `NSWindowStyleMask.fullScreen` (1 << 14). AppKit sets the bit
+/// when a transition starts and clears it when one to windowed starts, so it leads the
+/// animation — which is what we want for appearance, and why a *request* still has to wait for
+/// the transition itself to finish.
+#[cfg(target_os = "macos")]
+unsafe fn ns_window_is_fullscreen(ns_window: *const objc2::runtime::AnyObject) -> bool {
+    use objc2::msg_send;
+    const FULL_SCREEN: u64 = 1 << 14;
+    unsafe {
+        let mask: u64 = msg_send![ns_window, styleMask];
+        mask & FULL_SCREEN != 0
     }
 }
 
@@ -1371,20 +1491,16 @@ fn with_ns_window(window: &Window, f: impl FnOnce(*const objc2::runtime::AnyObje
 /// Check if the window is currently fullscreen.
 ///
 /// On macOS this reads the `NSWindow`'s own style mask instead of `winit`'s cached state: the
-/// cache only tracks transitions `winit` itself started, so it reports "fullscreen" forever
-/// after the user leaves a fullscreen AppKit started (the green traffic light). Everything
-/// downstream — the title-bar strip, the window background, the zoom rules — then dresses a
-/// restored window as if it were still fullscreen. The style mask is always the truth.
+/// cache only tracks transitions `winit` started, so it reports "fullscreen" forever after the
+/// user leaves a fullscreen AppKit started (the green traffic light). Everything downstream —
+/// the title-bar strip, the window background, the zoom rules — then dresses a restored window
+/// as if it were still fullscreen. The style mask is always the truth.
 pub fn is_fullscreen(window: &Window) -> bool {
     #[cfg(target_os = "macos")]
     {
-        // NSWindowStyleMask.fullScreen = 1 << 14
-        const FULL_SCREEN: u64 = 1 << 14;
         let mut fullscreen = false;
-        with_ns_window(window, |ns_window| unsafe {
-            use objc2::msg_send;
-            let mask: u64 = msg_send![ns_window, styleMask];
-            fullscreen = mask & FULL_SCREEN != 0;
+        with_ns_window(window, |ns_window| {
+            fullscreen = unsafe { ns_window_is_fullscreen(ns_window) };
         });
         fullscreen
     }
