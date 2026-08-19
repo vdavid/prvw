@@ -18,6 +18,7 @@ jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       website: ${{ steps.filter.outputs.website }}
@@ -49,6 +50,7 @@ jobs:
   desktop-rust:
     name: Desktop (Rust)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: inputs.run_all || needs.changes.outputs.rust == 'true'
 
@@ -62,10 +64,15 @@ jobs:
       - name: Install tools with mise
         run: mise install
 
+      # `apt-get` has hung here for hours on a stalled mirror, so it gets its own short
+      # timeout and retries rather than sitting on the job's whole budget.
       - name: Install Linux dependencies
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libxdo-dev
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 libglib2.0-dev libgtk-3-dev libxdo-dev
 
       - name: Cache Cargo
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -94,6 +101,7 @@ jobs:
   desktop-rust-macos:
     name: Desktop (Rust, macOS)
     runs-on: macos-latest
+    timeout-minutes: 45
     needs: changes
     if: inputs.run_all || needs.changes.outputs.rust == 'true'
 
@@ -124,6 +132,7 @@ jobs:
   website:
     name: Website
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: changes
     if: inputs.run_all || needs.changes.outputs.website == 'true'
 
@@ -174,6 +183,7 @@ jobs:
   scripts:
     name: Scripts (Go)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: changes
     if: inputs.run_all || needs.changes.outputs.scripts == 'true'
 
@@ -218,6 +228,7 @@ jobs:
   changelog:
     name: CHANGELOG commit links
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: changes
     if: inputs.run_all || needs.changes.outputs.changelog == 'true'
 
@@ -246,6 +257,7 @@ jobs:
   deploy-website:
     name: Deploy website
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: website
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
 
@@ -266,6 +278,7 @@ jobs:
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [desktop-rust, desktop-rust-macos, website, scripts, changelog]
     if: always()
     steps:

@@ -192,6 +192,7 @@ jobs:
     name: Create release
     needs: [build]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
