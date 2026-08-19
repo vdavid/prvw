@@ -5,7 +5,7 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.15.1] - 2026-08-19
 
 Window-chrome fixes for macOS 26: the traffic lights click where you see them, and the window comes back whole after a
 fullscreen round trip.
