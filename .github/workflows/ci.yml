@@ -82,6 +82,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # The test check falls back to `cargo install cargo-nextest --locked` when the binary is
+      # missing, which builds it from source and costs minutes on every run. The prebuilt binary
+      # takes seconds. `latest` is deliberate: it's a test runner, not something we ship.
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "$HOME/.cargo/bin"
+
       - name: Build check tool
         run: go build -o check .
         working-directory: ./scripts/check
@@ -96,7 +102,7 @@ jobs:
         run: ./scripts/check/check --check cargo-test --ci
 
   # ===========================================
-  # Desktop app - macOS compilation check
+  # Desktop app - macOS
   # ===========================================
   desktop-rust-macos:
     name: Desktop (Rust, macOS)
@@ -123,8 +129,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build
-        run: cargo build
+      # Prebuilt binary, for the same reason as the Linux job.
+      - name: Install cargo-nextest
+        run: curl -LsSf https://get.nexte.st/latest/mac | tar zxf - -C "$HOME/.cargo/bin"
+
+      - name: Build check tool
+        run: go build -o check .
+        working-directory: ./scripts/check
+
+      # No separate `cargo build` step and no rustfmt: clippy runs `--all-targets`, the test
+      # run builds the binary the E2E tests spawn, and rustfmt is platform-independent, so the
+      # Linux job already covers it.
+      - name: Run clippy
+        run: ./scripts/check/check --check clippy --ci
+
+      # macOS is the only platform that runs `tests/integration.rs`: the 60 E2E tests spawn a
+      # real window and wgpu surface, so they're `#![cfg(target_os = "macos")]` and headless
+      # Linux skips them entirely.
+      - name: Run Rust tests
+        run: ./scripts/check/check --check cargo-test --ci
 
   # ===========================================
   # Website
