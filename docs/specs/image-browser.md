@@ -87,11 +87,13 @@ under the live surface. We hide one and show the other.
   thread on a full decode; it reuses the same async cache-hit / cache-miss display path image-mode navigation uses.
 - **Selecting a folder** in the tree lists its images in the grid.
 - **The browse selection drives the prospective current image and is warmed.** When the selection lands on an image
-  (grid click or arrow-key selection), the app treats it as the prospective current image and warms it + N±2 neighbors
-  into the shared image cache via the preloader, cancelling/replacing as the selection moves (standard image-mode
-  preloader behavior). Warming is **by path** and does not display the image or auto-fit the window while browsing
-  (which would resize the window behind the browse UI) — the reveal makes it current and paints it. By reveal time the
-  full image is usually already cached (instant), and arrowing in image mode afterward is warm.
+  (grid click or arrow-key selection), the app treats it as the prospective current image and warms it plus
+  `preloader::preload_count()` neighbors each side into the shared image cache via the preloader, cancelling/replacing
+  as the selection moves (standard image-mode preloader behavior). That radius is the image-mode preload window, which
+  narrows on a machine whose cache budget can't retain the full one — warming fills the same cache, so warming wider
+  than it retains would evict on arrival. Warming is **by path** and does not display the image or auto-fit the window
+  while browsing (which would resize the window behind the browse UI) — the reveal makes it current and paints it. By
+  reveal time the full image is usually already cached (instant), and arrowing in image mode afterward is warm.
 - **Tab** toggles focus between tree and grid (app-managed in `browser::State`, not the native key-view loop — see
   "Input architecture"; the grid is skipped when empty). All focus paths (Tab, a tree click, a grid click) funnel
   through `sync_native`, which derives the grid's selection-emphasis color from `focused_pane` state (not the native

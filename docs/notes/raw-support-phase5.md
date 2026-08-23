@@ -106,6 +106,11 @@ Default-on means EDR-display users get HDR highlights out of the box; SDR-displa
 
 ### Cache budget
 
+> **Superseded on the numbers, not the reasoning.** Both budgets are RAM-proportional now, and the preload window is
+> derived from the budget rather than fixed. 512 MB / 1 GB is what a 32 GB machine still gets. See
+> [`preload-window-and-cache-budget.md`](preload-window-and-cache-budget.md) and `src/navigation/CLAUDE.md`. The
+> HDR-doubles-SDR relationship below is unchanged, and it's still what keeps the preload count identical in both modes.
+
 `navigation::preloader::ImageCache` now has `set_hdr_mode(bool)`:
 
 - SDR: 512 MB budget, unchanged from Phase 4.
