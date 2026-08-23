@@ -74,7 +74,9 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 - All Go checks: `./scripts/check.sh --go`
 - All checks: `./scripts/check.sh`
 - Specific Rust tests by name: `cd apps/desktop && cargo test <test_name>`
-- CI: Runs on PRs and pushes to main for changed files. Full run: Actions -> CI -> "Run workflow".
+- On Windows, `scripts/check.ps1` replaces `check.sh` (which is bash). Same flags, same exit code, same Go runner.
+- CI: Runs on PRs and pushes to main for changed files. A Rust change runs clippy and the tests on Linux, macOS, and
+  Windows. Full run: Actions -> CI -> "Run workflow".
 
 ### Checking the Windows build from macOS
 

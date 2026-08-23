@@ -6,9 +6,14 @@ Welcome! Here's how to get around.
 
 - [Rust](https://rustup.rs/) (stable, managed by `rust-toolchain.toml` at repo root)
 - [mise](https://mise.jdx.dev/) for Go, Node, and pnpm versions (pinned in `.mise.toml`)
-- macOS (the app uses Metal for GPU rendering)
+- macOS, to run the app
 
 Run `mise install` once after cloning to set up the right tool versions.
+
+**On Windows or Linux**, the desktop crate builds and its unit tests pass, and CI keeps both that way, so you can work
+on the cross-platform core (decoding, the RAW pipeline, color, settings, navigation) from either. What you can't yet do
+is use Prvw as a viewer there: the window, menus, browse mode, and display-profile matching are still macOS code.
+[docs/specs/cross-platform-plan.md](docs/specs/cross-platform-plan.md) tracks what's left.
 
 ## Running the desktop app
 
@@ -56,6 +61,18 @@ The check runner catches formatting, linting, and test issues before you push:
 ./scripts/check.sh --check clippy  # one specific check
 ./scripts/check.sh --help       # full list
 ```
+
+`check.sh` is a bash script. On Windows, run `scripts/check.ps1` instead, which takes the same flags and returns the
+same exit code:
+
+```powershell
+.\scripts\check.ps1
+.\scripts\check.ps1 --check clippy
+```
+
+If PowerShell refuses to run it ("running scripts is disabled on this system"), that's the default execution policy on
+Windows client editions. Either allow local scripts once with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or
+skip the wrapper for a single run: `pwsh -ExecutionPolicy Bypass -File scripts\check.ps1`.
 
 ## Running tests
 
@@ -110,5 +127,5 @@ commit(s). Validated by the `changelog-commit-links` check on every PR. Full rul
 
 ## Reporting issues
 
-Use the [issue tracker](https://github.com/vdavid/prvw/issues). Include your macOS version and any relevant logs
+Use the [issue tracker](https://github.com/vdavid/prvw/issues). Include your OS version and any relevant logs
 (`RUST_LOG=debug`).

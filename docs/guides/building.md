@@ -3,8 +3,11 @@
 ## Prerequisites
 
 - Rust stable (managed by `rust-toolchain.toml` at repo root)
-- macOS with Metal support (for wgpu)
+- macOS with Metal support (for wgpu), to run the app
 - For signing: Apple Developer ID certificate for "Rymdskottkarra AB (83H6YAQMNP)" in your Keychain
+
+Windows and Linux compile the desktop crate and pass its unit tests, and CI enforces both, but neither is a working
+viewer yet. See [../specs/cross-platform-plan.md](../specs/cross-platform-plan.md).
 
 ## Dev build
 
@@ -40,6 +43,15 @@ signature. The signed binary ends up at `apps/desktop/target/release/prvw`.
 ./scripts/check.sh --check rustfmt
 ./scripts/check.sh --check cargo-test
 ```
+
+On Windows, `scripts/check.ps1` is the entry point. Same flags, same exit code, since both wrap the same Go runner:
+
+```powershell
+.\scripts\check.ps1 --check clippy
+```
+
+To lint the Windows build from a Mac, without a Windows machine: `./scripts/check.sh --check windows-cross`. It's marked
+slow, so a plain run leaves it out; setup steps are in [AGENTS.md](../../AGENTS.md).
 
 ## Tests
 
