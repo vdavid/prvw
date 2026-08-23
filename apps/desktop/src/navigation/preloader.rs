@@ -3,13 +3,44 @@ use crate::decoding::{self, DecodedImage, RawPipelineFlags};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
 
-/// SDR cache budget (Phase 4). 512 MB holds ~6 × 20 MP RAW decodes as
-/// RGBA8. Every JPEG/PNG/WebP cached image fits the same budget.
-const SDR_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
+/// Fraction of physical RAM the SDR image cache may hold. 1/64 puts a 32 GB Mac
+/// on the 512 MB this budget is tuned for, and it scales the same way
+/// `previews` does rather than inventing a second scheme. The ratio matters
+/// more than the absolute number once we leave macOS: an 8 GB Windows laptop
+/// has no unified memory, so it pays for the GPU-side copies separately.
+const SDR_RAM_DIVISOR: usize = 64;
+
+/// One 20 MP RAW decode as RGBA8. The budget floor is expressed in these
+/// because that's the unit the cache actually deals in.
+const LARGE_DECODE_BYTES: usize = 20_000_000 * 4;
+
+/// Floor and ceiling for the RAM-scaled SDR cache budget. The floor holds the
+/// image on screen plus one preloaded neighbor, below which the cache isn't
+/// preloading at all. The ceiling is the 512 MB this budget used to be fixed
+/// at, so scaling can only ever shrink the cache: a big machine keeps exactly
+/// the behavior it has today, and only small ones get frugal. ~6 × 20 MP RAW
+/// decodes fit the ceiling, and preloading further ahead than that buys
+/// nothing.
+const MIN_SDR_MEMORY_BUDGET: usize = 2 * LARGE_DECODE_BYTES;
+const MAX_SDR_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
+
+/// SDR cache budget: 1/[`SDR_RAM_DIVISOR`] of physical RAM, clamped. 32 GB and
+/// up land on the 512 MB ceiling, 16 GB on 256 MB, 8 GB on the floor. Every
+/// JPEG/PNG/WebP cached image comes out of the same budget. Queried once (RAM
+/// doesn't change at runtime).
+pub fn sdr_memory_budget() -> usize {
+    static BUDGET: OnceLock<usize> = OnceLock::new();
+    *BUDGET.get_or_init(|| sdr_budget_for_ram(crate::platform::total_physical_ram_bytes() as usize))
+}
+
+/// Pure budget math, split out for testing without depending on host RAM.
+fn sdr_budget_for_ram(ram_bytes: usize) -> usize {
+    (ram_bytes / SDR_RAM_DIVISOR).clamp(MIN_SDR_MEMORY_BUDGET, MAX_SDR_MEMORY_BUDGET)
+}
 
 /// HDR cache budget (Phase 5). Doubled from the SDR path because RAW
 /// RGBA16F is 8 bytes per pixel instead of 4. With this bumped budget we
@@ -17,7 +48,9 @@ const SDR_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
 /// decision: trade RAM for preload count, because the preload experience
 /// is the whole value proposition of the preloader (see
 /// `docs/notes/raw-support-phase5.md` for the trade-off note).
-const HDR_MEMORY_BUDGET: usize = 1024 * 1024 * 1024;
+pub fn hdr_memory_budget() -> usize {
+    sdr_memory_budget() * 2
+}
 
 const PRELOAD_AHEAD: usize = 2;
 
@@ -96,6 +129,10 @@ pub struct ImageCache {
     access_order: Vec<PathBuf>,
     memory_used: usize,
     memory_budget: usize,
+    /// The two budgets `set_hdr_mode` switches between, resolved once at
+    /// construction so the cache never re-reads host RAM mid-session.
+    sdr_budget: usize,
+    hdr_budget: usize,
 }
 
 pub struct CacheEntry {
@@ -132,23 +169,29 @@ pub struct EvictedEntry {
 
 impl ImageCache {
     pub fn new() -> Self {
+        Self::with_budgets(sdr_memory_budget(), hdr_memory_budget())
+    }
+
+    fn with_budgets(sdr_budget: usize, hdr_budget: usize) -> Self {
         Self {
             entries: HashMap::new(),
             access_order: Vec::new(),
             memory_used: 0,
-            memory_budget: SDR_MEMORY_BUDGET,
+            memory_budget: sdr_budget,
+            sdr_budget,
+            hdr_budget,
         }
     }
 
-    /// Switch the cache budget between SDR (512 MB) and HDR (1 GB). Called
-    /// when the RAW pipeline's `hdr_output` flag or the display's EDR
-    /// headroom changes. Evicts LRU entries if the new budget is smaller
-    /// than the currently-resident total.
+    /// Switch the cache budget between the SDR and HDR sizes. Called when the
+    /// RAW pipeline's `hdr_output` flag or the display's EDR headroom changes.
+    /// Evicts LRU entries if the new budget is smaller than the
+    /// currently-resident total.
     pub fn set_hdr_mode(&mut self, hdr: bool) {
         let new_budget = if hdr {
-            HDR_MEMORY_BUDGET
+            self.hdr_budget
         } else {
-            SDR_MEMORY_BUDGET
+            self.sdr_budget
         };
         if new_budget == self.memory_budget {
             return;
@@ -873,20 +916,24 @@ mod tests {
     #[test]
     fn cache_hdr_budget_doubles() {
         // Phase 5: when the preloader is in HDR mode, the cache budget
-        // doubles from 512 MB to 1 GB so RAW previews keep their count.
+        // doubles so RAW previews keep their count.
         let mut cache = ImageCache::new();
-        assert_eq!(cache.memory_budget, SDR_MEMORY_BUDGET);
+        assert_eq!(cache.memory_budget, sdr_memory_budget());
         cache.set_hdr_mode(true);
-        assert_eq!(cache.memory_budget, HDR_MEMORY_BUDGET);
+        assert_eq!(cache.memory_budget, hdr_memory_budget());
+        assert_eq!(hdr_memory_budget(), sdr_memory_budget() * 2);
         cache.set_hdr_mode(false);
-        assert_eq!(cache.memory_budget, SDR_MEMORY_BUDGET);
+        assert_eq!(cache.memory_budget, sdr_memory_budget());
     }
 
     #[test]
     fn cache_shrinks_on_budget_drop() {
         // Switching from HDR mode back to SDR must evict entries that no
-        // longer fit the tighter budget.
-        let mut cache = ImageCache::new();
+        // longer fit the tighter budget. Budgets are pinned so the assertion
+        // doesn't depend on how much RAM the machine running the test has.
+        const SDR: usize = 512 * 1024 * 1024;
+        const HDR: usize = 2 * SDR;
+        let mut cache = ImageCache::with_budgets(SDR, HDR);
         cache.set_hdr_mode(true);
         // Plant 3 × 200 MB HDR images (fits in 1 GB).
         for i in 0..3 {
@@ -900,8 +947,42 @@ mod tests {
         assert_eq!(cache.len(), 3);
         cache.set_hdr_mode(false); // Drop to 512 MB.
         // Post-drop, the cache must shrink until resident <= budget.
-        assert!(cache.memory_used() <= SDR_MEMORY_BUDGET);
+        assert!(cache.memory_used() <= SDR);
         assert!(cache.len() <= 2); // at least one eviction happened
+    }
+
+    /// The budget tracks RAM between the floor and the ceiling.
+    #[test]
+    fn sdr_budget_scales_with_ram() {
+        let gb = 1024 * 1024 * 1024;
+        assert_eq!(sdr_budget_for_ram(16 * gb), 256 * 1024 * 1024);
+        assert_eq!(sdr_budget_for_ram(12 * gb), 192 * 1024 * 1024);
+        assert_eq!(sdr_budget_for_ram(8 * gb), MIN_SDR_MEMORY_BUDGET);
+    }
+
+    /// Scaling must never hand out *more* than the budget used to be fixed at.
+    /// A 32 GB Mac and a 256 GB Mac Pro both keep today's 512 MB.
+    #[test]
+    fn sdr_budget_never_exceeds_the_old_fixed_size() {
+        let gb = 1024 * 1024 * 1024;
+        assert_eq!(MAX_SDR_MEMORY_BUDGET, 512 * 1024 * 1024);
+        assert_eq!(sdr_budget_for_ram(32 * gb), MAX_SDR_MEMORY_BUDGET);
+        assert_eq!(sdr_budget_for_ram(256 * gb), MAX_SDR_MEMORY_BUDGET);
+        assert_eq!(sdr_budget_for_ram(usize::MAX), MAX_SDR_MEMORY_BUDGET);
+    }
+
+    #[test]
+    fn sdr_budget_never_drops_below_the_floor() {
+        assert_eq!(sdr_budget_for_ram(0), MIN_SDR_MEMORY_BUDGET);
+        assert_eq!(sdr_budget_for_ram(1024), MIN_SDR_MEMORY_BUDGET);
+    }
+
+    /// Whatever the host, the live budget has to hold the image on screen plus
+    /// one preloaded neighbor. A cache that can't do that isn't preloading.
+    #[test]
+    fn live_budget_holds_two_large_decodes() {
+        assert!(sdr_memory_budget() >= 2 * LARGE_DECODE_BYTES);
+        assert!(hdr_memory_budget() >= 2 * LARGE_DECODE_BYTES);
     }
 
     #[test]

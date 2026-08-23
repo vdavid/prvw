@@ -59,7 +59,9 @@ generation window derived from it so the two never fight.
 
 - **`preview_budget_bytes()`** (`mod.rs`): `clamp(physical_RAM / 128, 64 MB, 1 GB)`. 64 GB → 512 MB, 16 GB → 128 MB, 8
   GB → 64 MB (floor). A byte budget (not a fixed preview count) so it self-adjusts to preview size and display DPI.
-  Physical RAM comes from `platform::total_physical_ram_bytes()` (`sysctl hw.memsize`), queried once.
+  Physical RAM comes from `platform::total_physical_ram_bytes()`, queried once (`sysctl hw.memsize` on macOS,
+  `GlobalMemoryStatusEx` on Windows, `/proc/meminfo` on Linux). `navigation::preloader` scales its own budget off the
+  same call.
 
 - **Eviction (`evict_to_budget`)**: on `set_current` _and_ on each preview's arrival (`mark_ready`), evict
   farthest-from-`current` first until total bytes ≤ budget. Distance-based, so we always keep the previews nearest where

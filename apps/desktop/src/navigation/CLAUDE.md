@@ -1,15 +1,23 @@
 # Navigation
 
-Scan the parent directory for images, preload adjacent files in the background, and keep an LRU cache budgeted at 512 MB
-(SDR) or 1 GB (HDR, Phase 5). The cache auto-scales when the RAW pipeline's `hdr_output` flag flips or the display's EDR
-headroom crosses the 1.0 boundary, so preload count stays constant as we double per-pixel bytes for RAW RGBA16F.
+Scan the parent directory for images, preload adjacent files in the background, and keep an LRU cache budgeted off
+physical RAM: `clamp(RAM / 64, 160 MB, 512 MB)` for SDR, twice that for HDR (Phase 5). The ceiling is what the budget
+used to be fixed at, so scaling can only shrink the cache: 32 GB and up keep today's 512 MB / 1 GB pair, 16 GB gets 256
+MB / 512 MB, and 8 GB gets the floor. `sdr_memory_budget()` / `hdr_memory_budget()` in `preloader.rs` own the math, and
+`ImageCache` resolves both once at construction. The cache switches between them when the RAW pipeline's `hdr_output`
+flag flips or the display's EDR headroom crosses the 1.0 boundary, so preload count stays constant as we double
+per-pixel bytes for RAW RGBA16F.
+
+The floor is two 20 MP RGBA8 decodes: the image on screen plus one preloaded neighbor. Below that the cache isn't
+preloading, it's just holding what's visible. Scaling matters most off macOS, where an 8 GB laptop has no unified memory
+and pays for GPU-side copies separately.
 
 | File             | Purpose                                                                                                                                                                                                                                                                                    |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `mod.rs`         | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `format_offset` + `format_bytes` + `NAV_DEBOUNCE` helpers                                     |
 | `directory.rs`   | `DirectoryList`: scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`; absolute jumps via `go_to_first()` / `go_to_last()`; `from_sorted(files, sort_by, index)` for live-sync re-scans |
 | `folder_diff.rs` | Pure, headless-tested live-sync diff: `diff_folder(old, scanned, sort_by, current)` → adds/removes + the delete-current `CurrentOutcome` (`Unchanged`/`Navigate`/`Empty`). No I/O — the `FolderChanged` handler does the off-thread scan and applies the result                            |
-| `preloader.rs`   | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction (512 MB / 1 GB budget)                                                                                                                                                                                          |
+| `preloader.rs`   | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction; `sdr_memory_budget()` / `hdr_memory_budget()` scale the budget off physical RAM                                                                                                                                |
 | `wrap.rs`        | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::refresh_preload_window` on loop toggle / sort change and by `navigate_by` for cache `keep` set                                                            |
 | `sort.rs`        | `SortBy { Name, Date, FileType }` (all ascending) + `sort_files()` comparator. Name uses natural alphanumeric (`photo_2 < photo_10`), case-insensitive. Date and FileType fall back to Name as tiebreaker                                                                                  |
 
