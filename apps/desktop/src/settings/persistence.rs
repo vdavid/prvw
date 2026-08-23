@@ -1,13 +1,14 @@
 //! Settings persistence.
 //!
-//! Loads/saves user preferences from the app data directory:
-//! - Production: `~/Library/Application Support/com.veszelovszki.prvw/settings.json`
-//! - Dev/test: override with `PRVW_DATA_DIR` env var
+//! Loads/saves user preferences from the app data directory. Production
+//! locations are per-platform and listed on [`data_dir`]; dev and test runs
+//! override the lot with the `PRVW_DATA_DIR` env var.
 //!
 //! The settings file is the source of truth — no in-memory cache or Arc/Mutex needed.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 
@@ -179,14 +180,73 @@ impl Settings {
     }
 }
 
-/// The app data directory. Controlled by `PRVW_DATA_DIR` env var (for dev/test isolation),
-/// falling back to `~/Library/Application Support/com.veszelovszki.prvw/`.
+/// Where the app data directory lives on each platform. Picked by
+/// [`HOST_LAYOUT`], but carried as a value so [`data_dir_for`] can be tested
+/// against every platform's layout from whichever host runs the tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DataDirLayout {
+    /// `$HOME/Library/Application Support/com.veszelovszki.prvw`
+    MacOs,
+    /// `%APPDATA%\\Prvw`
+    Windows,
+    /// `$XDG_CONFIG_HOME/prvw`, or `$HOME/.config/prvw`
+    Xdg,
+}
+
+/// Reverse-DNS bundle identifier, which is what macOS expects an app's
+/// Application Support folder to be named after.
+const MACOS_APP_DIR: &str = "com.veszelovszki.prvw";
+
+const HOST_LAYOUT: DataDirLayout = if cfg!(target_os = "macos") {
+    DataDirLayout::MacOs
+} else if cfg!(target_os = "windows") {
+    DataDirLayout::Windows
+} else {
+    DataDirLayout::Xdg
+};
+
+/// The app data directory. `PRVW_DATA_DIR` overrides it outright (dev and test
+/// isolation, which the integration tests depend on). Otherwise:
+///
+/// - macOS: `~/Library/Application Support/com.veszelovszki.prvw/`
+/// - Windows: `%APPDATA%\Prvw\`
+/// - Linux and the rest: `$XDG_CONFIG_HOME/prvw/`, or `~/.config/prvw/`
+///
+/// When the platform's home variable is missing we fall back to a `prvw`
+/// folder inside the system temp directory. Settings won't survive a reboot
+/// there, but the path is absolute on every platform, which a bare `/tmp`
+/// isn't: on Windows it would resolve against the current drive.
 pub fn data_dir() -> PathBuf {
     if let Ok(custom) = std::env::var("PRVW_DATA_DIR") {
         return PathBuf::from(custom);
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join("Library/Application Support/com.veszelovszki.prvw")
+    data_dir_for(HOST_LAYOUT, |name: &str| std::env::var_os(name))
+        .unwrap_or_else(|| std::env::temp_dir().join("prvw"))
+}
+
+/// Pure path math behind [`data_dir`]. `var` is the environment lookup, passed
+/// in so tests don't have to mutate the process environment.
+fn data_dir_for(layout: DataDirLayout, var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let non_empty = |name: &str| var(name).filter(|value| !value.is_empty());
+    match layout {
+        DataDirLayout::MacOs => Some(
+            PathBuf::from(non_empty("HOME")?)
+                .join("Library")
+                .join("Application Support")
+                .join(MACOS_APP_DIR),
+        ),
+        DataDirLayout::Windows => Some(PathBuf::from(non_empty("APPDATA")?).join("Prvw")),
+        DataDirLayout::Xdg => {
+            if let Some(config_home) = non_empty("XDG_CONFIG_HOME") {
+                return Some(PathBuf::from(config_home).join("prvw"));
+            }
+            Some(
+                PathBuf::from(non_empty("HOME")?)
+                    .join(".config")
+                    .join("prvw"),
+            )
+        }
+    }
 }
 
 fn settings_path() -> PathBuf {
@@ -196,6 +256,83 @@ fn settings_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::platform::fixed_env;
+
+    #[test]
+    fn macos_data_dir_lives_under_application_support() {
+        let dir = data_dir_for(DataDirLayout::MacOs, fixed_env(&[("HOME", "/Users/dave")]))
+            .expect("HOME is set");
+        assert_eq!(
+            dir,
+            PathBuf::from("/Users/dave/Library/Application Support/com.veszelovszki.prvw")
+        );
+    }
+
+    #[test]
+    fn windows_data_dir_lives_under_appdata() {
+        let dir = data_dir_for(
+            DataDirLayout::Windows,
+            fixed_env(&[
+                ("APPDATA", "C:\\Users\\dave\\AppData\\Roaming"),
+                // Git Bash and friends set HOME on Windows. It must not win.
+                ("HOME", "C:\\Users\\dave"),
+            ]),
+        )
+        .expect("APPDATA is set");
+        assert_eq!(
+            dir,
+            PathBuf::from("C:\\Users\\dave\\AppData\\Roaming").join("Prvw")
+        );
+    }
+
+    #[test]
+    fn xdg_data_dir_prefers_config_home_then_falls_back_to_home() {
+        let explicit = data_dir_for(
+            DataDirLayout::Xdg,
+            fixed_env(&[
+                ("XDG_CONFIG_HOME", "/home/dave/.cfg"),
+                ("HOME", "/home/dave"),
+            ]),
+        )
+        .expect("XDG_CONFIG_HOME is set");
+        assert_eq!(explicit, PathBuf::from("/home/dave/.cfg/prvw"));
+
+        let implied = data_dir_for(DataDirLayout::Xdg, fixed_env(&[("HOME", "/home/dave")]))
+            .expect("HOME is set");
+        assert_eq!(implied, PathBuf::from("/home/dave/.config/prvw"));
+    }
+
+    /// An empty variable is as good as unset. Windows in particular hands out
+    /// empty strings for variables that were never assigned.
+    #[test]
+    fn empty_variables_count_as_missing() {
+        assert!(data_dir_for(DataDirLayout::MacOs, fixed_env(&[("HOME", "")])).is_none());
+        assert!(data_dir_for(DataDirLayout::Windows, fixed_env(&[("APPDATA", "")])).is_none());
+        assert!(data_dir_for(DataDirLayout::Xdg, fixed_env(&[])).is_none());
+
+        let fell_back = data_dir_for(
+            DataDirLayout::Xdg,
+            fixed_env(&[("XDG_CONFIG_HOME", ""), ("HOME", "/home/dave")]),
+        )
+        .expect("HOME still covers it");
+        assert_eq!(fell_back, PathBuf::from("/home/dave/.config/prvw"));
+    }
+
+    /// With no `PRVW_DATA_DIR` override, `data_dir` has to name an absolute
+    /// path on this host, override or not. A relative one would land wherever
+    /// the app was launched from, and on Windows a leading-slash path resolves
+    /// against the current drive.
+    #[test]
+    fn data_dir_is_absolute_on_this_host() {
+        let resolved = data_dir_for(HOST_LAYOUT, |name: &str| std::env::var_os(name))
+            .unwrap_or_else(|| std::env::temp_dir().join("prvw"));
+        assert!(resolved.is_absolute(), "got {resolved:?}");
+
+        // And the fallback stays absolute even when the layout finds nothing.
+        let fallback = std::env::temp_dir().join("prvw");
+        assert!(fallback.is_absolute(), "got {fallback:?}");
+    }
 
     #[test]
     fn defaults_are_correct() {
