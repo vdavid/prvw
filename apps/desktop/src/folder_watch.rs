@@ -257,32 +257,53 @@ fn drain_control(
     proxy: &EventLoopProxy<AppCommand>,
 ) {
     let mut changed = false;
-    while let Ok(msg) = control_rx.try_recv() {
-        match msg {
-            Control::Watch(path) => {
-                if let Err(e) = watcher.watch(&path, RecursiveMode::NonRecursive) {
-                    log::debug!("Failed to watch {}: {e}", path.display());
-                } else {
+    while let Ok(request) = control_rx.try_recv() {
+        let applied = match &request {
+            Control::Watch(path) => match watcher.watch(path, RecursiveMode::NonRecursive) {
+                Ok(()) => {
                     log::debug!("Watching {}", path.display());
-                    changed |= armed.insert(path);
+                    true
                 }
-            }
-            Control::Unwatch(path) => {
-                if let Err(e) = watcher.unwatch(&path) {
-                    log::debug!("Failed to unwatch {}: {e}", path.display());
-                } else {
+                Err(e) => {
+                    log::debug!("Failed to watch {}: {e}", path.display());
+                    false
+                }
+            },
+            Control::Unwatch(path) => match watcher.unwatch(path) {
+                Ok(()) => {
                     log::debug!("Unwatched {}", path.display());
+                    true
                 }
-                // Drop it either way: a folder that failed to unwatch (already gone, never
-                // watched) isn't delivering events, so reporting it as armed would be a lie.
-                changed |= armed.remove(&path);
-            }
-        }
+                Err(e) => {
+                    log::debug!("Failed to unwatch {}: {e}", path.display());
+                    false
+                }
+            },
+        };
+        changed |= record_watch_outcome(armed, request, applied);
     }
     if changed {
         let _ = proxy.send_event(AppCommand::WatchedFoldersChanged {
             folders: armed.iter().cloned().collect(),
         });
+    }
+}
+
+/// Fold one applied watch/unwatch request into the set of folders whose watch is live. Returns
+/// true when membership changed, so the caller posts only when the answer moved.
+///
+/// Exactly one case arms a folder: a `Watch` that `notify` accepted. Everything else disarms it,
+/// including a **failed** `Watch` on a folder that was already armed — `notify`'s macOS backend
+/// tears down and rebuilds one FSEvents stream over the whole path set on every call, so a
+/// rejected re-watch (the folder was deleted and recreated, say) can leave the previous stream
+/// gone. `armed` answers "are events flowing for this folder", never "did we ask for them": it
+/// feeds `/state`'s `watched_folders`, which is the barrier the live-sync E2E tests block on
+/// before they mutate a folder. A folder listed there with no live stream would wave a test
+/// straight into the race the barrier exists to close.
+fn record_watch_outcome(armed: &mut BTreeSet<PathBuf>, request: Control, applied: bool) -> bool {
+    match request {
+        Control::Watch(path) if applied => armed.insert(path),
+        Control::Watch(path) | Control::Unwatch(path) => armed.remove(&path),
     }
 }
 
@@ -358,6 +379,75 @@ pub fn list_supported_images(folder: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn watch(path: &str) -> Control {
+        Control::Watch(PathBuf::from(path))
+    }
+
+    fn unwatch(path: &str) -> Control {
+        Control::Unwatch(PathBuf::from(path))
+    }
+
+    fn armed_set(paths: &[&str]) -> BTreeSet<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn a_successful_watch_arms_a_folder_once() {
+        let mut armed = BTreeSet::new();
+        assert!(record_watch_outcome(&mut armed, watch("/a"), true));
+        assert_eq!(armed, armed_set(&["/a"]));
+        // Re-arming an already-armed folder isn't a change, so no needless post.
+        assert!(!record_watch_outcome(&mut armed, watch("/a"), true));
+        assert_eq!(armed, armed_set(&["/a"]));
+    }
+
+    /// The case this function exists for. `notify` rebuilds one FSEvents stream over the whole
+    /// path set on every call, so a re-watch that fails can leave the folder with no stream at
+    /// all. Reporting it as armed would tell a live-sync test the barrier had cleared when it
+    /// hadn't, which is the exact flake `watched_folders` was added to prevent.
+    #[test]
+    fn a_failed_re_watch_disarms_the_folder_it_was_already_watching() {
+        let mut armed = armed_set(&["/a", "/b"]);
+        assert!(record_watch_outcome(&mut armed, watch("/a"), false));
+        assert_eq!(armed, armed_set(&["/b"]), "/a is no longer delivering events");
+    }
+
+    #[test]
+    fn a_failed_watch_on_an_unarmed_folder_changes_nothing() {
+        let mut armed = armed_set(&["/b"]);
+        assert!(!record_watch_outcome(&mut armed, watch("/a"), false));
+        assert_eq!(armed, armed_set(&["/b"]));
+    }
+
+    /// Unwatch disarms whether or not `notify` accepted it: a folder we failed to unwatch
+    /// (already gone, or never watched) isn't delivering events either.
+    #[test]
+    fn unwatch_disarms_however_it_went() {
+        for applied in [true, false] {
+            let mut armed = armed_set(&["/a", "/b"]);
+            assert!(record_watch_outcome(&mut armed, unwatch("/a"), applied));
+            assert_eq!(armed, armed_set(&["/b"]));
+            assert!(!record_watch_outcome(&mut armed, unwatch("/a"), applied));
+        }
+    }
+
+    /// `record_watch_outcome` is only honest if `notify` actually reports a bad path as an error
+    /// rather than accepting it silently. Pin that, because the whole barrier rests on it.
+    #[test]
+    fn notify_rejects_a_watch_on_a_missing_folder() {
+        let (tx, _rx) = mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |res| {
+            let _ = tx.send(res);
+        })
+        .expect("watcher");
+        let missing = std::env::temp_dir().join("prvw-folder-watch-does-not-exist");
+        assert!(!missing.exists(), "the test's premise: {} is absent", missing.display());
+        assert!(
+            watcher.watch(&missing, RecursiveMode::NonRecursive).is_err(),
+            "notify must reject a missing path, or `armed` would list a dead watch"
+        );
+    }
 
     fn modify(path: &str) -> RawEvent {
         RawEvent {

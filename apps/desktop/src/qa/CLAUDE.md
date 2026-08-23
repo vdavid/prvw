@@ -93,3 +93,7 @@ That gap is a flake factory. `/state` answers before the watcher even exists, so
 after startup can get no event at all and then wait out its whole timeout, and the busier the machine the likelier that
 is. Every `live_sync_*` test in `tests/integration.rs` polls `TestApp::wait_for_watch` on its folder before touching it.
 Do the same in any new live-sync test; a `sleep` here only hides the race.
+
+The list is only worth blocking on if it can never name a dead watch, so `folder_watch::record_watch_outcome` arms a
+folder on exactly one outcome — a `Watch` that `notify` accepted — and disarms it on every other, a failed re-watch of
+an already-armed folder included.
