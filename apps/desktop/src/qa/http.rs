@@ -29,7 +29,12 @@ fn send_and_wait_http(
     proxy
         .send_event(AppCommand::Sync(tx))
         .map_err(|e| format!("Event loop closed: {e}"))?;
-    rx.recv_timeout(Duration::from_secs(2))
+    // The main thread has to drain the command and the `Sync` behind it. Two seconds was enough
+    // on an idle machine and not enough under a full-parallelism test run, where the reply came
+    // back as a plain-text error and the caller failed on "expected value, line 1 column 1"
+    // instead of on anything it was testing. This bound only exists so a wedged event loop can't
+    // hold the QA connection forever.
+    rx.recv_timeout(Duration::from_secs(15))
         .map_err(|e| format!("Command timeout: {e}"))?;
     let state_json = format_state_json(state);
     let body = serde_json::to_string_pretty(&state_json).map_err(|e| e.to_string())?;
