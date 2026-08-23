@@ -1,5 +1,7 @@
-//! Windows-specific glue. Mirrors `platform::macos`; submodules go in a `windows/` directory
-//! beside this file when there are enough of them to warrant one.
+//! Windows-specific glue. Mirrors `platform::macos`: submodules live in the `windows/` directory
+//! beside this file, and the small queries that don't warrant one stay here.
+
+pub mod msg_hook;
 
 use windows::Win32::Foundation::{GENERIC_WRITE, HANDLE};
 use windows::Win32::Storage::FileSystem::{

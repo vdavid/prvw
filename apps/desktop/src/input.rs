@@ -43,9 +43,11 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
     if bare && matches!(key, Key::Character("s") | Key::Character("S")) {
         return Some(AppCommand::ToggleSlideshow);
     }
-    // Open a file. The menu bar advertises the same shortcut, and on macOS AppKit's key
-    // equivalent takes the press before winit ever sees it — so this arm is what serves
-    // Windows and Linux, where nothing attaches the bar (`menu::absent`, and M4 for Windows).
+    // Open a file. The menu bar advertises the same shortcut, and on both platforms with a bar
+    // the toolkit takes the press before winit sees it: AppKit's key equivalent on macOS, and
+    // `TranslateAcceleratorW` on Windows (`platform::windows::msg_hook`). So this arm is what
+    // serves Linux, where nothing attaches a bar (`menu::absent`), and it's the fallback if a
+    // bar ever fails to go up.
     if command_modifier(modifiers) && matches!(key, Key::Character("o") | Key::Character("O")) {
         return Some(AppCommand::ShowOpenDialog);
     }

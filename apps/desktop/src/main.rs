@@ -16,9 +16,9 @@ mod launch;
 mod logging;
 mod menu;
 // The registries answer for every platform at once, so whatever a given build's own UI doesn't
-// consume is unused there: Linux has no menu bar and no settings window, and Windows has no
-// chrome until M4. macOS has all of it, so it's the build that still catches a registry entry
-// nothing reads any more.
+// consume is unused there: Linux has no menu bar and no settings window, and Windows has a menu
+// bar but no settings window until M4. macOS has all of it, so it's the build that still catches
+// a registry entry nothing reads any more.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod parity;
 mod pixels;
@@ -152,6 +152,11 @@ fn main() {
             .with_activation_policy(ActivationPolicy::Prohibited)
             .with_activate_ignoring_other_apps(false);
     }
+    // The one message hook winit allows, shared by the menu's accelerators and (from M4)
+    // modeless dialogs' keyboard navigation. Must go on before `build()`.
+    #[cfg(target_os = "windows")]
+    platform::windows::msg_hook::install(&mut event_loop_builder);
+
     let event_loop = event_loop_builder
         .build()
         .expect("Failed to create event loop");

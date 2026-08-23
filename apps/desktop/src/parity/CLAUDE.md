@@ -48,29 +48,30 @@ authoritative. So the UI can't be built without it:
 
 - `SettingKey`: is the setting exposed anywhere on this platform? Panel rows and menu-only settings both count, which is
   why `SettingKey::panel_coverage` filters to `Panel::None` before an audit compares it against a settings window.
-- `MenuItemKey`: can a person reach it from a menu here? muda builds the items on Windows too, but nothing calls
-  `init_for_hwnd`, so nothing is reachable and the arms say `Missing`. `MenuBuilder::finish` only audits on macOS for
-  that reason; M4 attaches the bar, flips the arms, and turns the audit on.
+- `MenuItemKey`: can a person reach it from a menu here? Both platforms with a bar audit themselves in
+  `MenuBuilder::finish`, and `menu::native`'s `what_a_platform_offers_is_what_it_declares` is the static half a Mac can
+  run for Windows. Linux says `Missing` throughout because no bar attaches there at all.
 - `CommandKey`: does running it do something here? Reachability is the menu's question, not this one.
 
 ## What layer 1 doesn't cover yet
 
 Worth knowing before leaning on the table as if it were the whole picture:
 
-- **Keyboard shortcuts.** `input::key_to_command` is still a hand-written table, and accelerators live in the muda calls
-  in `menu/native.rs` rather than in `MenuItemKey`. Windows will want `Ctrl` where macOS uses `Cmd` (muda's
-  `Modifiers::SUPER` is the Windows key there), so shortcuts are a per-platform decision M4 has to make deliberately.
-  Nothing here catches a shortcut one platform is missing.
+- **Keyboard shortcuts.** `input::key_to_command` is still a hand-written table, and accelerators live in `menu::macos`
+  and `menu::windows` rather than in `MenuItemKey`. Those two tables check themselves (no two items share a keystroke,
+  every mnemonic is unique within its menu), but nothing compares one platform's shortcut set against the other's, so a
+  shortcut only one platform carries goes unnoticed here.
 - **Surfaces, as opposed to what's inside them.** There's no entry for "the menu bar" or "the settings window" itself,
-  which is why Windows shows 37 `Missing` menu items instead of one missing menu bar. Same for the About window,
+  which is why Linux shows 34 `Missing` menu items instead of one missing menu bar. Same for the About window,
   onboarding, and browse mode. The launch empty state (`app::EmptyState`) is another one: it's a surface only the
   platforms without onboarding put up, so nothing here can gate a shared E2E test on it.
 - **The inverse of a gate.** `SharedApp::start` can say "this test needs X", never "this test needs the platforms
   without X". A behaviour that is a fallback for the platforms missing a feature (image mode standing in for browse mode
   on a folder argument) therefore can't be expressed as a shared test, and lands as unit coverage instead.
-- **Where a platform puts things.** `Panel` and `Menu` are the product's shared grouping. A platform that has to place
-  an item natively somewhere else (Windows convention puts About under Help) says so in its coverage arm's comment
-  today; if that becomes common, placement belongs in the coverage data.
+- **Where a platform puts things.** `Panel` and `Menu` are the product's shared grouping, and they still say `App` for
+  the six items Windows scatters (About to Help, Settings to Tools, Quit to File). Windows placement is data, but it's
+  `menu::windows`'s `WindowsMenu` rather than anything here, so the parity table's group column reads macOS's answer for
+  every platform.
 
 ## Layer 2: the generated table
 

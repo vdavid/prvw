@@ -78,7 +78,13 @@ macro_rules! menu_items {
                 match self { $( MenuItemKey::$variant => $label, )* }
             }
 
-            /// The exact string the menu item wears, hint included.
+            /// The cosmetic shortcut hint, padding included, or `""` for an item with none.
+            /// `menu::macos` pads it onto the title; `menu::windows` has its own column.
+            pub const fn hint(self) -> &'static str {
+                match self { $( MenuItemKey::$variant => $hint, )* }
+            }
+
+            /// The exact string the menu item wears on macOS, hint included.
             pub const fn title(self) -> &'static str {
                 match self { $( MenuItemKey::$variant => concat!($label, $hint), )* }
             }
@@ -207,10 +213,14 @@ impl MenuItemKey {
         }
     }
 
-    /// muda builds these items on Windows too, but nothing attaches the menu bar to the
-    /// window (`init_for_hwnd` has no call site) and the context menu is shown through an
-    /// `NSView`, so none of it is reachable yet. Flip an arm to `Present` when M4 attaches the
-    /// bar, and turn on the audit in `create_menu_bar` at the same time.
+    /// Windows has a real menu bar: `menu::windows::attach` puts it on the winit window and
+    /// `platform::windows::msg_hook` translates its accelerators. What's `Missing` here is
+    /// nothing to do with the bar; it's the items whose action `command_keys` says Windows
+    /// doesn't implement yet, which `MenuBuilder::offers` keeps out rather than showing dead.
+    ///
+    /// Where an item sits differs, because there's no app menu: About is Help's only item,
+    /// Settings is Tools', and Quit is File → Exit. `menu::windows::decoration` owns that
+    /// placement; `Menu` below stays the product's shared grouping.
     const fn windows_coverage(self) -> Coverage {
         match self {
             MenuItemKey::Hide | MenuItemKey::HideOthers | MenuItemKey::ShowAll => {
@@ -220,13 +230,13 @@ impl MenuItemKey {
                              itself rather than a menu.",
                 }
             }
-            MenuItemKey::About
-            | MenuItemKey::Settings
-            | MenuItemKey::Quit
+            MenuItemKey::CloseWindow => Coverage::NotApplicable {
+                reason: "Prvw has one window on Windows, and a Windows app with no windows is \
+                         an invisible process rather than a running app. Closing that window is \
+                         exiting, which File → Exit already does.",
+            },
+            MenuItemKey::Quit
             | MenuItemKey::Open
-            | MenuItemKey::Print
-            | MenuItemKey::CloseWindow
-            | MenuItemKey::Copy
             | MenuItemKey::ZoomIn
             | MenuItemKey::ZoomOut
             | MenuItemKey::ActualSize
@@ -243,7 +253,6 @@ impl MenuItemKey {
             | MenuItemKey::SortByFileType
             | MenuItemKey::Fullscreen
             | MenuItemKey::Refresh
-            | MenuItemKey::BrowseToggle
             | MenuItemKey::Previous
             | MenuItemKey::Next
             | MenuItemKey::GoToFirst
@@ -251,7 +260,16 @@ impl MenuItemKey {
             | MenuItemKey::LoopNavigation
             | MenuItemKey::SlideshowToggle
             | MenuItemKey::SlideshowIncreaseSpeed
-            | MenuItemKey::SlideshowDecreaseSpeed
+            | MenuItemKey::SlideshowDecreaseSpeed => Coverage::Present,
+            // Each of these waits on its own action: the clipboard and the print sheet (M1
+            // step 12), the settings window (M4), the about box (M6), and browse mode (M5).
+            // The context menu waits on the same two as Copy and Print, and on a right-click
+            // route of its own.
+            MenuItemKey::About
+            | MenuItemKey::Settings
+            | MenuItemKey::Print
+            | MenuItemKey::Copy
+            | MenuItemKey::BrowseToggle
             | MenuItemKey::ContextCopy
             | MenuItemKey::ContextPrint => Coverage::Missing,
         }

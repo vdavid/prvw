@@ -2,20 +2,38 @@
 //!
 //! See `menu/mod.rs` for the seam this sits behind and for the one-way flow between settings
 //! and menu state.
+//!
+//! ## What is shared and what forks
+//!
+//! Every item comes from a `MenuItemKey`, so both platforms show the same set of things called
+//! the same names. Two things fork, and only these two:
+//!
+//! - **How an item is dressed**: the shortcut it carries and the exact string it wears. That is
+//!   [`chrome`], which is [`super::macos`] or [`super::windows`] depending on the host.
+//! - **Where the app menu's items land**. macOS has an app menu; Windows has none, so About goes
+//!   to Help, Settings to Tools, and Quit becomes File → Exit. That is the two `#[cfg]` blocks
+//!   in [`create_menu_bar`], and it is the whole structural difference between the two bars.
+//!
+//! Everything else (which menus exist, what is in them, the order, the separators) is one
+//! definition, and [`MenuBuilder::offers`] is what thins it per platform.
 
-use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{
     CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
 };
+use winit::window::Window;
 
 use crate::commands::AppCommand;
 use crate::navigation::SortBy;
-#[cfg(target_os = "macos")]
-use crate::parity::Mismatch;
 use crate::parity::command_keys::CommandParity;
 use crate::parity::menu_items::MenuItemKey;
-use crate::parity::{Audit, Coverage, Platform};
+use crate::parity::{Audit, Coverage, Mismatch, Platform};
 use crate::settings::Settings;
+
+/// How this platform dresses a menu item. See the module docs.
+#[cfg(target_os = "macos")]
+use super::macos as chrome;
+#[cfg(target_os = "windows")]
+use super::windows as chrome;
 
 /// Builds menu items from registry keys, and remembers what it built.
 ///
@@ -65,11 +83,19 @@ impl MenuBuilder {
 
     /// A plain item that dispatches a command when clicked. `None` where this platform doesn't
     /// offer it, which is what keeps it out of the menu and out of the audit alike.
-    fn item(&mut self, key: MenuItemKey, accelerator: Option<Accelerator>) -> Option<MenuItem> {
+    ///
+    /// The title and the shortcut both come from [`chrome`], so no call site here spells either:
+    /// that is what keeps the Windows menu's mnemonics and Ctrl bindings out of the shared
+    /// definition below.
+    fn item(&mut self, key: MenuItemKey) -> Option<MenuItem> {
         if !Self::offers(key, Platform::HOST) {
             return None;
         }
-        let item = MenuItem::new(key.title(), true, accelerator);
+        let item = MenuItem::new(
+            chrome::title(key, key.label()),
+            true,
+            chrome::accelerator(key),
+        );
         self.ids.push((item.id().clone(), key));
         self.audit.record(key);
         Some(item)
@@ -77,15 +103,16 @@ impl MenuBuilder {
 
     /// A checkable item. Built unchecked and enabled; `sync_from_settings` gives it its real
     /// state, so settings-to-menu stays one mapping.
-    fn check_item(
-        &mut self,
-        key: MenuItemKey,
-        accelerator: Option<Accelerator>,
-    ) -> Option<CheckMenuItem> {
+    fn check_item(&mut self, key: MenuItemKey) -> Option<CheckMenuItem> {
         if !Self::offers(key, Platform::HOST) {
             return None;
         }
-        let item = CheckMenuItem::new(key.title(), true, false, accelerator);
+        let item = CheckMenuItem::new(
+            chrome::title(key, key.label()),
+            true,
+            false,
+            chrome::accelerator(key),
+        );
         self.ids.push((item.id().clone(), key));
         self.audit.record(key);
         Some(item)
@@ -106,34 +133,33 @@ impl MenuBuilder {
     }
 
     /// Hand over the id table, after checking the menu against what the registry declared.
+    ///
+    /// Runs on both platforms that have a bar. Nothing here is `#[cfg]`-gated by platform: the
+    /// host's own declaration is what it is checked against, so a Windows arm that says
+    /// `Present` for an item the Windows bar never builds is caught the first time the app
+    /// starts there.
     fn finish(self) -> Vec<(MenuId, MenuItemKey)> {
-        // Windows joins this when M4 attaches the menu bar (`init_for_hwnd` has no call site
-        // yet) and flips its arms in `parity::menu_items` from `Missing` to `Present`. Until
-        // then nobody can reach the bar there, so checking the built set against the
-        // declaration would only report that known gap 30 times over.
-        #[cfg(target_os = "macos")]
-        {
-            let mismatches = self
-                .audit
-                .mismatches(MenuItemKey::declared(Platform::MacOs));
-            for mismatch in &mismatches {
-                match mismatch {
-                    Mismatch::Declared(key) => log::error!(
-                        "Menu parity: macOS declares {} present, but no item was built for it",
-                        key.name()
-                    ),
-                    Mismatch::Undeclared(key, coverage) => log::error!(
-                        "Menu parity: an item was built for {}, which macOS declares {}",
-                        key.name(),
-                        coverage.status()
-                    ),
-                }
+        let host = Platform::HOST;
+        let mismatches = self.audit.mismatches(MenuItemKey::declared(host));
+        for mismatch in &mismatches {
+            match mismatch {
+                Mismatch::Declared(key) => log::error!(
+                    "Menu parity: {} declares {} present, but no item was built for it",
+                    host.name(),
+                    key.name()
+                ),
+                Mismatch::Undeclared(key, coverage) => log::error!(
+                    "Menu parity: an item was built for {}, which {} declares {}",
+                    key.name(),
+                    host.name(),
+                    coverage.status()
+                ),
             }
-            debug_assert!(
-                mismatches.is_empty(),
-                "the menu bar and parity::menu_items disagree: {mismatches:?}"
-            );
         }
+        debug_assert!(
+            mismatches.is_empty(),
+            "the menu bar and parity::menu_items disagree: {mismatches:?}"
+        );
         self.ids
     }
 }
@@ -231,25 +257,31 @@ fn set_enabled(item: &Option<CheckMenuItem>, enabled: bool) {
 }
 
 /// The Navigate menu's first item. In image mode the action takes you to the browser, in browse
-/// mode it takes you back. The bare `Enter` shortcut is shown cosmetically (padded into the
-/// title) rather than as a real accelerator: bare-key equivalents are app-global and would
-/// hijack typing into text fields. Only image mode advertises it, because in browse mode the
-/// focused pane owns Enter (`browser::browse_keydown_command`).
-fn browse_toggle_label(browsing: bool) -> &'static str {
+/// mode it takes you back. `Enter` is advertised as a shortcut hint rather than a real
+/// accelerator: a bare-key equivalent is app-global and would hijack typing into a text field.
+///
+/// Only image mode advertises it. Enter takes you into the browser, and once you are there the
+/// focused pane owns the key (`browser::browse_keydown_command`), so nothing brings you back
+/// with it.
+fn browse_toggle_title(browsing: bool) -> String {
+    let key = MenuItemKey::BrowseToggle;
     if browsing {
-        "Image view"
+        "Image view".to_string()
     } else {
-        MenuItemKey::BrowseToggle.title()
+        chrome::title(key, key.label())
     }
 }
 
-/// The Slideshow menu's first item, which starts or stops the slideshow.
-fn slideshow_toggle_label(running: bool) -> &'static str {
-    if running {
+/// The Slideshow menu's first item, which starts or stops the slideshow. Both names carry the
+/// same shortcut, because the one key starts and stops alike.
+fn slideshow_toggle_title(running: bool) -> String {
+    let key = MenuItemKey::SlideshowToggle;
+    let label = if running {
         "Stop slideshow"
     } else {
-        MenuItemKey::SlideshowToggle.title()
-    }
+        key.label()
+    };
+    chrome::title(key, label)
 }
 
 impl AppMenu {
@@ -297,7 +329,7 @@ impl AppMenu {
     /// Flip the Slideshow menu's first item between "Start slideshow" and "Stop slideshow".
     pub fn set_slideshow_running(&self, running: bool) {
         if let Some(item) = &self.slideshow_toggle_item {
-            item.set_text(slideshow_toggle_label(running));
+            item.set_text(slideshow_toggle_title(running));
         }
     }
 
@@ -305,8 +337,17 @@ impl AppMenu {
     /// where the registry says there's no image browser to switch to.
     pub fn set_browse_mode(&self, browsing: bool) {
         if let Some(item) = &self.browse_toggle_item {
-            item.set_text(browse_toggle_label(browsing));
+            item.set_text(browse_toggle_title(browsing));
         }
+    }
+
+    /// Take the bar away for fullscreen, and put it back on the way out.
+    ///
+    /// Fullscreen is where the image really is the whole app, and no Windows app shows a menu
+    /// bar there. There's no auto-hide and no setting for it: F11 is the whole story. macOS
+    /// hides its own bar, so this is a no-op there.
+    pub fn set_fullscreen(&self, fullscreen: bool) {
+        chrome::set_visible(!fullscreen);
     }
 
     /// Take the next pending menu click, if any, as an `AppCommand`. Non-blocking. Covers the
@@ -450,132 +491,123 @@ fn suppress_auto_edit_menu_items() {
     }
 }
 
-/// Build the native menu bar. The caller MUST keep the returned `AppMenu` alive.
+/// Build the native menu bar and put it up. The caller MUST keep the returned `AppMenu` alive.
 ///
 /// Checkable items are built unchecked and enabled; the `sync_from_settings` at the end is what
 /// gives them their real state, so there's one mapping from settings to menu, not two.
-pub fn create_menu_bar() -> Option<AppMenu> {
+///
+/// `window` is what a Windows bar attaches to. macOS hangs its bar off the application rather
+/// than a window, so it ignores the argument.
+#[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
     #[cfg(target_os = "macos")]
     suppress_auto_edit_menu_items();
 
     let mut build = MenuBuilder::new();
     let menu = Menu::new();
 
-    // App menu (macOS puts the first menu under the app name)
-    let app_menu = Submenu::new("Prvw", true);
-    let about = build.item(MenuItemKey::About, None);
-    let settings_item = build.item(
-        MenuItemKey::Settings,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)),
-    );
-    let hide = build.predefined(MenuItemKey::Hide, PredefinedMenuItem::hide(None));
-    let hide_others = build.predefined(
-        MenuItemKey::HideOthers,
-        PredefinedMenuItem::hide_others(None),
-    );
-    let show_all = build.predefined(MenuItemKey::ShowAll, PredefinedMenuItem::show_all(None));
-    let quit = build.predefined(MenuItemKey::Quit, PredefinedMenuItem::quit(None));
-    fill(
-        &app_menu,
-        &[
-            Slot::of(&about),
-            Slot::of(&settings_item),
-            Slot::Separator,
-            Slot::of(&hide),
-            Slot::of(&hide_others),
-            Slot::of(&show_all),
-            Slot::Separator,
-            Slot::of(&quit),
-        ],
+    // The app menu and the three menus its items scatter into where there is none. macOS keeps
+    // About, Settings, and Quit under the app's own name; Windows has no app menu, so About goes
+    // to Help, Settings to Tools, and Quit becomes File → Exit. Whichever of these the filter
+    // leaves empty never joins the bar.
+    let app_menu = Submenu::new(chrome::menu_title("Prvw"), true);
+    let file_menu = Submenu::new(chrome::menu_title("File"), true);
+    let tools_menu = Submenu::new(chrome::menu_title("Tools"), true);
+    // Help is left empty on macOS on purpose: AppKit auto-adds its Spotlight-style "Search"
+    // field to any menu titled "Help", which is all we want there.
+    let help_menu = Submenu::new(chrome::menu_title("Help"), true);
+
+    let about = build.item(MenuItemKey::About);
+    let settings_item = build.item(MenuItemKey::Settings);
+    let open = build.item(MenuItemKey::Open);
+    let print = build.item(MenuItemKey::Print);
+    let quit = build.predefined(
+        MenuItemKey::Quit,
+        PredefinedMenuItem::quit(chrome::quit_text().as_deref()),
     );
 
-    // File menu
-    let file_menu = Submenu::new("File", true);
-    let open = build.item(
-        MenuItemKey::Open,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)),
-    );
-    let print = build.item(
-        MenuItemKey::Print,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyP)),
-    );
-    let close_window = build.predefined(
-        MenuItemKey::CloseWindow,
-        PredefinedMenuItem::close_window(None),
-    );
-    fill(
-        &file_menu,
-        &[
-            Slot::of(&open),
-            Slot::Separator,
-            Slot::of(&print),
-            Slot::Separator,
-            Slot::of(&close_window),
-        ],
-    );
+    #[cfg(target_os = "macos")]
+    {
+        let hide = build.predefined(MenuItemKey::Hide, PredefinedMenuItem::hide(None));
+        let hide_others = build.predefined(
+            MenuItemKey::HideOthers,
+            PredefinedMenuItem::hide_others(None),
+        );
+        let show_all = build.predefined(MenuItemKey::ShowAll, PredefinedMenuItem::show_all(None));
+        fill(
+            &app_menu,
+            &[
+                Slot::of(&about),
+                Slot::of(&settings_item),
+                Slot::Separator,
+                Slot::of(&hide),
+                Slot::of(&hide_others),
+                Slot::of(&show_all),
+                Slot::Separator,
+                Slot::of(&quit),
+            ],
+        );
+        // Close window belongs to a platform where an app outlives its last window.
+        let close_window = build.predefined(
+            MenuItemKey::CloseWindow,
+            PredefinedMenuItem::close_window(None),
+        );
+        fill(
+            &file_menu,
+            &[
+                Slot::of(&open),
+                Slot::Separator,
+                Slot::of(&print),
+                Slot::Separator,
+                Slot::of(&close_window),
+            ],
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        fill(
+            &file_menu,
+            &[
+                Slot::of(&open),
+                Slot::Separator,
+                Slot::of(&print),
+                Slot::Separator,
+                Slot::of(&quit),
+            ],
+        );
+        fill(&tools_menu, &[Slot::of(&settings_item)]);
+        // About is Help's only item and therefore its last, which is the Windows convention.
+        fill(&help_menu, &[Slot::of(&about)]);
+    }
 
     // Edit menu. Only Copy — Cut/Paste/Select All make no sense in a viewer, and
     // showing them disabled would look broken.
-    let edit_menu = Submenu::new("Edit", true);
-    let copy = build.item(
-        MenuItemKey::Copy,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)),
-    );
+    let edit_menu = Submenu::new(chrome::menu_title("Edit"), true);
+    let copy = build.item(MenuItemKey::Copy);
     fill(&edit_menu, &[Slot::of(&copy)]);
 
     // View menu
-    let view_menu = Submenu::new("View", true);
-    let zoom_in = build.item(
-        MenuItemKey::ZoomIn,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::Equal)),
-    );
-    let zoom_out = build.item(
-        MenuItemKey::ZoomOut,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::Minus)),
-    );
-    let actual_size = build.item(
-        MenuItemKey::ActualSize,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::Digit0)),
-    );
-    let fit_to_window = build.item(MenuItemKey::FitToWindow, None);
+    let view_menu = Submenu::new(chrome::menu_title("View"), true);
+    let zoom_in = build.item(MenuItemKey::ZoomIn);
+    let zoom_out = build.item(MenuItemKey::ZoomOut);
+    let actual_size = build.item(MenuItemKey::ActualSize);
+    let fit_to_window = build.item(MenuItemKey::FitToWindow);
     // "Auto-fit window" and "Enlarge small images" stay enabled unconditionally: even with
     // auto-fit on, enlarging governs fullscreen, where auto-fit is inert.
-    let auto_fit_window = build.check_item(MenuItemKey::AutoFitWindow, None);
-    let enlarge_small_images = build.check_item(MenuItemKey::EnlargeSmallImages, None);
-    let icc_color_management = build.check_item(
-        MenuItemKey::IccColorManagement,
-        Some(Accelerator::new(
-            Some(Modifiers::SUPER | Modifiers::SHIFT),
-            Code::KeyI,
-        )),
-    );
-    let color_match_display = build.check_item(
-        MenuItemKey::ColorMatchDisplay,
-        Some(Accelerator::new(
-            Some(Modifiers::SUPER | Modifiers::SHIFT),
-            Code::KeyC,
-        )),
-    );
-    let relative_colorimetric = build.check_item(
-        MenuItemKey::RelativeColorimetric,
-        Some(Accelerator::new(
-            Some(Modifiers::SUPER | Modifiers::SHIFT),
-            Code::KeyR,
-        )),
-    );
-    // Bare-letter shortcuts (F, H, E) are shown cosmetically — the registry keeps them in the
-    // item's title, like the Navigate arrows — rather than as real accelerators: a bare-letter
-    // menu key equivalent is app-global and would hijack typing those letters into the
-    // Settings text fields. The bare keys themselves are handled in `input`.
-    let fullscreen = build.item(MenuItemKey::Fullscreen, None);
-    let refresh = build.item(MenuItemKey::Refresh, None);
-    let histogram = build.check_item(MenuItemKey::Histogram, None);
-    let exif_info = build.check_item(MenuItemKey::ExifInfo, None);
+    let auto_fit_window = build.check_item(MenuItemKey::AutoFitWindow);
+    let enlarge_small_images = build.check_item(MenuItemKey::EnlargeSmallImages);
+    let icc_color_management = build.check_item(MenuItemKey::IccColorManagement);
+    let color_match_display = build.check_item(MenuItemKey::ColorMatchDisplay);
+    let relative_colorimetric = build.check_item(MenuItemKey::RelativeColorimetric);
+    let fullscreen = build.item(MenuItemKey::Fullscreen);
+    let refresh = build.item(MenuItemKey::Refresh);
+    let histogram = build.check_item(MenuItemKey::Histogram);
+    let exif_info = build.check_item(MenuItemKey::ExifInfo);
 
-    let sort_by_submenu = Submenu::new("Sort by", true);
-    let sort_by_name = build.check_item(MenuItemKey::SortByName, None);
-    let sort_by_date = build.check_item(MenuItemKey::SortByDate, None);
-    let sort_by_file_type = build.check_item(MenuItemKey::SortByFileType, None);
+    let sort_by_submenu = Submenu::new(chrome::menu_title("Sort by"), true);
+    let sort_by_name = build.check_item(MenuItemKey::SortByName);
+    let sort_by_date = build.check_item(MenuItemKey::SortByDate);
+    let sort_by_file_type = build.check_item(MenuItemKey::SortByFileType);
     fill(
         &sort_by_submenu,
         &[
@@ -614,22 +646,16 @@ pub fn create_menu_bar() -> Option<AppMenu> {
     );
 
     // Navigate menu
-    let nav_menu = Submenu::new("Navigate", true);
+    let nav_menu = Submenu::new(chrome::menu_title("Navigate"), true);
     // Top item swaps the main screen between the image viewer and the browse screen. Its label
     // flips by mode (`set_browse_mode`), like the slideshow Start/Stop item. `Enter` in image
     // mode is handled in `input`.
-    let browse_toggle = build.item(MenuItemKey::BrowseToggle, None);
-    let previous = build.item(MenuItemKey::Previous, None);
-    let next = build.item(MenuItemKey::Next, None);
-    let go_to_first = build.item(
-        MenuItemKey::GoToFirst,
-        Some(Accelerator::new(None, Code::Home)),
-    );
-    let go_to_last = build.item(
-        MenuItemKey::GoToLast,
-        Some(Accelerator::new(None, Code::End)),
-    );
-    let loop_navigation = build.check_item(MenuItemKey::LoopNavigation, None);
+    let browse_toggle = build.item(MenuItemKey::BrowseToggle);
+    let previous = build.item(MenuItemKey::Previous);
+    let next = build.item(MenuItemKey::Next);
+    let go_to_first = build.item(MenuItemKey::GoToFirst);
+    let go_to_last = build.item(MenuItemKey::GoToLast);
+    let loop_navigation = build.check_item(MenuItemKey::LoopNavigation);
     fill(
         &nav_menu,
         &[
@@ -646,14 +672,10 @@ pub fn create_menu_bar() -> Option<AppMenu> {
     );
 
     // Slideshow menu
-    let slideshow_menu = Submenu::new("Slideshow", true);
-    let slideshow_toggle = build.item(
-        MenuItemKey::SlideshowToggle,
-        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyS)),
-    );
-    // `]` / `[` are shown cosmetically, for the same reason the bare letters above are.
-    let slideshow_increase_speed = build.item(MenuItemKey::SlideshowIncreaseSpeed, None);
-    let slideshow_decrease_speed = build.item(MenuItemKey::SlideshowDecreaseSpeed, None);
+    let slideshow_menu = Submenu::new(chrome::menu_title("Slideshow"), true);
+    let slideshow_toggle = build.item(MenuItemKey::SlideshowToggle);
+    let slideshow_increase_speed = build.item(MenuItemKey::SlideshowIncreaseSpeed);
+    let slideshow_decrease_speed = build.item(MenuItemKey::SlideshowDecreaseSpeed);
     fill(
         &slideshow_menu,
         &[
@@ -664,12 +686,8 @@ pub fn create_menu_bar() -> Option<AppMenu> {
         ],
     );
 
-    // Help menu. Left empty on purpose: macOS auto-adds its Spotlight-style "Search" field
-    // to any menu titled "Help", which is all we want here.
-    let help_menu = Submenu::new("Help", true);
-
-    // A menu the filter emptied is dropped rather than shown blank. Help is the exception: it
-    // is built empty on purpose, because AppKit fills it with its own search field.
+    // A menu the filter emptied is dropped rather than shown blank, so a platform with no
+    // Settings item shows no Tools menu at all.
     for submenu in [
         &app_menu,
         &file_menu,
@@ -677,12 +695,17 @@ pub fn create_menu_bar() -> Option<AppMenu> {
         &view_menu,
         &nav_menu,
         &slideshow_menu,
+        &tools_menu,
     ] {
         if !submenu.items().is_empty() {
             menu.append(submenu).expect("Failed to build menu bar");
         }
     }
-    menu.append(&help_menu).expect("Failed to build menu bar");
+    // Help is the exception, and only on macOS: an empty one is exactly what we want there,
+    // because AppKit fills it with its own search field.
+    if cfg!(target_os = "macos") || !help_menu.items().is_empty() {
+        menu.append(&help_menu).expect("Failed to build menu bar");
+    }
 
     #[cfg(target_os = "macos")]
     let menu_pruners;
@@ -693,12 +716,16 @@ pub fn create_menu_bar() -> Option<AppMenu> {
         // Enter Full Screen) before each open. Must run after `init_for_nsapp`.
         menu_pruners = crate::platform::macos::menu_cleanup::install();
     }
+    // Windows hangs the bar off the window, and points the message hook at the accelerator
+    // table the items just filled. Must run after the items are in, or the table is empty.
+    #[cfg(target_os = "windows")]
+    chrome::attach(&menu, window);
 
     // Right-click context menu. A separate menu (not part of the menu bar) with its own
     // Copy and Print items; both routes funnel to the same commands via `command_for`.
     let context_menu = Menu::new();
-    let context_copy = build.item(MenuItemKey::ContextCopy, None);
-    let context_print = build.item(MenuItemKey::ContextPrint, None);
+    let context_copy = build.item(MenuItemKey::ContextCopy);
+    let context_print = build.item(MenuItemKey::ContextPrint);
     for item in [context_copy, context_print].iter().flatten() {
         context_menu
             .append(item)
@@ -752,39 +779,81 @@ mod tests {
         }
     }
 
-    /// What the two platforms without chrome drop, and why. The image browser is the live case
-    /// (M1 step 3): it's suppressed because `CommandKey::BrowseMode` says `Missing`, so M5
-    /// brings the item back by building the feature rather than by touching this file.
+    /// What each platform drops, and why. Windows' list is what M1 leaves behind: the
+    /// clipboard, the print sheet, the settings window, the about box, and browse mode, each
+    /// suppressed because `parity::command_keys` says `Missing`, so building the feature is
+    /// what brings the item back rather than an edit to this file.
     #[test]
     fn platforms_without_the_feature_dont_offer_the_item() {
-        for platform in [Platform::Windows, Platform::Linux] {
-            let dropped: Vec<&str> = MenuItemKey::ALL
+        assert_eq!(
+            dropped_by(Platform::Windows),
+            vec![
+                "About",
+                "Settings",
+                "Hide",
+                "HideOthers",
+                "ShowAll",
+                "Print",
+                "CloseWindow",
+                "Copy",
+                "BrowseToggle",
+                "ContextCopy",
+                "ContextPrint",
+            ]
+        );
+        // Linux has no bar at all, so nothing here reaches anyone there. Close window is the
+        // one difference from Windows: it stays `Missing` rather than `NotApplicable`, because
+        // no Linux window model has been decided (M8).
+        assert_eq!(
+            dropped_by(Platform::Linux),
+            vec![
+                "About",
+                "Settings",
+                "Hide",
+                "HideOthers",
+                "ShowAll",
+                "Print",
+                "Copy",
+                "BrowseToggle",
+                "ContextCopy",
+                "ContextPrint",
+            ]
+        );
+    }
+
+    /// The static half of the audit `finish` runs, and the only half a Mac can check for
+    /// Windows: what the filter lets through has to be exactly what the platform declares
+    /// `Present`. A mismatch is a menu that logs a parity error the first time it opens.
+    ///
+    /// The two platforms that build a bar are the two the audit runs on, so they're the two
+    /// checked here.
+    #[test]
+    fn what_a_platform_offers_is_what_it_declares() {
+        for platform in [Platform::MacOs, Platform::Windows] {
+            let offered: Vec<&str> = MenuItemKey::ALL
                 .iter()
-                .filter(|key| !MenuBuilder::offers(**key, platform))
+                .filter(|key| MenuBuilder::offers(**key, platform))
                 .map(|key| key.name())
                 .collect();
-            assert_eq!(
-                dropped,
-                vec![
-                    "About",
-                    "Settings",
-                    "Hide",
-                    "HideOthers",
-                    "ShowAll",
-                    "Print",
-                    "Copy",
-                    "BrowseToggle",
-                    "ContextCopy",
-                    "ContextPrint",
-                ],
-                "on {}",
-                platform.name()
-            );
+            let declared: Vec<&str> = MenuItemKey::ALL
+                .iter()
+                .filter(|key| key.coverage(platform) == Coverage::Present)
+                .map(|key| key.name())
+                .collect();
+            assert_eq!(offered, declared, "on {}", platform.name());
         }
     }
 
-    /// The items a person can still reach off macOS, once the bar attaches there (M4). Open is
-    /// the one this milestone added, and it's the reason an empty window isn't a dead end.
+    fn dropped_by(platform: Platform) -> Vec<&'static str> {
+        MenuItemKey::ALL
+            .iter()
+            .filter(|key| !MenuBuilder::offers(**key, platform))
+            .map(|key| key.name())
+            .collect()
+    }
+
+    /// The items a person can still reach off macOS. Open is the one M1 added, and it's the
+    /// reason an empty window isn't a dead end.
     #[test]
     fn open_survives_on_every_platform() {
         for platform in Platform::ALL {

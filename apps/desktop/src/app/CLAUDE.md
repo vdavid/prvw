@@ -30,7 +30,7 @@ App holds three per-feature State structs (`zoom`, `color`, `navigation`) plus t
 - **Cross-thread**: `shared_state`, `event_loop_proxy`, `_qa_handle`.
 
 App doesn't implement any feature's logic. The handler arms in `execute_command` mutate `self.zoom`, `self.color`,
-`self.navigation` fields or delegate to the feature (e.g. `window::toggle_fullscreen`,
+`self.navigation` fields or delegate to the feature (e.g. `window::set_fullscreen`,
 `crate::settings::show_settings_window`).
 
 ## Key patterns

@@ -6,12 +6,13 @@ Prvw is a fast, minimal image viewer for macOS written in Rust (`winit` + `wgpu`
 pic, see it instantly, zoom/pan, arrow keys for next/prev (preloaded in background), ESC to close. Free forever for
 personal use (BSL license). Website at [getprvw.com](https://getprvw.com).
 
-**Supported platforms.** macOS is the shipping target and the only one with the full feature set: native menus, the
-browse-mode AppKit UI, display-profile matching, QuickLook previews, and the updater are all macOS-only. Windows and
-Linux builds compile and run, and the cross-platform core (decode, RAW pipeline, color transform, settings, navigation)
-is real there, but no release ships for them yet. Anything you write has to at least compile for all three: check
-Windows and Linux from this Mac with `./scripts/check.sh --check windows-cross --check linux-cross` (see below), and
-prefer a cross-platform implementation over a `#[cfg]` fence when the cost is comparable.
+**Supported platforms.** macOS is the shipping target and the only one with the full feature set: the browse-mode AppKit
+UI, the settings and about windows, display-profile matching, QuickLook previews, and the updater are all macOS-only.
+Windows has a native menu bar with working accelerators and the cross-platform core (decode, RAW pipeline, color
+transform, settings, navigation); Linux has the core and no menu bar at all. Neither ships a release yet, and
+`docs/parity.md` is the honest per-item picture. Anything you write has to at least compile for all three: check Windows
+and Linux from this Mac with `./scripts/check.sh --check windows-cross --check linux-cross` (see below), and prefer a
+cross-platform implementation over a `#[cfg]` fence when the cost is comparable.
 
 The main window has two top-level screens that swap: **image mode** (the wgpu viewer) and **browse mode** (a macOS-only
 native AppKit folder tree + thumbnail grid; `src/browser/`). Enter (in image mode) enters browse; `f`/`F11` keep
@@ -184,6 +185,10 @@ Verify a "no callers" against those before treating a symbol as dead.
 - **Never run AppKit modals inside winit's event loop.** `runModalForWindow` inside `resumed()` or any winit callback
   creates a nested run loop that segfaults on autorelease pool cleanup. Run native modals BEFORE `EventLoop::new()`
   instead (see onboarding in `main()`).
+- **Never open a nested message loop on Windows either.** Same rule, different failure: a Win32 modal loop
+  (`DialogBoxParam`, `TaskDialogIndirect`, `IFileDialog::Show`) doesn't crash, it starves winit's pump, so
+  `about_to_wait` stops running and the slideshow's timer freezes. Modeless (`CreateDialogParamW`) plus the one message
+  hook in `platform::windows::msg_hook` is the shape that works; read that module before adding anything to the pump.
 
 ## Worktrees
 

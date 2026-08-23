@@ -12,13 +12,13 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 ## Summary
 
 - macOS: 116 of 116 done, 0 not applicable, 0 missing
-- Windows: 31 of 116 done, 5 not applicable, 80 missing
+- Windows: 57 of 116 done, 6 not applicable, 53 missing
 - Linux: 31 of 116 done, 5 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
 - Settings (40 entries): macOS 40 / 0 / 0, Windows 0 / 1 / 39, Linux 0 / 1 / 39
-- Menu items (37 entries): macOS 37 / 0 / 0, Windows 0 / 3 / 34, Linux 0 / 3 / 34
+- Menu items (37 entries): macOS 37 / 0 / 0, Windows 26 / 4 / 7, Linux 0 / 3 / 34
 - Commands (39 entries): macOS 39 / 0 / 0, Windows 31 / 1 / 7, Linux 31 / 1 / 7
 
 ## What each platform still owes
@@ -29,7 +29,7 @@ Nothing missing.
 
 ### Windows
 
-80 missing:
+53 missing:
 
 - Setting, General: `AutoUpdate`, `ScrollToZoom`, `PreloadNeighbors`
 - Setting, Zoom: `AutoFitWindow`, `EnlargeSmallImages`
@@ -38,12 +38,10 @@ Nothing missing.
 - Setting, Slideshow: `SlideshowSeconds`, `SlideshowCrossfade`, `SlideshowLoop`
 - Setting, File associations: `FileAssociations`
 - Setting, Menu only: `HistogramVisible`, `ExifVisible`, `LoopNavigation`, `SortBy`
-- Menu item, Prvw: `About`, `Settings`, `Quit`
-- Menu item, File: `Open`, `Print`, `CloseWindow`
+- Menu item, Prvw: `About`, `Settings`
+- Menu item, File: `Print`
 - Menu item, Edit: `Copy`
-- Menu item, View: `ZoomIn`, `ZoomOut`, `ActualSize`, `FitToWindow`, `AutoFitWindow`, `EnlargeSmallImages`, `IccColorManagement`, `ColorMatchDisplay`, `RelativeColorimetric`, `Histogram`, `ExifInfo`, `SortByName`, `SortByDate`, `SortByFileType`, `Fullscreen`, `Refresh`
-- Menu item, Navigate: `BrowseToggle`, `Previous`, `Next`, `GoToFirst`, `GoToLast`, `LoopNavigation`
-- Menu item, Slideshow: `SlideshowToggle`, `SlideshowIncreaseSpeed`, `SlideshowDecreaseSpeed`
+- Menu item, Navigate: `BrowseToggle`
 - Menu item, Context menu: `ContextCopy`, `ContextPrint`
 - Command, Browse mode: `BrowseMode`, `BrowseFocus`, `BrowseOpenSelected`
 - Command, App: `CopyImage`, `Print`, `About`, `Settings`
@@ -77,6 +75,7 @@ Nothing missing.
 - `Hide` (menu item): Hiding an app while leaving it running is a macOS app-menu convention. Windows minimizes windows instead, from the window itself rather than a menu.
 - `HideOthers` (menu item): Hiding an app while leaving it running is a macOS app-menu convention. Windows minimizes windows instead, from the window itself rather than a menu.
 - `ShowAll` (menu item): Hiding an app while leaving it running is a macOS app-menu convention. Windows minimizes windows instead, from the window itself rather than a menu.
+- `CloseWindow` (menu item): Prvw has one window on Windows, and a Windows app with no windows is an invisible process rather than a running app. Closing that window is exiting, which File → Exit already does.
 - `TitleBar` (command): The title bar never covers the image on Windows, so there's no strip to reserve and nothing for the command to switch.
 
 ### Linux
@@ -139,36 +138,36 @@ Nothing missing.
 - `Hide` "Hide Prvw" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
 - `HideOthers` "Hide others" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
 - `ShowAll` "Show all" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
-- `Quit` "Quit Prvw" (menu item, Prvw menu): macOS done, Windows missing, Linux missing
-- `Open` "Open…" (menu item, File menu): macOS done, Windows missing, Linux missing
+- `Quit` "Quit Prvw" (menu item, Prvw menu): macOS done, Windows done, Linux missing
+- `Open` "Open…" (menu item, File menu): macOS done, Windows done, Linux missing
 - `Print` "Print…" (menu item, File menu): macOS done, Windows missing, Linux missing
-- `CloseWindow` "Close window" (menu item, File menu): macOS done, Windows missing, Linux missing
+- `CloseWindow` "Close window" (menu item, File menu): macOS done, Windows not applicable, Linux missing
 - `Copy` "Copy image" (menu item, Edit menu): macOS done, Windows missing, Linux missing
-- `ZoomIn` "Zoom in" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `ZoomOut` "Zoom out" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `ActualSize` "Actual size" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `FitToWindow` "Fit to window" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `AutoFitWindow` "Auto-fit window" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `EnlargeSmallImages` "Enlarge small images" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `IccColorManagement` "ICC color management" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `ColorMatchDisplay` "Color match display" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `RelativeColorimetric` "Relative colorimetric" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `Histogram` "Histogram" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `ExifInfo` "Exif info" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `SortByName` "Name" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `SortByDate` "Date" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `SortByFileType` "File type" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `Fullscreen` "Fullscreen" (menu item, View menu): macOS done, Windows missing, Linux missing
-- `Refresh` "Refresh" (menu item, View menu): macOS done, Windows missing, Linux missing
+- `ZoomIn` "Zoom in" (menu item, View menu): macOS done, Windows done, Linux missing
+- `ZoomOut` "Zoom out" (menu item, View menu): macOS done, Windows done, Linux missing
+- `ActualSize` "Actual size" (menu item, View menu): macOS done, Windows done, Linux missing
+- `FitToWindow` "Fit to window" (menu item, View menu): macOS done, Windows done, Linux missing
+- `AutoFitWindow` "Auto-fit window" (menu item, View menu): macOS done, Windows done, Linux missing
+- `EnlargeSmallImages` "Enlarge small images" (menu item, View menu): macOS done, Windows done, Linux missing
+- `IccColorManagement` "ICC color management" (menu item, View menu): macOS done, Windows done, Linux missing
+- `ColorMatchDisplay` "Color match display" (menu item, View menu): macOS done, Windows done, Linux missing
+- `RelativeColorimetric` "Relative colorimetric" (menu item, View menu): macOS done, Windows done, Linux missing
+- `Histogram` "Histogram" (menu item, View menu): macOS done, Windows done, Linux missing
+- `ExifInfo` "Exif info" (menu item, View menu): macOS done, Windows done, Linux missing
+- `SortByName` "Name" (menu item, View menu): macOS done, Windows done, Linux missing
+- `SortByDate` "Date" (menu item, View menu): macOS done, Windows done, Linux missing
+- `SortByFileType` "File type" (menu item, View menu): macOS done, Windows done, Linux missing
+- `Fullscreen` "Fullscreen" (menu item, View menu): macOS done, Windows done, Linux missing
+- `Refresh` "Refresh" (menu item, View menu): macOS done, Windows done, Linux missing
 - `BrowseToggle` "Image browser" (menu item, Navigate menu): macOS done, Windows missing, Linux missing
-- `Previous` "Previous" (menu item, Navigate menu): macOS done, Windows missing, Linux missing
-- `Next` "Next" (menu item, Navigate menu): macOS done, Windows missing, Linux missing
-- `GoToFirst` "Go to first" (menu item, Navigate menu): macOS done, Windows missing, Linux missing
-- `GoToLast` "Go to last" (menu item, Navigate menu): macOS done, Windows missing, Linux missing
-- `LoopNavigation` "Loop navigation" (menu item, Navigate menu): macOS done, Windows missing, Linux missing
-- `SlideshowToggle` "Start slideshow" (menu item, Slideshow menu): macOS done, Windows missing, Linux missing
-- `SlideshowIncreaseSpeed` "Increase speed" (menu item, Slideshow menu): macOS done, Windows missing, Linux missing
-- `SlideshowDecreaseSpeed` "Decrease speed" (menu item, Slideshow menu): macOS done, Windows missing, Linux missing
+- `Previous` "Previous" (menu item, Navigate menu): macOS done, Windows done, Linux missing
+- `Next` "Next" (menu item, Navigate menu): macOS done, Windows done, Linux missing
+- `GoToFirst` "Go to first" (menu item, Navigate menu): macOS done, Windows done, Linux missing
+- `GoToLast` "Go to last" (menu item, Navigate menu): macOS done, Windows done, Linux missing
+- `LoopNavigation` "Loop navigation" (menu item, Navigate menu): macOS done, Windows done, Linux missing
+- `SlideshowToggle` "Start slideshow" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
+- `SlideshowIncreaseSpeed` "Increase speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
+- `SlideshowDecreaseSpeed` "Decrease speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
 - `ContextCopy` "Copy image" (menu item, Context menu): macOS done, Windows missing, Linux missing
 - `ContextPrint` "Print…" (menu item, Context menu): macOS done, Windows missing, Linux missing
 

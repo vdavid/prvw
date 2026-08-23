@@ -1341,11 +1341,6 @@ pub fn window_title_loading(current: usize, total: usize) -> String {
     }
 }
 
-/// Toggle fullscreen on the window.
-pub fn toggle_fullscreen(window: &Window) {
-    set_fullscreen(window, !is_fullscreen(window));
-}
-
 /// Set fullscreen on or off.
 ///
 /// Two things make this more than a call into `winit`:

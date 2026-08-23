@@ -13,9 +13,21 @@
 //!   [`create_menu_bar`] returns `None`.
 //!
 //! `App` holds an `Option<AppMenu>` (it's `None` before `resumed()` builds it, and forever on a
-//! platform with no menu bar) and talks to it only through the four methods below. That's what
+//! platform with no menu bar) and talks to it only through the five methods below. That's what
 //! keeps `#[cfg]` out of `app.rs` and `app/executor.rs` entirely: the call sites are the same
 //! on every platform, and the menu-less build simply never has a menu to call.
+//!
+//! ## One item set, two sets of decoration
+//!
+//! What the menus contain is shared: `parity::menu_items` names every item once and supplies
+//! the one label the product calls it by. What an item *looks like* is not: macOS pads a
+//! cosmetic shortcut hint into the title and binds Command; Windows marks a mnemonic with `&`,
+//! right-aligns a tab-separated shortcut column, and binds Ctrl. [`macos`] and [`windows`] are
+//! those two tables, `native` picks one as `chrome`, and neither ever renames a shared label.
+//!
+//! Both tables compile on both platforms, deliberately, for the same reason the parity
+//! registries do: a `cargo test` on a Mac runs the Windows table's tests, and a Windows build
+//! type-checks the macOS one. Only the code that touches Win32 is `#[cfg]`-gated.
 //!
 //! ## State flows one way
 //!
@@ -34,6 +46,15 @@
 mod native;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use native::{AppMenu, create_menu_bar};
+
+// The two chrome tables. Each is dead code on the platform that isn't using it, which is the
+// price of having one host check the other's table.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod macos;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod windows;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 mod absent;

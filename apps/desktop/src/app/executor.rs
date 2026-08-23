@@ -109,16 +109,10 @@ impl App {
             }
             AppCommand::ToggleFullscreen => {
                 if let Some(win) = &self.window {
-                    window::toggle_fullscreen(win);
-                    self.update_shared_state();
+                    self.set_fullscreen(!window::is_fullscreen(win));
                 }
             }
-            AppCommand::SetFullscreen(on) => {
-                if let Some(win) = &self.window {
-                    window::set_fullscreen(win, on);
-                    self.update_shared_state();
-                }
-            }
+            AppCommand::SetFullscreen(on) => self.set_fullscreen(on),
             AppCommand::SetAutoFitWindow(enabled) => {
                 self.zoom.auto_fit = enabled;
                 log::debug!("Auto-fit window set to: {enabled}");
@@ -550,8 +544,7 @@ impl App {
                     && window::is_fullscreen(win)
                 {
                     log::info!("Fullscreen off");
-                    window::set_fullscreen(win, false);
-                    self.update_shared_state();
+                    self.set_fullscreen(false);
                     return;
                 }
                 log::info!("Exiting");
@@ -798,5 +791,21 @@ impl App {
                 self.pump_preview_requests();
             }
         }
+    }
+
+    /// Go fullscreen or come back, and take the chrome that follows it along.
+    ///
+    /// The single place fullscreen changes, which is what keeps the menu bar in step with it:
+    /// Windows takes the bar away in fullscreen and macOS hides its own. A second route into
+    /// `window::set_fullscreen` would leave a menu bar sitting over a fullscreen image.
+    fn set_fullscreen(&mut self, on: bool) {
+        let Some(win) = &self.window else {
+            return;
+        };
+        window::set_fullscreen(win, on);
+        if let Some(menu) = &self.app_menu {
+            menu.set_fullscreen(on);
+        }
+        self.update_shared_state();
     }
 }

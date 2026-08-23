@@ -95,9 +95,9 @@ impl EmptyState {
     fn overlay(self) -> &'static str {
         match self {
             // Draft copy, for David to review. It opens the way `docs/specs/windows-ui-design.md`
-            // asks ("Open an image to start") and then names both ways in, because off macOS
-            // there's no menu bar attached to advertise File → Open (M4 for Windows, a spec of
-            // its own for Linux). One line, because the pill behind it is one line high
+            // asks ("Open an image to start") and then names both ways in, because Linux has no
+            // menu bar to advertise File → Open and a Windows user reaching for the keyboard
+            // shouldn't have to find one. One line, because the pill behind it is one line high
             // (`render::text`). M6 is where the icon and the default-handler line join it, and
             // M1 step 12 is where "or drop one here" becomes true.
             EmptyState::NothingOpen => {
@@ -610,6 +610,11 @@ impl App {
         self.scale_factor = win.scale_factor();
         self.window = Some(win.clone());
 
+        // Create the native menu bar. `None` on a platform that has none. Before the renderer,
+        // because a Windows menu bar takes its height out of the client area: attaching it
+        // after the wgpu surface exists would size the surface twice.
+        self.app_menu = menu::create_menu_bar(&win);
+
         // Create renderer (wgpu surface must be created here, in resumed())
         self.renderer = Some(renderer::Renderer::new(win.clone()));
 
@@ -652,9 +657,6 @@ impl App {
             // Set initial appearance for windowed mode (image area vibrancy visible).
             window::set_fullscreen_appearance(&win, window::is_fullscreen(&win));
         }
-
-        // Create the native menu bar. `None` on a platform that has none.
-        self.app_menu = menu::create_menu_bar();
 
         // Build the navigation list
         let initial_sort_by = settings::Settings::load().sort_by;

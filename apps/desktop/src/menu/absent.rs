@@ -27,6 +27,11 @@ impl AppMenu {
         match *self {}
     }
 
+    /// Take the bar away for fullscreen, and put it back on the way out.
+    pub fn set_fullscreen(&self, _fullscreen: bool) {
+        match *self {}
+    }
+
     /// Take the next pending menu click, if any, as an `AppCommand`.
     pub fn poll_command(&self) -> Option<AppCommand> {
         match *self {}
@@ -35,7 +40,7 @@ impl AppMenu {
 
 /// No menu bar to build. Every menu-only action is unreachable here; the module docs and
 /// `menu/CLAUDE.md` list which ones and why that's the decided scope.
-pub fn create_menu_bar() -> Option<AppMenu> {
+pub fn create_menu_bar(_window: &winit::window::Window) -> Option<AppMenu> {
     log::debug!("No native menu bar on this platform; menu-only actions are unavailable");
     None
 }

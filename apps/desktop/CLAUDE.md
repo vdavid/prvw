@@ -18,7 +18,7 @@ src/
 ├── menu/                    Menu bar + context menu (muda) on macOS and Windows; `absent.rs` covers platforms with no menu bar
 ├── parity/                  Registries of settings, menu items, and commands + each platform's coverage (M0.5 layer 1)
 ├── pixels.rs                Logical/Physical coordinate newtypes
-├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach)
+├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach and message hook)
 ├── render.rs + render/      wgpu infrastructure (renderer, text, shaders)
 ├── scroll.rs                What a wheel notch or a trackpad swipe means, per platform (zoom modifier, steps, images)
 │
