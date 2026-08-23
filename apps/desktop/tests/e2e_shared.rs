@@ -21,6 +21,69 @@ fn shared_suite_stays_platform_neutral() {
     e2e::shared::assert_source_is_platform_neutral(include_str!("e2e_shared.rs"));
 }
 
+// ── The gate's own tests ─────────────────────────────────────────────────────────────────────
+//
+// On a Mac every command is `Present`, so the skip and fail branches never run and would ship
+// unexercised into the first Windows CI run. A synthetic table exercises all three.
+
+/// A one-entry parity table saying the host does `status` with `Refresh`.
+fn parity_table_saying(status: &str, reason: Option<&str>) -> serde_json::Value {
+    serde_json::json!({
+        "entries": [{
+            "registry": "Command",
+            "name": "Refresh",
+            "platforms": [{
+                "platform": e2e::shared::HOST_PLATFORM,
+                "status": status,
+                "reason": reason,
+            }],
+        }],
+    })
+}
+
+#[test]
+fn a_command_the_host_has_lets_the_test_run() {
+    let table = parity_table_saying("done", None);
+    assert_eq!(
+        e2e::shared::host_coverage(&table, "Refresh"),
+        e2e::shared::Coverage::Present
+    );
+}
+
+#[test]
+fn a_command_that_doesnt_apply_here_carries_its_reason_to_the_skip() {
+    let table = parity_table_saying("not applicable", Some("No strip to reserve."));
+    assert_eq!(
+        e2e::shared::host_coverage(&table, "Refresh"),
+        e2e::shared::Coverage::NotApplicable("No strip to reserve.".to_string())
+    );
+}
+
+#[test]
+fn a_command_the_host_hasnt_built_is_a_gap_not_a_skip() {
+    let table = parity_table_saying("missing", None);
+    assert_eq!(
+        e2e::shared::host_coverage(&table, "Refresh"),
+        e2e::shared::Coverage::Missing
+    );
+}
+
+#[test]
+#[should_panic(expected = "no `CommandKey` called Nonesuch")]
+fn a_misspelled_capability_fails_rather_than_waving_the_test_through() {
+    let table = parity_table_saying("done", None);
+    let _ = e2e::shared::host_coverage(&table, "Nonesuch");
+}
+
+#[test]
+#[should_panic(expected = "appears in the shared E2E suite")]
+fn the_neutrality_guard_rejects_a_platform_branch() {
+    // Spelled in two pieces so the needle isn't a substring of this file, which the guard
+    // itself scans.
+    let offending = format!("#[cfg(target{}os = \"macos\")]", "_");
+    e2e::shared::assert_source_is_platform_neutral(&offending);
+}
+
 /// Sorted directory indices currently resident in the image cache.
 fn cache_indices(state: &serde_json::Value) -> Vec<u64> {
     state["cache_indices"]

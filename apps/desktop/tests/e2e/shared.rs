@@ -105,14 +105,19 @@ fn display_available() -> bool {
     has_display
 }
 
-enum Coverage {
+/// What the parity table says the host does with one command.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Coverage {
     Present,
     NotApplicable(String),
     Missing,
 }
 
 /// Look one command up in the served parity table and return the host's status.
-fn host_coverage(table: &serde_json::Value, command: &str) -> Coverage {
+///
+/// Split out from [`SharedApp::gate`] so the skip and fail branches can be tested from a Mac,
+/// where every command is `Present` and neither would otherwise ever run.
+pub fn host_coverage(table: &serde_json::Value, command: &str) -> Coverage {
     let entries = table["entries"]
         .as_array()
         .expect("the parity table has an `entries` array");
