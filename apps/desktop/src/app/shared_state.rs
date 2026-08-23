@@ -39,6 +39,12 @@ pub struct SharedAppState {
     pub scroll_to_zoom: bool,
     /// Whether the title bar area is reserved at the top.
     pub title_bar: bool,
+    /// Logical pixels reserved at the top of the surface before image and overlay content
+    /// starts. Non-zero only where the window draws behind its own title bar, which is macOS;
+    /// `App::content_offset_y` is the single source of truth. Exposed because it's the one
+    /// number the overlays' on-screen geometry hangs off, so a test that wants to point at the
+    /// histogram has to read it rather than assume a platform's value.
+    pub content_offset_y: f32,
     /// Whether the histogram overlay is visible.
     pub histogram_visible: bool,
     /// Currently hovered histogram bin (0..=255), or `None` when the cursor
@@ -151,6 +157,7 @@ impl Default for SharedAppState {
             enlarge_small_images: false,
             scroll_to_zoom: false,
             title_bar: true,
+            content_offset_y: 0.0,
             histogram_visible: false,
             histogram_hover_bin: None,
             exif_visible: false,
@@ -185,6 +192,7 @@ impl App {
         state.enlarge_small_images = self.zoom.enlarge;
         state.scroll_to_zoom = self.zoom.scroll_to_zoom;
         state.title_bar = self.title_bar;
+        state.content_offset_y = self.content_offset_y().0;
         state.histogram_visible = self.histogram.visible;
         state.histogram_hover_bin = self.histogram.hover_bin;
         state.exif_visible = self.exif_overlay.visible;
