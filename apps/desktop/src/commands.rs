@@ -154,20 +154,25 @@ impl AppCommand {
         }
     }
 
-    /// Say so in the log when the action behind this command isn't built on the running
-    /// platform, instead of doing nothing and leaving the user wondering. `execute_command`
-    /// calls it for every command, which is what keeps `parity::command_keys` honest: a
-    /// registry that says `Missing` for something that works, or `Present` for a stub, shows
-    /// up the moment someone runs it.
-    pub fn log_if_unimplemented(&self) {
-        if let CommandParity::Action(key) = self.parity_key()
-            && key.coverage(Platform::HOST) == Coverage::Missing
-        {
-            log::info!(
-                "{} isn't implemented on {} yet",
-                key.label(),
-                Platform::HOST.name()
-            );
+    /// The action behind this command, when the registry says the running platform hasn't
+    /// built it. `execute_command` drops such a command and logs the name rather than running
+    /// an arm that would half-work.
+    ///
+    /// This is where per-platform suppression comes from, and it covers every entry point at
+    /// once: a key, a menu click, and a QA request all reach the same gate. Enter opens the
+    /// image browser on macOS and does nothing on Windows because `CommandKey::BrowseMode`
+    /// says `Missing` there, not because anything is `#[cfg]`ed out (M1 step 3 of
+    /// `docs/specs/cross-platform-plan.md`); M5 flips that arm by building browse mode.
+    ///
+    /// It's also what keeps `parity::command_keys` honest. A registry that says `Missing` for
+    /// something that works now breaks that thing visibly, and a `Present` that's really a
+    /// stub still shows up the moment someone runs it.
+    pub fn unimplemented_here(&self) -> Option<CommandKey> {
+        match self.parity_key() {
+            CommandParity::Action(key) if key.coverage(Platform::HOST) == Coverage::Missing => {
+                Some(key)
+            }
+            _ => None,
         }
     }
 }

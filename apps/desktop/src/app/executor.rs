@@ -18,7 +18,16 @@ impl App {
     /// Central command executor. All user actions — keyboard, mouse, menu, QA server —
     /// are mapped to `AppCommand` and dispatched here.
     pub(super) fn execute_command(&mut self, event_loop: &ActiveEventLoop, command: AppCommand) {
-        command.log_if_unimplemented();
+        // An action the parity registry says this platform hasn't built stops here, so a key
+        // or a menu click can't half-run it. See `AppCommand::unimplemented_here`.
+        if let Some(key) = command.unimplemented_here() {
+            log::info!(
+                "{} isn't built on {} yet",
+                key.label(),
+                crate::parity::Platform::HOST.name()
+            );
+            return;
+        }
         match command {
             AppCommand::SendKey(key_name) => {
                 // Branch by mode, mirroring the winit keyboard handler: browse mode routes

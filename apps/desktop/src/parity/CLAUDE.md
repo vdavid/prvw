@@ -30,7 +30,10 @@ authoritative. So the UI can't be built without it:
 - `menu::native::MenuBuilder` builds every item from a `MenuItemKey`, whose `title` the item wears.
 - Both record what they built into an `Audit`, which is compared against the declaration as the UI is assembled.
 - `command_for` in `menu/native.rs` checks each item against the action `MenuItemKey::command` registered for it.
-- `AppCommand::log_if_unimplemented` says so in the log when an action the registry calls `Missing` gets run anyway.
+- `AppCommand::unimplemented_here` is what `execute_command` consults first: an action the registry calls `Missing` on
+  the host is dropped with a log line instead of half-running. That covers every entry point at once (keyboard, menu,
+  QA), so per-platform suppression is a coverage arm rather than a `#[cfg]`.
+- `menu::native::MenuBuilder::offers` reads both registries to decide whether a platform's menu carries an item at all.
 
 ## What each layer of the guarantee catches
 
@@ -59,8 +62,12 @@ Worth knowing before leaning on the table as if it were the whole picture:
   `Modifiers::SUPER` is the Windows key there), so shortcuts are a per-platform decision M4 has to make deliberately.
   Nothing here catches a shortcut one platform is missing.
 - **Surfaces, as opposed to what's inside them.** There's no entry for "the menu bar" or "the settings window" itself,
-  which is why Windows shows 36 `Missing` menu items instead of one missing menu bar. Same for the About window,
-  onboarding, and browse mode.
+  which is why Windows shows 37 `Missing` menu items instead of one missing menu bar. Same for the About window,
+  onboarding, and browse mode. The launch empty state (`app::EmptyState`) is another one: it's a surface only the
+  platforms without onboarding put up, so nothing here can gate a shared E2E test on it.
+- **The inverse of a gate.** `SharedApp::start` can say "this test needs X", never "this test needs the platforms
+  without X". A behaviour that is a fallback for the platforms missing a feature (image mode standing in for browse mode
+  on a folder argument) therefore can't be expressed as a shared test, and lands as unit coverage instead.
 - **Where a platform puts things.** `Panel` and `Menu` are the product's shared grouping. A platform that has to place
   an item natively somewhere else (Windows convention puts About under Help) says so in its coverage arm's comment
   today; if that becomes common, placement belongs in the coverage data.

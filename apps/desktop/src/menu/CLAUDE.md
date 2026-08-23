@@ -42,9 +42,24 @@ declares for macOS.
 
 This replaced a 31-field `MenuIds` struct and a 30-branch if-else chain, so it's less code than what it guards.
 
-**Windows:** muda builds the same items there, but nothing calls `init_for_hwnd`, so the bar never attaches and the
-registry says `Missing` for every item. `finish` skips the audit off macOS for that reason. M4 attaches the bar, flips
-the arms to `Present`, and turns the audit on.
+**Windows:** nothing calls `init_for_hwnd`, so the bar never attaches and the registry says `Missing` for every item.
+`finish` skips the audit off macOS for that reason. M4 attaches the bar, flips the arms to `Present`, and turns the
+audit on.
+
+## Decision: a platform gets an item only where the registry says it works
+
+**Why:** a menu that lists something a platform hasn't built is worse than one that doesn't, because a dead item reads
+as a bug in the app rather than a gap. `MenuBuilder::offers` decides, from two registries: an item the menu registry
+calls `NotApplicable` has no meaning here, and an item whose action `parity::command_keys` calls `Missing` would
+dispatch a command `execute_command` drops. `fill` then drops the separators a filtered item would strand, and a submenu
+the filter emptied never joins the bar (Help excepted: AppKit fills it itself).
+
+So suppressing a feature on a platform means flipping a coverage arm and watching `docs/parity.md` move; there is no
+`#[cfg]` in this file for it. Image browser off macOS is the live case (M1 step 3 of
+`docs/specs/cross-platform-plan.md`), and M5 brings the item back by building the feature.
+
+Fields on `AppMenu` are `Option<T>` for the same reason: `set_checked` / `set_enabled` write through, and `dispatch`
+uses `as_ref()?`. `macos_offers_every_item` is the guard that stops the filter from ever thinning the Mac menu bar.
 
 ## What Linux loses
 

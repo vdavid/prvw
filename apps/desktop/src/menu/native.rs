@@ -4,15 +4,17 @@
 //! and menu state.
 
 use muda::accelerator::{Accelerator, Code, Modifiers};
-use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{
+    CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+};
 
 use crate::commands::AppCommand;
 use crate::navigation::SortBy;
-use crate::parity::Audit;
+#[cfg(target_os = "macos")]
+use crate::parity::Mismatch;
 use crate::parity::command_keys::CommandParity;
 use crate::parity::menu_items::MenuItemKey;
-#[cfg(target_os = "macos")]
-use crate::parity::{Mismatch, Platform};
+use crate::parity::{Audit, Coverage, Platform};
 use crate::settings::Settings;
 
 /// Builds menu items from registry keys, and remembers what it built.
@@ -35,36 +37,79 @@ impl MenuBuilder {
         }
     }
 
-    /// A plain item that dispatches a command when clicked.
-    fn item(&mut self, key: MenuItemKey, accelerator: Option<Accelerator>) -> MenuItem {
+    /// Whether this platform's menus carry `key` at all, straight out of `parity`.
+    ///
+    /// Two registries answer, and they answer different questions. An item the menu registry
+    /// calls `NotApplicable` has no meaning here (hiding an app is a macOS convention). An item
+    /// whose action `parity::command_keys` calls `Missing` would be a dead end: clicking it runs
+    /// a command `execute_command` drops, so offering it is worse than not having it.
+    ///
+    /// That's the whole suppression mechanism. Taking a feature off a platform means flipping a
+    /// coverage arm and watching `docs/parity.md` move, never adding a `#[cfg]` here. Image
+    /// browser off macOS is today's case (M1 step 3 of `docs/specs/cross-platform-plan.md`);
+    /// M5 flips it back by building the thing.
+    /// Takes the platform rather than reading `Platform::HOST`, so a Mac can check what
+    /// Windows and Linux end up with. The registries carry no `#[cfg]` for the same reason.
+    fn offers(key: MenuItemKey, platform: Platform) -> bool {
+        if matches!(key.coverage(platform), Coverage::NotApplicable { .. }) {
+            return false;
+        }
+        match key.command() {
+            // The items the toolkit acts on itself (Hide, Quit, Close window) have no action
+            // to check, so the menu registry's own answer above is the only one.
+            None => true,
+            Some(command) => command.coverage(platform) != Coverage::Missing,
+        }
+    }
+
+    /// A plain item that dispatches a command when clicked. `None` where this platform doesn't
+    /// offer it, which is what keeps it out of the menu and out of the audit alike.
+    fn item(&mut self, key: MenuItemKey, accelerator: Option<Accelerator>) -> Option<MenuItem> {
+        if !Self::offers(key, Platform::HOST) {
+            return None;
+        }
         let item = MenuItem::new(key.title(), true, accelerator);
         self.ids.push((item.id().clone(), key));
         self.audit.record(key);
-        item
+        Some(item)
     }
 
     /// A checkable item. Built unchecked and enabled; `sync_from_settings` gives it its real
     /// state, so settings-to-menu stays one mapping.
-    fn check_item(&mut self, key: MenuItemKey, accelerator: Option<Accelerator>) -> CheckMenuItem {
+    fn check_item(
+        &mut self,
+        key: MenuItemKey,
+        accelerator: Option<Accelerator>,
+    ) -> Option<CheckMenuItem> {
+        if !Self::offers(key, Platform::HOST) {
+            return None;
+        }
         let item = CheckMenuItem::new(key.title(), true, false, accelerator);
         self.ids.push((item.id().clone(), key));
         self.audit.record(key);
-        item
+        Some(item)
     }
 
     /// One of muda's predefined items, which the toolkit and the OS act on themselves. There's
     /// no id to route: `MenuItemKey::command` says `None` for exactly these.
-    fn predefined(&mut self, key: MenuItemKey, item: PredefinedMenuItem) -> PredefinedMenuItem {
+    fn predefined(
+        &mut self,
+        key: MenuItemKey,
+        item: PredefinedMenuItem,
+    ) -> Option<PredefinedMenuItem> {
+        if !Self::offers(key, Platform::HOST) {
+            return None;
+        }
         self.audit.record(key);
-        item
+        Some(item)
     }
 
     /// Hand over the id table, after checking the menu against what the registry declared.
     fn finish(self) -> Vec<(MenuId, MenuItemKey)> {
         // Windows joins this when M4 attaches the menu bar (`init_for_hwnd` has no call site
         // yet) and flips its arms in `parity::menu_items` from `Missing` to `Present`. Until
-        // then muda builds the items there but nobody can reach them, so checking the built
-        // set against the declaration would only report that known gap 30 times over.
+        // then nobody can reach the bar there, so checking the built set against the
+        // declaration would only report that known gap 30 times over.
         #[cfg(target_os = "macos")]
         {
             let mismatches = self
@@ -92,6 +137,45 @@ impl MenuBuilder {
     }
 }
 
+/// One position in a menu being assembled: an item, or a separator.
+///
+/// [`Slot::Item`] carries `None` for an item this platform doesn't offer (see
+/// [`MenuBuilder::offers`]), which is what lets one menu definition serve every platform.
+enum Slot<'a> {
+    Item(Option<&'a dyn IsMenuItem>),
+    Separator,
+}
+
+impl<'a> Slot<'a> {
+    /// A slot for whatever [`MenuBuilder::item`] or [`MenuBuilder::check_item`] returned.
+    fn of<T: IsMenuItem>(item: &'a Option<T>) -> Self {
+        Slot::Item(item.as_ref().map(|item| item as &dyn IsMenuItem))
+    }
+}
+
+/// Put `slots` into `menu`, skipping the items this platform doesn't offer and the separators
+/// they would strand: no leading separator, no trailing one, and no two in a row. A gap where
+/// an item used to be reads as a broken menu, so the grouping has to survive the filter.
+fn fill(menu: &Submenu, slots: &[Slot<'_>]) {
+    let mut separator_pending = false;
+    let mut filled = false;
+    for slot in slots {
+        match slot {
+            Slot::Separator => separator_pending = filled,
+            Slot::Item(None) => {}
+            Slot::Item(Some(item)) => {
+                if separator_pending {
+                    menu.append(&PredefinedMenuItem::separator())
+                        .expect("Failed to append a menu separator");
+                    separator_pending = false;
+                }
+                menu.append(*item).expect("Failed to append a menu item");
+                filled = true;
+            }
+        }
+    }
+}
+
 /// The menu bar and its action IDs. The `Menu` must be kept alive for the entire app lifetime,
 /// otherwise the `MenuChild` objects backing the native menu items get freed and clicking
 /// any menu item crashes (dangling pointer to freed MenuChild).
@@ -111,21 +195,38 @@ pub struct AppMenu {
     /// arrives as an id; this is what turns it back into a key `command_for` can match on.
     ids: Vec<(MenuId, MenuItemKey)>,
     /// The checkable items, each mirroring one setting. `sync_from_settings` writes them all.
-    auto_fit_item: CheckMenuItem,
-    enlarge_small_item: CheckMenuItem,
-    icc_color_management_item: CheckMenuItem,
-    color_match_item: CheckMenuItem,
-    relative_colorimetric_item: CheckMenuItem,
-    histogram_item: CheckMenuItem,
-    exif_info_item: CheckMenuItem,
-    sort_by_name_item: CheckMenuItem,
-    sort_by_date_item: CheckMenuItem,
-    sort_by_file_type_item: CheckMenuItem,
-    loop_navigation_item: CheckMenuItem,
+    /// `None` on a platform the registry says doesn't offer the item, so every write goes
+    /// through [`set_checked`] / [`set_enabled`] rather than testing for it inline.
+    auto_fit_item: Option<CheckMenuItem>,
+    enlarge_small_item: Option<CheckMenuItem>,
+    icc_color_management_item: Option<CheckMenuItem>,
+    color_match_item: Option<CheckMenuItem>,
+    relative_colorimetric_item: Option<CheckMenuItem>,
+    histogram_item: Option<CheckMenuItem>,
+    exif_info_item: Option<CheckMenuItem>,
+    sort_by_name_item: Option<CheckMenuItem>,
+    sort_by_date_item: Option<CheckMenuItem>,
+    sort_by_file_type_item: Option<CheckMenuItem>,
+    loop_navigation_item: Option<CheckMenuItem>,
     /// Start/Stop slideshow. Kept so `set_slideshow_running` can flip the label.
-    slideshow_toggle_item: MenuItem,
-    /// Image browser / Image view. Kept so `set_browse_mode` can flip the label.
-    browse_toggle_item: MenuItem,
+    slideshow_toggle_item: Option<MenuItem>,
+    /// Image browser / Image view. Kept so `set_browse_mode` can flip the label. `None` off
+    /// macOS, where browse mode doesn't exist yet (M5).
+    browse_toggle_item: Option<MenuItem>,
+}
+
+/// Tick or untick an item this platform may not have.
+fn set_checked(item: &Option<CheckMenuItem>, checked: bool) {
+    if let Some(item) = item {
+        item.set_checked(checked);
+    }
+}
+
+/// Enable or grey out an item this platform may not have.
+fn set_enabled(item: &Option<CheckMenuItem>, enabled: bool) {
+    if let Some(item) = item {
+        item.set_enabled(enabled);
+    }
 }
 
 /// The Navigate menu's first item. In image mode the action takes you to the browser, in browse
@@ -155,45 +256,56 @@ impl AppMenu {
     /// place that maps settings to menu state: `create_menu_bar` ends with it, and every
     /// command that saves a setting calls it right after.
     pub fn sync_from_settings(&self, settings: &Settings) {
-        self.auto_fit_item.set_checked(settings.auto_fit_window);
-        self.enlarge_small_item
-            .set_checked(settings.enlarge_small_images);
-        self.icc_color_management_item
-            .set_checked(settings.icc_color_management);
+        set_checked(&self.auto_fit_item, settings.auto_fit_window);
+        set_checked(&self.enlarge_small_item, settings.enlarge_small_images);
+        set_checked(
+            &self.icc_color_management_item,
+            settings.icc_color_management,
+        );
         // "Color match display" and "Relative colorimetric" are L2 toggles: they only mean
         // anything with ICC color management (L1) on, so they follow it in and out of enabled.
-        self.color_match_item
-            .set_checked(settings.color_match_display);
-        self.color_match_item
-            .set_enabled(settings.icc_color_management);
-        self.relative_colorimetric_item
-            .set_checked(settings.use_relative_colorimetric);
-        self.relative_colorimetric_item
-            .set_enabled(settings.icc_color_management);
-        self.histogram_item.set_checked(settings.histogram_visible);
-        self.exif_info_item.set_checked(settings.exif_visible);
+        set_checked(&self.color_match_item, settings.color_match_display);
+        set_enabled(&self.color_match_item, settings.icc_color_management);
+        set_checked(
+            &self.relative_colorimetric_item,
+            settings.use_relative_colorimetric,
+        );
+        set_enabled(
+            &self.relative_colorimetric_item,
+            settings.icc_color_management,
+        );
+        set_checked(&self.histogram_item, settings.histogram_visible);
+        set_checked(&self.exif_info_item, settings.exif_visible);
         // muda has no native radio group, so "exactly one checked" is enforced here by writing
         // all three every time.
-        self.sort_by_name_item
-            .set_checked(matches!(settings.sort_by, SortBy::Name));
-        self.sort_by_date_item
-            .set_checked(matches!(settings.sort_by, SortBy::Date));
-        self.sort_by_file_type_item
-            .set_checked(matches!(settings.sort_by, SortBy::FileType));
-        self.loop_navigation_item
-            .set_checked(settings.loop_navigation);
+        set_checked(
+            &self.sort_by_name_item,
+            matches!(settings.sort_by, SortBy::Name),
+        );
+        set_checked(
+            &self.sort_by_date_item,
+            matches!(settings.sort_by, SortBy::Date),
+        );
+        set_checked(
+            &self.sort_by_file_type_item,
+            matches!(settings.sort_by, SortBy::FileType),
+        );
+        set_checked(&self.loop_navigation_item, settings.loop_navigation);
     }
 
     /// Flip the Slideshow menu's first item between "Start slideshow" and "Stop slideshow".
     pub fn set_slideshow_running(&self, running: bool) {
-        self.slideshow_toggle_item
-            .set_text(slideshow_toggle_label(running));
+        if let Some(item) = &self.slideshow_toggle_item {
+            item.set_text(slideshow_toggle_label(running));
+        }
     }
 
-    /// Flip the Navigate menu's first item between "Image browser" and "Image view".
+    /// Flip the Navigate menu's first item between "Image browser" and "Image view". A no-op
+    /// where the registry says there's no image browser to switch to.
     pub fn set_browse_mode(&self, browsing: bool) {
-        self.browse_toggle_item
-            .set_text(browse_toggle_label(browsing));
+        if let Some(item) = &self.browse_toggle_item {
+            item.set_text(browse_toggle_label(browsing));
+        }
     }
 
     /// Take the next pending menu click, if any, as an `AppCommand`. Non-blocking. Covers the
@@ -273,19 +385,19 @@ impl AppMenu {
             // navigation) toggle app state instead, and their checkmark catches up through
             // `sync_from_settings`.
             MenuItemKey::AutoFitWindow => Some(AppCommand::SetAutoFitWindow(
-                self.auto_fit_item.is_checked(),
+                self.auto_fit_item.as_ref()?.is_checked(),
             )),
             MenuItemKey::EnlargeSmallImages => Some(AppCommand::SetEnlargeSmallImages(
-                self.enlarge_small_item.is_checked(),
+                self.enlarge_small_item.as_ref()?.is_checked(),
             )),
             MenuItemKey::IccColorManagement => Some(AppCommand::SetIccColorManagement(
-                self.icc_color_management_item.is_checked(),
+                self.icc_color_management_item.as_ref()?.is_checked(),
             )),
             MenuItemKey::ColorMatchDisplay => Some(AppCommand::SetColorMatchDisplay(
-                self.color_match_item.is_checked(),
+                self.color_match_item.as_ref()?.is_checked(),
             )),
             MenuItemKey::RelativeColorimetric => Some(AppCommand::SetRelativeColorimetric(
-                self.relative_colorimetric_item.is_checked(),
+                self.relative_colorimetric_item.as_ref()?.is_checked(),
             )),
 
             // Handled by muda and the OS, so there's nothing for the app to run.
@@ -355,21 +467,26 @@ pub fn create_menu_bar() -> Option<AppMenu> {
         MenuItemKey::Settings,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)),
     );
-    app_menu
-        .append_items(&[
-            &about,
-            &settings_item,
-            &PredefinedMenuItem::separator(),
-            &build.predefined(MenuItemKey::Hide, PredefinedMenuItem::hide(None)),
-            &build.predefined(
-                MenuItemKey::HideOthers,
-                PredefinedMenuItem::hide_others(None),
-            ),
-            &build.predefined(MenuItemKey::ShowAll, PredefinedMenuItem::show_all(None)),
-            &PredefinedMenuItem::separator(),
-            &build.predefined(MenuItemKey::Quit, PredefinedMenuItem::quit(None)),
-        ])
-        .expect("Failed to build app menu");
+    let hide = build.predefined(MenuItemKey::Hide, PredefinedMenuItem::hide(None));
+    let hide_others = build.predefined(
+        MenuItemKey::HideOthers,
+        PredefinedMenuItem::hide_others(None),
+    );
+    let show_all = build.predefined(MenuItemKey::ShowAll, PredefinedMenuItem::show_all(None));
+    let quit = build.predefined(MenuItemKey::Quit, PredefinedMenuItem::quit(None));
+    fill(
+        &app_menu,
+        &[
+            Slot::of(&about),
+            Slot::of(&settings_item),
+            Slot::Separator,
+            Slot::of(&hide),
+            Slot::of(&hide_others),
+            Slot::of(&show_all),
+            Slot::Separator,
+            Slot::of(&quit),
+        ],
+    );
 
     // File menu
     let file_menu = Submenu::new("File", true);
@@ -381,18 +498,20 @@ pub fn create_menu_bar() -> Option<AppMenu> {
         MenuItemKey::Print,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyP)),
     );
-    file_menu
-        .append_items(&[
-            &open,
-            &PredefinedMenuItem::separator(),
-            &print,
-            &PredefinedMenuItem::separator(),
-            &build.predefined(
-                MenuItemKey::CloseWindow,
-                PredefinedMenuItem::close_window(None),
-            ),
-        ])
-        .expect("Failed to build file menu");
+    let close_window = build.predefined(
+        MenuItemKey::CloseWindow,
+        PredefinedMenuItem::close_window(None),
+    );
+    fill(
+        &file_menu,
+        &[
+            Slot::of(&open),
+            Slot::Separator,
+            Slot::of(&print),
+            Slot::Separator,
+            Slot::of(&close_window),
+        ],
+    );
 
     // Edit menu. Only Copy — Cut/Paste/Select All make no sense in a viewer, and
     // showing them disabled would look broken.
@@ -401,9 +520,7 @@ pub fn create_menu_bar() -> Option<AppMenu> {
         MenuItemKey::Copy,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)),
     );
-    edit_menu
-        .append_items(&[&copy])
-        .expect("Failed to build edit menu");
+    fill(&edit_menu, &[Slot::of(&copy)]);
 
     // View menu
     let view_menu = Submenu::new("View", true);
@@ -458,33 +575,42 @@ pub fn create_menu_bar() -> Option<AppMenu> {
     let sort_by_name = build.check_item(MenuItemKey::SortByName, None);
     let sort_by_date = build.check_item(MenuItemKey::SortByDate, None);
     let sort_by_file_type = build.check_item(MenuItemKey::SortByFileType, None);
-    sort_by_submenu
-        .append_items(&[&sort_by_name, &sort_by_date, &sort_by_file_type])
-        .expect("Failed to build sort by submenu");
+    fill(
+        &sort_by_submenu,
+        &[
+            Slot::of(&sort_by_name),
+            Slot::of(&sort_by_date),
+            Slot::of(&sort_by_file_type),
+        ],
+    );
 
-    view_menu
-        .append_items(&[
-            &zoom_in,
-            &zoom_out,
-            &PredefinedMenuItem::separator(),
-            &actual_size,
-            &fit_to_window,
-            &auto_fit_window,
-            &enlarge_small_images,
-            &PredefinedMenuItem::separator(),
-            &icc_color_management,
-            &color_match_display,
-            &relative_colorimetric,
-            &PredefinedMenuItem::separator(),
-            &histogram,
-            &exif_info,
-            &sort_by_submenu,
-            &PredefinedMenuItem::separator(),
-            &fullscreen,
-            &PredefinedMenuItem::separator(),
-            &refresh,
-        ])
-        .expect("Failed to build view menu");
+    // The Sort by submenu is a menu, not an item, so it has no registry key of its own; it
+    // rides along when at least one of the three sort items survived the filter.
+    let sort_by_entry = (!sort_by_submenu.items().is_empty()).then_some(sort_by_submenu.clone());
+    fill(
+        &view_menu,
+        &[
+            Slot::of(&zoom_in),
+            Slot::of(&zoom_out),
+            Slot::Separator,
+            Slot::of(&actual_size),
+            Slot::of(&fit_to_window),
+            Slot::of(&auto_fit_window),
+            Slot::of(&enlarge_small_images),
+            Slot::Separator,
+            Slot::of(&icc_color_management),
+            Slot::of(&color_match_display),
+            Slot::of(&relative_colorimetric),
+            Slot::Separator,
+            Slot::of(&histogram),
+            Slot::of(&exif_info),
+            Slot::of(&sort_by_entry),
+            Slot::Separator,
+            Slot::of(&fullscreen),
+            Slot::Separator,
+            Slot::of(&refresh),
+        ],
+    );
 
     // Navigate menu
     let nav_menu = Submenu::new("Navigate", true);
@@ -503,19 +629,20 @@ pub fn create_menu_bar() -> Option<AppMenu> {
         Some(Accelerator::new(None, Code::End)),
     );
     let loop_navigation = build.check_item(MenuItemKey::LoopNavigation, None);
-    nav_menu
-        .append_items(&[
-            &browse_toggle,
-            &PredefinedMenuItem::separator(),
-            &previous,
-            &next,
-            &PredefinedMenuItem::separator(),
-            &go_to_first,
-            &go_to_last,
-            &PredefinedMenuItem::separator(),
-            &loop_navigation,
-        ])
-        .expect("Failed to build navigate menu");
+    fill(
+        &nav_menu,
+        &[
+            Slot::of(&browse_toggle),
+            Slot::Separator,
+            Slot::of(&previous),
+            Slot::of(&next),
+            Slot::Separator,
+            Slot::of(&go_to_first),
+            Slot::of(&go_to_last),
+            Slot::Separator,
+            Slot::of(&loop_navigation),
+        ],
+    );
 
     // Slideshow menu
     let slideshow_menu = Submenu::new("Slideshow", true);
@@ -526,29 +653,35 @@ pub fn create_menu_bar() -> Option<AppMenu> {
     // `]` / `[` are shown cosmetically, for the same reason the bare letters above are.
     let slideshow_increase_speed = build.item(MenuItemKey::SlideshowIncreaseSpeed, None);
     let slideshow_decrease_speed = build.item(MenuItemKey::SlideshowDecreaseSpeed, None);
-    slideshow_menu
-        .append_items(&[
-            &slideshow_toggle,
-            &PredefinedMenuItem::separator(),
-            &slideshow_increase_speed,
-            &slideshow_decrease_speed,
-        ])
-        .expect("Failed to build slideshow menu");
+    fill(
+        &slideshow_menu,
+        &[
+            Slot::of(&slideshow_toggle),
+            Slot::Separator,
+            Slot::of(&slideshow_increase_speed),
+            Slot::of(&slideshow_decrease_speed),
+        ],
+    );
 
     // Help menu. Left empty on purpose: macOS auto-adds its Spotlight-style "Search" field
     // to any menu titled "Help", which is all we want here.
     let help_menu = Submenu::new("Help", true);
 
-    menu.append_items(&[
+    // A menu the filter emptied is dropped rather than shown blank. Help is the exception: it
+    // is built empty on purpose, because AppKit fills it with its own search field.
+    for submenu in [
         &app_menu,
         &file_menu,
         &edit_menu,
         &view_menu,
         &nav_menu,
         &slideshow_menu,
-        &help_menu,
-    ])
-    .expect("Failed to build menu bar");
+    ] {
+        if !submenu.items().is_empty() {
+            menu.append(submenu).expect("Failed to build menu bar");
+        }
+    }
+    menu.append(&help_menu).expect("Failed to build menu bar");
 
     #[cfg(target_os = "macos")]
     let menu_pruners;
@@ -565,9 +698,11 @@ pub fn create_menu_bar() -> Option<AppMenu> {
     let context_menu = Menu::new();
     let context_copy = build.item(MenuItemKey::ContextCopy, None);
     let context_print = build.item(MenuItemKey::ContextPrint, None);
-    context_menu
-        .append_items(&[&context_copy, &context_print])
-        .expect("Failed to build context menu");
+    for item in [context_copy, context_print].iter().flatten() {
+        context_menu
+            .append(item)
+            .expect("Failed to build context menu");
+    }
 
     log::debug!("Menu bar created");
 
@@ -597,4 +732,62 @@ pub fn create_menu_bar() -> Option<AppMenu> {
     app_menu.sync_from_settings(&Settings::load());
 
     Some(app_menu)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// macOS ships every menu item, so the filter has to be a no-op there. If this fails, the
+    /// Mac build just lost a menu item.
+    #[test]
+    fn macos_offers_every_item() {
+        for key in MenuItemKey::ALL {
+            assert!(
+                MenuBuilder::offers(*key, Platform::MacOs),
+                "{} vanished from the macOS menu bar",
+                key.name()
+            );
+        }
+    }
+
+    /// What the two platforms without chrome drop, and why. The image browser is the live case
+    /// (M1 step 3): it's suppressed because `CommandKey::BrowseMode` says `Missing`, so M5
+    /// brings the item back by building the feature rather than by touching this file.
+    #[test]
+    fn platforms_without_the_feature_dont_offer_the_item() {
+        for platform in [Platform::Windows, Platform::Linux] {
+            let dropped: Vec<&str> = MenuItemKey::ALL
+                .iter()
+                .filter(|key| !MenuBuilder::offers(**key, platform))
+                .map(|key| key.name())
+                .collect();
+            assert_eq!(
+                dropped,
+                vec![
+                    "About",
+                    "Settings",
+                    "Hide",
+                    "HideOthers",
+                    "ShowAll",
+                    "Print",
+                    "Copy",
+                    "BrowseToggle",
+                    "ContextCopy",
+                    "ContextPrint",
+                ],
+                "on {}",
+                platform.name()
+            );
+        }
+    }
+
+    /// The items a person can still reach off macOS, once the bar attaches there (M4). Open is
+    /// the one this milestone added, and it's the reason an empty window isn't a dead end.
+    #[test]
+    fn open_survives_on_every_platform() {
+        for platform in Platform::ALL {
+            assert!(MenuBuilder::offers(MenuItemKey::Open, *platform));
+        }
+    }
 }
