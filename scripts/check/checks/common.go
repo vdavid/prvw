@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 // App represents the application a check belongs to.
@@ -94,28 +93,26 @@ type CheckDefinition struct {
 }
 
 // processTracker keeps track of all running child processes so they can be
-// killed as a group on Ctrl+C. Each command is started with its own process
-// group (Setpgid), so killing -pgid cleans up all its descendants too.
+// killed as a group on Ctrl+C. Each command is grouped for tree-wide killing by
+// the per-OS helpers in common_unix.go and common_windows.go, so stopping a
+// tracked child stops everything it spawned.
 var processTracker = struct {
 	mu    sync.Mutex
 	procs map[*exec.Cmd]struct{}
 }{procs: make(map[*exec.Cmd]struct{})}
 
-// KillAllProcesses sends SIGTERM to the process group of every tracked child.
+// KillAllProcesses stops every tracked child and the whole process tree below it.
 func KillAllProcesses() {
 	processTracker.mu.Lock()
 	defer processTracker.mu.Unlock()
 	for cmd := range processTracker.procs {
-		if cmd.Process != nil {
-			// Kill the entire process group (negative PID).
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-		}
+		killProcessGroup(cmd)
 	}
 }
 
 // RunCommand executes a command and captures its output.
-// The command is started in its own process group so that all of its
-// descendants can be killed together on shutdown.
+// The command is grouped so that all of its descendants can be killed together
+// on shutdown.
 func RunCommand(cmd *exec.Cmd, captureOutput bool) (string, error) {
 	var stdout, stderr bytes.Buffer
 	if captureOutput {
@@ -126,12 +123,12 @@ func RunCommand(cmd *exec.Cmd, captureOutput bool) (string, error) {
 		cmd.Stderr = os.Stderr
 	}
 
-	// Give the child its own process group so we can kill the whole tree.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	prepareProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
+	trackProcessGroup(cmd)
 
 	processTracker.mu.Lock()
 	processTracker.procs[cmd] = struct{}{}
@@ -142,6 +139,7 @@ func RunCommand(cmd *exec.Cmd, captureOutput bool) (string, error) {
 	processTracker.mu.Lock()
 	delete(processTracker.procs, cmd)
 	processTracker.mu.Unlock()
+	releaseProcessGroup(cmd)
 
 	output := stdout.String()
 	if stderr.Len() > 0 {
