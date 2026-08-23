@@ -19,7 +19,7 @@
 //! FSEvents only reports changes made after its stream starts, "requested" and "armed" are
 //! different states, and a change made in between is lost. So the thread posts
 //! `AppCommand::WatchedFoldersChanged` with the set it has actually applied, which the QA state
-//! exposes as `watched_folders` — the barrier the live-sync E2E tests wait on before touching a
+//! exposes as `watched_folders`: the barrier the live-sync E2E tests wait on before touching a
 //! folder.
 
 use std::collections::{BTreeMap, BTreeSet};

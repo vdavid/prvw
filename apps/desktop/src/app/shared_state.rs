@@ -87,8 +87,8 @@ pub struct SharedAppState {
     /// e.g. the last one was deleted via live folder sync). Lets QA/tests assert the empty state
     /// without a screenshot.
     pub no_images: bool,
-    /// The folders whose live-sync watch is armed — the FSEvents stream covering them has started,
-    /// so changes will be reported. Sorted. Tests poll for their folder to appear here before
+    /// The folders whose live-sync watch is armed, meaning the FSEvents stream covering them has
+    /// started and changes will be reported. Sorted. Tests poll for their folder to appear here before
     /// mutating it; a change made before the stream starts is never delivered, so this is the
     /// non-flaky barrier for live folder sync (the counterpart of `browse_reveal_pending`).
     pub watched_folders: Vec<String>,

@@ -147,7 +147,7 @@ impl TestApp {
     /// `/state` answers well before the folder watcher exists, let alone before its FSEvents
     /// stream starts, and FSEvents reports only what happens after the stream starts. A test that
     /// mutates the folder in that window gets no event at all and then waits out its full
-    /// timeout — the single biggest source of flakes in this file, and one that gets worse the
+    /// timeout, which was the single biggest source of flakes in this file and gets worse the
     /// busier the machine is. `watched_folders` reports what the watcher thread has actually
     /// applied, so polling it closes the race instead of sleeping at it.
     fn wait_for_watch(&self, folder: &std::path::Path) {
@@ -1341,7 +1341,7 @@ fn enter_in_browse_returns_to_image_mode() {
     // Enter maps to "open the selected grid image". Entering browse from an image reveals that
     // image's folder, so Enter takes one of two routes depending on whether the reveal's listing
     // has landed yet: the grid opens the selected image, or the tree-focused fallback returns to
-    // the current image. Both must land back in image mode — never a stray open, never stuck in
+    // the current image. Both must land back in image mode, never a stray open and never stuck in
     // browse. Which route ran is a race, so this asserts only what holds either way; the routes
     // themselves are covered by `entering_browse_from_an_image_preselects_that_image` and
     // `empty_folder_lists_zero_and_grid_stays_non_focusable`.
@@ -1488,7 +1488,7 @@ fn selecting_a_folder_lists_its_images() {
 #[test]
 fn empty_folder_lists_zero_and_grid_stays_non_focusable() {
     // An empty folder → zero images, "(No images)", grid non-focusable: Tab stays on the tree.
-    // The dir-arg launch is what makes the empty grid deterministic — entering browse from an
+    // The dir-arg launch is what makes the empty grid deterministic: entering browse from an
     // image always reveals a folder that has at least that image in it.
     let (home, _images, empty) = create_browse_home(2);
     let app = TestApp::start_browse_dir(&empty, home.path());

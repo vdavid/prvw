@@ -240,7 +240,7 @@ pub enum AppCommand {
     },
     /// The `folder_watch` worker applied a watch/unwatch, so the set of folders whose FSEvents
     /// stream is actually live changed. Sorted. Mirrored into shared state as `watched_folders`,
-    /// which is the QA barrier for "live sync is armed here" — distinct from `App::watched_folder`
+    /// which is the QA barrier for "live sync is armed here". Distinct from `App::watched_folder`
     /// and `watched_tree_folders`, which are what the app has *requested*. See
     /// `crate::folder_watch`.
     WatchedFoldersChanged { folders: Vec<PathBuf> },

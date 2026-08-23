@@ -80,12 +80,12 @@ All three are macOS-only (browse mode is); off macOS they return 400. Each retur
 
 ## Live-sync observability
 
-`GET /state`'s `watched_folders` lists the folders whose filesystem watch the `folder_watch` worker has **applied** —
-the FSEvents stream covering them has started, so changes will be reported. It's not the same as what the app has
-requested (`App::watched_folder` / `watched_tree_folders`): watching is asynchronous, and FSEvents reports nothing that
-happened before its stream started.
+`GET /state`'s `watched_folders` lists the folders whose filesystem watch the `folder_watch` worker has **applied**: the
+FSEvents stream covering them has started, so changes will be reported. It's not the same as what the app has requested
+(`App::watched_folder` / `watched_tree_folders`): watching is asynchronous, and FSEvents reports nothing that happened
+before its stream started.
 
 That gap is a flake factory. `/state` answers before the watcher even exists, so a test that mutates a folder right
-after startup can get no event at all and then wait out its whole timeout — the busier the machine, the likelier. Every
-`live_sync_*` test in `tests/integration.rs` polls `TestApp::wait_for_watch` on its folder before touching it. Do the
-same in any new live-sync test; a `sleep` here only hides the race.
+after startup can get no event at all and then wait out its whole timeout, and the busier the machine the likelier that
+is. Every `live_sync_*` test in `tests/integration.rs` polls `TestApp::wait_for_watch` on its folder before touching it.
+Do the same in any new live-sync test; a `sleep` here only hides the race.
