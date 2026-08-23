@@ -46,7 +46,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | `checks/walk.go`             | `findFiles` / `countFiles`: the file counting every check does             |
 | `console_{windows,other}.go` | `prepareConsole()`: UTF-8 and ANSI on the Windows console                  |
 | `checks/registry.go`         | `AllChecks`: canonical ordered list, lookup and validation functions       |
-| `checks/desktop-rust-*.go`   | Rust checks (rustfmt, clippy, cargo-test, windows-cross)                   |
+| `checks/desktop-rust-*.go`   | Rust checks (rustfmt, clippy, cargo-test, windows-cross, linux-cross)      |
 | `checks/oxfmt.go`            | Monorepo-wide formatter (oxfmt, prettier-compatible)                       |
 | `checks/website-*.go`        | Website checks (eslint, typecheck, build)                                  |
 | `checks/scripts-go-*.go`     | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests) |
@@ -70,13 +70,13 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 
 ## Apps and checks
 
-| App     | Tech      | Checks                                                         |
-| ------- | --------- | -------------------------------------------------------------- |
-| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                |
-| Desktop | Rust      | rustfmt, clippy, cargo-test, windows-cross (slow, opt-in)      |
-| Website | Astro     | eslint, typecheck, build                                       |
-| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests |
-| Other   | -         | changelog-commit-links                                         |
+| App     | Tech      | Checks                                                                       |
+| ------- | --------- | ---------------------------------------------------------------------------- |
+| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                              |
+| Desktop | Rust      | rustfmt, clippy, cargo-test, windows-cross + linux-cross (both slow, opt-in) |
+| Website | Astro     | eslint, typecheck, build                                                     |
+| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests               |
+| Other   | -         | changelog-commit-links                                                       |
 
 ## Cross-platform notes
 

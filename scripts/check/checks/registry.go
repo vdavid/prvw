@@ -45,6 +45,16 @@ var AllChecks = []CheckDefinition{
 		Run:         RunWindowsCross,
 	},
 	{
+		ID:          "desktop-rust-linux-cross",
+		Nickname:    "linux-cross",
+		DisplayName: "Linux cross-check",
+		App:         AppDesktop,
+		Tech:        "🦀 Rust",
+		IsSlow:      true,
+		DependsOn:   nil,
+		Run:         RunLinuxCross,
+	},
+	{
 		ID:          "desktop-rust-tests",
 		Nickname:    "cargo-test",
 		DisplayName: "tests",

@@ -10,8 +10,8 @@ personal use (BSL license). Website at [getprvw.com](https://getprvw.com).
 browse-mode AppKit UI, display-profile matching, QuickLook previews, and the updater are all macOS-only. Windows and
 Linux builds compile and run, and the cross-platform core (decode, RAW pipeline, color transform, settings, navigation)
 is real there, but no release ships for them yet. Anything you write has to at least compile for all three: check
-Windows from this Mac with `./scripts/check.sh --check windows-cross` (see below), and prefer a cross-platform
-implementation over a `#[cfg]` fence when the cost is comparable.
+Windows and Linux from this Mac with `./scripts/check.sh --check windows-cross --check linux-cross` (see below), and
+prefer a cross-platform implementation over a `#[cfg]` fence when the cost is comparable.
 
 The main window has two top-level screens that swap: **image mode** (the wgpu viewer) and **browse mode** (a macOS-only
 native AppKit folder tree + thumbnail grid; `src/browser/`). Enter (in image mode) enters browse; `f`/`F11` keep
@@ -78,7 +78,7 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 - CI: Runs on PRs and pushes to main for changed files. A Rust change runs clippy and the tests on Linux, macOS, and
   Windows. Full run: Actions -> CI -> "Run workflow".
 
-### Checking the Windows build from macOS
+### Checking the Windows and Linux builds from macOS
 
 `./scripts/check.sh --check windows-cross` type-checks and lints the desktop app for `x86_64-pc-windows-msvc` without a
 Windows machine, so Windows-only code gets a real feedback loop. It's marked slow, so a plain `./scripts/check.sh`
@@ -106,7 +106,14 @@ PATH="$(git rev-parse --show-toplevel)/target/cross-check-bin:$PATH" \
 That writes `target/x86_64-pc-windows-msvc/debug/prvw.exe`, a real PE32+ binary to copy into a Windows VM. Run the
 `windows-cross` check at least once first, so the `llvm-lib` link exists.
 
-There's no Linux equivalent yet; `docs/specs/cross-platform-plan.md` records what blocks it.
+`./scripts/check.sh --check linux-cross` is the Linux twin: the same clippy run against `x86_64-unknown-linux-gnu`, also
+slow-marked. One-time setup is `rustup target add x86_64-unknown-linux-gnu` and `mise install zig@latest`. zig supplies
+the Linux C toolchain that `zstd-sys` needs, since Apple's command line tools cross-compile to nothing. The check writes
+its own `cc` and `ar` wrappers into `target/cross-check-bin/`; they exist because cc-rs passes the Rust triple as
+`--target=x86_64-unknown-linux-gnu`, which zig can't parse.
+
+zig is deliberately **not** in `.mise.toml`: pinning it would make all five CI jobs download it for a check that only
+runs on a developer's Mac. The check finds it through `mise where zig` instead.
 
 ## Debugging
 
