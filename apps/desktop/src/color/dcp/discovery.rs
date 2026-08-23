@@ -8,15 +8,18 @@
 //!
 //! 1. `$PRVW_DCP_DIR`: an optional env var pointing to a directory of user-
 //!    provided DCPs. Highest priority so power users and tests can override
-//!    the system default.
-//! 2. `~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/`: the
-//!    default install location for Adobe Camera Raw / Lightroom DCPs on
-//!    macOS. Most users won't have ACR installed, in which case this
-//!    directory won't exist and we silently move on.
-//! 3. `~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/Adobe
-//!    Standard/`: Adobe stashes its "Standard" profiles under a subfolder
-//!    that ACR auto-discovers. We walk one level deep only (no global
-//!    recursive scan) so decode stays snappy.
+//!    the system default. It's also the only search path on Linux, where
+//!    Adobe Camera Raw doesn't exist.
+//! 2. Adobe Camera Raw's install location, which is
+//!    `~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/` on macOS
+//!    and `%APPDATA%\Adobe\CameraRaw\CameraProfiles\` then
+//!    `%PROGRAMDATA%\Adobe\CameraRaw\CameraProfiles\` on Windows (per-user
+//!    profiles win over machine-wide ones). Most users won't have ACR
+//!    installed, in which case the directory won't exist and we silently
+//!    move on.
+//! 3. The `Adobe Standard/` subfolder of each of those: Adobe stashes its
+//!    "Standard" profiles under a subfolder that ACR auto-discovers. We walk
+//!    one level deep only (no global recursive scan) so decode stays snappy.
 //!
 //! ## Matching
 //!
@@ -91,24 +94,66 @@ fn search_dirs() -> Vec<PathBuf> {
     {
         dirs.push(PathBuf::from(env_dir));
     }
-    if let Some(home) = home_dir() {
-        let adobe = home
-            .join("Library")
-            .join("Application Support")
-            .join("Adobe")
-            .join("CameraRaw")
-            .join("CameraProfiles");
-        dirs.push(adobe.clone());
-        dirs.push(adobe.join("Adobe Standard"));
+    // Each root's own files, then its `Adobe Standard` subfolder, per-user
+    // roots before machine-wide ones.
+    for root in acr_profile_roots(HOST_LAYOUT, |name: &str| env::var_os(name)) {
+        let standard = root.join("Adobe Standard");
+        dirs.push(root);
+        dirs.push(standard);
     }
     dirs
 }
 
-fn home_dir() -> Option<PathBuf> {
-    // `std::env::home_dir` was marked deprecated for Windows quirks; we use
-    // `HOME` directly since Prvw is macOS-only and `HOME` is always set by
-    // launchd.
-    env::var_os("HOME").map(PathBuf::from)
+/// Where Adobe Camera Raw keeps its camera profiles on each platform. Picked
+/// by [`HOST_LAYOUT`], but carried as a value so [`acr_profile_roots`] can be
+/// tested against every platform from whichever host runs the tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AcrLayout {
+    /// `$HOME/Library/Application Support/Adobe/CameraRaw/CameraProfiles`
+    MacOs,
+    /// `%APPDATA%` then `%PROGRAMDATA%`, each `\Adobe\CameraRaw\CameraProfiles`
+    Windows,
+    /// Adobe ships no Camera Raw for Linux, so there's nothing to guess at.
+    /// `$PRVW_DCP_DIR` is the way in there.
+    None,
+}
+
+const HOST_LAYOUT: AcrLayout = if cfg!(target_os = "macos") {
+    AcrLayout::MacOs
+} else if cfg!(target_os = "windows") {
+    AcrLayout::Windows
+} else {
+    AcrLayout::None
+};
+
+/// Adobe Camera Raw's profile directories, most specific first. `var` is the
+/// environment lookup, passed in so tests don't have to mutate the process
+/// environment.
+fn acr_profile_roots(
+    layout: AcrLayout,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
+    let non_empty = |name: &str| var(name).filter(|value| !value.is_empty());
+    let camera_profiles =
+        |base: PathBuf| base.join("Adobe").join("CameraRaw").join("CameraProfiles");
+    match layout {
+        AcrLayout::MacOs => non_empty("HOME")
+            .map(|home| {
+                camera_profiles(
+                    PathBuf::from(home)
+                        .join("Library")
+                        .join("Application Support"),
+                )
+            })
+            .into_iter()
+            .collect(),
+        AcrLayout::Windows => ["APPDATA", "PROGRAMDATA"]
+            .iter()
+            .filter_map(|name| non_empty(name))
+            .map(|base| camera_profiles(PathBuf::from(base)))
+            .collect(),
+        AcrLayout::None => Vec::new(),
+    }
 }
 
 fn scan_dir_for_match(dir: &Path, target: &str) -> Result<Option<Dcp>, String> {
@@ -266,14 +311,84 @@ mod tests {
         assert!(dcp_matches(&dcp, &normalize("custom-sig-xyz")));
     }
 
+    use crate::platform::fixed_env;
+
+    #[test]
+    fn macos_acr_root_sits_under_application_support() {
+        let roots = acr_profile_roots(AcrLayout::MacOs, fixed_env(&[("HOME", "/Users/dave")]));
+        assert_eq!(
+            roots,
+            vec![PathBuf::from(
+                "/Users/dave/Library/Application Support/Adobe/CameraRaw/CameraProfiles"
+            )]
+        );
+    }
+
+    /// Both Windows roots, per-user first: a profile the user installed wins
+    /// over a machine-wide one of the same name.
+    #[test]
+    fn windows_acr_roots_are_appdata_then_programdata() {
+        let roots = acr_profile_roots(
+            AcrLayout::Windows,
+            fixed_env(&[
+                ("APPDATA", "C:\\Users\\dave\\AppData\\Roaming"),
+                ("PROGRAMDATA", "C:\\ProgramData"),
+            ]),
+        );
+        let tail = |base: &str| {
+            PathBuf::from(base)
+                .join("Adobe")
+                .join("CameraRaw")
+                .join("CameraProfiles")
+        };
+        assert_eq!(
+            roots,
+            vec![
+                tail("C:\\Users\\dave\\AppData\\Roaming"),
+                tail("C:\\ProgramData"),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_or_empty_variables_drop_their_root() {
+        assert!(acr_profile_roots(AcrLayout::MacOs, fixed_env(&[("HOME", "")])).is_empty());
+        assert!(acr_profile_roots(AcrLayout::Windows, fixed_env(&[])).is_empty());
+        assert_eq!(
+            acr_profile_roots(
+                AcrLayout::Windows,
+                fixed_env(&[("APPDATA", ""), ("PROGRAMDATA", "C:\\ProgramData")]),
+            )
+            .len(),
+            1,
+            "PROGRAMDATA alone still gives one root"
+        );
+    }
+
+    /// Adobe ships no Camera Raw for Linux, so we invent no path there.
+    /// `$PRVW_DCP_DIR` stays the only way in.
+    #[test]
+    fn linux_has_no_guessed_roots() {
+        assert!(
+            acr_profile_roots(AcrLayout::None, fixed_env(&[("HOME", "/home/dave")])).is_empty()
+        );
+    }
+
+    /// Every search directory ends in the `Adobe Standard` subfolder of the
+    /// root right before it, so a root's own profiles are tried first.
+    #[test]
+    fn search_dirs_pair_each_root_with_its_standard_subfolder() {
+        let dirs = search_dirs();
+        for pair in dirs.windows(2) {
+            if pair[1].file_name().and_then(|n| n.to_str()) == Some("Adobe Standard") {
+                assert_eq!(pair[1].parent(), Some(pair[0].as_path()));
+            }
+        }
+    }
+
     /// Smoke test for the full `find_dcp_for_camera` path: put a synthetic
     /// DCP in a temp dir, point `PRVW_DCP_DIR` at it, and confirm the
     /// discoverer finds it and returns the parsed struct.
-    ///
-    /// Gated to macOS because other tests in the color module already lean
-    /// on macOS specifics; keeping this one consistent avoids surprise
-    /// Linux CI failures from a serial env-var race against another suite.
-    #[cfg(target_os = "macos")]
     #[test]
     fn find_dcp_uses_env_var_path() {
         use tempfile::TempDir;

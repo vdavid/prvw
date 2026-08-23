@@ -23,9 +23,11 @@ A profile reaches the applier via one of these tiers, tried in order:
    Samsung Galaxy, and iPhone ProRAW file ships one; Adobe DNG Converter also bakes one in. The camera manufacturer
    chose this profile, so it's the most trustworthy source.
 2. **Filesystem exact** (`discovery::find_dcp_for_camera`, Phase 3.2). No embedded profile. Try a standalone `.dcp`
-   under `$PRVW_DCP_DIR` or Adobe Camera Raw's default directory
-   (`~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/`). Matching is by `UniqueCameraModel`
-   (case-insensitive, whitespace-tolerant) or `ProfileCalibrationSignature` as a fallback.
+   under `$PRVW_DCP_DIR` or Adobe Camera Raw's install directory, which `discovery::acr_profile_roots` resolves per
+   platform: `~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/` on macOS, `%APPDATA%` then `%PROGRAMDATA%`
+   joined with `Adobe\CameraRaw\CameraProfiles\` on Windows, and nothing on Linux (Adobe ships no Camera Raw there, so
+   `$PRVW_DCP_DIR` is the only way in). Matching is by `UniqueCameraModel` (case-insensitive, whitespace-tolerant) or
+   `ProfileCalibrationSignature` as a fallback.
 3. **Bundled exact** (`bundled::find_bundled_dcp`, Phase 3.5). Try the 161 RawTherapee community profiles packed into
    the binary at build time (~10 MB zstd blob). No user setup required.
 4. **Fuzzy family alias** (`family_aliases::aliases_for`, Phase 3.5). For each curated alias of the camera, repeat tiers
