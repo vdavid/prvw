@@ -131,3 +131,36 @@ fn query_ui_font_name() -> Option<String> {
         .ok()
         .filter(|name| !name.is_empty())
 }
+
+/// How many lines of content one wheel notch moves, from `SPI_GETWHEELSCROLLLINES`.
+///
+/// Three by default, and the only place Windows lets someone say their wheel is too slow, so
+/// `crate::scroll` scales the zoom rate by it. `WHEEL_PAGESCROLL` ("one screen at a time")
+/// arrives as `u32::MAX` and is passed along as-is; the caller clamps.
+///
+/// Asked once and kept: a query per scroll event would be wasted work, and the setting changing
+/// mid-session is rare enough to let the next launch pick it up.
+pub fn wheel_scroll_lines() -> u32 {
+    static LINES: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *LINES.get_or_init(|| query_wheel_scroll_lines().unwrap_or(3))
+}
+
+fn query_wheel_scroll_lines() -> Option<u32> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+
+    let mut lines: u32 = 0;
+    // SAFETY: `SPI_GETWHEELSCROLLLINES` writes one `UINT` through `pvParam`, which is what
+    // `lines` is. `uiParam` is unused for this action.
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETWHEELSCROLLLINES,
+            0,
+            Some(std::ptr::from_mut(&mut lines).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .ok()?;
+    (lines > 0).then_some(lines)
+}

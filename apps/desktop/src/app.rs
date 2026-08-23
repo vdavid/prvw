@@ -25,13 +25,13 @@ use crate::render::{renderer, text};
 use crate::updater;
 use crate::{
     TITLE_BAR_HEIGHT, color, decoding, exif_overlay, histogram, input, menu, navigation, qa,
-    settings, slideshow, window, zoom,
+    scroll, settings, slideshow, window, zoom,
 };
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
@@ -178,6 +178,9 @@ pub(crate) struct App {
     pub(crate) drag_start: Option<(Logical<f64>, Logical<f64>)>,
     pub(crate) last_mouse_pos: (Logical<f64>, Logical<f64>),
     pub(crate) last_click_time: Option<Instant>,
+    /// What a scroll event means here: the platform's zoom modifier, and the running conversion
+    /// from raw deltas to zoom steps and images. See `crate::scroll`.
+    pub(crate) scroll: scroll::Scroll,
     pub(crate) needs_redraw: bool,
     /// Set by a slideshow auto-advance to request that the next image display
     /// crossfades from the current one. Consumed (and cleared) by
@@ -292,6 +295,7 @@ impl App {
             drag_start: None,
             last_mouse_pos: (Logical(0.0), Logical(0.0)),
             last_click_time: None,
+            scroll: scroll::Scroll::for_host(),
             needs_redraw: false,
             pending_crossfade: false,
             scale_factor: 2.0,
@@ -3467,36 +3471,47 @@ impl ApplicationHandler<AppCommand> for App {
                 }
             }
 
-            // Scroll: zoom (when scroll_to_zoom is on or Cmd is held) or navigate images
+            // Scroll: zoom (when "Scroll to zoom" is on or the platform's zoom modifier is
+            // held) or move through the folder. `crate::scroll` owns every per-platform
+            // decision in that sentence.
             WindowEvent::MouseWheel { delta, .. } => {
-                let scroll_y = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 50.0,
-                };
-                if scroll_y.abs() > f32::EPSILON {
-                    let cmd_held = self.modifiers.super_key();
-                    if self.zoom.scroll_to_zoom || cmd_held {
+                match self.scroll.interpret(
+                    delta,
+                    self.scale_factor,
+                    &self.modifiers,
+                    self.zoom.scroll_to_zoom,
+                ) {
+                    Some(scroll::ScrollAction::Zoom(steps)) => {
                         // Zoom centered on cursor (Y offset into image area)
                         let old_zoom = self.zoom.view.zoom;
                         let (cx, cy) = self.last_mouse_pos;
                         let offset = Logical(self.content_offset_y().0 as f64);
                         self.zoom
                             .view
-                            .scroll_zoom(scroll_y, cx.as_f32(), (cy - offset).as_f32());
+                            .scroll_zoom(steps, cx.as_f32(), (cy - offset).as_f32());
                         if self.zoom.auto_fit {
                             self.auto_fit_after_zoom(old_zoom, cx, cy);
                         }
                         self.update_transform_and_redraw();
-                    } else {
-                        // Navigate: scroll down = next, scroll up = previous.
-                        // Debounced so a wheel spin collapses to one jump.
-                        let forward = scroll_y < 0.0;
-                        self.execute_command(event_loop, AppCommand::NavigateDebounced(forward));
                     }
+                    Some(scroll::ScrollAction::Navigate(images)) => {
+                        // Debounced, so a wheel spin collapses into one jump and one decode.
+                        let forward = images > 0;
+                        for _ in 0..images.abs() {
+                            self.execute_command(
+                                event_loop,
+                                AppCommand::NavigateDebounced(forward),
+                            );
+                        }
+                    }
+                    None => {}
                 }
             }
 
-            // Trackpad pinch-to-zoom: cursor-centered
+            // Trackpad pinch-to-zoom, cursor-centered. macOS and iOS only: winit reports no
+            // gesture events elsewhere. Windows needs no counterpart because a precision
+            // touchpad synthesises Ctrl + wheel for a pinch, which the arm above already zooms
+            // with; Linux has neither, so Ctrl + scroll is the zoom there.
             WindowEvent::PinchGesture { delta, .. } => {
                 let delta = delta as f32;
                 if delta.abs() > f32::EPSILON {

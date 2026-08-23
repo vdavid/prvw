@@ -24,6 +24,7 @@ mod parity;
 mod pixels;
 mod platform;
 mod render;
+mod scroll;
 
 // Features
 #[cfg(target_os = "macos")]

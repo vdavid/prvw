@@ -135,14 +135,17 @@ impl ViewState {
         }
     }
 
-    /// Zoom by scroll wheel, centered on the cursor position.
-    pub fn scroll_zoom(&mut self, delta: f32, cursor_x: Logical<f32>, cursor_y: Logical<f32>) {
-        let factor = if delta > 0.0 {
-            ZOOM_STEP
-        } else {
-            1.0 / ZOOM_STEP
-        };
-        self.zoom_around(factor, cursor_x, cursor_y);
+    /// Zoom by `steps` scroll steps, centered on the cursor position. One step is
+    /// [`ZOOM_STEP`], which is what a wheel notch is worth; positive zooms in.
+    ///
+    /// Fractional steps are the point: a trackpad reports finger travel, and `crate::scroll`
+    /// turns it into a fraction of a notch, so the factor is continuous rather than a sign test.
+    /// Whole steps land exactly where the wheel always put them.
+    pub fn scroll_zoom(&mut self, steps: f32, cursor_x: Logical<f32>, cursor_y: Logical<f32>) {
+        if !steps.is_finite() || steps == 0.0 {
+            return;
+        }
+        self.zoom_around(ZOOM_STEP.powf(steps), cursor_x, cursor_y);
     }
 
     /// Zoom by trackpad pinch gesture, centered on the cursor position.
@@ -452,6 +455,41 @@ mod tests {
         view.zoom = 0.5;
         view.set_min_zoom(1.0);
         assert!((view.zoom - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn scroll_zoom_scales_with_the_number_of_steps() {
+        // Two steps in one event land where two single-step events do, so a trackpad's
+        // fractions and a wheel's whole notches are the same scale.
+        let mut once = ViewState::new();
+        once.update_dimensions(800, 600, Logical(800.0), Logical(600.0));
+        once.set_min_zoom(0.1);
+        once.zoom = 1.0;
+        let mut twice = once.clone();
+
+        once.scroll_zoom(2.0, Logical(400.0), Logical(300.0));
+        twice.scroll_zoom(1.0, Logical(400.0), Logical(300.0));
+        twice.scroll_zoom(1.0, Logical(400.0), Logical(300.0));
+        assert!(
+            (once.zoom - twice.zoom).abs() < 0.001,
+            "{} vs {}",
+            once.zoom,
+            twice.zoom
+        );
+    }
+
+    #[test]
+    fn a_fraction_of_a_step_zooms_by_less_than_a_whole_one() {
+        let mut view = ViewState::new();
+        view.update_dimensions(800, 600, Logical(800.0), Logical(600.0));
+        view.set_min_zoom(0.1);
+        view.zoom = 1.0;
+        view.scroll_zoom(0.25, Logical(400.0), Logical(300.0));
+        assert!(
+            view.zoom > 1.0 && view.zoom < ZOOM_STEP,
+            "got {}",
+            view.zoom
+        );
     }
 
     #[test]

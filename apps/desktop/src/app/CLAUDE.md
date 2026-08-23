@@ -18,14 +18,15 @@ App holds three per-feature State structs (`zoom`, `color`, `navigation`) plus t
   Each feature's runtime + setting-backed fields live in its own module.
 - **Launch**: `file_path`, `explicit_files`, `waiting_for_file`, `launch_directory` (a lone directory CLI arg → browse
   mode on macOS, the folder's images in image mode elsewhere; see `browser::classify_launch_target`, `launch`, and
-  `initialize_viewer`), `wait_start`, `empty_state` (why image mode is showing no image, if it isn't).
-  `file_path` is what opens (argv order, so `prvw b.png a.png` opens b.png) while `explicit_files` becomes a list in
-  the user's **sort** order, so `initialize_viewer` positions the list at `file_path`. Everything downstream keys off
-  `dir_list.current_index()` — the cache slot, the title's `n / total`, the preload window — so a list sitting
-  anywhere else shows a blank window and mislabels it.
+  `initialize_viewer`), `wait_start`, `empty_state` (why image mode is showing no image, if it isn't). `file_path` is
+  what opens (argv order, so `prvw b.png a.png` opens b.png) while `explicit_files` becomes a list in the user's
+  **sort** order, so `initialize_viewer` positions the list at `file_path`. Everything downstream keys off
+  `dir_list.current_index()` — the cache slot, the title's `n / total`, the preload window — so a list sitting anywhere
+  else shows a blank window and mislabels it.
 - **Handles**: `window`, `renderer`, `app_menu`.
 - **Cross-cutting toggle**: `title_bar` (affects window chrome, not enough to justify its own feature state struct).
-- **Runtime input**: `modifiers`, `drag_start`, `last_mouse_pos`, `last_click_time`, `needs_redraw`, `scale_factor`.
+- **Runtime input**: `modifiers`, `drag_start`, `last_mouse_pos`, `last_click_time`, `scroll` (`crate::scroll::Scroll` —
+  the platform's zoom modifier plus the running delta-to-images conversion), `needs_redraw`, `scale_factor`.
 - **Cross-thread**: `shared_state`, `event_loop_proxy`, `_qa_handle`.
 
 App doesn't implement any feature's logic. The handler arms in `execute_command` mutate `self.zoom`, `self.color`,

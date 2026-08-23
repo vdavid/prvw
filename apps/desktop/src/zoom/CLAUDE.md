@@ -15,7 +15,9 @@
 
 - `auto_fit`: setting, whether window resizes to match each image
 - `enlarge`: setting, whether to upscale small images
-- `scroll_to_zoom`: setting, scroll wheel zooms vs navigates
+- `scroll_to_zoom`: setting, scroll wheel zooms vs navigates. What a raw scroll event is _worth_ — and which modifier
+  means "zoom" on which platform — belongs to `crate::scroll`, not here; `ViewState::scroll_zoom` just takes the number
+  of steps it decided on, fractions included (that's how a trackpad zooms smoothly)
 - `view: ViewState`: runtime zoom/pan math + `TransformUniform`
 
 Inside `ViewState`: `zoom: f32` is the absolute scale (1.0 = pixel-perfect), `pan_x/pan_y`, `min_zoom` (the floor),

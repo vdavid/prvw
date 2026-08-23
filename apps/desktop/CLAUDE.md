@@ -20,6 +20,7 @@ src/
 ├── pixels.rs                Logical/Physical coordinate newtypes
 ├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach)
 ├── render.rs + render/      wgpu infrastructure (renderer, text, shaders)
+├── scroll.rs                What a wheel notch or a trackpad swipe means, per platform (zoom modifier, steps, images)
 │
 │   Features:
 ├── about.rs                 About window
