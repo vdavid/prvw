@@ -141,9 +141,23 @@ fn main() {
     // Onboarding (the "waiting" path) only when there's neither a file nor a launch directory.
     let waiting_for_file = resolved_files.is_empty() && launch_directory.is_none();
 
+    // Only macOS has something to wait for. There, Finder delivers the file through an Apple
+    // Event (`platform/macos/open_handler.rs`) and `onboarding` puts a window up meanwhile. Off
+    // macOS neither exists, and `resumed()` builds no window without a file, so waiting would
+    // leave a process with no window and no way to reach one — the normal outcome of a Start-menu
+    // or taskbar launch on Windows, which passes no argv. Say what to open and exit instead.
+    // M1 step 1 replaces this with an empty-state window plus File → Open.
+    #[cfg(not(target_os = "macos"))]
+    if waiting_for_file {
+        log::error!("Nothing to show. Pass an image or a folder: prvw <path>");
+        // 2, the way clap exits on a usage error, so a script can tell this from a crash.
+        std::process::exit(2);
+    }
+
     if launch_directory.is_some() {
         // Already logged above.
     } else if waiting_for_file {
+        // macOS only; every other platform exited above.
         log::info!("No files on CLI, waiting for Apple Event (Finder double-click)");
     } else if resolved_files.len() == 1 {
         log::info!("Opening {}", resolved_files[0].display());

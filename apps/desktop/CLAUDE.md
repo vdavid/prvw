@@ -50,6 +50,12 @@ Single-file features (`about.rs`, `diagnostics.rs`, `updater.rs`, `window.rs`) u
 cross-cutting state: handles (window, renderer, menu), launch flags (file_path, waiting_for_file, launch_directory),
 runtime input (modifiers, drag_start, etc.), and the single cross-feature toggle `title_bar`.
 
+**Gotcha: `waiting_for_file` is a macOS-only state.** `resumed()` builds no window in it, and what makes that safe on
+macOS is that Finder delivers the file through an Apple Event and `onboarding` puts a window up meanwhile. Neither
+exists elsewhere, so `main` logs and exits (code 2) rather than leaving a windowless process — which is what a Windows
+Start-menu or taskbar launch would otherwise produce, since those pass no argv. M1 step 1 of
+`docs/specs/cross-platform-plan.md` replaces the exit with an empty-state window plus File → Open.
+
 ## Top-level principles
 
 - **`winit` 0.30 `ApplicationHandler`.** App implements the trait. Window + wgpu surface created in `resumed()`, not

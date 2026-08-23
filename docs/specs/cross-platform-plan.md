@@ -98,14 +98,14 @@ there's no window, no renderer, nothing. The 500 ms timer at `app.rs:3300` then 
 `crate::onboarding::show_window()`, which is macOS-only (`main.rs:28-29` gates the whole module). And the File menu
 (`menu/native.rs:326-338`) is Print, a separator, and Close window: **there is no Open item anywhere in the app**.
 
-Still true after M0: nothing in that milestone touched `main.rs` or `resumed()`, so a no-argument launch off macOS logs
-one `info` line and then waits forever.
+Partly addressed in M0: a no-argument launch off macOS now logs at `error` and exits 2 rather than waiting forever.
+`resumed()` is untouched, so the window and the recovery path are still M1 step 1's job.
 
 On macOS none of that matters, because Finder delivers files through Apple Events (`platform/macos/open_handler.rs`). On
 Windows, a Start-menu shortcut, a taskbar pin, or a desktop icon are the normal ways to launch, and all of them pass no
-argv. The user gets a process with no window and no way to recover, because `AppCommand::OpenFile` only ever arrives
-from an Apple Event or the debug QA server. This is M1 step 1, and it's the single most important thing in the
-milestone.
+argv. The user got a process with no window and no way to recover, because `AppCommand::OpenFile` only ever arrives
+from an Apple Event or the debug QA server. M0's Done-when clause turned that into a message and exit 2; making the
+launch actually work is M1 step 1, and it's the single most important thing in the milestone.
 
 **4. The macOS side of CI is weaker than the Linux side. Fixed in M0 step 1.** The `desktop-rust-macos` job's only step
 was `cargo build`. No rustfmt, no clippy, no tests. Combined with the crate-level gates above, **the E2E suite and the
@@ -596,8 +596,10 @@ no-argument case log and exit rather than hang invisibly.)
 
 **Where that landed:** the first half is as verified as a Mac can make it —
 `cargo xwin build --target x86_64-pc-windows-msvc` produces a `prvw.exe`, but nobody has started it on Windows yet. The
-second half is **not done**: `main.rs` is untouched, so a no-argument launch still logs
-`No files on CLI, waiting for Apple Event` at `info` and then waits forever off macOS. Carry it into M1 step 1.
+second half is the defensible-rather-than-nothing version: off macOS a no-argument launch logs
+`Nothing to show. Pass an image or a folder: prvw <path>` at `error` and exits 2, instead of running an event loop that
+will never build a window. macOS keeps waiting for its Apple Event. The real fix, an empty-state window plus
+File → Open, is still M1 step 1.
 
 ### M0.5: the parity harness (one to two weeks)
 
