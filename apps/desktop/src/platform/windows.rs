@@ -93,7 +93,14 @@ fn enable_ansi(handle: HANDLE) -> bool {
 /// This is what the Windows UI design calls for: reading the metric gives "Segoe UI" on both
 /// Windows 10 and 11, so the overlay matches the desktop without a version branch. `None` means
 /// the query failed, and `render::text` falls back to its own list.
-pub fn system_ui_font_name() -> Option<String> {
+///
+/// Asked once and kept, since a font system can be built more than once per process.
+pub fn system_ui_font_name() -> Option<&'static str> {
+    static NAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    NAME.get_or_init(query_ui_font_name).as_deref()
+}
+
+fn query_ui_font_name() -> Option<String> {
     use windows::Win32::UI::WindowsAndMessaging::{
         NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
         SystemParametersInfoW,

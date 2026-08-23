@@ -168,8 +168,7 @@ fn ui_font_candidates() -> Vec<&'static str> {
     let names = {
         let mut names = vec!["Segoe UI", "Tahoma", "Arial"];
         if let Some(preferred) = crate::platform::windows::system_ui_font_name() {
-            // Leaked so the whole list can stay `'static`. One string, once per process.
-            names.insert(0, Box::leak(preferred.into_boxed_str()));
+            names.insert(0, preferred);
         }
         names
     };
