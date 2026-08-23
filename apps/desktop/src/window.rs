@@ -861,11 +861,6 @@ pub fn push_metal_layer_above_vibrancy(window: &Window) {
     }
 }
 
-/// Hide or show the wgpu CAMetalLayer. Browse mode hides it so the native split view (a sibling
-/// at a higher `zPosition`) is the only visible content; image mode unhides it. Reuses the same
-/// `find_sublayer_responding_to(setColorspace:)` walk as `push_metal_layer_above_vibrancy` to
-/// locate the Metal layer.
-#[cfg(target_os = "macos")]
 /// Make winit's content view the window's first responder again.
 ///
 /// Browse mode hosts a live `NSOutlineView`; while it's up the outline view (or some descendant)
@@ -894,6 +889,10 @@ pub fn restore_content_view_first_responder(window: &Window) {
     }
 }
 
+/// Hide or show the wgpu CAMetalLayer. Browse mode hides it so the native split view (a sibling
+/// at a higher `zPosition`) is the only visible content; image mode unhides it. Reuses the same
+/// `find_sublayer_responding_to(setColorspace:)` walk as `push_metal_layer_above_vibrancy` to
+/// locate the Metal layer.
 #[cfg(target_os = "macos")]
 pub fn set_metal_layer_hidden(window: &Window, hidden: bool) {
     use objc2::msg_send;

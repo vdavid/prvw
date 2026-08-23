@@ -3,8 +3,6 @@
 //! Lives here (not in `crate::previews`) because it touches `App` fields —
 //! the previews module is platform code and shouldn't know about App.
 
-#![cfg(target_os = "macos")]
-
 use super::App;
 use super::shared_state::PreviewEvent;
 use objc2_core_foundation::CGSize;
