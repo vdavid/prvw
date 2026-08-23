@@ -243,6 +243,7 @@ impl AppMenu {
     fn dispatch(&self, key: MenuItemKey) -> Option<AppCommand> {
         match key {
             MenuItemKey::About => Some(AppCommand::ShowAbout),
+            MenuItemKey::Open => Some(AppCommand::ShowOpenDialog),
             MenuItemKey::Settings => Some(AppCommand::ShowSettings),
             MenuItemKey::Copy | MenuItemKey::ContextCopy => Some(AppCommand::CopyImage),
             MenuItemKey::Print | MenuItemKey::ContextPrint => Some(AppCommand::Print),
@@ -372,12 +373,18 @@ pub fn create_menu_bar() -> Option<AppMenu> {
 
     // File menu
     let file_menu = Submenu::new("File", true);
+    let open = build.item(
+        MenuItemKey::Open,
+        Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyO)),
+    );
     let print = build.item(
         MenuItemKey::Print,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyP)),
     );
     file_menu
         .append_items(&[
+            &open,
+            &PredefinedMenuItem::separator(),
             &print,
             &PredefinedMenuItem::separator(),
             &build.predefined(

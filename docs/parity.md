@@ -11,14 +11,14 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 
 ## Summary
 
-- macOS: 115 of 115 done, 0 not applicable, 0 missing
-- Windows: 31 of 115 done, 5 not applicable, 79 missing
-- Linux: 31 of 115 done, 5 not applicable, 79 missing
+- macOS: 116 of 116 done, 0 not applicable, 0 missing
+- Windows: 31 of 116 done, 5 not applicable, 80 missing
+- Linux: 31 of 116 done, 5 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
 - Settings (40 entries): macOS 40 / 0 / 0, Windows 0 / 1 / 39, Linux 0 / 1 / 39
-- Menu items (36 entries): macOS 36 / 0 / 0, Windows 0 / 3 / 33, Linux 0 / 3 / 33
+- Menu items (37 entries): macOS 37 / 0 / 0, Windows 0 / 3 / 34, Linux 0 / 3 / 34
 - Commands (39 entries): macOS 39 / 0 / 0, Windows 31 / 1 / 7, Linux 31 / 1 / 7
 
 ## What each platform still owes
@@ -29,7 +29,7 @@ Nothing missing.
 
 ### Windows
 
-79 missing:
+80 missing:
 
 - Setting, General: `AutoUpdate`, `ScrollToZoom`, `PreloadNeighbors`
 - Setting, Zoom: `AutoFitWindow`, `EnlargeSmallImages`
@@ -39,7 +39,7 @@ Nothing missing.
 - Setting, File associations: `FileAssociations`
 - Setting, Menu only: `HistogramVisible`, `ExifVisible`, `LoopNavigation`, `SortBy`
 - Menu item, Prvw: `About`, `Settings`, `Quit`
-- Menu item, File: `Print`, `CloseWindow`
+- Menu item, File: `Open`, `Print`, `CloseWindow`
 - Menu item, Edit: `Copy`
 - Menu item, View: `ZoomIn`, `ZoomOut`, `ActualSize`, `FitToWindow`, `AutoFitWindow`, `EnlargeSmallImages`, `IccColorManagement`, `ColorMatchDisplay`, `RelativeColorimetric`, `Histogram`, `ExifInfo`, `SortByName`, `SortByDate`, `SortByFileType`, `Fullscreen`, `Refresh`
 - Menu item, Navigate: `BrowseToggle`, `Previous`, `Next`, `GoToFirst`, `GoToLast`, `LoopNavigation`
@@ -50,7 +50,7 @@ Nothing missing.
 
 ### Linux
 
-79 missing:
+80 missing:
 
 - Setting, General: `AutoUpdate`, `ScrollToZoom`, `PreloadNeighbors`
 - Setting, Zoom: `AutoFitWindow`, `EnlargeSmallImages`
@@ -60,7 +60,7 @@ Nothing missing.
 - Setting, File associations: `FileAssociations`
 - Setting, Menu only: `HistogramVisible`, `ExifVisible`, `LoopNavigation`, `SortBy`
 - Menu item, Prvw: `About`, `Settings`, `Quit`
-- Menu item, File: `Print`, `CloseWindow`
+- Menu item, File: `Open`, `Print`, `CloseWindow`
 - Menu item, Edit: `Copy`
 - Menu item, View: `ZoomIn`, `ZoomOut`, `ActualSize`, `FitToWindow`, `AutoFitWindow`, `EnlargeSmallImages`, `IccColorManagement`, `ColorMatchDisplay`, `RelativeColorimetric`, `Histogram`, `ExifInfo`, `SortByName`, `SortByDate`, `SortByFileType`, `Fullscreen`, `Refresh`
 - Menu item, Navigate: `BrowseToggle`, `Previous`, `Next`, `GoToFirst`, `GoToLast`, `LoopNavigation`
@@ -140,6 +140,7 @@ Nothing missing.
 - `HideOthers` "Hide others" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
 - `ShowAll` "Show all" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
 - `Quit` "Quit Prvw" (menu item, Prvw menu): macOS done, Windows missing, Linux missing
+- `Open` "Open…" (menu item, File menu): macOS done, Windows missing, Linux missing
 - `Print` "Print…" (menu item, File menu): macOS done, Windows missing, Linux missing
 - `CloseWindow` "Close window" (menu item, File menu): macOS done, Windows missing, Linux missing
 - `Copy` "Copy image" (menu item, Edit menu): macOS done, Windows missing, Linux missing

@@ -64,7 +64,7 @@ impl AppCommand {
             }
             AppCommand::GoToFirst => Action(CommandKey::GoToFirst),
             AppCommand::GoToLast => Action(CommandKey::GoToLast),
-            AppCommand::OpenFile(_) => Action(CommandKey::OpenFile),
+            AppCommand::OpenFile(_) | AppCommand::ShowOpenDialog => Action(CommandKey::OpenFile),
             AppCommand::ToggleLoopNavigation => Action(CommandKey::LoopNavigation),
             AppCommand::SetSortBy(_) => Action(CommandKey::SortBy),
             AppCommand::Refresh => Action(CommandKey::Refresh),
@@ -199,6 +199,9 @@ pub enum AppCommand {
     GoToLast,
     /// Open a specific file.
     OpenFile(PathBuf),
+    /// Put the native file picker up (File → Open…, Cmd/Ctrl+O). The chosen path comes back
+    /// as [`AppCommand::OpenFile`]; a dismissed picker sends nothing. See `open_dialog`.
+    ShowOpenDialog,
 
     // ── View ─────────────────────────────────────────────────────────
     /// Zoom in one step (keyboard shortcut).

@@ -206,6 +206,11 @@ pub fn is_supported_extension(ext: &str) -> bool {
     dispatch::is_supported_extension(ext)
 }
 
+/// Every extension the app opens, for the file picker's filter.
+pub fn supported_extensions() -> Vec<&'static str> {
+    dispatch::supported_extensions()
+}
+
 /// Whether a file extension is a camera RAW format (gate for the quick-preview
 /// path — only RAW decodes are slow enough to need it).
 pub fn is_raw_extension(ext: &str) -> bool {

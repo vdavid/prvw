@@ -33,6 +33,7 @@ mod histogram;
 mod navigation;
 #[cfg(target_os = "macos")]
 mod onboarding;
+mod open_dialog;
 #[cfg(target_os = "macos")]
 mod previews;
 mod qa;

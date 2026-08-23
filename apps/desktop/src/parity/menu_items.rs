@@ -107,6 +107,7 @@ menu_items! {
     Quit { label: "Quit Prvw", hint: "", menu: App, command: None, }
 
     // ── File menu ────────────────────────────────────────────────────
+    Open { label: "Open\u{2026}", hint: "", menu: File, command: Some(CommandKey::OpenFile), }
     Print { label: "Print\u{2026}", hint: "", menu: File, command: Some(CommandKey::Print), }
     CloseWindow { label: "Close window", hint: "", menu: File, command: None, }
 
@@ -172,6 +173,7 @@ impl MenuItemKey {
             | MenuItemKey::HideOthers
             | MenuItemKey::ShowAll
             | MenuItemKey::Quit
+            | MenuItemKey::Open
             | MenuItemKey::Print
             | MenuItemKey::CloseWindow
             | MenuItemKey::Copy
@@ -221,6 +223,7 @@ impl MenuItemKey {
             MenuItemKey::About
             | MenuItemKey::Settings
             | MenuItemKey::Quit
+            | MenuItemKey::Open
             | MenuItemKey::Print
             | MenuItemKey::CloseWindow
             | MenuItemKey::Copy
@@ -270,6 +273,7 @@ impl MenuItemKey {
             MenuItemKey::About
             | MenuItemKey::Settings
             | MenuItemKey::Quit
+            | MenuItemKey::Open
             | MenuItemKey::Print
             | MenuItemKey::CloseWindow
             | MenuItemKey::Copy

@@ -7,6 +7,17 @@
 use crate::commands::AppCommand;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+/// Whether the modifier a platform reserves for its own app shortcuts is down: Cmd on macOS,
+/// Ctrl everywhere else. Windows and Linux hand the Super key to the desktop, so `super_key()`
+/// is never ours there.
+fn command_modifier(modifiers: &ModifiersState) -> bool {
+    if cfg!(target_os = "macos") {
+        modifiers.super_key()
+    } else {
+        modifiers.control_key()
+    }
+}
+
 /// Map a keyboard key press to an `AppCommand`.
 /// Returns `None` for keys that don't map to any action.
 /// Takes `Key<&str>` (from `Key::as_ref()`) so callers don't need to clone.
@@ -31,6 +42,12 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
     }
     if bare && matches!(key, Key::Character("s") | Key::Character("S")) {
         return Some(AppCommand::ToggleSlideshow);
+    }
+    // Open a file. The menu bar advertises the same shortcut, and on macOS AppKit's key
+    // equivalent takes the press before winit ever sees it — so this arm is what serves
+    // Windows and Linux, where nothing attaches the bar (`menu::absent`, and M4 for Windows).
+    if command_modifier(modifiers) && matches!(key, Key::Character("o") | Key::Character("O")) {
+        return Some(AppCommand::ShowOpenDialog);
     }
     match key {
         // Navigation (user input → debounced so a wheel spin coalesces).

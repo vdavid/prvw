@@ -551,6 +551,17 @@ impl App {
                 }
                 event_loop.exit();
             }
+            AppCommand::ShowOpenDialog => {
+                // Start where the user already is: the folder of the image on screen. With no
+                // image (the empty state, a folder with nothing in it) the platform decides,
+                // which is normally the last folder they picked from.
+                let start_in = self
+                    .navigation
+                    .dir_list
+                    .as_ref()
+                    .and_then(|dir| dir.current().parent().map(Path::to_path_buf));
+                crate::open_dialog::show(self.event_loop_proxy.clone(), start_in);
+            }
             AppCommand::OpenFile(path) => {
                 let resolved = path.canonicalize().unwrap_or(path);
                 if !resolved.is_file() {
