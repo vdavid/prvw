@@ -45,6 +45,8 @@ type cliFlags struct {
 }
 
 func main() {
+	prepareConsole()
+
 	// Kill all child process groups on Ctrl+C / SIGTERM so no orphans are left behind.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

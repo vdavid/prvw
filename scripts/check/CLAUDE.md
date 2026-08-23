@@ -14,6 +14,8 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 ./scripts/check.sh --ci --fail-fast   # CI mode
 ```
 
+On Windows the entry point is `scripts\check.ps1`, which takes the same flags and returns the same exit code.
+
 ## Architecture
 
 ```
@@ -34,19 +36,23 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 
 ## Key files
 
-| File                       | Purpose                                                                    |
-| -------------------------- | -------------------------------------------------------------------------- |
-| `main.go`                  | Entry point: flags, root dir, check selection, runner delegation           |
-| `runner.go`                | Parallel executor: goroutine pool, dependency graph, TTY status line       |
-| `checks/common.go`         | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`)  |
-| `checks/registry.go`       | `AllChecks`: canonical ordered list, lookup and validation functions       |
-| `checks/desktop-rust-*.go` | Rust checks (rustfmt, clippy, cargo-test)                                  |
-| `checks/oxfmt.go`          | Monorepo-wide formatter (oxfmt, prettier-compatible)                       |
-| `checks/website-*.go`      | Website checks (eslint, typecheck, build)                                  |
-| `checks/scripts-go-*.go`   | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests) |
-| `stats.go`                 | CSV stats logging (`~/prvw-check-log.csv`)                                 |
-| `colors.go`                | ANSI color constants                                                       |
-| `utils.go`                 | `findRootDir()` (walks up until `AGENTS.md` is found)                      |
+| File                         | Purpose                                                                    |
+| ---------------------------- | -------------------------------------------------------------------------- |
+| `main.go`                    | Entry point: flags, root dir, check selection, runner delegation           |
+| `runner.go`                  | Parallel executor: goroutine pool, dependency graph, TTY status line       |
+| `checks/common.go`           | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`)  |
+| `checks/common_unix.go`      | Process-group setup and tree kill on macOS and Linux                       |
+| `checks/common_windows.go`   | The same, via job objects, on Windows                                      |
+| `checks/walk.go`             | `findFiles` / `countFiles`: the file counting every check does             |
+| `console_{windows,other}.go` | `prepareConsole()`: UTF-8 and ANSI on the Windows console                  |
+| `checks/registry.go`         | `AllChecks`: canonical ordered list, lookup and validation functions       |
+| `checks/desktop-rust-*.go`   | Rust checks (rustfmt, clippy, cargo-test)                                  |
+| `checks/oxfmt.go`            | Monorepo-wide formatter (oxfmt, prettier-compatible)                       |
+| `checks/website-*.go`        | Website checks (eslint, typecheck, build)                                  |
+| `checks/scripts-go-*.go`     | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests) |
+| `stats.go`                   | CSV stats logging (`~/prvw-check-log.csv`)                                 |
+| `colors.go`                  | ANSI color constants                                                       |
+| `utils.go`                   | `findRootDir()` (walks up until `AGENTS.md` is found)                      |
 
 ## Adding a new check
 
@@ -71,3 +77,22 @@ Go CLI that runs all code quality checks for the Prvw monorepo in parallel with 
 | Website | Astro     | eslint, typecheck, build                                       |
 | Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests |
 | Other   | -         | changelog-commit-links                                         |
+
+## Cross-platform notes
+
+The runner builds and runs on macOS, Linux, and Windows. Three things carry that, and each has a trap:
+
+- **Killing a check kills its whole tree.** `cargo` spawns `rustc` children, and a wedged child that outlives the runner
+  is the failure mode this guards against. Unix does it with `Setpgid` plus a signal to the negative PID; Windows does
+  it with a job object per child. Both hide behind the same four functions (`prepareProcessGroup`, `trackProcessGroup`,
+  `killProcessGroup`, `releaseProcessGroup`), so `RunCommand` stays platform-blind. ❌ Don't reach for `syscall` in a
+  check: add to the per-OS pair instead.
+- **Counting files goes through `findFiles`, never `find`.** On Windows `find` resolves to
+  `C:\Windows\System32\find.exe`, a text search tool that returns plausible-looking garbage rather than failing.
+  `findFiles` matches `find <dir> -type f -name ...` exactly: symlinks excluded, hidden entries included, nothing
+  pruned.
+- **`go run .`, not `go run *.go`.** The explicit file list breaks the moment a file carries a build tag, which several
+  now do. Both `check.sh` and `check.ps1` use `go run .`.
+
+**Gotcha**: `EnsureGoTool` returns a path with no `.exe`. That is fine, because `os/exec` appends Windows extensions
+when it starts a command given a full path.
