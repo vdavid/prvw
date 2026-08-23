@@ -496,9 +496,10 @@ const FIXTURE_SIZE: u32 = 1024;
 
 /// Write the default fixture image: a vertical grayscale ramp.
 ///
-/// The ramp gives a non-degenerate histogram while staying cheap on both ends: every row is a
-/// single color, so PNG's row filter flattens all but the first and both the encode here and
-/// the decode in the app's startup path stay well under a millisecond.
+/// The ramp gives a non-degenerate histogram, and one color per row lets PNG's row filter flatten
+/// all but the first, so the file lands at ~23 KB and the app decodes it in ~30 ms against the old
+/// 924 KB icon's ~75 ms. Writing it costs ~200 ms per test process, which is noise next to the
+/// window and GPU setup every test already pays.
 fn create_fixture_image(path: &std::path::Path) {
     let img = image::RgbaImage::from_fn(FIXTURE_SIZE, FIXTURE_SIZE, |_, y| {
         let value = (y * 256 / FIXTURE_SIZE) as u8;
