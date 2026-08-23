@@ -1,10 +1,13 @@
-//! Build script: pack bundled DCP profiles into a single compressed blob.
+//! Build script: pack bundled DCP profiles into a single compressed blob, and (on Windows
+//! targets) hand the linker the executable's icon, manifest, and version info.
+//!
+//! ## The DCP bundle
 //!
 //! Reads every `.dcp` file under `build-assets/dcps/`, concatenates them,
 //! and zstd-compresses the result. Alongside it writes an index file so the
 //! runtime can find each profile by filename without decompressing everything.
 //!
-//! ## Output files
+//! ### Output files
 //!
 //! Both land in `OUT_DIR` (Cargo's per-build scratch space):
 //!
@@ -16,7 +19,7 @@
 //! Cargo re-runs this script whenever a file under `build-assets/dcps/`
 //! changes, so the bundle stays in sync automatically.
 //!
-//! ## Compression rationale
+//! ### Compression rationale
 //!
 //! DCP files consist mostly of binary float arrays (HueSatMap grids) that
 //! compress poorly individually with gzip (~81 % of original). Concatenating
@@ -24,10 +27,93 @@
 //! in the float data — profiles from the same manufacturer share structure.
 //! This brings the combined blob down to ~11 MB (vs. ~67 MB with gzip).
 //! We use zstd level 10 to balance build speed and compression ratio.
+//!
+//! ## Windows resources
+//!
+//! `embed_windows_resources` writes a third `OUT_DIR` file, `prvw.res`, and points the linker at
+//! it. See `build-support/win_resources.rs`.
 
 use std::{env, fs, path::Path};
 
+/// The `.res` encoders. Shared with `tests/win_resources.rs`, which is where they're tested.
+#[path = "build-support/win_resources.rs"]
+mod win_resources;
+
 fn main() {
+    pack_bundled_dcps();
+    embed_windows_resources();
+}
+
+/// Give `prvw.exe` its icon, its application manifest, and its version info.
+///
+/// Only a Windows target links these; every other target skips the work but still declares the
+/// same `rerun-if-changed` inputs, so switching targets in one tree can't leave a stale answer
+/// behind. See `build-support/win_resources.rs` for what goes into the blob and why we write it
+/// ourselves instead of running a resource compiler.
+fn embed_windows_resources() {
+    println!("cargo:rerun-if-changed=resources/AppIcon.ico");
+    println!("cargo:rerun-if-changed=resources/prvw.manifest");
+    println!("cargo:rerun-if-changed=build-support/win_resources.rs");
+
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+
+    let version = env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION not set");
+    let mut parts = version.split('.').map(|part| {
+        part.parse::<u16>()
+            .unwrap_or_else(|e| panic!("version part {part:?} of {version:?} isn't a number: {e}"))
+    });
+    // The fourth field is Windows' build number, which our three-part version doesn't have.
+    let numeric = [
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        0,
+    ];
+
+    let ico = fs::read("resources/AppIcon.ico").expect(
+        "resources/AppIcon.ico is missing; regenerate it with `cargo run --example make-app-icon`",
+    );
+    let manifest = fs::read_to_string("resources/prvw.manifest")
+        .expect("failed to read resources/prvw.manifest")
+        .replace(
+            "__VERSION__",
+            &format!(
+                "{}.{}.{}.{}",
+                numeric[0], numeric[1], numeric[2], numeric[3]
+            ),
+        );
+
+    let info = win_resources::VersionInfo {
+        version: numeric,
+        company: "Rymdskottkärra AB".to_string(),
+        description: "Prvw".to_string(),
+        product: "Prvw".to_string(),
+        copyright: "© 2026 Rymdskottkärra AB".to_string(),
+        file_name: "prvw.exe".to_string(),
+    };
+
+    let res = win_resources::build_res(&ico, &manifest, &info)
+        .unwrap_or_else(|e| panic!("couldn't build the Windows resources: {e}"));
+
+    let out_dir = env::var("OUT_DIR").expect("OUT_DIR not set");
+    let res_path = Path::new(&out_dir).join("prvw.res");
+    fs::write(&res_path, &res)
+        .unwrap_or_else(|e| panic!("failed to write {}: {e}", res_path.display()));
+
+    // Both `link.exe` and `lld-link` recognize a `.res` by its contents and convert it in place.
+    // Binaries only: the test executables have no use for an icon.
+    println!("cargo:rustc-link-arg-bins={}", res_path.display());
+    eprintln!(
+        "build.rs: wrote {} bytes of Windows resources to {}",
+        res.len(),
+        res_path.display()
+    );
+}
+
+/// Pack the bundled DCP profiles into one compressed blob plus an index.
+fn pack_bundled_dcps() {
     // Tell Cargo to re-run this script when the DCP assets change.
     println!("cargo:rerun-if-changed=build-assets/dcps");
 
