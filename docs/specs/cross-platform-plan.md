@@ -475,7 +475,9 @@ Three practical consequences:
   native one for this kind of viewer on Windows, so leaning into it is both the faithful and the native choice.
 
 Design work for the Windows chrome is a draft for David to review before it gets built, per his standing rule that all
-human-facing design is reviewed under his name.
+human-facing design is reviewed under his name. That draft is [windows-ui-design.md](windows-ui-design.md): it decides
+the toolkit (Win32 common controls through the `windows` crate), the menu bar, the settings dialog, browse mode,
+onboarding, and what Windows deliberately doesn't get. M1's menu work and M4 through M6 all implement it.
 
 **2. Full parity from the start.** Windows ships matching macOS. There is no viewer-only beta, so the number that
 matters is the parity number in the effort summary, and the milestone order below is a dependency graph rather than a
@@ -965,10 +967,10 @@ Roughly 3,400 lines of AppKit to mirror: `settings/window.rs` (863), `widgets.rs
 `panels/raw.rs` (1,157), plus the per-feature panels that live with their features (`color/settings_panel.rs` 106,
 `zoom/settings_panel.rs` 87, `slideshow/settings_panel.rs` 237, `file_associations/settings_panel.rs` 748).
 
-1. **Pick the Win32 UI approach first, and write down why.** Raw `CreateWindowEx` plus `WM_COMMAND` is the lowest
-   dependency and the most tedious. A dialog-template approach is less code but awkward for the dynamic enable and
-   disable relationships the panels already have (ICC off disables Color match and Relative colorimetric). Whatever
-   wins, it also has to look right under per-monitor DPI, which M1 step 6 sets up.
+1. **The Win32 UI approach is already decided**: see [windows-ui-design.md](windows-ui-design.md), "The settings
+   surface". A modeless dialog hosting a `SysTabControl32`, six tabs, one Close button, controls built in code from
+   `SettingKey` rather than from an `.rc` template (a template would hardcode labels and sever the registry link the
+   whole harness exists for). It also has to look right under per-monitor DPI, which M1 step 6 sets up.
 2. **Mirror the structure, not the pixels.** Same six panels in the same sidebar order (General, Zoom, Color, RAW,
    Slideshow, File associations), same immediate-apply-through-`AppCommand` behavior, same Close button. Windows
    conventions where they differ: this is "Options", and the window is a property sheet rather than a preferences
@@ -1006,9 +1008,9 @@ The Windows-specific pieces that must be native regardless:
 - **The verbatim and case-insensitive path work** from M1 step 10 lands here in `reveal_path_chain`.
 - **Re-enable the browse menu item and Enter**, which M1 step 3 turned off.
 
-**Also reconsider whether "one folder tree plus a grid" is the right Windows shape at all** before rebuilding it
-verbatim. Windows users' mental model of a file tree differs from Finder's sidebar. Worth a design pass of its own
-before any porting starts.
+**The design pass is done**: see [windows-ui-design.md](windows-ui-design.md), "Browse mode". One folder tree plus a
+grid stays the right Windows shape (it's Explorer's and ACDSee's), but the roots, the theming, the splitter, the status
+bar, and the swapchain composition all differ from the macOS build. Read that section before starting.
 
 ### M6: onboarding and about on Windows (one to two weeks)
 
@@ -1024,6 +1026,11 @@ deep-link to `ms-settings:defaultapps`. Write new copy rather than translating t
 
 Note that M1 step 1 already gave the no-argument launch a defensible empty state, so this milestone is a polish pass by
 the time it arrives.
+
+**[windows-ui-design.md](windows-ui-design.md) argues this milestone down to two or three days**: Windows gets no
+onboarding window at all (all three macOS steps are meaningless or impossible there, and the empty state M1 step 1 owes
+anyway covers what's left), and the about box is a `TaskDialogIndirect` on a spawned thread. Read "Onboarding and about"
+before budgeting a week for AppKit-shaped work that shouldn't exist here.
 
 ### M7: distribution (one to two weeks of work, plus signing lead time)
 
