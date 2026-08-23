@@ -120,11 +120,11 @@ the accelerator table whenever an item joins or leaves a menu, so a stored handl
 
 ## Gotcha: a menu has to join the bar before it is filled
 
-muda registers an item's accelerator into the **root** menu's `HACCEL` table as the item is appended
-(`AccelAction::add` walks the child's `root_menu_haccel_stores`), and a submenu that hasn't joined a root yet has no
-table to register into. Appending the submenu afterwards doesn't go back for its children, so filling first leaves every
-accelerator in the bar dead — while the items still *show* their shortcut, because the text is composed on a different
-path. That silence is the whole failure mode.
+muda registers an item's accelerator into the **root** menu's `HACCEL` table as the item is appended (`AccelAction::add`
+walks the child's `root_menu_haccel_stores`), and a submenu that hasn't joined a root yet has no table to register into.
+Appending the submenu afterwards doesn't go back for its children, so filling first leaves every accelerator in the bar
+dead — while the items still _show_ their shortcut, because the text is composed on a different path. That silence is
+the whole failure mode.
 
 `top_level` is what keeps the order right: it appends each top-level menu to the bar at creation, and the menus the
 filter empties come back off at the end. The Sort by submenu is the one that still joins its parent through `fill`, so

@@ -330,25 +330,28 @@ mod bar {
     /// Hiding keeps muda's subclass on the window, so accelerators (F11 among them) keep working
     /// while the bar is gone.
     pub fn set_visible(visible: bool) {
-        BAR.with_borrow(|bar| {
-            let Some(bar) = bar else {
-                return;
-            };
-            let hwnd = bar.hwnd.0 as isize;
-            // SAFETY: the window this bar was attached to is alive for as long as the bar is.
-            let result = unsafe {
-                if visible {
-                    bar.menu.show_for_hwnd(hwnd)
-                } else {
-                    bar.menu.hide_for_hwnd(hwnd)
-                }
-            };
-            if let Err(error) = result {
-                log::warn!("Couldn't {} the menu bar: {error}", {
-                    if visible { "show" } else { "hide" }
-                });
+        // Taken out of the `RefCell` before the call, not held across it: `SetMenu` and
+        // `DrawMenuBar` send the window its own resize messages, and winit dispatches those
+        // straight into the app's handlers. `Menu` is an `Rc` handle, so the clone is cheap.
+        let Some((hwnd, menu)) = BAR.with_borrow(|bar| {
+            bar.as_ref()
+                .map(|bar| (bar.hwnd.0 as isize, bar.menu.clone()))
+        }) else {
+            return;
+        };
+
+        // SAFETY: the window this bar was attached to is alive for as long as the bar is.
+        let result = unsafe {
+            if visible {
+                menu.show_for_hwnd(hwnd)
+            } else {
+                menu.hide_for_hwnd(hwnd)
             }
-        });
+        };
+        if let Err(error) = result {
+            let verb = if visible { "show" } else { "hide" };
+            log::warn!("Couldn't {verb} the menu bar: {error}");
+        }
     }
 }
 

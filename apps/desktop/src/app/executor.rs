@@ -799,12 +799,19 @@ impl App {
     /// Windows takes the bar away in fullscreen and macOS hides its own. A second route into
     /// `window::set_fullscreen` would leave a menu bar sitting over a fullscreen image.
     fn set_fullscreen(&mut self, on: bool) {
-        let Some(win) = &self.window else {
+        let Some(win) = self.window.clone() else {
             return;
         };
-        window::set_fullscreen(win, on);
-        if let Some(menu) = &self.app_menu {
-            menu.set_fullscreen(on);
+        // The bar goes away before the window grows and comes back after it shrinks, so the
+        // window is never sized around a menu bar it's about to lose. Get that backwards on
+        // Windows and the fullscreen image comes up a menu-bar's height short until the second
+        // resize catches it.
+        if on && let Some(menu) = &self.app_menu {
+            menu.set_fullscreen(true);
+        }
+        window::set_fullscreen(&win, on);
+        if !on && let Some(menu) = &self.app_menu {
+            menu.set_fullscreen(false);
         }
         self.update_shared_state();
     }
