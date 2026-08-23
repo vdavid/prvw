@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Repo tasks that read the desktop app's registries without building the app"
+license = "BUSL-1.1"
+
+# No dependencies, on purpose. See `xtask/CLAUDE.md`: this crate exists so the parity table can be
+# generated on any platform in under a second, without cargo touching the app's graph.
+[dependencies]

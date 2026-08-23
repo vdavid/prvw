@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/desktop"]
+members = ["apps/desktop", "xtask"]
 resolver = "3"
 
 # Profile overrides MUST live at the workspace root — Cargo ignores `[profile.*]`

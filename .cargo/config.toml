@@ -1,0 +1,4 @@
+[alias]
+# `cargo xtask parity` prints the platform parity table. `./scripts/check.sh --check parity` is
+# what writes `docs/parity.md`; this alias is for reading the table without the check runner.
+xtask = "run --quiet --package xtask --"
