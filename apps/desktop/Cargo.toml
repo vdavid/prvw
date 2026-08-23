@@ -53,6 +53,7 @@ muda = { version = "0.19.3", default-features = false }
 # entry is one Win32 area we actually call into.
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Gdi",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
   "Win32_System_ProcessStatus",

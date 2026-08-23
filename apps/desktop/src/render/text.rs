@@ -4,7 +4,7 @@
 use crate::pixels::Logical;
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
-    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
+    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight, fontdb,
 };
 use std::sync::{Mutex, OnceLock};
 
@@ -133,13 +133,142 @@ fn measure_text_width(buffer: &Buffer) -> f32 {
     })
 }
 
+/// The font every overlay string is shaped with: the platform's own UI font, so the title strip,
+/// the zoom pill, the EXIF panel, and the histogram labels look like the rest of the desktop.
+///
+/// Resolved once, by [`build_font_system`], against the fonts that machine actually has. Callers
+/// that somehow ask before then get the first candidate unverified, which is the best guess we
+/// have and no worse than not asking.
+fn ui_family() -> Family<'static> {
+    Family::Name(
+        UI_FAMILY
+            .get()
+            .map(String::as_str)
+            .unwrap_or_else(|| ui_font_candidates()[0]),
+    )
+}
+
+static UI_FAMILY: OnceLock<String> = OnceLock::new();
+
+/// UI font names to try, best first.
+///
+/// macOS: "System Font" is the English family name fontdb reads out of `SFNS.ttf`; the localized
+/// spellings are registered alongside it, so this matches whatever the locale is.
+///
+/// Windows: `lfMessageFont` is the honest answer, and it reports "Segoe UI" on both Windows 10 and
+/// 11 (the Segoe UI Variable switch is a XAML-layer thing, not a system-font one). The rest are
+/// there for a machine where that query fails.
+///
+/// Linux has no single answer, so this is the union of what the big desktops ship, most
+/// distinctive first. cosmic-text's own default is "Open Sans", which stock installs rarely have.
+fn ui_font_candidates() -> Vec<&'static str> {
+    #[cfg(target_os = "macos")]
+    let names = vec!["System Font", "Helvetica Neue", "Helvetica"];
+    #[cfg(target_os = "windows")]
+    let names = {
+        let mut names = vec!["Segoe UI", "Tahoma", "Arial"];
+        if let Some(preferred) = crate::platform::windows::system_ui_font_name() {
+            // Leaked so the whole list can stay `'static`. One string, once per process.
+            names.insert(0, Box::leak(preferred.into_boxed_str()));
+        }
+        names
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let names = vec![
+        "Cantarell",
+        "Ubuntu",
+        "Noto Sans",
+        "DejaVu Sans",
+        "Liberation Sans",
+        "FreeSans",
+    ];
+    names
+}
+
+/// The first candidate the database can actually match. `None` means none of them are installed.
+fn resolve_ui_family(db: &fontdb::Database, candidates: &[&str]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|name| {
+            db.query(&fontdb::Query {
+                families: &[Family::Name(name)],
+                ..Default::default()
+            })
+            .is_some()
+        })
+        .map(|name| (*name).to_string())
+}
+
+/// Build a `FontSystem` and settle which family the overlay draws in.
+///
+/// Every `FontSystem` in the process comes from here, so measurement and rendering shape with the
+/// same faces. They used to differ: only the renderer loaded the macOS bold alias below, so a
+/// wrapped-line count could disagree with what got drawn.
+fn build_font_system() -> FontSystem {
+    #[allow(unused_mut)] // mut needed on macOS for load_font_source
+    let mut font_system = FontSystem::new();
+
+    // Load the macOS system font (SF Pro). SFNS.ttf is a variable font with a `wght`
+    // axis, but fontdb registers it as a single weight-400 face. cosmic-text applies
+    // the `wght` variation at render time, but fontdb's query won't SELECT the face
+    // when asked for bold (weight 700) because it only sees weight 400.
+    //
+    // Fix: load it twice — fontdb deduplicates the data but creates two face entries.
+    // We then find the second entry's ID and re-register it with weight=700 via
+    // push_face_info, so fontdb will match it for bold queries.
+    //
+    // Windows needs no equivalent: Segoe UI ships separate static weights, so a bold query
+    // finds a real bold face.
+    #[cfg(target_os = "macos")]
+    {
+        use glyphon::fontdb::{FaceInfo, Source};
+        let path = std::path::Path::new("/System/Library/Fonts/SFNS.ttf");
+        if path.exists() {
+            let data = std::fs::read(path).unwrap();
+            let ids = font_system
+                .db_mut()
+                .load_font_source(Source::Binary(std::sync::Arc::new(data)));
+            // For each registered face, add a bold alias pointing to the same source
+            for id in ids {
+                if let Some(face) = font_system.db().face(id) {
+                    let bold_face = FaceInfo {
+                        id: fontdb::ID::dummy(),
+                        source: face.source.clone(),
+                        index: face.index,
+                        families: face.families.clone(),
+                        post_script_name: face.post_script_name.clone(),
+                        style: face.style,
+                        weight: fontdb::Weight(700),
+                        stretch: face.stretch,
+                        monospaced: face.monospaced,
+                    };
+                    font_system.db_mut().push_face_info(bold_face);
+                }
+            }
+        }
+    }
+
+    let candidates = ui_font_candidates();
+    match resolve_ui_family(font_system.db(), &candidates) {
+        Some(family) => {
+            log::debug!("Overlay font: {family}");
+            let _ = UI_FAMILY.set(family);
+        }
+        None => log::error!(
+            "None of the overlay font candidates {candidates:?} are installed, so the overlay text \
+             will be shaped with whichever face the font database happens to return first"
+        ),
+    }
+    font_system
+}
+
 /// Shared `FontSystem` for measurement-only callers (overlay layout passes
 /// that need the wrapped line count before the renderer runs). Initialized
 /// lazily on first use, then reused for the process lifetime — `FontSystem`
 /// scans system fonts on construction, which is too expensive to repeat.
 fn measurement_font_system() -> &'static Mutex<FontSystem> {
     static FONT_SYSTEM: OnceLock<Mutex<FontSystem>> = OnceLock::new();
-    FONT_SYSTEM.get_or_init(|| Mutex::new(FontSystem::new()))
+    FONT_SYSTEM.get_or_init(|| Mutex::new(build_font_system()))
 }
 
 /// Count the visual lines `text` would occupy after shaping at `font_size`
@@ -153,7 +282,7 @@ pub fn count_wrapped_lines(text: &str, font_size: f32, line_height: f32, max_wid
     let metrics = Metrics::new(font_size, line_height);
     let mut buffer = Buffer::new(&mut fs, metrics);
     buffer.set_size(&mut fs, Some(max_width), None);
-    let attrs = Attrs::new().family(Family::Name("System Font"));
+    let attrs = Attrs::new().family(ui_family());
     buffer.set_text(&mut fs, text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut fs, false);
     buffer.layout_runs().count().max(1)
@@ -171,49 +300,7 @@ pub struct GlyphonRenderer {
 impl GlyphonRenderer {
     /// Create a new text renderer. Call once during renderer init.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        #[allow(unused_mut)] // mut needed on macOS for load_font_source
-        let mut font_system = FontSystem::new();
-
-        // Load the macOS system font (SF Pro) directly from disk. fontdb's automatic
-        // scanning finds SFNS.ttf but doesn't fully expose its variable font weight axis,
-        // so requesting Weight::BOLD falls back to the wrong font. Loading the bytes
-        // explicitly makes all weight variations available.
-        // Load the macOS system font (SF Pro). SFNS.ttf is a variable font with a `wght`
-        // axis, but fontdb registers it as a single weight-400 face. cosmic-text applies
-        // the `wght` variation at render time, but fontdb's query won't SELECT the face
-        // when asked for bold (weight 700) because it only sees weight 400.
-        //
-        // Fix: load it twice — fontdb deduplicates the data but creates two face entries.
-        // We then find the second entry's ID and re-register it with weight=700 via
-        // push_face_info, so fontdb will match it for bold queries.
-        #[cfg(target_os = "macos")]
-        {
-            use glyphon::fontdb::{self, FaceInfo, Source};
-            let path = std::path::Path::new("/System/Library/Fonts/SFNS.ttf");
-            if path.exists() {
-                let data = std::fs::read(path).unwrap();
-                let ids = font_system
-                    .db_mut()
-                    .load_font_source(Source::Binary(std::sync::Arc::new(data)));
-                // For each registered face, add a bold alias pointing to the same source
-                for id in ids {
-                    if let Some(face) = font_system.db().face(id) {
-                        let bold_face = FaceInfo {
-                            id: fontdb::ID::dummy(),
-                            source: face.source.clone(),
-                            index: face.index,
-                            families: face.families.clone(),
-                            post_script_name: face.post_script_name.clone(),
-                            style: face.style,
-                            weight: fontdb::Weight(700),
-                            stretch: face.stretch,
-                            monospaced: face.monospaced,
-                        };
-                        font_system.db_mut().push_face_info(bold_face);
-                    }
-                }
-            }
-        }
+        let font_system = build_font_system();
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
         let viewport = Viewport::new(device, &cache);
@@ -345,11 +432,9 @@ impl GlyphonRenderer {
                 }
             });
             let attrs = if block.bold {
-                Attrs::new()
-                    .family(Family::Name("System Font"))
-                    .weight(Weight::BOLD)
+                Attrs::new().family(ui_family()).weight(Weight::BOLD)
             } else {
-                Attrs::new().family(Family::Name("System Font"))
+                Attrs::new().family(ui_family())
             };
 
             let max_render_w_raw = block.max_render_width.map(|w| w.0);
@@ -487,6 +572,51 @@ impl GlyphonRenderer {
 mod tests {
     use super::*;
 
+    /// The overlay has to name a font that exists on this machine. When it doesn't, cosmic-text
+    /// picks whichever face its database returns first, which is how the text ended up in an
+    /// arbitrary font off macOS.
+    #[test]
+    fn the_overlay_font_exists_on_this_host() {
+        let fs = measurement_font_system()
+            .lock()
+            .expect("font system poisoned");
+        if fs.db().is_empty() {
+            // A machine with no fonts at all (a bare container). Nothing to assert.
+            return;
+        }
+        let family = UI_FAMILY
+            .get()
+            .expect("building a font system resolves the overlay family");
+        assert!(
+            resolve_ui_family(fs.db(), &[family.as_str()]).is_some(),
+            "the overlay font {family:?} isn't installed, candidates were {:?}",
+            ui_font_candidates()
+        );
+    }
+
+    /// A missing font is skipped rather than taken, which is what makes the list a fallback chain
+    /// instead of a guess.
+    #[test]
+    fn the_candidate_list_skips_fonts_that_are_missing() {
+        let fs = measurement_font_system()
+            .lock()
+            .expect("font system poisoned");
+        let Some(installed) = fs
+            .db()
+            .faces()
+            .find_map(|face| face.families.first().map(|(name, _)| name.clone()))
+        else {
+            return; // no fonts on this machine
+        };
+
+        const ABSENT: &str = "Definitely Not An Installed Font 4242";
+        assert_eq!(
+            resolve_ui_family(fs.db(), &[ABSENT, &installed]),
+            Some(installed.clone())
+        );
+        assert_eq!(resolve_ui_family(fs.db(), &[ABSENT]), None);
+    }
+
     /// A render-width-capped block (like the title) must stay on a single line and
     /// middle-truncate, even when the buffer's wrap width is set wider than the cap (as the
     /// overlay layout does — it reserves room for the zoom pill). Pre-fix, the wider wrap
@@ -503,9 +633,7 @@ mod tests {
         // only way to stay single-line is for the fix to disable wrapping.
         let wrap_width = 150.0;
         buffer.set_size(&mut fs, Some(wrap_width), Some(40.0));
-        let attrs = Attrs::new()
-            .family(Family::Name("System Font"))
-            .weight(Weight::BOLD);
+        let attrs = Attrs::new().family(ui_family()).weight(Weight::BOLD);
 
         let text = "6 / 39 \u{2013} 2026-04-17_at_12.58.27_125827@2x.png";
         let cap = wrap_width;
@@ -536,7 +664,7 @@ mod tests {
         let metrics = Metrics::new(13.5, 18.5);
         let mut buffer = Buffer::new(&mut fs, metrics);
         buffer.set_size(&mut fs, Some(120.0), Some(200.0));
-        let attrs = Attrs::new().family(Family::Name("System Font"));
+        let attrs = Attrs::new().family(ui_family());
 
         let text = "The quick brown fox jumps over the lazy dog repeatedly all day long";
         let out = GlyphonRenderer::shape_and_truncate(&mut fs, &mut buffer, text, &attrs, None);

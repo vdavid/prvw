@@ -32,6 +32,26 @@ legacy window paths. `App::titlebar_text` is the single source for both paths' s
 stays glyphon in both cases. The general rule behind the `zPosition` / both-paths handling — for any native AppKit view
 over the Metal layer — is in `platform/macos/CLAUDE.md` ("Native AppKit views over/around the wgpu Metal layer").
 
+## The overlay font is the platform's UI font
+
+Every overlay string (title strip, zoom pill, EXIF panel, histogram labels) is shaped with the host's own UI font, and
+`text.rs` resolves which one that is at startup: macOS takes "System Font" (fontdb's English name for `SFNS.ttf`,
+registered alongside its localized spellings), Windows asks `SystemParametersInfo(SPI_GETNONCLIENTMETRICS)` for
+`lfMessageFont`, and everything else walks a list of what the big Linux desktops ship. Each candidate is checked against
+the font database before it's used, the chain falls through to the next when one is missing, and a total miss logs at
+`error`.
+
+**Why it can't be one name.** cosmic-text answers a family it can't find by handing back every face in the database
+sorted by weight distance, so an unmatched name renders in an arbitrary font rather than failing.
+`Family::Name("System Font")` is a macOS-only alias, and that's what the overlay used to ask for everywhere.
+
+**Why Windows doesn't need the bold-alias trick below.** Segoe UI ships separate static weight files, so a bold query
+matches a real bold face. Segoe UI Variable would have the same problem `SFNS.ttf` does, but `lfMessageFont` reports
+"Segoe UI" on both Windows 10 and 11: the Variable switch is a XAML-layer thing.
+
+**Every `FontSystem` comes from `build_font_system`.** Measurement (wrapped-line counts) and rendering have to shape
+with the same faces, or a layout pass disagrees with what gets drawn.
+
 ## Gotchas
 
 - **Image texture must be explicitly destroyed on replace.** `set_image` holds the previous `wgpu::Texture` in

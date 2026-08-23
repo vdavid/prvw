@@ -87,3 +87,40 @@ fn enable_ansi(handle: HANDLE) -> bool {
     // SAFETY: same handle, and the mode only adds a documented flag.
     unsafe { SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) }.is_ok()
 }
+
+/// The face name of the font Windows uses for its own UI text, from `lfMessageFont`.
+///
+/// This is what the Windows UI design calls for: reading the metric gives "Segoe UI" on both
+/// Windows 10 and 11, so the overlay matches the desktop without a version branch. `None` means
+/// the query failed, and `render::text` falls back to its own list.
+pub fn system_ui_font_name() -> Option<String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        SystemParametersInfoW,
+    };
+
+    let mut metrics = NONCLIENTMETRICSW {
+        cbSize: size_of::<NONCLIENTMETRICSW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `cbSize` tells Windows how big the buffer is, and the pointer is to that same
+    // struct. The DPI-scaled sizes it also fills in don't matter here; only the name does.
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cbSize,
+            Some(std::ptr::from_mut(&mut metrics).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .ok()?;
+
+    let name = metrics.lfMessageFont.lfFaceName;
+    let end = name
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(name.len());
+    String::from_utf16(&name[..end])
+        .ok()
+        .filter(|name| !name.is_empty())
+}
