@@ -519,6 +519,54 @@ mod tests {
         );
     }
 
+    /// The cases above are POSIX-shaped, which `Path` still parses correctly on Windows (both
+    /// `/` and `\` are separators there), so they cover the algorithm on every platform. What
+    /// they don't cover is the shape browse mode will actually see on Windows: a drive-rooted
+    /// path, which carries a `Prefix` component ahead of its `RootDir`.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn reveal_path_chain_handles_drive_rooted_paths() {
+        // A drive root has to be spelled `C:\`, never a bare `C:`: `C:` parses to a prefix with
+        // no `RootDir`, and `Path::new(r"C:\Users").starts_with("C:")` is then false.
+        let roots = vec![
+            Root {
+                name: "Home".to_string(),
+                path: PathBuf::from(r"C:\Users\dave"),
+            },
+            Root {
+                name: "Windows (C:)".to_string(),
+                path: PathBuf::from(r"C:\"),
+            },
+            Root {
+                name: "Photos (D:)".to_string(),
+                path: PathBuf::from(r"D:\"),
+            },
+        ];
+
+        // Longest prefix wins, same as under home on macOS: `C:\Users\dave` is four components,
+        // `C:\` is two.
+        assert_eq!(
+            reveal_path_chain(&roots, Path::new(r"C:\Users\dave\Pictures\Trip")).unwrap(),
+            vec![
+                PathBuf::from(r"C:\Users\dave"),
+                PathBuf::from(r"C:\Users\dave\Pictures"),
+                PathBuf::from(r"C:\Users\dave\Pictures\Trip"),
+            ]
+        );
+
+        // A path on another drive reveals under that drive, never under `C:\`.
+        assert_eq!(
+            reveal_path_chain(&roots, Path::new(r"D:\Photos")).unwrap(),
+            vec![PathBuf::from(r"D:\"), PathBuf::from(r"D:\Photos")]
+        );
+
+        // A drive root as the target is just itself: `C:\` has no parent to walk up to.
+        assert_eq!(
+            reveal_path_chain(&roots, Path::new(r"C:\")).unwrap(),
+            vec![PathBuf::from(r"C:\")]
+        );
+    }
+
     #[test]
     fn build_roots_without_home_is_just_volumes() {
         let volumes = vec![Root {
