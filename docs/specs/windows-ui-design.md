@@ -252,10 +252,9 @@ Save reflex lands on something. Leaving Ctrl+S unbound means the reflex does not
 app that cannot save. `S` is implemented in `input::key_to_command` on every platform; the Windows menu shows it in the
 item's shortcut column, exactly like `H` and `E`.
 
-macOS carries a real ⌘S accelerator on the same item on top of that. It collides with nothing, and a Mac user reading ⌘S
-off the menu is reading a Mac convention rather than an imported Windows one. It is also why `MenuItemKey::hint` stays
-empty for `SlideshowToggle`: the macOS item already displays a shortcut, and a cosmetic `S` beside it would give the
-item two.
+**macOS reaches the same answer, so ⌘S is gone from that item too.** The Save reflex is a Mac reflex as much as a
+Windows one, and the argument doesn't get weaker for being made about Command. So `SlideshowToggle` carries no key
+equivalent on either platform, and `MenuItemKey::hint` paints `S` into the macOS title the way `Fullscreen` shows `F`.
 
 **Ctrl+0 stays Actual size**, matching macOS and matching browsers, even though the bare `0` key means Fit to window and
 the bare `1` means Actual size. That inconsistency is inherited from the macOS design and this is not the place to fix

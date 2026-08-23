@@ -37,14 +37,18 @@ already-passed deadline, so it never busy-spins on `WaitUntil(past)`.
 
 `[` / `]` (and Slideshow → Increase/Decrease speed) call `adjust_slideshow_speed`, stepping `seconds` by one within
 `MIN_SECONDS..=MAX_SECONDS`. They adjust the setting whether or not a slideshow is running. Bare `S` in image mode
-(everywhere), ⌘S (macOS menu accelerator), and Slideshow → Start/Stop all toggle `running`; the menu item's label flips
-between "Start slideshow" and "Stop slideshow". `S` is bound in image mode only, because browse mode's tree and list own
-bare letters for type-ahead select. `SharedAppState::slideshow_running` mirrors the flag for the QA server.
+(everywhere) and Slideshow → Start/Stop both toggle `running`; the menu item's label flips between "Start slideshow" and
+"Stop slideshow". `S` is bound in image mode only, because browse mode's tree and list own bare letters for type-ahead
+select. `SharedAppState::slideshow_running` mirrors the flag for the QA server.
 
-**Gotcha: `MenuItemKey::SlideshowToggle`'s `hint` stays empty on purpose.** The hint is the cosmetic bare-key shortcut a
-few items paint into their own title (`"Fullscreen        F"`), and it exists for items with no real accelerator. This
-item has one, ⌘S, so adding `S` as a hint would show the same item two shortcuts side by side. Windows gets `S` in the
-item's shortcut column from `menu/windows.rs`'s own table instead (see `docs/specs/windows-ui-design.md`).
+**Decision: `S` is the only shortcut, and it's advertised as a hint rather than bound as an accelerator.**
+
+**Why:** ⌘S and Ctrl+S mean Save, and Prvw never saves, so the Save reflex should land on nothing rather than start a
+slideshow. Every other viewer-state toggle is a bare letter too (`h` histogram, `e` Exif, `l` loop, `f` fullscreen, `[`
+and `]` speed), and a modified shortcut here would be the only one in that family. A bare letter can't be a real
+accelerator on either platform (a menu key equivalent is app-global and would hijack typing into a settings field), so
+`input::key_to_command` owns the key and the menu only advertises it: `MenuItemKey::hint` paints `S` into the macOS
+title, and `menu::windows`'s own table puts it in the Windows shortcut column.
 
 Starting a slideshow does NOT enter fullscreen, jump to image 1, or hide overlays — it only arms the timer.
 

@@ -1759,7 +1759,7 @@ impl App {
 
     // ── Slideshow ────────────────────────────────────────────────────
 
-    /// Start or stop the slideshow (Slideshow → Start/Stop, ⌘S).
+    /// Start or stop the slideshow (Slideshow → Start/Stop, or bare `S`).
     pub(crate) fn toggle_slideshow(&mut self) {
         if self.slideshow.running {
             self.stop_slideshow();

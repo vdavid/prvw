@@ -44,7 +44,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `open_dialog.rs`     | The native "Open an image" picker behind File → Open, run off the event-loop thread through `rfd`           |
 | `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                         |
 | `settings/`          | JSON persistence + Settings window shell + General panel                                                    |
-| `slideshow/`         | Timer-driven auto-advance (⌘S) + crossfade + Slideshow settings panel + `slideshow::State`                  |
+| `slideshow/`         | Timer-driven auto-advance (`S`) + crossfade + Slideshow settings panel + `slideshow::State`                 |
 | `updater.rs`         | Auto-update check (GitHub releases)                                                                         |
 | `window.rs`          | Main viewer window: create, fullscreen, auto-fit, title-bar vibrancy                                        |
 | `zoom/`              | `ViewState` + zoom/pan math + Zoom settings panel + `zoom::State`                                           |

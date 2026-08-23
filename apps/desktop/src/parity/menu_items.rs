@@ -151,7 +151,7 @@ menu_items! {
     // ── Slideshow menu ───────────────────────────────────────────────
     /// Its title flips between "Start slideshow" and "Stop slideshow"
     /// (`menu::native::slideshow_toggle_label`).
-    SlideshowToggle { label: "Start slideshow", hint: "", menu: Slideshow, command: Some(CommandKey::Slideshow), }
+    SlideshowToggle { label: "Start slideshow", hint: "     S", menu: Slideshow, command: Some(CommandKey::Slideshow), }
     SlideshowIncreaseSpeed { label: "Increase speed", hint: "      ]", menu: Slideshow, command: Some(CommandKey::SlideshowSpeed), }
     SlideshowDecreaseSpeed { label: "Decrease speed", hint: "     [", menu: Slideshow, command: Some(CommandKey::SlideshowSpeed), }
 
@@ -353,6 +353,12 @@ mod tests {
     fn titles_carry_their_shortcut_hints() {
         assert_eq!(MenuItemKey::Previous.title(), "Previous      \u{2190}");
         assert_eq!(MenuItemKey::Fullscreen.title(), "Fullscreen        F");
+        // Padded to the same column as its two neighbours in the Slideshow menu, which sit at
+        // "Increase speed" plus six and "Decrease speed" plus five.
+        assert_eq!(
+            MenuItemKey::SlideshowToggle.title(),
+            "Start slideshow     S"
+        );
         assert_eq!(MenuItemKey::Refresh.title(), "Refresh");
     }
 

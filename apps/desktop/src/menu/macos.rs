@@ -57,7 +57,6 @@ pub fn accelerator(key: MenuItemKey) -> Option<Accelerator> {
         }
         MenuItemKey::GoToFirst => (None, Code::Home),
         MenuItemKey::GoToLast => (None, Code::End),
-        MenuItemKey::SlideshowToggle => (Some(Modifiers::SUPER), Code::KeyS),
 
         // No shortcut, or one `input` owns. The toolkit's own items (Hide, Quit, Close window)
         // come with AppKit's standard equivalents already.
@@ -81,6 +80,7 @@ pub fn accelerator(key: MenuItemKey) -> Option<Accelerator> {
         | MenuItemKey::Previous
         | MenuItemKey::Next
         | MenuItemKey::LoopNavigation
+        | MenuItemKey::SlideshowToggle
         | MenuItemKey::SlideshowIncreaseSpeed
         | MenuItemKey::SlideshowDecreaseSpeed
         | MenuItemKey::ContextCopy
@@ -107,6 +107,31 @@ mod tests {
             }
             taken.push((accelerator, *key));
         }
+    }
+
+    /// An item advertises one shortcut or none. The hint and a key equivalent would print two
+    /// strings side by side, and they'd have to agree forever.
+    #[test]
+    fn a_hint_and_an_accelerator_are_never_both_set() {
+        for key in MenuItemKey::ALL {
+            assert!(
+                key.hint().is_empty() || accelerator(*key).is_none(),
+                "{} carries both a hint and a key equivalent",
+                key.name()
+            );
+        }
+    }
+
+    /// Start slideshow advertises the bare `S` and binds nothing. ⌘S is Save, Prvw never saves,
+    /// so the Save reflex does nothing rather than starting a slideshow.
+    #[test]
+    fn the_slideshow_item_advertises_a_bare_key() {
+        let key = MenuItemKey::SlideshowToggle;
+        assert!(accelerator(key).is_none());
+        assert_eq!(title(key, key.label()), "Start slideshow     S");
+        // The alternate name doesn't carry it: `native::slideshow_toggle_title` composes that
+        // one, because `s` stops a slideshow as well as starting it.
+        assert_eq!(title(key, "Stop slideshow"), "Stop slideshow     S");
     }
 
     /// The padded hint the registry declares is what lines the shortcut column up.

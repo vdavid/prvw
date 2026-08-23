@@ -332,7 +332,7 @@ pub enum AppCommand {
 
     // ── Slideshow ────────────────────────────────────────────────────
     /// Start the slideshow if stopped, stop it if running (Slideshow →
-    /// Start/Stop slideshow, ⌘S).
+    /// Start/Stop slideshow, or bare `S`).
     ToggleSlideshow,
     /// Set the time-per-image in seconds (Settings → Slideshow slider).
     /// Clamped to `slideshow::MIN_SECONDS..=MAX_SECONDS`.
