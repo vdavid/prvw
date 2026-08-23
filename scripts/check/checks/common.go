@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -282,14 +283,7 @@ func runESLintCheck(ctx *CheckContext, dir string, extensions []string, requireC
 	}
 
 	// Count lintable files
-	findArgs := buildFindArgs("src", extensions)
-	findCmd := exec.Command("find", findArgs...)
-	findCmd.Dir = dir
-	findOutput, _ := RunCommand(findCmd, true)
-	fileCount := 0
-	if strings.TrimSpace(findOutput) != "" {
-		fileCount = len(strings.Split(strings.TrimSpace(findOutput), "\n"))
-	}
+	fileCount := countFiles(filepath.Join(dir, "src"), extensions...)
 
 	var cmd *exec.Cmd
 	if ctx.CI {
@@ -380,19 +374,6 @@ func parseOxfmtFileCount(output string) int {
 	return 0
 }
 
-// buildFindArgs constructs arguments for a find command to locate files with given extensions.
-func buildFindArgs(searchDir string, extensions []string) []string {
-	args := []string{searchDir, "-type", "f", "("}
-	for i, ext := range extensions {
-		if i > 0 {
-			args = append(args, "-o")
-		}
-		args = append(args, "-name", ext)
-	}
-	args = append(args, ")")
-	return args
-}
-
 // GetGoDirectories returns all directories in the repo that contain Go code.
 // Each returned path is relative to rootDir.
 func GetGoDirectories() []string {
@@ -402,26 +383,17 @@ func GetGoDirectories() []string {
 }
 
 // FindGoModules finds all go.mod files in the given directory and returns
-// the directories containing them.
+// the directories containing them, relative to rootDir. A go.mod at rootDir
+// itself is reported as ".".
 func FindGoModules(rootDir string) ([]string, error) {
-	findCmd := exec.Command("find", ".", "-name", "go.mod", "-type", "f")
-	findCmd.Dir = rootDir
-	output, err := RunCommand(findCmd, true)
+	files, err := findFiles(rootDir, "go.mod")
 	if err != nil {
 		return nil, err
 	}
 
 	var modules []string
-	for line := range strings.SplitSeq(strings.TrimSpace(output), "\n") {
-		if line != "" {
-			// Get directory containing go.mod
-			dir := strings.TrimSuffix(line, "/go.mod")
-			dir = strings.TrimPrefix(dir, "./")
-			if dir == "go.mod" {
-				dir = "."
-			}
-			modules = append(modules, dir)
-		}
+	for _, file := range files {
+		modules = append(modules, path.Dir(file))
 	}
 	return modules, nil
 }

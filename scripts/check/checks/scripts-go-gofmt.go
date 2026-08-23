@@ -19,12 +19,7 @@ func RunGoFmt(ctx *CheckContext) (CheckResult, error) {
 		fullPath := filepath.Join(ctx.RootDir, goDir)
 
 		// Count Go files
-		findCmd := exec.Command("find", ".", "-name", "*.go", "-type", "f")
-		findCmd.Dir = fullPath
-		findOutput, _ := RunCommand(findCmd, true)
-		if strings.TrimSpace(findOutput) != "" {
-			totalFileCount += len(strings.Split(strings.TrimSpace(findOutput), "\n"))
-		}
+		totalFileCount += countFiles(fullPath, "*.go")
 
 		// Check which files need formatting (-l lists them)
 		checkCmd := exec.Command("gofmt", "-s", "-l", ".")

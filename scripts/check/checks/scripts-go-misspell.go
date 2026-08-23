@@ -22,12 +22,7 @@ func RunMisspell(ctx *CheckContext) (CheckResult, error) {
 		fullPath := filepath.Join(ctx.RootDir, goDir)
 
 		// Count Go files
-		findCmd := exec.Command("find", ".", "-name", "*.go", "-type", "f")
-		findCmd.Dir = fullPath
-		findOutput, _ := RunCommand(findCmd, true)
-		if strings.TrimSpace(findOutput) != "" {
-			totalFileCount += len(strings.Split(strings.TrimSpace(findOutput), "\n"))
-		}
+		totalFileCount += countFiles(fullPath, "*.go")
 
 		cmd := exec.Command(misspellBin, "-error", ".")
 		cmd.Dir = fullPath

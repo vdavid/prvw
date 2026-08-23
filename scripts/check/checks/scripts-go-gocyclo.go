@@ -32,12 +32,7 @@ func RunGocyclo(ctx *CheckContext) (CheckResult, error) {
 			modLabel := filepath.Join(goDir, mod)
 
 			// Count Go files in this module
-			findCmd := exec.Command("find", ".", "-name", "*.go", "-type", "f")
-			findCmd.Dir = modDir
-			findOutput, _ := RunCommand(findCmd, true)
-			if strings.TrimSpace(findOutput) != "" {
-				fileCount += len(strings.Split(strings.TrimSpace(findOutput), "\n"))
-			}
+			fileCount += countFiles(modDir, "*.go")
 
 			// Run gocyclo with threshold
 			cmd := exec.Command(gocycloBin, "-over", fmt.Sprintf("%d", GocycloThreshold), ".")

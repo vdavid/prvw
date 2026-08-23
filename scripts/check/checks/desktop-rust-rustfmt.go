@@ -18,13 +18,7 @@ func RunRustfmt(ctx *CheckContext) (CheckResult, error) {
 	}
 
 	// Count .rs files for the message
-	findCmd := exec.Command("find", "src", "-name", "*.rs", "-type", "f")
-	findCmd.Dir = rustDir
-	findOutput, _ := RunCommand(findCmd, true)
-	fileCount := len(strings.Split(strings.TrimSpace(findOutput), "\n"))
-	if findOutput == "" {
-		fileCount = 0
-	}
+	fileCount := countFiles(filepath.Join(rustDir, "src"), "*.rs")
 
 	// Check which files need formatting (--files-with-diff lists them)
 	checkCmd := exec.Command("cargo", "fmt", "--", "--check", "--files-with-diff")
