@@ -449,6 +449,34 @@ structural and becomes something you have to enforce. So the fork comes with a c
 because retrofitting registries after 3,400 lines of Win32 forms is far harder than growing them alongside. Nothing in
 M4 through M6 starts until M0.5 lands.
 
+**1b. Native feel beats cross-platform sameness, and the split runs down the middle of the app.** Decided 2026-08-23,
+after M0.5 landed. The image window is custom by nature, so it stays the same everywhere: one wgpu renderer, one set of
+gestures, one look. Everything around it goes the other way. Settings, menus, browse mode, onboarding, and about should
+each feel like they were written for the platform they run on, using that platform's own toolkit and idioms, not like a
+macOS app ported sideways.
+
+The reasoning David gave, and it is worth keeping because it settles a whole class of later arguments: almost nobody
+uses Prvw on both macOS and Windows, and the few who do already know how each system behaves and want their apps to
+blend into that understanding. So there is no user being served by making the two look alike, and there is a real user
+being served by making each one disappear into its platform. Make the Windows version very Windows-like.
+
+Three practical consequences:
+
+- **Parity means feature parity, never layout parity.** M0.5's registries already model this correctly: a `SettingKey`
+  names the job (`Toggle`, `Slider`, `Choice`) and each platform picks its own widget, while `description` copy stays a
+  per-platform argument. Keep that separation. A reviewer comparing two screenshots side by side and finding different
+  layouts is seeing the design working, not a defect.
+- **Surfaces may legitimately differ, not just their contents.** Windows is free to place something in a different
+  dialog, a context menu, or a different part of the shell, as long as the capability is reachable and the registry says
+  so. When a Windows placement genuinely has no macOS counterpart, that is `NotApplicable` with a real reason, not a
+  gap.
+- **The app's own lineage points the way on Windows.** `AGENTS.md` names ACDSee 2.41 as the model, which was a Win32 app
+  with a conventional menu bar, a modal options dialog, and a tree-plus-thumbnails browser. That idiom is still the
+  native one for this kind of viewer on Windows, so leaning into it is both the faithful and the native choice.
+
+Design work for the Windows chrome is a draft for David to review before it gets built, per his standing rule that all
+human-facing design is reviewed under his name.
+
 **2. Full parity from the start.** Windows ships matching macOS. There is no viewer-only beta, so the number that
 matters is the parity number in the effort summary, and the milestone order below is a dependency graph rather than a
 release sequence.
@@ -1076,6 +1104,10 @@ None. All five questions this plan opened with, and the two follow-ups they prod
 **Decisions** above and the log below.
 
 ## Decision log
+
+- **2026-08-23**: native feel per platform beats sameness across platforms. The image window stays identical everywhere;
+  settings, menus, browse, onboarding, and about are written to each platform's own idiom. Parity is measured as
+  features reachable, never as layouts matching. See decision 1b above.
 
 - **2026-08-23**: fork the UI per OS (option (a)), with M0.5's parity harness as the condition. Full parity from the
   start. Windows 10 supported at full fidelity, Windows 11 first. Linux held to no-regressions with its own spec later.
