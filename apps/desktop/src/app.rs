@@ -187,7 +187,9 @@ pub(crate) struct App {
     /// `display_from_cache`; cleared on a cache miss so only instant,
     /// already-cached advances crossfade.
     pub(crate) pending_crossfade: bool,
-    /// Current display scale factor (Retina = 2.0).
+    /// The current display's scale factor: 2.0 on a Retina Mac, 1.0, 1.25, 1.5, or 1.75 on a
+    /// typical Windows display. Taken from the window the moment it exists and updated on every
+    /// `ScaleFactorChanged`, so it always names the monitor the window is on.
     pub(crate) scale_factor: f64,
     /// Fullscreen state at the last `Resized` event. A fullscreen toggle is async on macOS
     /// (animated), so the reliable signal that the transition settled is the resulting
@@ -298,7 +300,9 @@ impl App {
             scroll: scroll::Scroll::for_host(),
             needs_redraw: false,
             pending_crossfade: false,
-            scale_factor: 2.0,
+            // Neutral until there's a window to ask (`initialize_viewer`). Anything else is a
+            // guess at one platform's hardware, and nothing reads this before then anyway.
+            scale_factor: 1.0,
             was_fullscreen: false,
             shared_state,
             event_loop_proxy,
@@ -3596,11 +3600,35 @@ impl ApplicationHandler<AppCommand> for App {
                 self.show_image_context_menu();
             }
 
+            // The window moved to a monitor with a different scale factor, or the one it's on
+            // changed. Windows sends this whenever a window crosses between a 150% laptop panel
+            // and a 100% external monitor (the app manifest asks for per-monitor v2 awareness, so
+            // the system reports the change instead of bitmap-stretching); macOS sends it moving
+            // between a Retina display and a 1x one. A `Resized` follows, since the physical size
+            // changes with the factor, but everything measured in logical pixels has to adopt the
+            // new factor first or that resize is computed against the old one.
             WindowEvent::ScaleFactorChanged {
                 scale_factor: new_scale,
                 ..
             } => {
                 self.scale_factor = new_scale;
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.set_scale_factor(new_scale);
+                    if let Some((iw, ih)) = self.navigation.current_image_size {
+                        self.zoom.view.update_dimensions(
+                            iw,
+                            ih,
+                            renderer.logical_width(),
+                            renderer.logical_height(),
+                        );
+                    }
+                }
+                self.update_min_zoom();
+                if let Some(renderer) = &self.renderer {
+                    renderer.update_transform(&self.zoom.view.transform());
+                }
+                self.request_redraw();
+                self.update_shared_state();
                 log::debug!("Scale factor changed to {new_scale}");
             }
 

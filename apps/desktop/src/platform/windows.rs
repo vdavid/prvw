@@ -164,3 +164,51 @@ fn query_wheel_scroll_lines() -> Option<u32> {
     .ok()?;
     (lines > 0).then_some(lines)
 }
+
+/// The work area of the monitor `window` is on, in physical virtual-desktop pixels.
+///
+/// `rcWork` is `rcMonitor` minus the taskbar and any other appbar, so a window sized and centered
+/// against it can't come up tucked underneath them. `MONITOR_DEFAULTTONEAREST` answers for a
+/// window straddling two monitors the same way Windows itself decides which monitor's DPI a
+/// window takes, so this and `Window::scale_factor` always name the same display.
+///
+/// `None` when the window has no Win32 handle yet or the query fails; the caller falls back to
+/// winit's full monitor rect.
+pub fn monitor_work_area(window: &winit::window::Window) -> Option<crate::window::PhysicalRect> {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
+        return None;
+    };
+    let hwnd = windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+
+    // SAFETY: `hwnd` comes from winit's live window. `MonitorFromWindow` can't fail with
+    // `DEFAULTTONEAREST`, but a null answer is still checked below.
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_invalid() {
+        return None;
+    }
+
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `cbSize` declares the buffer size, as the API requires, and the pointer is to that
+    // same struct.
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        return None;
+    }
+
+    let work = info.rcWork;
+    let width = f64::from(work.right - work.left);
+    let height = f64::from(work.bottom - work.top);
+    (width > 0.0 && height > 0.0).then(|| crate::window::PhysicalRect {
+        x: f64::from(work.left),
+        y: f64::from(work.top),
+        width,
+        height,
+    })
+}

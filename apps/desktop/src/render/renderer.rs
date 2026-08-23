@@ -1261,6 +1261,20 @@ impl Renderer {
         png_bytes
     }
 
+    /// Adopt a new display scale factor, after the window moved to a monitor with a different
+    /// one (or the user changed it under the window).
+    ///
+    /// The overlay text is laid out in logical pixels and rasterised at this factor, and
+    /// [`Self::logical_width`] and [`Self::logical_height`] divide by it — which is what the zoom
+    /// math measures the window with. Leaving it at whatever the window's first monitor had makes
+    /// the title strip, the zoom pill, and the fit calculation all wrong by the ratio between the
+    /// two displays.
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        if scale_factor > 0.0 {
+            self.scale_factor = scale_factor;
+        }
+    }
+
     pub fn logical_width(&self) -> Logical<f32> {
         Physical(self.config.width).to_logical_f32(self.scale_factor)
     }

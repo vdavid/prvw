@@ -14,6 +14,11 @@
 //! - **Auto-fit resize.** `resize_to_fit_image` computes physical size and returns it
 //!   synchronously — callers can pass it straight to `renderer.resize()` instead of
 //!   waiting for the asynchronous `Resized` event.
+//! - **One space for window and monitor geometry.** Monitor rects come out of the OS in physical
+//!   pixels and `MonitorBounds` converts them with the *window's* scale factor, never the
+//!   monitor's, so sizing and centering compare like with like on a desktop whose monitors have
+//!   different scale factors. The reasoning is on `MonitorBounds` itself; the tests at the bottom
+//!   of this file are what keeps it true.
 //! - **Background material.** On macOS 26+ the whole window background is a single
 //!   `NSGlassEffectView` (Liquid Glass) behind the wgpu Metal layer, rounded to the window
 //!   corner radius. The Metal layer is masked to a rounded rect inset by `IMAGE_FRAME_INSET`
@@ -80,10 +85,10 @@
 //!   `hitTest:` returns null; a plain `NSTextField` would swallow double-click-to-zoom and
 //!   window drags where the title/zoom text sits.
 
-use crate::pixels::{
-    Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
-    to_logical_size,
-};
+use crate::pixels::{Logical, from_physical_size, to_logical_pos, to_logical_size};
+// Only `grow_to_browse_minimum` reads a logical size back, and browse mode is macOS-only (M5).
+#[cfg(target_os = "macos")]
+use crate::pixels::from_logical_size;
 // Brought to module scope for the `ClickThroughLabel` `define_class!` below, whose macro
 // arms require the superclass and protocol as bare identifiers (not paths).
 #[cfg(target_os = "macos")]
@@ -1542,7 +1547,34 @@ pub fn is_fullscreen(window: &Window) -> bool {
     }
 }
 
-/// Monitor work area in logical pixels.
+/// A monitor rectangle in physical pixels, in the desktop's own coordinate space.
+///
+/// The shared truth between platforms: winit reports monitor positions and sizes this way, Win32
+/// reports `rcWork` this way, and a window's own position is in the same space. Everything that
+/// mixes the two converts from here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PhysicalRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The area of a monitor a window may sensibly occupy, in **the window's** logical pixels.
+///
+/// The unit being the window's rather than the monitor's is the whole trick, and it's what keeps
+/// mixed per-monitor DPI working. Every consumer compares these numbers against
+/// `Window::outer_position` and `inner_size` converted with `Window::scale_factor`, and hands the
+/// answer back through `set_outer_position`, which winit converts back with that same factor.
+/// Windows lays its monitors out in one **physical** virtual-desktop space no matter how their
+/// scale factors differ, so a rect converted with the *monitor's* own factor would describe a
+/// rectangle in a space no window coordinate lives in: the window would be centered on a monitor
+/// half or twice the size of the real one. Converting the physical rect with the window's factor
+/// keeps both sides of every comparison in one space.
+///
+/// The area is the work area on Windows (`rcWork`, so auto-fit can't tuck a window under the
+/// taskbar) and the full monitor rect elsewhere. On macOS that means the menu bar and the Dock
+/// are included, which [`MAX_SCREEN_FRACTION`] absorbs.
 pub struct MonitorBounds {
     pub x: Logical<f64>,
     pub y: Logical<f64>,
@@ -1551,28 +1583,63 @@ pub struct MonitorBounds {
 }
 
 impl MonitorBounds {
-    /// Get the current monitor's bounds in logical pixels. Returns `None` if no monitor.
+    /// The bounds of the monitor this window is on. `None` if it isn't on one (winit can't name
+    /// a current monitor, and Windows can't name a nearest one).
     pub fn from_window(window: &Window) -> Option<Self> {
-        let scale = window.scale_factor();
-        window.current_monitor().map(|m| {
-            let (x, y) = from_logical_pos(m.position().to_logical::<f64>(scale));
-            let (width, height) = from_logical_size(m.size().to_logical::<f64>(scale));
-            Self {
-                x,
-                y,
-                width,
-                height,
-            }
-        })
+        Some(Self::from_physical(
+            monitor_rect(window)?,
+            window.scale_factor(),
+        ))
     }
 
-    /// Maximum window size (90% of monitor in each dimension).
+    /// Express a physical monitor rect in a window's logical pixels. Pure, so the mixed-DPI
+    /// arithmetic is testable without a second monitor plugged in.
+    pub fn from_physical(rect: PhysicalRect, window_scale_factor: f64) -> Self {
+        let scale = if window_scale_factor > 0.0 {
+            window_scale_factor
+        } else {
+            1.0
+        };
+        Self {
+            x: Logical(rect.x / scale),
+            y: Logical(rect.y / scale),
+            width: Logical(rect.width / scale),
+            height: Logical(rect.height / scale),
+        }
+    }
+
+    /// Maximum window size (90% of the monitor's usable area in each dimension).
     pub fn max_window_size(&self) -> (Logical<f64>, Logical<f64>) {
         (
             self.width * MAX_SCREEN_FRACTION,
             self.height * MAX_SCREEN_FRACTION,
         )
     }
+}
+
+/// The physical rect of the monitor this window is on.
+///
+/// Windows answers with the monitor's **work area**, which is what the window may actually have:
+/// the taskbar is excluded, and it's per-monitor, so a window on the 100% external display gets
+/// that display's rect rather than the 150% laptop panel's. Everywhere else winit's
+/// `current_monitor` gives the full rect, because neither platform exposes a work area through
+/// it (macOS's `NSScreen.visibleFrame` would, and doesn't matter while auto-fit only asks for
+/// 90% of the screen).
+fn monitor_rect(window: &Window) -> Option<PhysicalRect> {
+    #[cfg(target_os = "windows")]
+    if let Some(work_area) = crate::platform::windows::monitor_work_area(window) {
+        return Some(work_area);
+    }
+
+    let monitor = window.current_monitor()?;
+    let position = monitor.position();
+    let size = monitor.size();
+    Some(PhysicalRect {
+        x: f64::from(position.x),
+        y: f64::from(position.y),
+        width: f64::from(size.width),
+        height: f64::from(size.height),
+    })
 }
 
 /// Clamp a new window position so it doesn't go MORE off-screen than the old position.
@@ -1716,4 +1783,113 @@ pub fn resize_to_fit_image(
     }
 
     Some(PhysicalSize::new(pw.0, ph.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 4K monitor sitting to the right of a 1080p one, in the physical coordinates every
+    /// platform lays its desktop out in.
+    fn secondary_4k() -> PhysicalRect {
+        PhysicalRect {
+            x: 1920.0,
+            y: 0.0,
+            width: 3840.0,
+            height: 2160.0,
+        }
+    }
+
+    #[test]
+    fn a_monitor_rect_arrives_in_the_windows_own_logical_pixels() {
+        let bounds = MonitorBounds::from_physical(secondary_4k(), 2.0);
+        assert_eq!(bounds.x.0, 960.0);
+        assert_eq!(bounds.y.0, 0.0);
+        assert_eq!(bounds.width.0, 1920.0);
+        assert_eq!(bounds.height.0, 1080.0);
+    }
+
+    /// Windows' fractional factors are ordinary here, and a 150% panel is the case that used to
+    /// come out wrong on the *other* monitor.
+    #[test]
+    fn a_fractional_scale_factor_divides_out_cleanly() {
+        let bounds = MonitorBounds::from_physical(
+            PhysicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 2880.0,
+                height: 1800.0,
+            },
+            1.5,
+        );
+        assert_eq!(bounds.width.0, 1920.0);
+        assert_eq!(bounds.height.0, 1200.0);
+    }
+
+    /// The mixed-DPI invariant, stated as arithmetic: the monitor rect and the window's own
+    /// position have to be divided by the *same* factor, or they describe rectangles in
+    /// different spaces and the window gets clamped against a screen that isn't there.
+    #[test]
+    fn window_position_and_monitor_bounds_land_in_one_space() {
+        // A 200% window on the 4K monitor: winit reports its outer position in the same physical
+        // virtual-desktop coordinates as the monitor rect.
+        let scale = 2.0;
+        let bounds = MonitorBounds::from_physical(secondary_4k(), scale);
+        let window_pos = (Logical(2000.0 / scale), Logical(100.0 / scale));
+        let window_size = (Logical(800.0), Logical(600.0));
+
+        // Pushed far off the monitor's right edge, it comes back to rest against it.
+        let (x, y) = clamp_to_screen(
+            (Logical(5000.0), window_pos.1),
+            window_size,
+            window_pos,
+            window_size,
+            &bounds,
+        );
+        assert_eq!(x.0, bounds.x.0 + bounds.width.0 - window_size.0.0);
+        assert_eq!(y.0, window_pos.1.0);
+
+        // Had the rect been divided by the *monitor's* factor while the window kept its own, the
+        // right edge would have landed at 3840 - 800 instead.
+        assert_ne!(x.0, 3840.0 - window_size.0.0);
+    }
+
+    #[test]
+    fn a_window_already_off_screen_is_allowed_to_stay_where_it_is() {
+        // Never push a window further off than it was: someone dragged it there on purpose.
+        let bounds = MonitorBounds::from_physical(
+            PhysicalRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1920.0,
+                height: 1080.0,
+            },
+            1.0,
+        );
+        let size = (Logical(800.0), Logical(600.0));
+        let off_left = (Logical(-200.0), Logical(50.0));
+        let (x, _) = clamp_to_screen(
+            (Logical(-200.0), Logical(50.0)),
+            size,
+            off_left,
+            size,
+            &bounds,
+        );
+        assert_eq!(x.0, -200.0);
+    }
+
+    #[test]
+    fn max_window_size_leaves_a_margin_on_the_usable_area() {
+        let bounds = MonitorBounds::from_physical(secondary_4k(), 2.0);
+        let (w, h) = bounds.max_window_size();
+        assert_eq!(w.0, 1920.0 * MAX_SCREEN_FRACTION);
+        assert_eq!(h.0, 1080.0 * MAX_SCREEN_FRACTION);
+    }
+
+    /// A scale factor of zero would turn every bound into an infinity and every clamp into a NaN.
+    #[test]
+    fn a_nonsense_scale_factor_leaves_the_rect_finite() {
+        let bounds = MonitorBounds::from_physical(secondary_4k(), 0.0);
+        assert!(bounds.width.0.is_finite() && bounds.width.0 > 0.0);
+    }
 }

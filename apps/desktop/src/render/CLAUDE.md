@@ -54,6 +54,11 @@ with the same faces, or a layout pass disagrees with what gets drawn.
 
 ## Gotchas
 
+- **The renderer's `scale_factor` is a copy, and copies go stale.** It's read from the window once at creation, and
+  everything logical hangs off it: `logical_width` / `logical_height` (what the zoom math measures the window with) and
+  the size the overlay text is rasterised at. A window that moves to a display with a different factor - a Retina Mac to
+  a 1x external monitor, a 150% Windows laptop panel to a 100% desktop screen - has to be told, which `app.rs` does from
+  the `ScaleFactorChanged` arm via `set_scale_factor`. Anything else that caches the factor owes the same.
 - **Image texture must be explicitly destroyed on replace.** `set_image` holds the previous `wgpu::Texture` in
   `Renderer.image_texture` and calls `texture.destroy()` before allocating the new one. Without this, Metal keeps the
   old unified-memory backing resident. A long navigation session through 20 MP RAWs can grow RSS by gigabytes even
