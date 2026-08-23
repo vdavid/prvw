@@ -12,7 +12,8 @@
 //! - **`NavigationRecord` lives here** because it's a measurement type (from/to index,
 //!   cache hit, duration, timestamp). The ring buffer lives on `navigation::State`;
 //!   diagnostics just formats it.
-//! - **Process RSS via `ps`** — no platform crate, just a subprocess. Returns 0.0 on
+//! - **Process RSS is per-platform and best-effort.** macOS shells out to `ps`, Linux
+//!   reads `/proc/self/statm`, Windows asks `GetProcessMemoryInfo`. Returns 0.0 on
 //!   failure. Fine because it's diagnostic output, not a gate on anything.
 //!
 //! ## Format
@@ -53,19 +54,69 @@ pub fn format_bytes(bytes: usize) -> String {
     }
 }
 
-/// Get the current process RSS in MB via `ps`. Returns 0.0 on failure.
+/// The current process' resident set size in MB. Returns 0.0 when the platform
+/// won't say, which callers render as-is: this is diagnostic output, not a gate.
 pub fn get_process_rss_mb() -> f64 {
+    process_rss_bytes().map_or(0.0, |bytes| bytes as f64 / (1024.0 * 1024.0))
+}
+
+/// macOS: `ps` reports RSS in KB. A subprocess is heavier than `task_info`, but
+/// this runs on state changes rather than per frame, and it needs no `unsafe`.
+#[cfg(target_os = "macos")]
+fn process_rss_bytes() -> Option<u64> {
     let pid = std::process::id();
-    std::process::Command::new("ps")
+    let output = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &pid.to_string()])
         .output()
-        .ok()
-        .and_then(|output| {
-            let text = String::from_utf8_lossy(&output.stdout);
-            text.trim().parse::<f64>().ok()
-        })
-        .map(|kb| kb / 1024.0)
-        .unwrap_or(0.0)
+        .ok()?;
+    let kb: u64 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .ok()?;
+    kb.checked_mul(1024)
+}
+
+/// Linux: `/proc/self/statm`'s second field is the resident set in pages.
+#[cfg(target_os = "linux")]
+fn process_rss_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = parse_statm_resident_pages(&statm)?;
+    // SAFETY: `sysconf` reads a static system value and touches no memory of
+    // ours.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let page_size = u64::try_from(page_size).ok()?;
+    pages.checked_mul(page_size)
+}
+
+/// Pull the resident-pages field out of a `/proc/self/statm` line. Split out so
+/// the parse is testable on any host.
+#[cfg(any(target_os = "linux", test))]
+fn parse_statm_resident_pages(statm: &str) -> Option<u64> {
+    statm.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Windows: `PROCESS_MEMORY_COUNTERS::WorkingSetSize` is the RSS equivalent,
+/// already in bytes.
+#[cfg(target_os = "windows")]
+fn process_rss_bytes() -> Option<u64> {
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?,
+        ..Default::default()
+    };
+    // SAFETY: `GetCurrentProcess` hands back a pseudo-handle that needs no
+    // closing, and `GetProcessMemoryInfo` fills our stack struct, whose size we
+    // pass alongside it.
+    unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) }.ok()?;
+    u64::try_from(counters.WorkingSetSize).ok()
+}
+
+/// Any other platform: no reading available yet.
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn process_rss_bytes() -> Option<u64> {
+    None
 }
 
 /// Build human/agent-readable diagnostics text covering cache, navigation timing,
@@ -152,4 +203,43 @@ pub fn build_text(
     ));
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_bytes_picks_a_readable_unit() {
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(2048), "2.0 KB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.0 GB");
+    }
+
+    /// Each supported platform has to report something for a running process.
+    /// Zero is the documented "couldn't tell" answer, and we shouldn't be
+    /// hitting it on macOS, Linux, or Windows.
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[test]
+    fn process_rss_is_plausible() {
+        let mb = get_process_rss_mb();
+        assert!(mb > 0.0, "expected a non-zero RSS, got {mb} MB");
+        assert!(mb < 1024.0 * 1024.0, "expected under 1 TB, got {mb} MB");
+    }
+
+    #[test]
+    fn statm_resident_pages_is_the_second_field() {
+        assert_eq!(
+            parse_statm_resident_pages("5432 987 654 1 0 321 0"),
+            Some(987)
+        );
+    }
+
+    #[test]
+    fn malformed_statm_is_none() {
+        assert_eq!(parse_statm_resident_pages("5432"), None);
+        assert_eq!(parse_statm_resident_pages(""), None);
+        assert_eq!(parse_statm_resident_pages("5432 nonsense"), None);
+    }
 }

@@ -34,6 +34,20 @@ half = "2.7"
 alphanumeric-sort = "1.5.6"
 notify = "8.2.0"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# Process RSS (`diagnostics`) and installed RAM (`platform`). MIT OR Apache-2.0.
+# Only the two Win32 areas those need; the crate is feature-gated per namespace.
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `sysconf(_SC_PAGESIZE)`, to turn `/proc/self/statm` pages into bytes.
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # Only the macOS updater speaks HTTPS. Scoping `reqwest` here keeps `aws-lc-sys` (and its
 # NASM build requirement) out of the Windows and Linux targets entirely.

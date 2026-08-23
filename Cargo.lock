@@ -3782,6 +3782,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "wgpu",
+ "windows",
  "winit",
  "zstd",
  "zune-core",
