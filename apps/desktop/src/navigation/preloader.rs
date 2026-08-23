@@ -14,24 +14,49 @@ use winit::event_loop::EventLoopProxy;
 /// has no unified memory, so it pays for the GPU-side copies separately.
 const SDR_RAM_DIVISOR: usize = 64;
 
-/// One 20 MP RAW decode as RGBA8. The budget floor is expressed in these
-/// because that's the unit the cache actually deals in.
-const LARGE_DECODE_BYTES: usize = 20_000_000 * 4;
+/// One decoded 24 MP image as RGBA8: 24 million pixels at 4 bytes each. The
+/// unit both the budget floor and the preload window are expressed in.
+///
+/// 24 MP because the window has to survive the images that can overrun the
+/// cache, not the median one. It's what a current full-frame body shoots, and
+/// it's already this repo's reference large image (`color::transform`'s
+/// measurements use it, and so does the cross-platform plan's `profiles_match`
+/// note). Phone photos, the common case, are a third of it and simply fit more
+/// of themselves into the same bytes — the cache charges exact
+/// `width * height * bytes_per_pixel`, so a smaller image is never rounded up
+/// to this.
+///
+/// RGBA8 rather than RGBA16F even though HDR RAW decodes are 8 bytes per pixel:
+/// [`hdr_memory_budget`] doubles alongside, so the window comes out the same in
+/// both modes and only one of them needs a constant.
+const LARGE_DECODE_BYTES: usize = 24_000_000 * 4;
 
-/// Floor and ceiling for the RAM-scaled SDR cache budget. The floor holds the
-/// image on screen plus one preloaded neighbor, below which the cache isn't
-/// preloading at all. The ceiling is the 512 MB this budget used to be fixed
-/// at, so scaling can only ever shrink the cache: a big machine keeps exactly
-/// the behavior it has today, and only small ones get frugal. ~6 × 20 MP RAW
-/// decodes fit the ceiling, and preloading further ahead than that buys
+/// Farthest the preloader will ever reach on each side of the current image.
+/// The live window is [`preload_count`], which is smaller on a machine whose
+/// budget won't retain this many.
+const MAX_PRELOAD_AHEAD: usize = 2;
+
+/// Floor and ceiling for the RAM-scaled SDR cache budget.
+///
+/// The floor is three [`LARGE_DECODE_BYTES`]: the image on screen plus one
+/// neighbor on each side, the narrowest window that still makes navigation
+/// instant whichever way the user turns. Sizing the floor to the window rather
+/// than the other way round is the point — a budget that can't hold what the
+/// preloader fetches doesn't save memory, it just decodes the same images over
+/// and over.
+///
+/// The ceiling is the 512 MB this budget used to be fixed at, so scaling can
+/// only ever shrink the cache: a big machine keeps exactly the behavior it has
+/// today, and only small ones get frugal. It holds the full
+/// ±[`MAX_PRELOAD_AHEAD`] window with room to spare, and reaching further buys
 /// nothing.
-const MIN_SDR_MEMORY_BUDGET: usize = 2 * LARGE_DECODE_BYTES;
+const MIN_SDR_MEMORY_BUDGET: usize = 3 * LARGE_DECODE_BYTES;
 const MAX_SDR_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
 
 /// SDR cache budget: 1/[`SDR_RAM_DIVISOR`] of physical RAM, clamped. 32 GB and
-/// up land on the 512 MB ceiling, 16 GB on 256 MB, 8 GB on the floor. Every
-/// JPEG/PNG/WebP cached image comes out of the same budget. Queried once (RAM
-/// doesn't change at runtime).
+/// up land on the ceiling, 24 GB on 384 MiB, and 16 GB and below on the floor.
+/// Every JPEG/PNG/WebP cached image comes out of the same budget. Queried once
+/// (RAM doesn't change at runtime).
 pub fn sdr_memory_budget() -> usize {
     static BUDGET: OnceLock<usize> = OnceLock::new();
     *BUDGET.get_or_init(|| sdr_budget_for_ram(crate::platform::total_physical_ram_bytes() as usize))
@@ -43,16 +68,14 @@ fn sdr_budget_for_ram(ram_bytes: usize) -> usize {
 }
 
 /// HDR cache budget (Phase 5). Doubled from the SDR path because RAW
-/// RGBA16F is 8 bytes per pixel instead of 4. With this bumped budget we
-/// keep the same ~6 preload count for 20 MP RAWs that SDR had. User
-/// decision: trade RAM for preload count, because the preload experience
-/// is the whole value proposition of the preloader (see
-/// `docs/notes/raw-support-phase5.md` for the trade-off note).
+/// RGBA16F is 8 bytes per pixel instead of 4, so the same doubling keeps
+/// [`preload_count`] identical in both modes. User decision: trade RAM for
+/// preload count, because the preload experience is the whole value
+/// proposition of the preloader (see `docs/notes/raw-support-phase5.md` for
+/// the trade-off note).
 pub fn hdr_memory_budget() -> usize {
     sdr_memory_budget() * 2
 }
-
-const PRELOAD_AHEAD: usize = 2;
 
 // The preloader runs on a single dedicated `std::thread`, not a rayon
 // pool. Reason: each RAW decode internally calls `rayon::par_iter` through
@@ -788,9 +811,27 @@ impl Preloader {
     }
 }
 
-/// Returns the number of images to preload ahead/behind the current position.
+/// How many images to preload each side of the current one.
+///
+/// Derived from the cache budget rather than fixed, so the preloader never
+/// fetches more than the cache will retain. A window wider than the budget is
+/// worse than a narrow one: each preload evicts the previous one, and once the
+/// image on screen becomes the LRU entry it gets evicted by its own neighbors,
+/// so every keypress pays for a fresh decode. `previews::generation_radius`
+/// derives its radius from its own budget for exactly this reason.
+///
+/// A window of `n` holds `2n + 1` images, so the budget has to cover the
+/// current image plus `2n` neighbors. Read off the SDR budget in both modes:
+/// HDR doubles the budget and the per-pixel size together, so the count is the
+/// same either way.
 pub fn preload_count() -> usize {
-    PRELOAD_AHEAD
+    preload_count_for_budget(sdr_memory_budget())
+}
+
+/// Pure window math, split out for testing without depending on host RAM.
+fn preload_count_for_budget(budget: usize) -> usize {
+    (budget.saturating_sub(LARGE_DECODE_BYTES) / (2 * LARGE_DECODE_BYTES))
+        .clamp(1, MAX_PRELOAD_AHEAD)
 }
 
 #[cfg(test)]
@@ -955,8 +996,9 @@ mod tests {
     #[test]
     fn sdr_budget_scales_with_ram() {
         let gb = 1024 * 1024 * 1024;
-        assert_eq!(sdr_budget_for_ram(16 * gb), 256 * 1024 * 1024);
-        assert_eq!(sdr_budget_for_ram(12 * gb), 192 * 1024 * 1024);
+        assert_eq!(sdr_budget_for_ram(24 * gb), 384 * 1024 * 1024);
+        assert_eq!(sdr_budget_for_ram(20 * gb), 320 * 1024 * 1024);
+        assert_eq!(sdr_budget_for_ram(16 * gb), MIN_SDR_MEMORY_BUDGET);
         assert_eq!(sdr_budget_for_ram(8 * gb), MIN_SDR_MEMORY_BUDGET);
     }
 
@@ -977,12 +1019,42 @@ mod tests {
         assert_eq!(sdr_budget_for_ram(1024), MIN_SDR_MEMORY_BUDGET);
     }
 
-    /// Whatever the host, the live budget has to hold the image on screen plus
-    /// one preloaded neighbor. A cache that can't do that isn't preloading.
+    /// The invariant the whole budget/window pair exists to hold: whatever the
+    /// host, the cache must be able to retain everything the preloader fetches.
+    /// If this fails, every navigation evicts what the last one decoded.
     #[test]
-    fn live_budget_holds_two_large_decodes() {
-        assert!(sdr_memory_budget() >= 2 * LARGE_DECODE_BYTES);
-        assert!(hdr_memory_budget() >= 2 * LARGE_DECODE_BYTES);
+    fn the_budget_always_holds_the_whole_preload_window() {
+        for budget in [
+            MIN_SDR_MEMORY_BUDGET,
+            MIN_SDR_MEMORY_BUDGET + 1,
+            300 * 1024 * 1024,
+            384 * 1024 * 1024,
+            MAX_SDR_MEMORY_BUDGET,
+            usize::MAX,
+        ] {
+            let resident = (2 * preload_count_for_budget(budget) + 1) * LARGE_DECODE_BYTES;
+            assert!(
+                resident <= budget,
+                "window of {} needs {resident} bytes, budget is {budget}",
+                preload_count_for_budget(budget)
+            );
+        }
+        let live = (2 * preload_count() + 1) * LARGE_DECODE_BYTES;
+        assert!(live <= sdr_memory_budget(), "on this host: {live} bytes");
+    }
+
+    /// The window narrows with the budget, and never past the point where
+    /// navigating either way is still warm.
+    #[test]
+    fn preload_window_follows_the_budget() {
+        assert_eq!(preload_count_for_budget(MAX_SDR_MEMORY_BUDGET), 2);
+        assert_eq!(preload_count_for_budget(MIN_SDR_MEMORY_BUDGET), 1);
+        assert_eq!(preload_count_for_budget(384 * 1024 * 1024), 1);
+        assert_eq!(preload_count_for_budget(usize::MAX), MAX_PRELOAD_AHEAD);
+        // Below the floor is unreachable through `sdr_budget_for_ram`, but the
+        // window still refuses to collapse to zero: a preloader that preloads
+        // nothing is worse than a small one.
+        assert_eq!(preload_count_for_budget(0), 1);
     }
 
     #[test]

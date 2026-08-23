@@ -29,8 +29,13 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-/// Distance from `current` within which full-decode preloads cover the index
-/// (matches `navigation::preloader::PRELOAD_AHEAD`).
+/// Distance from `current` within which full-decode preloads may cover the
+/// index, matching `navigation::preloader::MAX_PRELOAD_AHEAD`. Only a priority
+/// boundary: previews inside it are generated first because a full decode may
+/// beat them there. It stays at the maximum rather than tracking
+/// `preloader::preload_count()`, which narrows on a small machine — generating
+/// a preview one step early costs an ordering slot, and on exactly the machines
+/// where the decode window shrinks, having the preview ready matters more.
 const PRELOAD_HALF: usize = 2;
 
 /// Upper bound on how far around `current` we generate previews. The

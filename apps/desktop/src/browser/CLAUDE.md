@@ -348,14 +348,15 @@ live-resize cells is deferred (see "Deferred work + known limitations"). The gri
 - **Warming the browse selection (so reveal is actually instant).** When the browse selection lands on an image — a grid
   click (`BrowseGridSelected`) or the seeded selection after a folder lists (`BrowseFolderListed`) — the executor calls
   `App::warm_browse_selection`: it reads the grid's image list + selected index (`State::grid_warm_target`, focus-
-  independent), computes the prospective-current + N±2 neighbor indices (`browser::browse_warm_indices`, built on
-  `navigation::wrap::active_preload_indices`, clamped to the folder, no wrap), maps them to paths, and warms them into
-  the shared `navigation::image_cache` via `Preloader::warm_paths`. The browse selection IS the prospective current
-  image (reveal makes it current). **Warming runs by PATH and deliberately does NOT display the image or auto-fit the
-  window while browsing** — doing so would resize the window behind the browse UI. The cache is path-keyed, so warming
-  arbitrary paths is safe; `warm_paths` cancels paths that drop out of the new set, so a moved selection cancels its
-  stale warms. Net effect: by reveal time the full image is usually already cached → instant; and after revealing,
-  arrowing left/right is warm.
+  independent), computes the prospective-current + `preloader::preload_count()` neighbor indices each side
+  (`browser::browse_warm_indices`, which takes the radius as a parameter so it stays pure and host-RAM independent,
+  built on `navigation::wrap::active_preload_indices`, clamped to the folder, no wrap), maps them to paths, and warms
+  them into the shared `navigation::image_cache` via `Preloader::warm_paths`. The browse selection IS the prospective
+  current image (reveal makes it current). **Warming runs by PATH and deliberately does NOT display the image or
+  auto-fit the window while browsing** — doing so would resize the window behind the browse UI. The cache is path-keyed,
+  so warming arbitrary paths is safe; `warm_paths` cancels paths that drop out of the new set, so a moved selection
+  cancels its stale warms. Net effect: by reveal time the full image is usually already cached → instant; and after
+  revealing, arrowing left/right is warm.
 
 ### Thumbnails: same QL worker as previews, AppKit owns the bitmaps
 

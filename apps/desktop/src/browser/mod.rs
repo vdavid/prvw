@@ -161,26 +161,23 @@ pub fn browse_entry_pane(grid_empty: bool) -> PaneSide {
     }
 }
 
-/// How many images each side of the browse selection to warm into the image cache. Matches the
-/// image-mode preloader radius (`preloader::preload_count()` is also 2) so opening lands on a warm
-/// image and arrowing left/right in image mode is immediately warm.
-pub const BROWSE_WARM_RADIUS: usize = 2;
-
 /// The grid indices to warm when the browse selection lands on `selected`: the selection itself
-/// (first, the prospective current image) plus `BROWSE_WARM_RADIUS` neighbors each side, clamped to
+/// (first, the prospective current image) plus `radius` neighbors each side, clamped to
 /// `[0, total)`. Browse never loops (loop navigation is an image-mode concept), so the window stops
 /// at the folder edges. Returns empty when the folder is empty. Pure (headless-tested); the executor
 /// maps these to paths and hands them to `Preloader::warm_paths`.
+///
+/// Callers pass `preloader::preload_count()`. Warming lands in the same `ImageCache` the image-mode
+/// preloader fills, so warming wider than that cache retains would evict on arrival and leave
+/// browse slower than not warming at all. Taking the radius as a parameter is what keeps this
+/// function pure and its tests independent of the host's RAM.
 #[must_use]
-pub fn browse_warm_indices(selected: usize, total: usize) -> Vec<usize> {
+pub fn browse_warm_indices(selected: usize, total: usize, radius: usize) -> Vec<usize> {
     if total == 0 || selected >= total {
         return Vec::new();
     }
     crate::navigation::wrap::active_preload_indices(
-        selected,
-        total,
-        BROWSE_WARM_RADIUS,
-        /* loop_on */ false,
+        selected, total, radius, /* loop_on */ false,
     )
 }
 
@@ -887,7 +884,7 @@ mod tests {
     fn browse_warm_indices_centers_on_selection_with_two_each_side() {
         // The selection comes first (the prospective current image), then ±2 neighbors. Order
         // beyond the first doesn't matter to the warmer, so compare as a set, but pin the first.
-        let warm = browse_warm_indices(5, 10);
+        let warm = browse_warm_indices(5, 10, 2);
         assert_eq!(
             warm[0], 5,
             "selection warms first (it's the prospective current)"
@@ -899,12 +896,12 @@ mod tests {
     #[test]
     fn browse_warm_indices_clamps_at_folder_edges_and_does_not_wrap() {
         // At the first image, only the selection + the two ahead survive (no wrap to the end).
-        let start = browse_warm_indices(0, 10);
+        let start = browse_warm_indices(0, 10, 2);
         let start_set: std::collections::HashSet<usize> = start.iter().copied().collect();
         assert_eq!(start_set, std::collections::HashSet::from([0, 1, 2]));
 
         // At the last image, only the selection + the two behind survive.
-        let end = browse_warm_indices(9, 10);
+        let end = browse_warm_indices(9, 10, 2);
         let end_set: std::collections::HashSet<usize> = end.iter().copied().collect();
         assert_eq!(end_set, std::collections::HashSet::from([9, 8, 7]));
     }
@@ -1031,8 +1028,9 @@ mod tests {
         // Pre-warm guarantee: the focused (selected) image itself must be in the warm set, and
         // first, so revealing it is a cache hit (black → image, near-instant) rather than a
         // cache-miss placeholder. Holds at the edges and the interior alike.
-        for (selected, total) in [(0, 1), (0, 10), (5, 10), (9, 10), (3, 4)] {
-            let warm = browse_warm_indices(selected, total);
+        for (selected, total, radius) in [(0, 1, 1), (0, 10, 2), (5, 10, 1), (9, 10, 2), (3, 4, 1)]
+        {
+            let warm = browse_warm_indices(selected, total, radius);
             assert_eq!(
                 warm.first().copied(),
                 Some(selected),
@@ -1045,12 +1043,23 @@ mod tests {
         }
     }
 
+    /// On a machine whose cache budget only retains three images, warming has
+    /// to narrow with it — otherwise browse re-fills the same cache the image
+    /// mode preloader is trying to keep warm.
+    #[test]
+    fn browse_warm_indices_narrows_with_the_radius() {
+        let warm = browse_warm_indices(5, 10, 1);
+        assert_eq!(warm[0], 5, "selection still warms first");
+        let set: std::collections::HashSet<usize> = warm.iter().copied().collect();
+        assert_eq!(set, std::collections::HashSet::from([4, 5, 6]));
+    }
+
     #[test]
     fn browse_warm_indices_handles_empty_and_out_of_range() {
-        assert!(browse_warm_indices(0, 0).is_empty());
-        assert!(browse_warm_indices(5, 3).is_empty());
+        assert!(browse_warm_indices(0, 0, 2).is_empty());
+        assert!(browse_warm_indices(5, 3, 2).is_empty());
         // A single-image folder warms just that image.
-        assert_eq!(browse_warm_indices(0, 1), vec![0]);
+        assert_eq!(browse_warm_indices(0, 1, 2), vec![0]);
     }
 
     #[test]

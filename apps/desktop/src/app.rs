@@ -775,10 +775,11 @@ impl App {
             return;
         };
         let total = images.len();
-        let tasks: Vec<(usize, PathBuf)> = crate::browser::browse_warm_indices(selected, total)
-            .into_iter()
-            .filter_map(|i| images.get(i).map(|p| (i, p.clone())))
-            .collect();
+        let tasks: Vec<(usize, PathBuf)> =
+            crate::browser::browse_warm_indices(selected, total, preloader::preload_count())
+                .into_iter()
+                .filter_map(|i| images.get(i).map(|p| (i, p.clone())))
+                .collect();
         if tasks.is_empty() {
             return;
         }
@@ -2270,7 +2271,7 @@ impl App {
 
         // Drop cache entries outside the hot window. Keeps RAM bounded even
         // when the LRU budget isn't hit (for example, lots of small JPEGs).
-        // The window is current ± PRELOAD_AHEAD on both sides regardless of
+        // The window is current ± `preload_count()` on both sides regardless of
         // travel direction (the user can reverse at any time). With loop
         // navigation on, the window wraps so the wrap-side neighbours stay
         // resident.
@@ -2338,7 +2339,7 @@ impl App {
         self.submit_neighbor_preload(current_index, total, &preload_indices);
     }
 
-    /// Paths currently inside the hot preload window (current ± `PRELOAD_AHEAD`,
+    /// Paths currently inside the hot preload window (current ± `preload_count()`,
     /// wrap-aware). Used by `poll_preloader` to decide whether a salvaged decode
     /// is still worth keeping. Empty when no directory is loaded. Mirrors the
     /// keep-set logic in `after_position_change` / `refresh_preload_window`.

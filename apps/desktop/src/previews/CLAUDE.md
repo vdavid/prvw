@@ -61,7 +61,7 @@ generation window derived from it so the two never fight.
   GB → 64 MB (floor). A byte budget (not a fixed preview count) so it self-adjusts to preview size and display DPI.
   Physical RAM comes from `platform::total_physical_ram_bytes()`, queried once (`sysctl hw.memsize` on macOS,
   `GlobalMemoryStatusEx` on Windows, `/proc/meminfo` on Linux). `navigation::preloader` scales its own budget off the
-  same call.
+  same call, and derives its preload window from that budget the way `generation_radius` does here.
 
 - **Eviction (`evict_to_budget`)**: on `set_current` _and_ on each preview's arrival (`mark_ready`), evict
   farthest-from-`current` first until total bytes ≤ budget. Distance-based, so we always keep the previews nearest where

@@ -1,16 +1,33 @@
 # Navigation
 
 Scan the parent directory for images, preload adjacent files in the background, and keep an LRU cache budgeted off
-physical RAM: `clamp(RAM / 64, 160 MB, 512 MB)` for SDR, twice that for HDR (Phase 5). The ceiling is what the budget
-used to be fixed at, so scaling can only shrink the cache: 32 GB and up keep today's 512 MB / 1 GB pair, 16 GB gets 256
-MB / 512 MB, and 8 GB gets the floor. `sdr_memory_budget()` / `hdr_memory_budget()` in `preloader.rs` own the math, and
-`ImageCache` resolves both once at construction. The cache switches between them when the RAW pipeline's `hdr_output`
-flag flips or the display's EDR headroom crosses the 1.0 boundary, so preload count stays constant as we double
-per-pixel bytes for RAW RGBA16F.
+physical RAM: `clamp(RAM / 64, 3 × 24 MP RGBA8, 512 MB)` for SDR, twice that for HDR (Phase 5). The ceiling is what the
+budget used to be fixed at, so scaling can only shrink the cache: 32 GB and up keep today's 512 MB / 1 GB pair, 24 GB
+gets 384 MB / 768 MB, and 16 GB and below get the floor. `sdr_memory_budget()` / `hdr_memory_budget()` in `preloader.rs`
+own the math, and `ImageCache` resolves both once at construction. The cache switches between them when the RAW
+pipeline's `hdr_output` flag flips or the display's EDR headroom crosses the 1.0 boundary; doubling the budget alongside
+RAW RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in both modes.
 
-The floor is two 20 MP RGBA8 decodes: the image on screen plus one preloaded neighbor. Below that the cache isn't
-preloading, it's just holding what's visible. Scaling matters most off macOS, where an 8 GB laptop has no unified memory
-and pays for GPU-side copies separately.
+## Decision: the preload window is derived from the budget, never fixed
+
+**Why:** a window wider than the budget retains is worse than a narrow one. Each preload evicts the previous one, and
+once the image on screen becomes the LRU entry its own neighbors evict it, so every keypress pays for a decode the
+preloader was supposed to have already done. `preload_count()` therefore reads off `sdr_memory_budget()`, the same shape
+`previews::generation_radius` uses for the same reason, and `MAX_PRELOAD_AHEAD` is a cap rather than the value.
+
+A window of `n` holds `2n + 1` images, so the floor is three `LARGE_DECODE_BYTES` (one 24 MP RGBA8 decode each): the
+image on screen plus one neighbor each side, the narrowest window that keeps navigation instant whichever way the user
+turns. 32 GB and up get ±2; 24 GB and below get ±1. Browse mode's pre-warm reads the same `preload_count()`, because it
+fills this same cache.
+
+**Gotcha:** `LARGE_DECODE_BYTES` is a sizing unit, not a per-entry charge. The cache charges exact
+`width * height * bytes_per_pixel`, so a folder of 12 MP phone photos holds far more than the window asks for. The
+constant is deliberately the large end of what Prvw opens, because the window's job is to not overrun on the images that
+can overrun it. Scaling matters most off macOS, where an 8 GB laptop has no unified memory and pays for GPU-side copies
+separately.
+
+Measurements, the rejected 480 MB floor, and the per-RAM before/after table:
+[`docs/notes/preload-window-and-cache-budget.md`](../../../../docs/notes/preload-window-and-cache-budget.md).
 
 | File             | Purpose                                                                                                                                                                                                                                                                                    |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
