@@ -103,9 +103,9 @@ Partly addressed in M0: a no-argument launch off macOS now logs at `error` and e
 
 On macOS none of that matters, because Finder delivers files through Apple Events (`platform/macos/open_handler.rs`). On
 Windows, a Start-menu shortcut, a taskbar pin, or a desktop icon are the normal ways to launch, and all of them pass no
-argv. The user got a process with no window and no way to recover, because `AppCommand::OpenFile` only ever arrives
-from an Apple Event or the debug QA server. M0's Done-when clause turned that into a message and exit 2; making the
-launch actually work is M1 step 1, and it's the single most important thing in the milestone.
+argv. The user got a process with no window and no way to recover, because `AppCommand::OpenFile` only ever arrives from
+an Apple Event or the debug QA server. M0's Done-when clause turned that into a message and exit 2; making the launch
+actually work is M1 step 1, and it's the single most important thing in the milestone.
 
 **4. The macOS side of CI is weaker than the Linux side. Fixed in M0 step 1.** The `desktop-rust-macos` job's only step
 was `cargo build`. No rustfmt, no clippy, no tests. Combined with the crate-level gates above, **the E2E suite and the
@@ -598,8 +598,8 @@ no-argument case log and exit rather than hang invisibly.)
 `cargo xwin build --target x86_64-pc-windows-msvc` produces a `prvw.exe`, but nobody has started it on Windows yet. The
 second half is the defensible-rather-than-nothing version: off macOS a no-argument launch logs
 `Nothing to show. Pass an image or a folder: prvw <path>` at `error` and exits 2, instead of running an event loop that
-will never build a window. macOS keeps waiting for its Apple Event. The real fix, an empty-state window plus
-File → Open, is still M1 step 1.
+will never build a window. macOS keeps waiting for its Apple Event. The real fix, an empty-state window plus File →
+Open, is still M1 step 1.
 
 ### M0.5: the parity harness (one to two weeks)
 

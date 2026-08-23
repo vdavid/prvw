@@ -178,10 +178,16 @@ pub fn profiles_match(a: &[u8], b: &[u8]) -> bool {
     a == b
 }
 
-/// Largest per-channel 8-bit difference a transform may produce and still count
-/// as a no-op. One step out of 255 is below what any display resolves, and it's
-/// the size of the rounding noise two encodings of the same color space produce
-/// against each other.
+/// Largest per-channel 8-bit difference a transform may produce **over
+/// [`probe_lattice`]** and still count as a no-op. One step out of 255 is below
+/// what any display resolves, and it's the size of the rounding noise two
+/// encodings of the same color space produce against each other.
+///
+/// A sampled lattice under-reports, so the real bound is a step or two rather
+/// than exactly one: the true maximum for system sRGB → Display P3 is 118 where
+/// the probe finds 105. That's the accepted limit of the approach, measured in
+/// `docs/notes/icc-negligible-transform-probe.md`. Don't read the skip as a
+/// promise that nothing moves.
 const NEGLIGIBLE_DELTA: u8 = 1;
 
 /// Steps per channel in [`probe_lattice`]. 18 values spanning 0..=255 land on
@@ -226,7 +232,7 @@ fn probe_lattice() -> &'static [u8] {
 /// field, and it works for LUT-based profiles where no field-by-field
 /// comparison would. It costs ~11 µs, against a transform that already had to
 /// be built. Genuinely different profiles aren't close to the threshold: system
-/// sRGB to Display P3 moves a probe channel by 116.
+/// sRGB to Display P3 moves a probe channel by 105.
 fn transform_is_negligible(transform: &(dyn InPlaceTransformExecutor<u8> + Send + Sync)) -> bool {
     let reference = probe_lattice();
     let mut probe = reference.to_vec();

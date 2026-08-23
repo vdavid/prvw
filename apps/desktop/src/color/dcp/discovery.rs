@@ -94,14 +94,27 @@ fn search_dirs() -> Vec<PathBuf> {
     {
         dirs.push(PathBuf::from(env_dir));
     }
-    // Each root's own files, then its `Adobe Standard` subfolder, per-user
-    // roots before machine-wide ones.
-    for root in acr_profile_roots(HOST_LAYOUT, |name: &str| env::var_os(name)) {
-        let standard = root.join("Adobe Standard");
-        dirs.push(root);
-        dirs.push(standard);
-    }
+    dirs.extend(with_standard_subfolders(acr_profile_roots(
+        HOST_LAYOUT,
+        |name: &str| env::var_os(name),
+    )));
     dirs
+}
+
+/// Expand each ACR root into itself followed by its `Adobe Standard` subfolder, keeping the roots
+/// in the order they came (per-user before machine-wide), so a root's own profiles are tried
+/// before the Adobe-shipped ones underneath it.
+///
+/// Split from [`search_dirs`] so the ordering can be asserted for every platform's roots from
+/// whichever host runs the tests — on Linux `search_dirs` has no roots to pair at all.
+fn with_standard_subfolders(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    roots
+        .into_iter()
+        .flat_map(|root| {
+            let standard = root.join("Adobe Standard");
+            [root, standard]
+        })
+        .collect()
 }
 
 /// Where Adobe Camera Raw keeps its camera profiles on each platform. Picked
@@ -374,16 +387,34 @@ mod tests {
         );
     }
 
-    /// Every search directory ends in the `Adobe Standard` subfolder of the
-    /// root right before it, so a root's own profiles are tried first.
+    /// Each root is followed by its own `Adobe Standard` subfolder, and the roots keep their
+    /// order. Asserted against the two-root Windows layout, which is the case with something to
+    /// get wrong; running it against `search_dirs()` would assert nothing on Linux, where there
+    /// are no guessed roots to pair.
     #[test]
-    fn search_dirs_pair_each_root_with_its_standard_subfolder() {
-        let dirs = search_dirs();
-        for pair in dirs.windows(2) {
-            if pair[1].file_name().and_then(|n| n.to_str()) == Some("Adobe Standard") {
-                assert_eq!(pair[1].parent(), Some(pair[0].as_path()));
-            }
-        }
+    fn each_root_is_followed_by_its_own_standard_subfolder() {
+        let roots = acr_profile_roots(
+            AcrLayout::Windows,
+            fixed_env(&[
+                ("APPDATA", "C:\\Users\\dave\\AppData\\Roaming"),
+                ("PROGRAMDATA", "C:\\ProgramData"),
+            ]),
+        );
+        let dirs = with_standard_subfolders(roots.clone());
+        assert_eq!(
+            dirs,
+            vec![
+                roots[0].clone(),
+                roots[0].join("Adobe Standard"),
+                roots[1].clone(),
+                roots[1].join("Adobe Standard"),
+            ]
+        );
+    }
+
+    #[test]
+    fn no_roots_expand_to_no_search_dirs() {
+        assert!(with_standard_subfolders(Vec::new()).is_empty());
     }
 
     /// Smoke test for the full `find_dcp_for_camera` path: put a synthetic
@@ -395,9 +426,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let bytes = crate::color::dcp::tests::tiny_identity_dcp("Test Camera");
         std::fs::write(tmp.path().join("test.dcp"), &bytes).unwrap();
-        // SAFETY: Each test lives in its own process in practice; we set
-        // and clear the env var synchronously within the test body. There
-        // is no other test in this module that reads `PRVW_DCP_DIR`.
+        // SAFETY: nextest gives every test its own process, which is what makes this sound —
+        // `search_dirs_pair_each_root_with_its_standard_subfolder` reads `PRVW_DCP_DIR` through
+        // `search_dirs()`, so under a shared-process runner these two would race `setenv`
+        // against `getenv`. `./scripts/check.sh --check cargo-test` and CI both use nextest.
         unsafe {
             std::env::set_var(DCP_DIR_ENV_VAR, tmp.path());
         }

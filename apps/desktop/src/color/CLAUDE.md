@@ -46,7 +46,13 @@ per-rayon-task closure → `decoding::load_image` → `color::transform_icc`. On
   the built transform over an 18³ RGB lattice and skips it when nothing moves by more than 1. It costs ~11 µs against a
   transform that had to be built anyway, and it beats comparing parsed colorants and curves: no per-field tolerances to
   tune, and it works for LUT-based profiles that no field comparison could handle. Real conversions aren't close to the
-  threshold (system sRGB → Display P3 moves a probe channel by 116).
+  threshold (system sRGB → Display P3 moves a probe channel by 105).
+  - **A sampled lattice is not an upper bound.** The probe reports the largest difference _it can find_, and for Display
+    P3 that's 105 against a true maximum of 118 over the full 256³ cube — an 11% under-report. So a transform whose real
+    maximum is 2 could probe as 1 and be skipped. That's accepted, not overlooked: one or two steps out of 255 is below
+    what any display resolves, and the cases that matter are two orders of magnitude from the threshold. Don't restate
+    the skip as a guarantee that nothing moves. Full-cube measurements, and a trap for whoever measures this next:
+    [`docs/notes/icc-negligible-transform-probe.md`](../../../../docs/notes/icc-negligible-transform-probe.md).
 - **Perceptual intent by default.** "Relative colorimetric" toggle is opt-in for photographers comparing specific color
   values.
 - **Parametric + default wrapper pattern (Phase 2.5b).** `tone_curve.rs` and `sharpen.rs` both expose a parametric entry

@@ -74,7 +74,8 @@ jobs:
 
       # The test check falls back to `cargo install cargo-nextest --locked` when the binary is
       # missing, which builds it from source and costs minutes on every run. The prebuilt binary
-      # takes seconds. `latest` is deliberate: it's a test runner, not something we ship.
+      # takes seconds. Pinned rather than `latest` so a nextest release can't change what CI
+      # means overnight; bump it deliberately. All three jobs use the same version.
       - name: Install cargo-nextest
         run: curl -LsSf https://get.nexte.st/0.9.143/linux | tar zxf - -C "$HOME/.cargo/bin"
 

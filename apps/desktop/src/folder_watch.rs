@@ -410,7 +410,11 @@ mod tests {
     fn a_failed_re_watch_disarms_the_folder_it_was_already_watching() {
         let mut armed = armed_set(&["/a", "/b"]);
         assert!(record_watch_outcome(&mut armed, watch("/a"), false));
-        assert_eq!(armed, armed_set(&["/b"]), "/a is no longer delivering events");
+        assert_eq!(
+            armed,
+            armed_set(&["/b"]),
+            "/a is no longer delivering events"
+        );
     }
 
     #[test]
@@ -442,9 +446,15 @@ mod tests {
         })
         .expect("watcher");
         let missing = std::env::temp_dir().join("prvw-folder-watch-does-not-exist");
-        assert!(!missing.exists(), "the test's premise: {} is absent", missing.display());
         assert!(
-            watcher.watch(&missing, RecursiveMode::NonRecursive).is_err(),
+            !missing.exists(),
+            "the test's premise: {} is absent",
+            missing.display()
+        );
+        assert!(
+            watcher
+                .watch(&missing, RecursiveMode::NonRecursive)
+                .is_err(),
             "notify must reject a missing path, or `armed` would list a dead watch"
         );
     }

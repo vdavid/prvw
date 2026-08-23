@@ -115,11 +115,14 @@ re-transform) and the rest are preloaded while they're looking at it.
 **Chosen: fall back to sRGB (Level 1 behavior).**
 
 If `CGDisplayCopyColorSpace` or `CGColorSpaceCopyICCData` returns null (headless, SSH, CI), the display ICC defaults to
-the macOS system sRGB profile (`/System/Library/ColorSync/Profiles/sRGB Profile.icc`). This is the same behavior as
-Level 1. Zero risk.
+sRGB. This is the same behavior as Level 1. Zero risk.
 
-The `srgb_icc_bytes()` function loads this file once via `OnceLock` and panics if it's missing. It's always present on
-macOS. Cross-platform support will need an embedded fallback sRGB profile.
+`srgb_icc_bytes()` generates those bytes with `moxcms::ColorProfile::new_srgb().encode()`, cached in a `OnceLock`, so
+the fallback touches no filesystem on any platform. It used to read the macOS system profile and panic when the file was
+missing, which is what killed the Linux and Windows builds at startup until M0 step 2 of
+`docs/specs/cross-platform-plan.md`. One consequence worth knowing here: images tagged with Apple's own sRGB profile no
+longer short-circuit on `profiles_match`, because the two encodings aren't byte-equal — `transform_is_negligible`
+catches them instead (`src/color/CLAUDE.md`).
 
 ## Decision 8: newtype wrappers for color spaces
 
