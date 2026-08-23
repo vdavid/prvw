@@ -752,8 +752,10 @@ constants, and the path-comparison helper.
 - Auto Color Management is Windows 11 22H2 and later. Its absence on Windows 10 makes that platform **simpler**, not
   worse: there's no competing system transform to coexist with.
 
-So Windows 10 gets the same pipeline. Set the minimum to **Windows 10 1703** for the HDR path (1607 for
-`longPathAware`), and treat the one Windows 11 API as an enhancement guarded by a version check.
+So Windows 10 gets the same pipeline, and the **Windows 10 22H2** floor (decided 2026-08-23) makes it simpler still:
+every API above is present unconditionally on 22H2, so there are no version guards to write except one runtime probe for
+`ColorProfileGetDisplayDefault`, which is the Windows 11 enhancement. Set `longPathAware` and the scRGB path without
+guards.
 
 1. **Display profile detection.** `MonitorFromWindow` for the window's current monitor, `GetICMProfileW` on its DC for
    the ICC path, read the bytes, hand them to `color::State.display_icc`. On Windows 11, prefer
@@ -988,20 +990,17 @@ the two drift.
 
 ## Open questions
 
-All five questions this plan opened with were answered on 2026-08-23; see **Decisions** above. Two smaller ones came out
-of those answers and are still open:
-
-1. **What's the Windows 10 floor?** The plan assumes **1703** (the oldest build with scRGB through `SetColorSpace1`) and
-   notes 1607 for `longPathAware`. 22H2 is the only Windows 10 still receiving consumer ESU, and that ends 2026-10-13,
-   so there's a case for setting the floor at 22H2 and dropping several version checks. Cheaper to decide now than after
-   the manifest and the guarded API calls are written.
-2. **Does the Windows PC for test environment (c) exist, or does it need buying?** It's the only way to verify M2, and
-   M2 is the differentiator. If it needs buying, the thing that matters is a real GPU and an HDR-capable,
-   profile-calibrated monitor, since that's precisely what neither the VM nor GitHub's runners can provide.
+None. All five questions this plan opened with, and the two follow-ups they produced, were answered on 2026-08-23. See
+**Decisions** above and the log below.
 
 ## Decision log
 
 - **2026-08-23**: fork the UI per OS (option (a)), with M0.5's parity harness as the condition. Full parity from the
   start. Windows 10 supported at full fidelity, Windows 11 first. Linux held to no-regressions with its own spec later.
-  The two macOS-only defects (macOS CI, File → Open) fixed in this effort. Test environments (a) UTM VM and (b) GitHub
-  Actions now, (c) physical Windows PC when connected.
+  The two macOS-only defects (macOS CI, File → Open) fixed in this effort. Test environments (a) local VM and (b) GitHub
+  Actions now, (c) a physical Windows PC that David already owns, QA'd in person when the time comes.
+- **2026-08-23**: the Windows floor is **Windows 10 22H2**, not 1703. 22H2 is the only Windows 10 still receiving
+  consumer ESU (through 2026-10-13), so anything older is unsupported by Microsoft before this port ships. Practical
+  effect: every API this plan calls is present unconditionally on 22H2, so the version checks collapse to a single
+  runtime probe for `ColorProfileGetDisplayDefault` (Windows 11 only) and nothing else. Set `longPathAware` and the
+  scRGB path without guards.
