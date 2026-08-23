@@ -15,8 +15,14 @@ prefer a cross-platform implementation over a `#[cfg]` fence when the cost is co
 
 The main window has two top-level screens that swap: **image mode** (the wgpu viewer) and **browse mode** (a macOS-only
 native AppKit folder tree + thumbnail grid; `src/browser/`). Enter (in image mode) enters browse; `f`/`F11` keep
-toggling fullscreen (Enter no longer does). A directory CLI argument boots into browse at that folder. See
-`docs/specs/image-browser.md` and `src/browser/CLAUDE.md`.
+toggling fullscreen (Enter no longer does). A directory CLI argument boots into browse at that folder. Off macOS neither
+exists yet (M5): Enter does nothing there, the menu doesn't offer the browser, and a directory argument opens the
+folder's images in image mode instead. See `docs/specs/image-browser.md` and `src/browser/CLAUDE.md`.
+
+**How a file reaches the app.** A path on the command line, a Finder double-click (macOS, through an Apple Event), or
+**File → Open…** (Cmd+O on macOS, Ctrl+O elsewhere), which works on every platform (`src/open_dialog.rs`). A launch with
+nothing to open waits for Finder on macOS and puts up an empty window everywhere else; `src/launch.rs` decides, and
+`apps/desktop/CLAUDE.md` has the full picture.
 
 - Desktop app: `cd apps/desktop && cargo run -- <image_path_or_dir>`
 - Website dev: `cd apps/website && pnpm dev`

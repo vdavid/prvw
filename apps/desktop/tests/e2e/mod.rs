@@ -51,9 +51,18 @@
 //!   app's own path handling, which is M1 step 10.
 //! - **`HOME`.** `TestApp` sets both `HOME` and `USERPROFILE` so the fixture stays scoped
 //!   wherever it runs, but only macOS reads either today (the browse tree's home root).
-//! - **A directory argument.** `main.rs` accepts one everywhere, and off macOS it opens a window
-//!   with no image and no browse mode to pick one from. Only the macOS driver launches that way,
-//!   so nothing here trips over it, but M1 step 1 is where it gets an answer.
+//! - **A directory argument.** `main.rs` accepts one everywhere. macOS boots into browse mode;
+//!   everywhere else the folder's images open in image mode, starting at the first (M1 step 2).
+//!   Only the macOS driver launches that way, so nothing here covers the other half.
+//!
+//! ## What this gate can't ask for
+//!
+//! `SharedApp::start` names the actions a test needs, so it can say "this test needs browse
+//! mode", never "this test needs the platforms that don't have browse mode". The behaviours
+//! that exist *because* a platform is missing a feature therefore can't live here: the folder
+//! argument's image-mode fallback, and the empty window a no-argument launch puts up
+//! (`app::EmptyState::NothingOpen`, which macOS never reaches because it waits for Finder's
+//! Apple Event). Those are unit-tested in `src/launch.rs` instead, for every platform at once.
 
 // Each test target compiles the whole harness, so whatever one of them doesn't use looks dead
 // there. The alternative is splitting the harness per target, which is what this module exists
