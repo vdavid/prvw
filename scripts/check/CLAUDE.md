@@ -46,7 +46,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | `checks/walk.go`             | `findFiles` / `countFiles`: the file counting every check does             |
 | `console_{windows,other}.go` | `prepareConsole()`: UTF-8 and ANSI on the Windows console                  |
 | `checks/registry.go`         | `AllChecks`: canonical ordered list, lookup and validation functions       |
-| `checks/desktop-rust-*.go`   | Rust checks (rustfmt, clippy, cargo-test, windows-cross)                                  |
+| `checks/desktop-rust-*.go`   | Rust checks (rustfmt, clippy, cargo-test, windows-cross)                   |
 | `checks/oxfmt.go`            | Monorepo-wide formatter (oxfmt, prettier-compatible)                       |
 | `checks/website-*.go`        | Website checks (eslint, typecheck, build)                                  |
 | `checks/scripts-go-*.go`     | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests) |
