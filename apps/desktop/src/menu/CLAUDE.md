@@ -118,6 +118,18 @@ it shares with M4's dialogs and the reason it passes the main window's HWND rath
 `menu::windows::attach` reads `Menu::haccel()` **on every message** rather than caching it: muda destroys and recreates
 the accelerator table whenever an item joins or leaves a menu, so a stored handle can outlive what it names.
 
+## Gotcha: a menu has to join the bar before it is filled
+
+muda registers an item's accelerator into the **root** menu's `HACCEL` table as the item is appended
+(`AccelAction::add` walks the child's `root_menu_haccel_stores`), and a submenu that hasn't joined a root yet has no
+table to register into. Appending the submenu afterwards doesn't go back for its children, so filling first leaves every
+accelerator in the bar dead — while the items still *show* their shortcut, because the text is composed on a different
+path. That silence is the whole failure mode.
+
+`top_level` is what keeps the order right: it appends each top-level menu to the bar at creation, and the menus the
+filter empties come back off at the end. The Sort by submenu is the one that still joins its parent through `fill`, so
+it can't carry accelerators; `the_sort_by_submenu_carries_no_accelerators` is the guard.
+
 ## Gotcha: muda puts Ctrl+Q on File → Exit and won't take it off
 
 `PredefinedMenuItem::quit` carries a built-in `CMD_OR_CTRL+Q` accelerator on Windows, and there is no setter to remove

@@ -491,6 +491,22 @@ fn suppress_auto_edit_menu_items() {
     }
 }
 
+/// Create a top-level menu and put it on the bar straight away, before anything fills it.
+///
+/// Joining the bar first is load-bearing on Windows, and silently so. muda registers an item's
+/// accelerator into the **root** menu's `HACCEL` table as the item is appended (`AccelAction::add`
+/// walks `root_menu_haccel_stores`), and a submenu that hasn't joined a root yet has no table to
+/// register into. Appending the submenu afterwards doesn't go back for its children. Fill first
+/// and every accelerator in the bar quietly does nothing, while the items still *show* their
+/// shortcut, because the text is composed on a different path.
+///
+/// The menus the filter leaves empty come back off at the end of [`create_menu_bar`].
+fn top_level(menu: &Menu, title: &'static str) -> Submenu {
+    let submenu = Submenu::new(chrome::menu_title(title), true);
+    menu.append(&submenu).expect("Failed to build menu bar");
+    submenu
+}
+
 /// Build the native menu bar and put it up. The caller MUST keep the returned `AppMenu` alive.
 ///
 /// Checkable items are built unchecked and enabled; the `sync_from_settings` at the end is what
@@ -506,16 +522,25 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
     let mut build = MenuBuilder::new();
     let menu = Menu::new();
 
-    // The app menu and the three menus its items scatter into where there is none. macOS keeps
-    // About, Settings, and Quit under the app's own name; Windows has no app menu, so About goes
-    // to Help, Settings to Tools, and Quit becomes File → Exit. Whichever of these the filter
-    // leaves empty never joins the bar.
-    let app_menu = Submenu::new(chrome::menu_title("Prvw"), true);
-    let file_menu = Submenu::new(chrome::menu_title("File"), true);
-    let tools_menu = Submenu::new(chrome::menu_title("Tools"), true);
+    // The whole bar, in order, before anything fills it. That order is what makes Windows
+    // accelerators work at all; `top_level` has the why, and the menus the filter leaves empty
+    // come back off at the end.
+    //
+    // macOS keeps About, Settings, and Quit under the app's own name. Windows has no app menu,
+    // so About goes to Help, Settings to Tools, and Quit becomes File → Exit, which leaves the
+    // app menu empty there and Tools and Help empty on macOS.
+    let app_menu = top_level(&menu, "Prvw");
+    let file_menu = top_level(&menu, "File");
+    // Only Copy — Cut/Paste/Select all make no sense in a viewer, and showing them disabled
+    // would look broken.
+    let edit_menu = top_level(&menu, "Edit");
+    let view_menu = top_level(&menu, "View");
+    let nav_menu = top_level(&menu, "Navigate");
+    let slideshow_menu = top_level(&menu, "Slideshow");
+    let tools_menu = top_level(&menu, "Tools");
     // Help is left empty on macOS on purpose: AppKit auto-adds its Spotlight-style "Search"
     // field to any menu titled "Help", which is all we want there.
-    let help_menu = Submenu::new(chrome::menu_title("Help"), true);
+    let help_menu = top_level(&menu, "Help");
 
     let about = build.item(MenuItemKey::About);
     let settings_item = build.item(MenuItemKey::Settings);
@@ -580,14 +605,11 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
         fill(&help_menu, &[Slot::of(&about)]);
     }
 
-    // Edit menu. Only Copy — Cut/Paste/Select All make no sense in a viewer, and
-    // showing them disabled would look broken.
-    let edit_menu = Submenu::new(chrome::menu_title("Edit"), true);
+    // Edit menu
     let copy = build.item(MenuItemKey::Copy);
     fill(&edit_menu, &[Slot::of(&copy)]);
 
     // View menu
-    let view_menu = Submenu::new(chrome::menu_title("View"), true);
     let zoom_in = build.item(MenuItemKey::ZoomIn);
     let zoom_out = build.item(MenuItemKey::ZoomOut);
     let actual_size = build.item(MenuItemKey::ActualSize);
@@ -604,6 +626,9 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
     let histogram = build.check_item(MenuItemKey::Histogram);
     let exif_info = build.check_item(MenuItemKey::ExifInfo);
 
+    // Sort by is filled before it joins View, which would cost its items any accelerator they
+    // carried (see `top_level`). None of the three has one, and
+    // `the_sort_by_submenu_carries_no_accelerators` is what keeps that true.
     let sort_by_submenu = Submenu::new(chrome::menu_title("Sort by"), true);
     let sort_by_name = build.check_item(MenuItemKey::SortByName);
     let sort_by_date = build.check_item(MenuItemKey::SortByDate);
@@ -645,9 +670,7 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
         ],
     );
 
-    // Navigate menu
-    let nav_menu = Submenu::new(chrome::menu_title("Navigate"), true);
-    // Top item swaps the main screen between the image viewer and the browse screen. Its label
+    // Navigate menu. Top item swaps the main screen between the image viewer and the browse screen. Its label
     // flips by mode (`set_browse_mode`), like the slideshow Start/Stop item. `Enter` in image
     // mode is handled in `input`.
     let browse_toggle = build.item(MenuItemKey::BrowseToggle);
@@ -672,7 +695,6 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
     );
 
     // Slideshow menu
-    let slideshow_menu = Submenu::new(chrome::menu_title("Slideshow"), true);
     let slideshow_toggle = build.item(MenuItemKey::SlideshowToggle);
     let slideshow_increase_speed = build.item(MenuItemKey::SlideshowIncreaseSpeed);
     let slideshow_decrease_speed = build.item(MenuItemKey::SlideshowDecreaseSpeed);
@@ -686,8 +708,10 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
         ],
     );
 
-    // A menu the filter emptied is dropped rather than shown blank, so a platform with no
-    // Settings item shows no Tools menu at all.
+    // A menu the filter emptied comes back off rather than showing blank, so a platform with no
+    // Settings item shows no Tools menu at all. Help is the exception, and only on macOS: an
+    // empty one is exactly what we want there, because AppKit fills it with its own search field.
+    let keep_empty_help = cfg!(target_os = "macos");
     for submenu in [
         &app_menu,
         &file_menu,
@@ -696,15 +720,13 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
         &nav_menu,
         &slideshow_menu,
         &tools_menu,
-    ] {
-        if !submenu.items().is_empty() {
-            menu.append(submenu).expect("Failed to build menu bar");
+    ]
+    .into_iter()
+    .chain((!keep_empty_help).then_some(&help_menu))
+    {
+        if submenu.items().is_empty() {
+            menu.remove(submenu).expect("Failed to drop an empty menu");
         }
-    }
-    // Help is the exception, and only on macOS: an empty one is exactly what we want there,
-    // because AppKit fills it with its own search field.
-    if cfg!(target_os = "macos") || !help_menu.items().is_empty() {
-        menu.append(&help_menu).expect("Failed to build menu bar");
     }
 
     #[cfg(target_os = "macos")]
@@ -850,6 +872,24 @@ mod tests {
             .filter(|key| !MenuBuilder::offers(**key, platform))
             .map(|key| key.name())
             .collect()
+    }
+
+    /// Sort by is filled before it joins the bar, and muda registers an accelerator into the
+    /// root menu's table as the item is appended, so an accelerator on one of its three items
+    /// would show in the menu and never fire. See `top_level`.
+    #[test]
+    fn the_sort_by_submenu_carries_no_accelerators() {
+        for key in [
+            MenuItemKey::SortByName,
+            MenuItemKey::SortByDate,
+            MenuItemKey::SortByFileType,
+        ] {
+            assert!(
+                chrome::accelerator(key).is_none(),
+                "{} grew an accelerator that would never fire",
+                key.name()
+            );
+        }
     }
 
     /// The items a person can still reach off macOS. Open is the one M1 added, and it's the
