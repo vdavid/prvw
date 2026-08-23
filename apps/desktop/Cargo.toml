@@ -29,13 +29,15 @@ rawler = "0.7.2"
 multiversion = "0.8.0"
 lensfun = { git = "https://github.com/vdavid/lensfun-rs", rev = "ae65ed6" }
 zstd = "0.13.3"
-reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
 glyphon = { git = "https://github.com/grovesNL/glyphon.git", rev = "28f1cb9" }
 half = "2.7"
 alphanumeric-sort = "1.5.6"
 notify = "8.2.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Only the macOS updater speaks HTTPS. Scoping `reqwest` here keeps `aws-lc-sys` (and its
+# NASM build requirement) out of the Windows and Linux targets entirely.
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
 libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = [
@@ -146,3 +148,6 @@ zstd = "0.13.3"
 [dev-dependencies]
 tempfile = "3.27.0"
 little_exif = "0.6.23"
+# The E2E harness talks plain HTTP to `127.0.0.1` (`qa/server.rs`), so it needs no TLS
+# provider. Keeping it TLS-free is what lets non-macOS targets skip `aws-lc-sys`.
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json"] }
