@@ -1,0 +1,17 @@
+# Line endings are LF everywhere: in the repository, and in every working tree on every
+# platform. Without this, a Windows clone with `core.autocrlf=true` gets CRLF files, and
+# then rustfmt, gofmt, and CI disagree about what "formatted" means on a diff nobody
+# changed. `eol=lf` settles it regardless of how a contributor's git is configured.
+* text=auto eol=lf
+
+# Binary assets: never rewrite their bytes, never diff them as text. Git's NUL-byte
+# heuristic already classifies most of these correctly; naming them means no single
+# unlucky file (161 `.dcp` camera profiles, for instance) can slip through as text.
+*.dcp binary
+*.dng binary
+*.icns binary
+*.ico binary
+*.jpg binary
+*.png binary
+*.webp binary
+*.woff2 binary
