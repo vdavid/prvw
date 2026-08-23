@@ -1,46 +1,43 @@
 # Navigation
 
-Scan the parent directory for images, preload adjacent files in the background, and keep an LRU cache budgeted off
-physical RAM: `clamp(RAM / 32, 3 × 24 MP RGBA8, 512 MB)` for SDR, twice that for HDR (Phase 5). The ceiling is what the
-budget used to be fixed at, so scaling can only shrink the cache: 16 GB and up keep today's 512 MB / 1 GB pair, 12 GB
-gets 403 MB / 806 MB, and 8 GB gets the 288 MB / 576 MB floor. `sdr_memory_budget()` / `hdr_memory_budget()` in
-`preloader.rs` own the math, and `ImageCache` resolves both once at construction. The cache switches between them when
-the RAW pipeline's `hdr_output` flag flips or the display's EDR headroom crosses the 1.0 boundary; doubling the budget
-alongside RAW RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in both modes.
+Scan the parent directory for images, preload adjacent files in the background, and keep an LRU cache with a flat 512 MB
+budget for SDR, twice that for HDR (Phase 5). `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` in `preloader.rs` are the
+constants, and `ImageCache` resolves both once at construction. The cache switches between them when the RAW pipeline's
+`hdr_output` flag flips or the display's EDR headroom crosses the 1.0 boundary; doubling the budget alongside RAW
+RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in both modes.
 
-## Decision: the preload window is derived from the budget, never fixed
+## Decision: the preload window is derived from the budget, never stated separately
 
 **Why:** a window wider than the budget retains is worse than a narrow one. Each preload evicts the previous one, and
 once the image on screen becomes the LRU entry its own neighbors evict it, so every keypress pays for a decode the
-preloader was supposed to have already done. `preload_count()` therefore reads off `sdr_memory_budget()`, the same shape
+preloader was supposed to have already done. `preload_count()` therefore reads off `SDR_MEMORY_BUDGET`, the same shape
 `previews::generation_radius` uses for the same reason, and `MAX_PRELOAD_AHEAD` is a cap rather than the value.
 
-A window of `n` holds `2n + 1` images, so the floor is three `LARGE_DECODE_BYTES` (one 24 MP RGBA8 decode each): the
-image on screen plus one neighbor each side, the narrowest window that keeps navigation instant whichever way the user
-turns. 16 GB and up get ±2; below that, ±1. Browse mode's pre-warm reads the same `preload_count()`, because it fills
-this same cache.
+A window of `n` holds `2n + 1` images, so 512 MB covers ±2 of a 24 MP RGBA8 decode (`LARGE_DECODE_BYTES`) with room to
+spare. The budget is flat, so that's every machine. Browse mode's pre-warm reads the same `preload_count()`, because it
+fills this same cache.
 
-## Decision: the divisor is 1/32 because 16 GB is where the old flat budget sat
+The pairing is checked at **compile time** — a `const _: () = assert!(…)` beside the constants, in the same spirit as
+M0.5's parity registries. Lower the budget below what one window costs and the build stops. Raising `MAX_PRELOAD_AHEAD`
+can't break it, and that asymmetry is the guarantee: the derivation won't hand out a window the budget doesn't cover.
 
-**Why:** 16 GB / 32 is exactly the 512 MB ceiling, so the divisor isn't a number picked for feel — it says out loud what
-the flat 512 MB was implicitly tuned for. Everything at or above 16 GB is untouched by the scaling, and only smaller
-machines shrink. That's the case M0 step 5 of `docs/specs/cross-platform-plan.md` actually raised (an 8 GB laptop with
-no unified memory, paying for GPU-side copies separately); it never asked for a regression on the most common Mac
-configuration. `sixteen_gb_lands_exactly_on_the_ceiling` fails if the divisor and the ceiling ever drift apart.
+## Decision: the budget is flat, not RAM-proportional
 
-**Gotcha: this is deliberately four times more generous than `previews::budget_for_ram`, which takes 1/128.** A preview
-is ~4 MB against a decode's ~96 MB, so previews' 64 MB floor already holds 16 of them where ours has to clear three of a
-single unit. And the bytes buy different things: previews buy grid smoothness across a ±50 window and degrade to
-placeholders when short, while full decodes buy this image and the ones either side of it, where running short is a
-visible decode on an arrow key.
+**Why (David's call):** we want reasonable UX on low-RAM machines too. A viewer that navigates instantly _is_ the
+product, and 512 MB is a defensible charge for it even on 8 GB. The alternative shrank exactly the machines least able
+to absorb the extra latency.
 
-**Gotcha:** `LARGE_DECODE_BYTES` is a sizing unit, not a per-entry charge. The cache charges exact
-`width * height * bytes_per_pixel`, so a folder of 12 MP phone photos holds far more than the window asks for. The
-constant is deliberately the large end of what Prvw opens, because the window's job is to not overrun on the images that
-can overrun it. Scaling matters most off macOS, where an 8 GB laptop has no unified memory and pays for GPU-side copies
-separately.
+RAM-proportional scaling is right for `previews`, which spends its budget on a ±50 window of small thumbnails, so more
+RAM genuinely buys more of them. It's wrong here in **both** directions:
 
-Measurements, the rejected 480 MB floor, and the per-RAM before/after table:
+- **Upward it buys nothing.** The window is capped at ±2, and `App::navigate_by` calls `image_cache.retain_only()` on
+  the hot window after every navigation, so the cache is a sliding window rather than an LRU history. A 64 GB machine
+  has nothing to spend a bigger budget on — giving it one would need a different retention policy, not a bigger number.
+- **Downward it only removes latency budget** from the machine with the least headroom to begin with.
+
+`platform::total_physical_ram_bytes()` stays, because `previews` genuinely uses it.
+
+Full history, the measured tables, and the rejected alternatives:
 [`docs/notes/preload-window-and-cache-budget.md`](../../../../docs/notes/preload-window-and-cache-budget.md).
 
 | File             | Purpose                                                                                                                                                                                                                                                                                    |
@@ -48,7 +45,7 @@ Measurements, the rejected 480 MB floor, and the per-RAM before/after table:
 | `mod.rs`         | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `format_offset` + `format_bytes` + `NAV_DEBOUNCE` helpers                                     |
 | `directory.rs`   | `DirectoryList`: scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`; absolute jumps via `go_to_first()` / `go_to_last()`; `from_sorted(files, sort_by, index)` for live-sync re-scans |
 | `folder_diff.rs` | Pure, headless-tested live-sync diff: `diff_folder(old, scanned, sort_by, current)` → adds/removes + the delete-current `CurrentOutcome` (`Unchanged`/`Navigate`/`Empty`). No I/O — the `FolderChanged` handler does the off-thread scan and applies the result                            |
-| `preloader.rs`   | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction; `sdr_memory_budget()` / `hdr_memory_budget()` scale the budget off physical RAM                                                                                                                                |
+| `preloader.rs`   | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction; `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` and the `preload_count()` derived from them                                                                                                                          |
 | `wrap.rs`        | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::refresh_preload_window` on loop toggle / sort change and by `navigate_by` for cache `keep` set                                                            |
 | `sort.rs`        | `SortBy { Name, Date, FileType }` (all ascending) + `sort_files()` comparator. Name uses natural alphanumeric (`photo_2 < photo_10`), case-insensitive. Date and FileType fall back to Name as tiebreaker                                                                                  |
 

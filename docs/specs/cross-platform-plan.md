@@ -539,12 +539,15 @@ gates, and the docs. Two things to know before you build on it:
      `SDR_MEMORY_BUDGET` to 512 MB and `:20` set `HDR_MEMORY_BUDGET` to 1 GB, both absolute constants. On an 8 GB
      Windows laptop with no unified memory, a 1 GB HDR cache plus the GPU-side copies is a different proposition than on
      a 32 GB Mac. Scale them off total RAM the way `previews` already does.
-   - **Scale the preload window with them, or the budget makes things worse.** M0 shipped the budget half alone, and a
-     window of ±2 against a budget that retains two images means every preload evicts the last one. `preload_count()`
-     now derives from `sdr_memory_budget()`, the way `previews::generation_radius` derives from its own budget. The
-     divisor is 1/32 rather than `previews`' 1/128, so a 16 GB machine lands exactly on the 512 MB ceiling and only
-     smaller machines narrow — this bullet's 8 GB laptop is the case, and it was never a licence to regress 16 GB.
-     Numbers and rejected alternatives: `docs/notes/preload-window-and-cache-budget.md`.
+   - **This one was reverted, and the reasoning above is where it went wrong.** M0 scaled the budget but left the
+     preload window at a fixed ±2, and a window of ±2 against a budget that retains two images means every preload
+     evicts the last one — worse than either number alone. Fixing the coupling then exposed the real problem: the window
+     is capped at ±2 and `App::navigate_by` drops everything outside it on every navigation, so a bigger budget has
+     nothing to buy upward, and shrinking it downward only takes navigation latency from the machines least able to
+     absorb it. `previews` scales because its ±50 window of small thumbnails genuinely uses the RAM; the preloader
+     doesn't, and now holds a flat 512 MB (twice that for HDR) with `preload_count()` derived from it. David's call:
+     reasonable UX on low-RAM machines matters more than the RAM. Full history and rejected alternatives:
+     `docs/notes/preload-window-and-cache-budget.md`.
 6. ✅ **Add `windows = "0.62.2"`** under `[target.'cfg(target_os = "windows")'.dependencies]`. It's already in
    `Cargo.lock` transitively, so nothing new is downloaded, but per `AGENTS.md`'s critical rules this is still a new
    direct dependency and needs a license check and a crates.io version check. (0.62.2 is current, published 2025-10-06,

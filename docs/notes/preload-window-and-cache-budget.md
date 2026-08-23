@@ -1,7 +1,7 @@
 # Preload window and image cache budget
 
-Why `navigation::preloader::preload_count()` is derived from the cache budget instead of being a constant, and how the
-floor, the divisor, and the sizing unit were each picked. Referenced from `src/navigation/CLAUDE.md`.
+Why `navigation::preloader::preload_count()` is derived from the cache budget, why the budget is flat rather than
+RAM-proportional, and how the sizing unit was picked. Referenced from `src/navigation/CLAUDE.md`.
 
 ## The problem
 
@@ -30,88 +30,95 @@ large end of what Prvw opens, not the median.
 - Spot check of what real files look like, from the Photos library on the dev machine: 8.0, 10.6, 12.2, and 12.2 MP.
   Phone photos are roughly a third of the unit and simply fit more of themselves into the same bytes. Sizing the window
   for them would put every RAW shooter back in the thrashing case.
-- RGBA8 rather than RGBA16F even though HDR RAW decodes are 8 bytes per pixel: `hdr_memory_budget()` doubles alongside,
-  so the window comes out identical in both modes and only one constant is needed.
+- RGBA8 rather than RGBA16F even though HDR RAW decodes are 8 bytes per pixel: `HDR_MEMORY_BUDGET` doubles alongside, so
+  the window comes out identical in both modes and only one constant is needed.
 
-## The floor
+## The decision: a flat 512 MB budget, and ±2 on every machine
 
-`MIN_SDR_MEMORY_BUDGET = 3 × LARGE_DECODE_BYTES` (288 MB). Picked from the window, not the other way round: three
-decodes is the image on screen plus one neighbor on each side, the narrowest window that still keeps navigation instant
-whichever way the user turns.
+David's call, and the reasoning is his: _"I think the 512 MB floor actually makes sense. We do want to provide
+reasonable UX even on low-RAM machines. This affects all machines under 32 GB of RAM and it's fine, let's raise that
+floor."_
 
-## The divisor
+So `SDR_MEMORY_BUDGET` is a flat 512 MB, `HDR_MEMORY_BUDGET` is twice that, and every machine gets the full ±2 window. A
+viewer that navigates instantly is the product; 512 MB is a defensible charge for it even on 8 GB, and an 8 GB machine
+needs the latency saved no less than a 32 GB one does.
 
-`SDR_RAM_DIVISOR = 32`, because **16 GB / 32 is exactly the 512 MB ceiling**. The budget this replaced was a flat 512
-MB, so it was implicitly tuned for a 16 GB machine all along; the divisor just says so out loud. Two consequences worth
-stating:
+That made the RAM scaling inert — the ceiling was already 512 MB, so a 512 MB floor left
+`clamp(RAM / 64, 512 MB, 512 MB)`, a constant with extra steps. The scaling is gone rather than left in place looking
+like it does something.
 
-- The scaling can only ever shrink a machine _smaller_ than the one the flat budget assumed. 16 GB and up are untouched,
-  which matters because that's the most common Mac configuration and the one Prvw is developed on.
-- The case the scaling exists for is the one M0 step 5's sub-bullet actually raised: an 8 GB Windows laptop with no
-  unified memory, paying for the GPU-side copies separately. It never asked for a regression at 16 GB.
+### Why not keep the scaling and raise the ceiling instead
 
-`sixteen_gb_lands_exactly_on_the_ceiling` fails if the divisor and the ceiling ever drift apart, so the relationship is
-enforced rather than commented.
+The idea was that a big machine could retain more previously-viewed images, making backtracking through a folder a cache
+hit. **It buys nothing, and the reason is structural rather than a matter of degree.** `App::navigate_by` (`app.rs`)
+calls `image_cache.retain_only()` on `current ± preload_count()` after every navigation, so the cache is a sliding
+window, not an LRU history: an image two steps behind is dropped one keypress later whatever the budget says. Buying
+history depth would mean widening the retention policy, which is a different feature with its own design questions (how
+deep? does backtracking actually happen?), not a bigger number.
 
-Between the floor (about 8.6 GB) and the ceiling (16 GB) the budget varies but the window doesn't — everything in that
-band is `±1`. That's honest rather than wasteful: the budget is the memory bound, the window is a coarse integer derived
-from it, and the spare bytes do get used, because the cache charges each entry its real size.
+Meanwhile the window is capped at ±2, so upward the budget has nothing to spend on either way, and downward the only
+thing scaling could do was take latency budget from the machines with the least headroom.
 
-**Deliberately four times more generous than `previews::budget_for_ram`, which takes 1/128.** Two reasons, both about
-what a byte buys there versus here. A preview is ~4 MB against a decode's ~96 MB, so previews' 64 MB floor already holds
-16 of them where ours has to clear three of a single unit. And previews buy grid smoothness across a ±50 window and
-degrade to placeholders when short, while full decodes buy this image and the ones either side of it, where running
-short is a visible decode on an arrow key.
+RAM-proportional scaling stays right for `previews`, which spends its budget on a ±50 window of ~4 MB thumbnails where
+more RAM genuinely buys more of them. `platform::total_physical_ram_bytes()` stays for that reason.
 
-## Measured outcome
+## The window is still derived from the budget
+
+The budget being flat doesn't make `preload_count()` a constant in disguise; it makes the derivation cheap. A window of
+`n` holds `2n + 1` images, so the budget has to cover the current image plus `2n` neighbors, and `preload_count()`
+computes that rather than restating it. If the budget ever moves, the window follows and can't over-fetch.
+
+That pairing is now checked at **compile time**, in the same spirit as M0.5's parity registries:
+
+```rust
+const _: () = assert!(
+    (2 * preload_count_for_budget(SDR_MEMORY_BUDGET) + 1) * LARGE_DECODE_BYTES <= SDR_MEMORY_BUDGET
+);
+```
+
+Verified by breaking it: dropping `SDR_MEMORY_BUDGET` to 200 MB fails the build with
+`error[E0080]: evaluation panicked`. Raising `MAX_PRELOAD_AHEAD` can't break it, and that asymmetry is the guarantee —
+the derivation simply won't hand out a window the budget doesn't cover, so the cap is only ever the smaller of the two.
+The unit test covers the range either side of the shipped budget, so the derivation stays sound if the budget moves.
+
+## What each configuration gets
 
 Images assumed to be 24 MP (the sizing unit). "fetches" is `2n + 1`; "retains" is `budget / 96 MB`.
 
-| RAM   | version           | budget | window | fetches | retains | result             |
-| ----- | ----------------- | ------ | ------ | ------- | ------- | ------------------ |
-| 8 GB  | pre-M0            | 537 MB | ±2     | 5       | 5       | ok                 |
-| 8 GB  | M0 as merged      | 160 MB | ±2     | 5       | 1       | evicts 4 of 5      |
-| 8 GB  | now               | 288 MB | ±1     | 3       | 3       | ok                 |
-| 12 GB | pre-M0            | 537 MB | ±2     | 5       | 5       | ok                 |
-| 12 GB | M0 as merged      | 201 MB | ±2     | 5       | 2       | evicts 3 of 5      |
-| 12 GB | now               | 403 MB | ±1     | 3       | 4       | ok, one slot spare |
-| 16 GB | pre-M0            | 537 MB | ±2     | 5       | 5       | ok                 |
-| 16 GB | M0 as merged      | 268 MB | ±2     | 5       | 2       | evicts 3 of 5      |
-| 16 GB | now               | 537 MB | ±2     | 5       | 5       | unchanged          |
-| 24 GB | pre-M0            | 537 MB | ±2     | 5       | 5       | ok                 |
-| 24 GB | M0 as merged      | 403 MB | ±2     | 5       | 4       | evicts 1 of 5      |
-| 24 GB | now               | 537 MB | ±2     | 5       | 5       | unchanged          |
-| 32 GB | pre-M0 / M0 / now | 537 MB | ±2     | 5       | 5       | unchanged          |
-| 64 GB | pre-M0 / M0 / now | 537 MB | ±2     | 5       | 5       | unchanged          |
+| RAM          | version      | budget | window | fetches | retains | result        |
+| ------------ | ------------ | ------ | ------ | ------- | ------- | ------------- |
+| 8 GB         | pre-M0       | 537 MB | ±2     | 5       | 5       | ok            |
+| 8 GB         | M0 as merged | 160 MB | ±2     | 5       | 1       | evicts 4 of 5 |
+| 8 GB         | now          | 537 MB | ±2     | 5       | 5       | ok            |
+| 16 GB        | pre-M0       | 537 MB | ±2     | 5       | 5       | ok            |
+| 16 GB        | M0 as merged | 268 MB | ±2     | 5       | 2       | evicts 3 of 5 |
+| 16 GB        | now          | 537 MB | ±2     | 5       | 5       | ok            |
+| 32 GB and up | any version  | 537 MB | ±2     | 5       | 5       | unchanged     |
 
-## The tradeoff, stated plainly
-
-Against M0 as merged this is a strict improvement everywhere: no configuration thrashes any more.
-
-Against pre-M0, only machines below 16 GB change, and they change in the direction the scaling was for. An 8 GB machine
-commits 288 MB instead of 537 MB and gets `±1` instead of `±2`, so arrowing two images at once is a cache miss where it
-used to be a hit. A 12 GB machine keeps 403 MB and the same `±1`. 16 GB and up are byte-for-byte what they were, window
-included.
-
-Folders of phone-sized photos are unaffected in practice: the cache charges their real size, so a 288 MB budget holds
-six 12 MP decodes even though the window only asks for three.
+So: identical to pre-M0 everywhere, and M0's regression is gone. Folders of phone-sized photos get more than the window
+asks for, because the cache charges each entry its real size — a 537 MB budget holds eleven 12 MP decodes.
 
 ## Rejected alternatives
 
-Kept because each one is a reasonable-looking idea that someone will have again.
+Kept because each is a reasonable-looking idea that someone will have again, and the analysis behind them is worth not
+repeating.
 
-- **M0 as merged: scale the budget, leave the window at a fixed `±2`.** The defect this note exists to fix, and worse
+- **M0 as merged: scale the budget, leave the window at a fixed ±2.** The defect all of this started from, and worse
   than either a small window or a large budget on its own — the preloader decodes images the cache throws away before
-  anyone sees them. The middle rows of the table above are what that costs.
-- **A 480 MB floor (`5 × LARGE_DECODE_BYTES`) to preserve `±2` everywhere.** It makes the scaling almost entirely inert:
-  even at 1/32 the budget only lands between 480 and 512 MB for RAM between roughly 15 and 16 GB, so every machine
-  outside that sliver gets the old flat budget back. The floor's job is to stop the window collapsing, not to pin it.
-- **Keeping M0's 1/64 divisor alongside the derived window.** This was the first attempt at the fix, and its own table
-  is why it didn't stand: 8 GB → 288 MB/±1, 12 GB → 288 MB/±1, 16 GB → 288 MB/±1, 24 GB → 403 MB/±1, 32 GB → 537 MB/±2.
-  It removed the thrashing, but paid for it by narrowing 16 and 24 GB machines that had been fine — charging a fix the
-  plan located on an 8 GB laptop to everyone below 32 GB.
-- **A divisor of 1/26 or 1/24, so 12 GB gets `±2` too.** Both work arithmetically, but they buy it by spending more on
-  the 8 GB machine (330 MB and 358 MB against 288 MB), which is the exact machine the scaling exists to protect.
+  anyone sees them. An 8 GB machine kept one of the five it fetched.
+- **A 288 MB floor (`3 × LARGE_DECODE_BYTES`) with a ±1 window on small machines.** Correct as far as it went: it
+  removed the thrashing, and 288 MB is genuinely the narrowest budget that keeps navigation warm in both directions.
+  Rejected because a narrower window is still a worse viewer, and the RAM it saves isn't worth that on the machines
+  where instant navigation matters most.
+- **Keeping the scaling but moving the divisor to 1/32**, so 16 GB lands exactly on the 512 MB ceiling and only machines
+  below it narrow. Tidy — the divisor stops being arbitrary and says out loud that the flat 512 MB was always tuned for
+  a 16 GB machine — and it removed the regression at 16 and 24 GB. Still rejected, because it left 8 and 12 GB machines
+  at ±1 for a saving that isn't worth the latency. For the record, its curve was 8 GB → 288 MB/±1, 12 GB → 403 MB/±1, 16
+  GB and up → 537 MB/±2.
+- **A 1/26 or 1/24 divisor**, to give 12 GB a ±2 window too. Both work arithmetically, but they buy it by spending
+  _more_ on the 8 GB machine (330 MB and 358 MB against 288 MB) — the machine the scaling was supposed to protect.
+- **Keeping the scaling and raising the ceiling for history depth on big machines.** See above: `retain_only()` makes it
+  structurally impossible without a different retention policy.
 
 ## Knock-on
 
@@ -119,5 +126,5 @@ Kept because each one is a reasonable-looking idea that someone will have again.
 `BROWSE_WARM_RADIUS = 2` with a comment saying it matched the preloader. It now takes the radius as a parameter and the
 caller passes `preload_count()`, which deletes the duplicated constant and keeps the function pure.
 
-`previews::scheduler::PRELOAD_HALF` deliberately stays at the maximum. It is only a priority boundary for preview
-generation, costs no memory, and on the machines where the decode window narrows, having the preview ready matters more.
+`previews::scheduler::PRELOAD_HALF` is a separate 2 and stays one. It is only a priority boundary for preview generation
+and costs no memory, so coupling it to `preload_count()` would buy nothing.
