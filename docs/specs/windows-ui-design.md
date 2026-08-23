@@ -1,6 +1,7 @@
 # Prvw on Windows: the native chrome
 
-Status: draft for review, written 2026-08-23. Nothing here is built.
+Status: written 2026-08-23. None of the Windows chrome is built. The one piece that landed early is the bare `S`
+slideshow shortcut, which is cross-platform and lives in `input::key_to_command`.
 
 This spec answers one question: what should Prvw's Windows chrome look like, and what should we build it with. It covers
 the menu bar, the settings surface, browse mode, onboarding, and about. It does not cover the image window, which stays
@@ -66,9 +67,10 @@ collision with winit's message pump, all of it new ground with no prior art we c
   catch `WM_COMMAND`, and introduces no nested loop. `menu::poll_menu_event` keeps working unchanged.
 - **`rfd` 0.17.2** (published 2026-01-12) for the file and folder pickers, always through `AsyncFileDialog`.
 - **An embedded application manifest** carrying two things in one file: the `Microsoft.Windows.Common-Controls` version
-  `6.0.0.0` dependency, without which we silently get comctl32 v5 (unthemed, no task dialogs, no `SysLink`), and
-  `<dpiAwareness>PerMonitorV2</dpiAwareness>`. Both have to be in the manifest rather than set by an API call, because
-  they apply before any HWND exists. Use the `embed-manifest` crate from `build.rs`.
+  `6.0.0.0` dependency, without which we silently get comctl32 v5 (unthemed, no `SysLink` for the about box's
+  hyperlinks, and none of the Explorer theming browse mode leans on), and `<dpiAwareness>PerMonitorV2</dpiAwareness>`.
+  Both have to be in the manifest rather than set by an API call, because they apply before any HWND exists. Use the
+  `embed-manifest` crate from `build.rs`.
 
 ### Why not the alternatives
 
@@ -186,7 +188,8 @@ what IrfanView, XnView, and FastStone still have.
 
 Seven top-level menus, in this order: File, Edit, View, Navigate, Slideshow, Tools, Help.
 
-- **File**: Open… (Ctrl+O), separator, Print… (Ctrl+P), separator, Exit.
+- **File**: Open… (Ctrl+O), separator, Print… (Ctrl+P), separator, Exit. "Show in File Explorer" joins this menu when
+  the reveal pair lands (see the decisions at the end), which is after M1.
 - **Edit**: Copy image (Ctrl+C). Only Copy, same reasoning as macOS: Cut, Paste, and Select all make no sense in a
   viewer and showing them disabled looks broken.
 - **View**: Zoom in (Ctrl++), Zoom out (Ctrl+-), separator, Actual size (Ctrl+0), Fit to window, Auto-fit window,
@@ -195,7 +198,7 @@ Seven top-level menus, in this order: File, Edit, View, Navigate, Slideshow, Too
   separator, Fullscreen (F11), separator, Refresh (F5).
 - **Navigate**: Image browser (Enter), separator, Previous (Left arrow), Next (Right arrow), separator, Go to first
   (Home), Go to last (End), separator, Loop navigation.
-- **Slideshow**: Start slideshow (Ctrl+S), separator, Increase speed (]), Decrease speed ([).
+- **Slideshow**: Start slideshow (S), separator, Increase speed (]), Decrease speed ([).
 - **Tools**: Settings… (Ctrl+,).
 - **Help**: About Prvw.
 
@@ -237,14 +240,20 @@ The rule is Ctrl where macOS uses Cmd, and then three deliberate Windows wins:
   should honor that.
 - **Print stays Ctrl+P, Copy stays Ctrl+C, Open is Ctrl+O.** No surprises.
 
-Kept as cosmetic hints, handled by `input` exactly as on macOS: H (Histogram), E (Exif info), L (Loop navigation), the
-arrow keys, `]` and `[`, and Enter for the image browser. The reason is the same on both platforms, and on Windows it is
-sharper: the hook order above means a real accelerator table entry would fire even when a settings field has focus if we
-ever got the ordering wrong. Cosmetic hints have no such failure mode.
+Kept as cosmetic hints, handled by `input` exactly as on macOS: S (Start slideshow), H (Histogram), E (Exif info), L
+(Loop navigation), the arrow keys, `]` and `[`, and Enter for the image browser. The reason is the same on both
+platforms, and on Windows it is sharper: the hook order above means a real accelerator table entry would fire even when
+a settings field has focus if we ever got the ordering wrong. Cosmetic hints have no such failure mode.
 
-**Slideshow keeps Ctrl+S.** Ctrl+S is Save everywhere else on Windows, which normally rules it out, but Prvw has no save
-command at all, so there is nothing to collide with, and it keeps the shortcut consistent with the website and the macOS
-build. Flagged in the open questions in case David disagrees.
+**Slideshow is bare `S`, and Ctrl+S stays bound to nothing.** Starting a slideshow is a viewer-state toggle, and every
+other one in Prvw is a bare single letter: `h` histogram, `e` Exif, `l` loop, `f` fullscreen, `[` and `]` speed, `;` and
+`'` navigate. Ctrl+S would be the only modified shortcut in that family, and it would be the one place a Windows user's
+Save reflex lands on something. Leaving Ctrl+S unbound means the reflex does nothing, which is the right answer in an
+app that cannot save. `S` is already implemented in `input::key_to_command` on every platform; the Windows menu shows it
+in the item's shortcut column, exactly like `H` and `E`.
+
+macOS keeps its real ⌘S accelerator on the same item on top of that. It predates this design, it does not collide with
+anything, and a Mac user reading ⌘S off the menu is not reading a Windows convention.
 
 **Ctrl+0 stays Actual size**, matching macOS and matching browsers, even though the bare `0` key means Fit to window and
 the bare `1` means Actual size. That inconsistency is inherited from the macOS design and this is not the place to fix
@@ -268,10 +277,20 @@ fixed for Windows.
 
 ### Menu bar and fullscreen
 
-The menu bar occupies about 20 logical pixels above the client area permanently, which is in tension with "the image is
-99% of the app". Recommendation: keep it visible in windowed image mode, where a Windows user expects it, and call
-`SetMenu(hwnd, null)` on entering fullscreen, restoring it on exit. Fullscreen is where the image really is 99% of the
-app, and no Windows app shows a menu bar there.
+**The menu bar is always visible in windowed mode and gone in fullscreen. There is no auto-hide and no setting for it in
+v1.** `SetMenu(hwnd, null)` on entering fullscreen, restoring it on exit. Fullscreen is where the image really is 99% of
+the app, and no Windows app shows a menu bar there.
+
+The tempting third option is Explorer's classic behavior: hide the bar and reveal it on Alt. It is a real Windows
+pattern, and it is rejected on four counts.
+
+- **Alt-reveal is discoverable only by accident.** A user who does not already know the gesture sees an app with no
+  menus.
+- **The menu is the only mouse path to most features until M5 ships browse mode.** Hiding it by default hides the app.
+- **F11 is already the escape hatch** for anyone who wants the chrome gone.
+- **A setting costs far more than it buys.** A `SettingKey` with no macOS counterpart, a parity entry, a visible/hidden
+  state machine that has to compose with fullscreen, and the bugs that come with it, all for about 20 logical pixels
+  above a letterboxed image.
 
 ## The settings surface
 
@@ -433,9 +452,9 @@ shell around them.
   (`IDC_SIZEWE`), `WM_LBUTTONDOWN` with `SetCapture`, `WM_MOUSEMOVE`, and `WM_LBUTTONUP`. Call it 80 lines. Default the
   tree pane to about 240 logical pixels, matching macOS.
 - **A status bar** (`msctls_statusbar32`) across the bottom, with the image count in the current folder, the selected
-  file's name, and its dimensions. macOS has none. This is a legitimate place for the platforms to differ: a status bar
-  is a Windows idiom that ACDSee had, it costs almost nothing, and it gives the browser somewhere to say "Loading …"
-  that is not an overlay. It is not a parity registry entry today; see the open questions.
+  file's name, and its dimensions. **Build it, Windows-only.** A status bar is a Windows idiom that ACDSee had, it costs
+  almost nothing, and it gives the browser somewhere to say "Loading …" that is not an overlay. Its parity coverage is
+  settled under "The browse-mode status bar" below.
 
 ### How it composes with the wgpu surface
 
@@ -507,9 +526,9 @@ neighborhoods with `WNetOpenEnum` is slow, blocking, and a source of hangs, and 
 - **The grid shows images only, never folders.** Explorer mixes them; Prvw does not, on either platform. The tree is the
   navigation model. Worth stating because it is the one place a Windows user might expect Explorer's behavior and will
   not get it.
-- **A right-click menu over the grid** with Open, Copy image, and "Show in File Explorer". The last one is a Windows
-  affordance macOS lacks (its counterpart would be "Reveal in Finder"), and it is the kind of thing whose absence reads
-  as a missing feature to a Windows user. It would need a new `MenuItemKey` and `CommandKey`; see the open questions.
+- **A right-click menu over the grid** with Open, Copy image, and "Show in File Explorer". That last item ships as its
+  own change alongside its macOS twin, "Reveal in Finder", rather than inside M1 or M5; the reasoning is under "Show in
+  File Explorer and Reveal in Finder" below. Until it lands the grid's context menu carries Open and Copy image.
 - **No thumbnail size slider in v1**, matching the macOS deferral. When it lands, use Explorer's own vocabulary as a
   View submenu (Extra large icons, Large icons, Medium icons, Small icons) rather than a slider, because that is the
   control Windows users already know. The "generate at `MAX_CELL_PT × 2`, downscale below it" rule already supports it
@@ -531,7 +550,7 @@ specifics that belong in this design rather than in M3's notes:
 
 ## Onboarding and about
 
-**Recommendation: build no onboarding window on Windows at all, and make the about box a task dialog.** This is the
+**Recommendation: build no onboarding window on Windows at all, and build a small About dialog of our own.** This is the
 place to argue for less, and the argument is strong.
 
 ### Why there is nothing to onboard
@@ -569,24 +588,32 @@ Its content, in order:
 
 No new toolkit surface, no new window, and it is reachable from the one place a Windows user will actually hit it.
 
-**M6 therefore shrinks from one to two weeks to two or three days**, most of which is the about box. Note the dependency
-this creates: M1 step 1 owns the empty state, so M6 becomes a polish pass over work M1 already did.
+**M6 therefore shrinks from one to two weeks to three or four days**, most of which is the about box. Note the two
+dependencies this creates: M1 step 1 owns the empty state, so M6 becomes a polish pass over work M1 already did, and the
+about box reuses M4's dark-mode and layout plumbing, so M6 has to follow M4 rather than float.
 
 ### The about box
 
-**A task dialog, shown on a spawned thread.** `TaskDialogIndirect` with `TDF_ENABLE_HYPERLINKS`, the app icon set
-through `TDN_CREATED`, main instruction "Prvw", content carrying the version, the author credit, the license line, and
-hyperlinks to getprvw.com and the license. `TaskDialogIndirect` blocks, so it runs on its own thread with the main
-window as owner; muda's `PredefinedMenuItem::about` already does exactly this on Windows and is a working precedent to
-read.
+**Our own small modeless dialog, built the same way the settings dialog is.** `CreateDialogParamW`-free: a plain
+`WS_POPUP | WS_CAPTION | WS_SYSMENU` window with the app icon, "Prvw" as the heading, statics carrying the version, the
+author credit, and the license line, two `SysLink` controls for getprvw.com and the license, and one Close button. It
+joins the `with_msg_hook` dialog set like any other modeless dialog, so Tab and Esc work through `IsDialogMessageW`.
 
-That is roughly 80 lines against macOS's 252 plus its share of `ui_common`, and it is what a Windows user expects. A
-small About box, not a window they have to close. It is also correct at any DPI and v6-themed for free.
+**Not a `TaskDialogIndirect`.** The argument is marginal cost, not taste. The settings surface already forces us to
+build six tabs of dark-themed Win32 dialogs: the `SetPreferredAppMode` plumbing, the theme-name-per-control table, the
+`lfMessageFont` handling, the DPI reposition, and the layout helper all exist whether or not About uses them. About is
+then a handful of controls on top of machinery that is already paid for.
 
-The one honest cost: **task dialogs do not follow dark mode**, so the about box will be light even in a dark theme. That
-is true of a great many Windows apps, including first-party ones, and it is not worth a custom window to fix.
+A task dialog would instead add a second dialog mechanism to the app, and the one flaw it has is exactly the thing worth
+avoiding: **task dialogs do not follow dark mode.** A light box emerging from a dark app is one of the clearest tells
+that an app was ported rather than written for Windows, and it is the tell right next to the app's name and version.
+`TaskDialogIndirect` also blocks, so it would need its own thread, which is a second lifetime to reason about for a box
+that says four lines.
 
-Implement it as `CommandKey::About` dispatching to our own task dialog rather than using muda's predefined item, so that
+Call it 150 lines against macOS's 252 plus its share of `ui_common`, and it is what a Windows user expects: a small
+About box, correct at any DPI, v6-themed, and dark when the system is dark.
+
+Implement it as `CommandKey::About` dispatching to that dialog rather than using muda's predefined item, so that
 `MenuItemKey::About`'s registered command stays `Some(CommandKey::About)` and the audit keeps working.
 
 ## Windows 10 versus Windows 11
@@ -681,10 +708,11 @@ should not exist on Windows.
 - **`MenuItemKey::CloseWindow`**: "Prvw has one window on Windows, and a Windows app with no windows is an invisible
   process rather than a running app. Closing that window is exiting, which File → Exit already does."
 
-That is the only new one. Everything else in the 79 is genuinely reachable on Windows under this design, which is worth
-stating plainly: the design does not use `NotApplicable` as a way to make the number go down. The registry's own docs
-warn that using the escape hatch without a real platform fact is how the whole layer rots, and one honest entry is the
-right count here.
+That is the only new one among the 79. Everything else in them is genuinely reachable on Windows under this design,
+which is worth stating plainly: the design does not use `NotApplicable` as a way to make the number go down. The
+registry's own docs warn that using the escape hatch without a real platform fact is how the whole layer rots, and one
+honest entry is the right count here. The browse-mode status bar carries a second `NotApplicable`, but it faces the
+other way (macOS, not Windows) and it is spelled out in its own section below.
 
 **Things we build differently rather than skip**, restated so nobody mistakes them for gaps: `SettingKey::TitleBar` and
 `CommandKey::TitleBar` are already `NotApplicable` and stay that way; `SettingKey::FileAssociations` becomes a
@@ -696,6 +724,8 @@ registry handles as a coverage-arm comment because `Menu` is the product's share
 - **Any Mica, Acrylic, or Liquid Glass equivalent.** Occluded by the swapchain, as above.
 - **A custom caption or title strip.** Nothing covers the image on Windows.
 - **Owner-drawn dark menus** in v1.
+- **A menu bar auto-hide setting**, with or without Alt-reveal. Reasoned out under "Menu bar and fullscreen".
+- **A task dialog for About**, or a second dialog mechanism of any kind. Reasoned out under "The about box".
 - **The Windows 11 SettingsCard look.** No inbox control, no open-source Win32 precedent, and Microsoft's own answer is
   "use XAML Islands".
 - **An onboarding window.** Replaced by the empty state.
@@ -716,30 +746,81 @@ The cross-platform plan's numbers were written before this design existed. Three
 - **M5 (browse mode), estimated three to six weeks.** Unchanged, with the flip-model spike moved to the start rather
   than discovered in the middle. The `SetWindowTheme(L"Explorer")` line and the async volume-label read are the two
   details most likely to be missed.
-- **M6 (onboarding and about), estimated one to two weeks. Now two or three days**, because the onboarding window does
-  not exist and the about box is a task dialog. The saved work moves into M1 step 1's empty state, which was always in
-  scope.
+- **M6 (onboarding and about), estimated one to two weeks. Now three or four days**, because the onboarding window does
+  not exist and the about box is a small dialog on top of machinery M4 already built. The saved work moves into M1 step
+  1's empty state, which was always in scope. M6 now depends on M4 rather than floating.
 
 Also worth naming: **M1 step 9 (accelerators) grows slightly**, because the combined `with_msg_hook` closure now has to
 serve both `TranslateAcceleratorW` and the modeless-dialog `IsDialogMessageW` path, and because we found no prior art
 for the second half. Building the hook with both branches from the start, even before any dialog exists, avoids
 reworking it in M4.
 
-## Open questions
+And one new item that is not a milestone: **"Show in File Explorer" and "Reveal in Finder" are a change of their own,
+landing after M1 on both platforms at once.** Call it a day or two for the pair. It is small enough that folding it into
+a milestone would bury it, and cross-platform enough that giving it to one milestone would make the platforms diverge
+for no reason.
 
-Short list, each answerable in a line.
+## Decisions that span sections
 
-1. **Slideshow accelerator.** Ctrl+S is Save everywhere else on Windows, but Prvw has no save so nothing collides. Keep
-   Ctrl+S, or pick something else?
-2. **A menu bar hiding setting.** The menu bar is always visible in windowed mode and removed in fullscreen. Should
-   there also be a setting to hide it entirely, with Alt to reveal it, the way Explorer's classic menu works? That would
-   be a new `SettingKey` with no macOS counterpart.
-3. **The browse-mode status bar.** Build it (recommended) and, if so, should it be a parity registry entry, given macOS
-   has no counterpart and probably should not grow one?
-4. **"Show in File Explorer" in the grid's context menu.** Add it as a new command on Windows only, or add it on both
-   platforms with "Reveal in Finder" as the macOS half?
-5. **The about box as a task dialog.** It will be light even in dark mode. Acceptable, or is a real window worth the
-   extra code to get dark mode right?
+Five choices the sections above lean on. Three are argued where they apply and are only named here; two need their own
+detail and get it.
+
+1. **Slideshow is bare `S` on both platforms, and Ctrl+S stays bound to nothing.** See "Accelerators, and where they
+   differ from macOS".
+2. **The menu bar is always visible in windowed mode and gone in fullscreen, with no auto-hide and no setting in v1.**
+   See "Menu bar and fullscreen".
+3. **The browse-mode status bar gets built, Windows-only.** Below.
+4. **"Show in File Explorer" and "Reveal in Finder" both get built, on both platforms, as their own change after M1.**
+   Below.
+5. **The about box is a small dialog of ours, not a `TaskDialogIndirect`.** See "The about box".
+
+### The browse-mode status bar
+
+**Coverage: Windows `Present`, macOS `NotApplicable`, Linux `Missing`.** The macOS reason string:
+
+> A status bar pinned to the window's bottom edge is an Explorer idiom, and Finder's own is off by default. Prvw's macOS
+> browse mode says what it has to in place instead: each grid cell wears its filename, an empty folder shows "(No
+> images)", and an overdue scan shows "Loading…" over the tree pane.
+
+Linux stays `Missing` rather than `NotApplicable` because the Linux desktop does not answer with one voice: a status bar
+is canonical in KDE's Dolphin and absent from modern GNOME's Files. That is a Linux spec's call to make, and `Missing`
+is what an undecided entry honestly looks like.
+
+**Where the entry goes is M5's first question, because layer 1 has no registry that fits.** `SettingKey`, `MenuItemKey`,
+and `CommandKey` model settings, menu items, and actions; a passive readout is none of the three, and `parity/CLAUDE.md`
+already names this as the hole ("There's no entry for 'the menu bar' or 'the settings window' itself"). M5 either grows
+layer 1 a kind for readouts or accepts that this is the case that finally forces one. Don't wedge it into `CommandKey`
+just to get a row in the table.
+
+**What macOS is missing, said plainly.** The reason string above is true about the _surface_: a bottom status bar is not
+a Mac idiom, and the filename readout already has a Mac home in the cell labels. It is not the whole story about the
+_content_. Two of the three things the Windows status bar shows have no macOS browse-mode home at all:
+
+- **The folder's image count.** macOS shows "3 / 40" in the title-bar strip in image mode (`App::titlebar_text`), and
+  browse mode deliberately hides those labels: `browser::State::sync_native` calls
+  `window::set_titlebar_labels_hidden(window, true)`, because browse stops redrawing and the stale image title would
+  otherwise linger over the native UI. So while browsing on a Mac, nothing says how many images the folder holds.
+- **The selected image's dimensions.** They live in the Exif overlay's "Size" row, which is an image-mode overlay bound
+  to `E`. Browse mode never shows it.
+
+That is a macOS gap, not a Windows feature, and a `NotApplicable` on the surface must not be read as covering it. It
+deserves the same treatment as the reveal pair below: a small change of its own that gives the Mac browser somewhere to
+say those two things in a Mac idiom, most likely the title-bar strip it already owns, repurposed for browse mode. Not
+scheduled here; named so it does not disappear behind a reason string.
+
+### Show in File Explorer and Reveal in Finder
+
+**Build both, on both platforms, as their own change after M1.** Three reasons:
+
+- **It is a gap on both platforms rather than a Windows feature.** macOS has no "Reveal in Finder" today either, and
+  framing it as a Windows item would hide that.
+- **It is small on each.** `ShellExecuteW` against `explorer.exe` with `/select,<path>` on Windows; `NSWorkspace`'s
+  `activateFileViewerSelectingURLs:` on macOS.
+- **Doing both at once means parity never diverges.** The new `MenuItemKey` and `CommandKey` land with both arms
+  `Present` in the same commit, so the table never carries a row that is `Missing` on one side while somebody decides.
+
+It belongs in the File menu and in the image context menu. In browse mode it also belongs in the grid's right-click
+menu, which is M5's to wire once the command exists.
 
 ## What we could not verify
 
@@ -763,3 +844,7 @@ reasoned or triangulated rather than measured, and each is somewhere a surprise 
   issue that was closed with no Microsoft response.
 - The compile-time and binary-size delta between `windows` and `windows-sys` for our feature set. No published 2026
   benchmark exists; measure with `cargo build --timings` if it matters.
+- Whether `explorer.exe /select,<path>` and `NSWorkspace`'s `activateFileViewerSelectingURLs:` behave as the reveal
+  decision describes. Both are long-standing and widely used, and neither was run for this document.
+- That Finder's own status bar is off by default, which the status bar's macOS reason string leans on. Everything else
+  in that string comes from reading `browser/` and `app.rs`.

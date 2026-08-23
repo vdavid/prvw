@@ -474,8 +474,8 @@ Three practical consequences:
   with a conventional menu bar, a modal options dialog, and a tree-plus-thumbnails browser. That idiom is still the
   native one for this kind of viewer on Windows, so leaning into it is both the faithful and the native choice.
 
-Design work for the Windows chrome is a draft for David to review before it gets built, per his standing rule that all
-human-facing design is reviewed under his name. That draft is [windows-ui-design.md](windows-ui-design.md): it decides
+The Windows chrome has its own design document, reviewed by David before any of it gets built, per his standing rule
+that all human-facing design is reviewed under his name. It is [windows-ui-design.md](windows-ui-design.md): it decides
 the toolkit (Win32 common controls through the `windows` crate), the menu bar, the settings dialog, browse mode,
 onboarding, and what Windows deliberately doesn't get. M1's menu work and M4 through M6 all implement it.
 
@@ -1027,10 +1027,11 @@ deep-link to `ms-settings:defaultapps`. Write new copy rather than translating t
 Note that M1 step 1 already gave the no-argument launch a defensible empty state, so this milestone is a polish pass by
 the time it arrives.
 
-**[windows-ui-design.md](windows-ui-design.md) argues this milestone down to two or three days**: Windows gets no
+**[windows-ui-design.md](windows-ui-design.md) argues this milestone down to three or four days**: Windows gets no
 onboarding window at all (all three macOS steps are meaningless or impossible there, and the empty state M1 step 1 owes
-anyway covers what's left), and the about box is a `TaskDialogIndirect` on a spawned thread. Read "Onboarding and about"
-before budgeting a week for AppKit-shaped work that shouldn't exist here.
+anyway covers what's left), and the about box is a small dialog of our own reusing M4's dark-mode and layout plumbing.
+That last point makes M6 depend on M4. Read "Onboarding and about" before budgeting a week for AppKit-shaped work that
+shouldn't exist here.
 
 ### M7: distribution (one to two weeks of work, plus signing lead time)
 
