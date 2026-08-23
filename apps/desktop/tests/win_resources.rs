@@ -339,3 +339,29 @@ fn a_broken_ico_stops_the_build_with_a_readable_message() {
         "got {err:?}"
     );
 }
+
+/// The manifest is read by Windows before any of our code runs, so nothing at runtime can check
+/// it and nothing on a Mac can either. These four declarations are the reason it exists, and
+/// `longPathAware` in particular is what M1 step 10's path handling is built on.
+#[test]
+fn the_manifest_declares_what_windows_reads_before_startup() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/prvw.manifest");
+    let manifest = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("couldn't read {}: {e}", path.display()));
+
+    for needle in [
+        "name=\"Microsoft.Windows.Common-Controls\" version=\"6.0.0.0\"",
+        "<dpiAwareness xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">PerMonitorV2<",
+        "<longPathAware xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">true<",
+        "level=\"asInvoker\"",
+    ] {
+        assert!(
+            manifest.contains(needle),
+            "the manifest is missing {needle:?}"
+        );
+    }
+    assert!(
+        manifest.contains("version=\"__VERSION__\""),
+        "the build script substitutes the app version into the manifest's assemblyIdentity"
+    );
+}
