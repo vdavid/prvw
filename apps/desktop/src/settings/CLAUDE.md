@@ -33,9 +33,9 @@ features).
 1. `persistence.rs`: add the field with `#[serde(default)]`, update `Default` + tests.
 2. `crate::app::App` struct: add a field, initialize from `initial_settings`.
 3. `crate::commands::AppCommand`: add a `Set{Name}(bool)` variant.
-4. `app/executor.rs`: handle it: update App field, load/save `Settings`, sync menu checkmark if any, call
-   `self.update_shared_state()`.
-5. Menu item (optional): `menu.rs` + `input.rs` + `handle_menu_event`.
+4. `app/executor.rs`: handle it: update App field, load/save `Settings`, call `self.sync_menu_from_settings(&s)` if the
+   menu mirrors it, call `self.update_shared_state()`.
+5. Menu item (optional): `menu/native.rs`, both the item and the `sync_from_settings` line that drives its checkmark.
 6. Settings toggle: add it to the relevant feature's `settings_panel.rs`. If the delegate needs to mutate it
    (cross-dependency), add a field to the panel's output struct and plumb the pointer into `SettingsDelegateIvars` in
    `window.rs`. Wire `setTarget`/`setAction` there too.

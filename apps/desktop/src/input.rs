@@ -1,12 +1,10 @@
-//! Maps keyboard, mouse, and menu events to `AppCommand`s.
+//! Maps keyboard and QA-server key events to `AppCommand`s.
 //!
-//! This is the single place that defines what each input does. The main event loop,
-//! menu handler, and QA key handler all call into these functions rather than
-//! duplicating action logic.
+//! This is the single place that defines what each key does, in image mode and in browse mode,
+//! for real keystrokes and for the QA server's synthetic ones alike. The menu's twin table
+//! lives in `menu::native`, next to the item IDs it has to match against.
 
 use crate::commands::AppCommand;
-use crate::menu::MenuIds;
-use muda::MenuEvent;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 /// Map a keyboard key press to an `AppCommand`.
@@ -88,67 +86,6 @@ pub fn browse_key_to_command(key: Key<&str>, _modifiers: &ModifiersState) -> Opt
         // Tab flips focus between the tree and grid panes.
         Key::Named(NamedKey::Tab) => Some(AppCommand::ToggleBrowseFocus),
         _ => None,
-    }
-}
-
-/// Map a menu event to an `AppCommand`, using the menu's ID table.
-pub fn menu_to_command(event: &MenuEvent, ids: &MenuIds) -> Option<AppCommand> {
-    let id = event.id();
-    if id == &ids.about {
-        Some(AppCommand::ShowAbout)
-    } else if id == &ids.settings {
-        Some(AppCommand::ShowSettings)
-    } else if id == &ids.copy || id == &ids.context_copy {
-        Some(AppCommand::CopyImage)
-    } else if id == &ids.print || id == &ids.context_print {
-        Some(AppCommand::Print)
-    } else if id == &ids.zoom_in {
-        Some(AppCommand::ZoomIn)
-    } else if id == &ids.zoom_out {
-        Some(AppCommand::ZoomOut)
-    } else if id == &ids.actual_size {
-        Some(AppCommand::ActualSize)
-    } else if id == &ids.fit_to_window {
-        Some(AppCommand::FitToWindow)
-    } else if id == &ids.auto_fit_window
-        || id == &ids.enlarge_small_images
-        || id == &ids.icc_color_management
-        || id == &ids.color_match_display
-        || id == &ids.histogram
-        || id == &ids.exif_info
-        || id == &ids.loop_navigation
-    {
-        // CheckMenuItems auto-toggle on click; we return None and let the caller
-        // handle it (it needs the CheckMenuItem ref to read the new state).
-        None
-    } else if id == &ids.sort_by_name {
-        Some(AppCommand::SetSortBy(crate::navigation::SortBy::Name))
-    } else if id == &ids.sort_by_date {
-        Some(AppCommand::SetSortBy(crate::navigation::SortBy::Date))
-    } else if id == &ids.sort_by_file_type {
-        Some(AppCommand::SetSortBy(crate::navigation::SortBy::FileType))
-    } else if id == &ids.fullscreen {
-        Some(AppCommand::ToggleFullscreen)
-    } else if id == &ids.refresh {
-        Some(AppCommand::Refresh)
-    } else if id == &ids.previous {
-        Some(AppCommand::NavigateDebounced(false))
-    } else if id == &ids.next {
-        Some(AppCommand::NavigateDebounced(true))
-    } else if id == &ids.go_to_first {
-        Some(AppCommand::GoToFirst)
-    } else if id == &ids.go_to_last {
-        Some(AppCommand::GoToLast)
-    } else if id == &ids.browse_toggle {
-        Some(AppCommand::ToggleBrowseMode)
-    } else if id == &ids.slideshow_toggle {
-        Some(AppCommand::ToggleSlideshow)
-    } else if id == &ids.slideshow_increase_speed {
-        Some(AppCommand::IncreaseSlideshowSpeed)
-    } else if id == &ids.slideshow_decrease_speed {
-        Some(AppCommand::DecreaseSlideshowSpeed)
-    } else {
-        None
     }
 }
 

@@ -115,9 +115,7 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.auto_fit_window = enabled;
                 s.save();
-                if let Some(menu) = &self.app_menu {
-                    menu.auto_fit_item.set_checked(enabled);
-                }
+                self.sync_menu_from_settings(&s);
                 if enabled
                     && let (Some(win), Some((iw, ih))) =
                         (&self.window, self.navigation.current_image_size)
@@ -148,9 +146,7 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.enlarge_small_images = enabled;
                 s.save();
-                if let Some(menu) = &self.app_menu {
-                    menu.enlarge_small_item.set_checked(enabled);
-                }
+                self.sync_menu_from_settings(&s);
                 // Re-apply zoom: toggling this changes whether small images enlarge or not
                 self.apply_initial_zoom();
                 self.update_transform_and_redraw();
@@ -161,12 +157,7 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.icc_color_management = enabled;
                 s.save();
-                if let Some(menu) = &self.app_menu {
-                    menu.icc_color_management_item.set_checked(enabled);
-                    // "Color match display" and "Relative colorimetric" depend on ICC being enabled
-                    menu.color_match_item.set_enabled(enabled);
-                    menu.relative_colorimetric_item.set_enabled(enabled);
-                }
+                self.sync_menu_from_settings(&s);
                 self.apply_icc_settings();
             }
             AppCommand::SetColorMatchDisplay(enabled) => {
@@ -175,9 +166,7 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.color_match_display = enabled;
                 s.save();
-                if let Some(menu) = &self.app_menu {
-                    menu.color_match_item.set_checked(enabled);
-                }
+                self.sync_menu_from_settings(&s);
                 self.apply_icc_settings();
             }
             AppCommand::SetRelativeColorimetric(enabled) => {
@@ -193,9 +182,7 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.use_relative_colorimetric = enabled;
                 s.save();
-                if let Some(menu) = &self.app_menu {
-                    menu.relative_colorimetric_item.set_checked(enabled);
-                }
+                self.sync_menu_from_settings(&s);
                 self.flush_and_redisplay();
             }
             AppCommand::SetScrollToZoom(enabled) => {
@@ -229,9 +216,7 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.histogram_visible = self.histogram.visible;
                 s.save();
-                if let Some(menu) = &self.app_menu {
-                    menu.histogram_item.set_checked(self.histogram.visible);
-                }
+                self.sync_menu_from_settings(&s);
                 if self.histogram.visible {
                     // Lazy compute on first toggle: per-image we skip the
                     // scan when the panel is hidden, so the data may be
@@ -259,9 +244,7 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.exif_visible = self.exif_overlay.visible;
                 s.save();
-                if let Some(menu) = &self.app_menu {
-                    menu.exif_info_item.set_checked(self.exif_overlay.visible);
-                }
+                self.sync_menu_from_settings(&s);
                 self.request_redraw();
                 self.update_shared_state();
             }
@@ -272,9 +255,7 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.loop_navigation = enabled;
                 s.save();
-                if let Some(menu) = &self.app_menu {
-                    menu.loop_navigation_item.set_checked(enabled);
-                }
+                self.sync_menu_from_settings(&s);
                 self.refresh_preload_window();
                 self.update_shared_state();
             }
@@ -328,14 +309,7 @@ impl App {
                 s.sort_by = new;
                 s.save();
 
-                if let Some(menu) = &self.app_menu {
-                    menu.sort_by_name_item
-                        .set_checked(matches!(new, crate::navigation::SortBy::Name));
-                    menu.sort_by_date_item
-                        .set_checked(matches!(new, crate::navigation::SortBy::Date));
-                    menu.sort_by_file_type_item
-                        .set_checked(matches!(new, crate::navigation::SortBy::FileType));
-                }
+                self.sync_menu_from_settings(&s);
 
                 self.refresh_preload_window();
                 self.update_shared_state();

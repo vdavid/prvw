@@ -12,8 +12,8 @@ src/
 │   Infrastructure:
 ├── app.rs + app/            App struct, ApplicationHandler, command dispatcher, shared-state snapshot
 ├── commands.rs              AppCommand enum + global EventLoopProxy
-├── input.rs                 Maps keys/menu/QA keys → AppCommand
-├── menu.rs                  Native macOS menu bar (muda)
+├── input.rs                 Maps keys/QA keys → AppCommand
+├── menu/                    Menu bar + context menu (muda) on macOS and Windows; `absent.rs` covers platforms with no menu bar
 ├── pixels.rs                Logical/Physical coordinate newtypes
 ├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers)
 ├── render.rs + render/      wgpu infrastructure (renderer, text, shaders)

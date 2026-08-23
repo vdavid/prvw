@@ -594,8 +594,8 @@ impl App {
             window::set_fullscreen_appearance(&win, window::is_fullscreen(&win));
         }
 
-        // Create native menu bar
-        self.app_menu = Some(menu::create_menu_bar());
+        // Create the native menu bar. `None` on a platform that has none.
+        self.app_menu = menu::create_menu_bar();
 
         // Build the navigation list
         let initial_sort_by = settings::Settings::load().sort_by;
@@ -1689,12 +1689,7 @@ impl App {
     /// Update the Start/Stop menu item's label to match the running state.
     fn set_slideshow_menu_label(&self) {
         if let Some(menu) = &self.app_menu {
-            let label = if self.slideshow.running {
-                "Stop slideshow"
-            } else {
-                "Start slideshow"
-            };
-            menu.slideshow_toggle_item.set_text(label);
+            menu.set_slideshow_running(self.slideshow.running);
         }
     }
 
@@ -1948,12 +1943,15 @@ impl App {
     /// viewing an image (the action takes you there), "Image view" while browsing.
     fn set_browse_menu_label(&self) {
         if let Some(menu) = &self.app_menu {
-            let label = if self.browser.is_browse() {
-                "Image view"
-            } else {
-                "Image browser"
-            };
-            menu.browse_toggle_item.set_text(label);
+            menu.set_browse_mode(self.browser.is_browse());
+        }
+    }
+
+    /// Push freshly saved settings onto the menu's checkmarks. Every command that writes a
+    /// setting the menu mirrors ends with this.
+    pub(crate) fn sync_menu_from_settings(&self, settings: &settings::Settings) {
+        if let Some(menu) = &self.app_menu {
+            menu.sync_from_settings(settings);
         }
     }
 
@@ -3067,7 +3065,6 @@ impl App {
     /// `handle_menu_event` on the next `about_to_wait`, same path as the menu bar.
     #[cfg(target_os = "macos")]
     fn show_image_context_menu(&self) {
-        use muda::ContextMenu;
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
         let Some(app_menu) = &self.app_menu else {
@@ -3083,13 +3080,8 @@ impl App {
             return;
         };
         let ns_view = handle.ns_view.as_ptr() as *const std::ffi::c_void;
-        // SAFETY: winit gives us a valid `NSView*` for the main window. A `None` position
-        // tells muda to use the current mouse location.
-        unsafe {
-            app_menu
-                .context_menu
-                .show_context_menu_for_nsview(ns_view, None);
-        }
+        // SAFETY: winit gives us a valid `NSView*` for the main window.
+        unsafe { app_menu.show_image_context_menu(ns_view) };
     }
 
     fn show_settings_dialog(&self) {
@@ -3182,75 +3174,8 @@ impl App {
         let Some(app_menu) = &self.app_menu else {
             return;
         };
-        let Some(event) = menu::poll_menu_event() else {
-            return;
-        };
-
-        // CheckMenuItems auto-toggle on click, so we read their new state directly
-        if event.id() == &app_menu.ids.auto_fit_window {
-            let enabled = app_menu.auto_fit_item.is_checked();
-            log::debug!("Menu: Auto-fit window -> {enabled}");
-            let _ = self
-                .event_loop_proxy
-                .send_event(AppCommand::SetAutoFitWindow(enabled));
-            return;
-        }
-        if event.id() == &app_menu.ids.enlarge_small_images {
-            let enabled = app_menu.enlarge_small_item.is_checked();
-            log::debug!("Menu: Enlarge small images -> {enabled}");
-            let _ = self
-                .event_loop_proxy
-                .send_event(AppCommand::SetEnlargeSmallImages(enabled));
-            return;
-        }
-        if event.id() == &app_menu.ids.icc_color_management {
-            let enabled = app_menu.icc_color_management_item.is_checked();
-            log::debug!("Menu: ICC color management -> {enabled}");
-            let _ = self
-                .event_loop_proxy
-                .send_event(AppCommand::SetIccColorManagement(enabled));
-            return;
-        }
-        if event.id() == &app_menu.ids.color_match_display {
-            let enabled = app_menu.color_match_item.is_checked();
-            log::debug!("Menu: Color match display -> {enabled}");
-            let _ = self
-                .event_loop_proxy
-                .send_event(AppCommand::SetColorMatchDisplay(enabled));
-            return;
-        }
-        if event.id() == &app_menu.ids.relative_colorimetric {
-            let enabled = app_menu.relative_colorimetric_item.is_checked();
-            log::debug!("Menu: Relative colorimetric -> {enabled}");
-            let _ = self
-                .event_loop_proxy
-                .send_event(AppCommand::SetRelativeColorimetric(enabled));
-            return;
-        }
-        if event.id() == &app_menu.ids.histogram {
-            // CheckMenuItem auto-toggles on click. The toggle command
-            // re-syncs the checkmark afterward; we just fire it here.
-            let _ = self
-                .event_loop_proxy
-                .send_event(AppCommand::ToggleHistogram);
-            return;
-        }
-        if event.id() == &app_menu.ids.exif_info {
-            let _ = self.event_loop_proxy.send_event(AppCommand::ToggleExifInfo);
-            return;
-        }
-        if event.id() == &app_menu.ids.loop_navigation {
-            let _ = self
-                .event_loop_proxy
-                .send_event(AppCommand::ToggleLoopNavigation);
-            return;
-        }
-
-        if let Some(command) = input::menu_to_command(&event, &app_menu.ids) {
-            log::debug!("Menu event: {:?}", event.id());
+        if let Some(command) = app_menu.poll_command() {
             let _ = self.event_loop_proxy.send_event(command);
-        } else {
-            log::debug!("Menu: unhandled event {:?}", event.id());
         }
     }
 }
