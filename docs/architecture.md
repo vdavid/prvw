@@ -69,6 +69,12 @@ Astro + Tailwind v4. Marketing site for getprvw.com.
 | `src/styles/`     | Global CSS, color palette       |
 | `public/`         | Static assets (fonts, favicon)  |
 
+## Repo tasks (`xtask/`)
+
+A dependency-free crate that reads the app's registries without building the app. `cargo xtask parity` renders
+[`docs/parity.md`](parity.md), the generated table of what each platform's UI owes. See
+[`xtask/CLAUDE.md`](../xtask/CLAUDE.md) and [`apps/desktop/src/parity/CLAUDE.md`](../apps/desktop/src/parity/CLAUDE.md).
+
 ## Scripts (`scripts/`)
 
 | Path                | Purpose                                                      |

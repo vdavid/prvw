@@ -55,9 +55,11 @@ This is a monorepo:
 
 - `apps/desktop/` - The Rust desktop app (`winit` + `wgpu` + `muda`)
 - `apps/website/` - getprvw.com marketing website (Astro + Tailwind v4)
+- `xtask/` - Dependency-free repo tasks that read the app's registries without building it (`cargo xtask parity`)
 - `scripts/check/` - Go-based unified check runner
 - `docs/` - Dev docs
   - `architecture.md` - Map of all subsystems
+  - `parity.md` - Generated: what each platform's UI owes the app and what it has. Never edit by hand
   - `style-guide.md` - Writing, code, and design style rules
   - `design-principles.md` - Product design values
   - `mcp-server.md` - MCP/QA server tool and resource reference
@@ -70,7 +72,7 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 
 - Specific checks: `./scripts/check.sh --check <name>` (for example, `--check clippy`, `--check rustfmt`). Use `--help`
   for the full list, or multiple `--check` flags.
-- All Rust checks: `./scripts/check.sh --rust`
+- All Rust checks: `./scripts/check.sh --rust` (workspace-wide: `apps/desktop` and `xtask`)
 - All Go checks: `./scripts/check.sh --go`
 - All checks: `./scripts/check.sh`
 - Specific Rust tests by name: `cd apps/desktop && cargo test <test_name>`
@@ -178,7 +180,7 @@ won't grab your keystrokes. See `window::background_window_requested`.
 
 - **Always read** [style-guide.md](docs/style-guide.md) before touching code. Especially sentence case!
 - Cover your code with tests until you're confident. Don't go overboard.
-- **Run `./scripts/check.sh` before every commit.** It takes ~10 seconds (14 checks across Rust, Go, and Astro) and
+- **Run `./scripts/check.sh` before every commit.** It takes ~10 seconds (16 checks across Rust, Go, and Astro) and
   catches formatting, linting, and test failures that CI will reject. Run all checks, not just `--rust`. Non-CI mode
   auto-formats; CI mode only checks. Don't skip this. Never `tail`, `head`, or truncate the checker output. Its output
   is already concise.

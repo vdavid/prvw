@@ -65,8 +65,17 @@ Worth knowing before leaning on the table as if it were the whole picture:
   an item natively somewhere else (Windows convention puts About under Help) says so in its coverage arm's comment
   today; if that becomes common, placement belongs in the coverage data.
 
-## For layer 2
+## Layer 2: the generated table
 
 `report()` returns the table as owned data: registry, name, label, group, control kind, backing field, and every
 platform's status with its `NotApplicable` reason. It's a pure function of the registries, so it answers the same on
-every host. `GET /parity` on the QA server serves the same thing as JSON.
+every host. Three things read it:
+
+- **`docs/parity.md`**, rendered by `cargo xtask parity` and kept honest by the `parity` check
+  (`scripts/check/checks/parity-table.go`), which rewrites it locally and fails in CI on a stale file. Never edit that
+  file by hand; edit an arm here and regenerate.
+- **`GET /parity`** on the QA server, the same thing as JSON.
+- Nothing else. If you want a fourth consumer, take it from `report()` rather than re-reading the registries.
+
+A coverage arm you flip shows up as a diff in `docs/parity.md`, which is the point: parity moves in review, not
+silently. `xtask/CLAUDE.md` covers why the generator is its own dependency-free crate.

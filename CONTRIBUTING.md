@@ -55,8 +55,8 @@ pnpm build:website
 The check runner catches formatting, linting, and test issues before you push:
 
 ```bash
-./scripts/check.sh              # all 14 checks
-./scripts/check.sh --rust       # Rust checks only (rustfmt, clippy, cargo-test)
+./scripts/check.sh              # all 16 checks
+./scripts/check.sh --rust       # Rust checks only (rustfmt, clippy, cargo-test, parity)
 ./scripts/check.sh --go         # Go checks only (scripts)
 ./scripts/check.sh --check clippy  # one specific check
 ./scripts/check.sh --help       # full list
@@ -104,7 +104,8 @@ The release binary lands in `target/release/prvw`.
 ```
 apps/desktop/     Rust desktop app (winit + wgpu + muda)
 apps/website/     getprvw.com (Astro + Tailwind v4)
-scripts/check/    Go check runner (14 checks)
+xtask/            Repo tasks that read the app's registries (cargo xtask parity)
+scripts/check/    Go check runner (16 checks, plus 2 opt-in slow ones)
 docs/             Dev docs (architecture, style guide, design principles)
 ```
 
