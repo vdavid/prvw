@@ -11,10 +11,11 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 /// Returns `None` for keys that don't map to any action.
 /// Takes `Key<&str>` (from `Key::as_ref()`) so callers don't need to clone.
 pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppCommand> {
-    // Bare H toggles the histogram, bare E toggles the EXIF info panel, and
-    // bare L toggles loop navigation. We deliberately ignore the press if
-    // any modifier is held so Cmd-H (Hide window) and friends keep their
-    // native behavior.
+    // Bare H toggles the histogram, bare E toggles the EXIF info panel, bare L
+    // toggles loop navigation, and bare S starts or stops the slideshow. We
+    // deliberately ignore the press if any modifier is held so Cmd-H (Hide
+    // window), Cmd-S (the Slideshow menu's own accelerator on macOS), and
+    // friends keep their native behavior.
     let bare = !modifiers.shift_key()
         && !modifiers.control_key()
         && !modifiers.alt_key()
@@ -27,6 +28,9 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
     }
     if bare && matches!(key, Key::Character("l") | Key::Character("L")) {
         return Some(AppCommand::ToggleLoopNavigation);
+    }
+    if bare && matches!(key, Key::Character("s") | Key::Character("S")) {
+        return Some(AppCommand::ToggleSlideshow);
     }
     match key {
         // Navigation (user input → debounced so a wheel spin coalesces).
@@ -108,6 +112,7 @@ pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
         "h" | "H" => Some(AppCommand::ToggleHistogram),
         "e" | "E" => Some(AppCommand::ToggleExifInfo),
         "l" | "L" => Some(AppCommand::ToggleLoopNavigation),
+        "s" | "S" => Some(AppCommand::ToggleSlideshow),
         "r" => Some(AppCommand::Refresh),
         _ => {
             log::debug!("QA server: unhandled key '{key_name}'");
@@ -130,6 +135,59 @@ pub fn browse_qa_key_to_command(key_name: &str) -> Option<AppCommand> {
         _ => {
             log::debug!("QA server (browse mode): unhandled key '{key_name}'");
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bare() -> ModifiersState {
+        ModifiersState::empty()
+    }
+
+    /// Bare `s` starts or stops the slideshow, in either case.
+    #[test]
+    fn bare_s_toggles_the_slideshow() {
+        for key in [Key::Character("s"), Key::Character("S")] {
+            assert!(matches!(
+                key_to_command(key, &bare()),
+                Some(AppCommand::ToggleSlideshow)
+            ));
+        }
+    }
+
+    /// A held modifier hands the press back to the platform, so macOS's own Cmd-S menu
+    /// accelerator and the Windows Save muscle memory both keep their meaning.
+    #[test]
+    fn modified_s_is_left_alone() {
+        for modifiers in [
+            ModifiersState::SUPER,
+            ModifiersState::CONTROL,
+            ModifiersState::ALT,
+            ModifiersState::SHIFT,
+        ] {
+            assert!(key_to_command(Key::Character("s"), &modifiers).is_none());
+        }
+    }
+
+    /// Browse mode's tree and list own bare letters for type-ahead select, so `s` belongs to
+    /// the focused pane there rather than to the slideshow.
+    #[test]
+    fn browse_mode_leaves_s_to_the_focused_pane() {
+        assert!(browse_key_to_command(Key::Character("s"), &bare()).is_none());
+        assert!(browse_qa_key_to_command("s").is_none());
+    }
+
+    /// The QA table is the real keyboard's twin, so a binding that lands in one lands in both.
+    #[test]
+    fn the_qa_table_drives_the_slideshow_too() {
+        for name in ["s", "S"] {
+            assert!(matches!(
+                qa_key_to_command(name),
+                Some(AppCommand::ToggleSlideshow)
+            ));
         }
     }
 }

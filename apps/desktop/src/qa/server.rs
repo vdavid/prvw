@@ -221,6 +221,7 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "exif_visible": s.exif_visible,
         "exif_present": s.exif_present,
         "loop_navigation": s.loop_navigation,
+        "slideshow_running": s.slideshow_running,
         "view_mode": s.view_mode,
         "focused_pane": s.focused_pane,
         "browse_selected_folder": s.browse_selected_folder,

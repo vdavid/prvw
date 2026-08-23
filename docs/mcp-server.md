@@ -57,9 +57,9 @@ both a text confirmation and a `state` field with the current app state as JSON.
 ## Resources
 
 - **prvw://state**: Current app state as JSON (file, zoom, pan, fullscreen, window/image geometry, settings, title,
-  `loop_navigation`, `cache_indices` (sorted directory indices currently in the image cache), and the browse-mode fields
-  `view_mode`, `focused_pane`, `browse_selected_folder`, `browse_grid_selected`, `browse_grid_count`,
-  `browse_reveal_pending`).
+  `loop_navigation`, `slideshow_running`, `cache_indices` (sorted directory indices currently in the image cache), and
+  the browse-mode fields `view_mode`, `focused_pane`, `browse_selected_folder`, `browse_grid_selected`,
+  `browse_grid_count`, `browse_reveal_pending`).
 - **prvw://settings**: Current settings from disk as JSON (auto_update, auto_fit_window, enlarge_small_images,
   loop_navigation).
 - **prvw://menu**: Menu bar structure.

@@ -59,6 +59,10 @@ pub struct SharedAppState {
     /// Whether navigation wraps at the directory boundary (Navigate →
     /// Loop navigation, bare L key).
     pub loop_navigation: bool,
+    /// Whether the slideshow is auto-advancing (Slideshow → Start / Stop
+    /// slideshow, bare S key). The only observable the slideshow has from
+    /// outside, so it's what the E2E suite asserts the S binding against.
+    pub slideshow_running: bool,
     /// Sorted directory indices currently resident in the image cache.
     /// Mainly useful for tests and debugging the preload window. Exposed
     /// in prod builds too because the cost is negligible (a clone of a
@@ -163,6 +167,7 @@ impl Default for SharedAppState {
             exif_visible: false,
             exif_present: false,
             loop_navigation: false,
+            slideshow_running: false,
             cache_indices: Vec::new(),
             diagnostics_text: String::new(),
             previews: PreviewsSnapshot::default(),
@@ -198,6 +203,7 @@ impl App {
         state.exif_visible = self.exif_overlay.visible;
         state.exif_present = self.current_image_has_exif();
         state.loop_navigation = self.navigation.loop_navigation;
+        state.slideshow_running = self.slideshow.running;
         state.view_mode = if self.browser.is_browse() {
             "browse"
         } else {

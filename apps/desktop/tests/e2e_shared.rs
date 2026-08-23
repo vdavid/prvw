@@ -1024,6 +1024,38 @@ fn loop_persists_across_settings_reload() {
     );
 }
 
+// ── Slideshow ────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn slideshow_s_starts_and_stops_it() {
+    let (_dir, first) = create_multi_image_dir(3);
+    let Some(app) = SharedApp::start_with_image(&["Slideshow"], &first) else {
+        return;
+    };
+
+    assert_eq!(
+        app.get_state()["slideshow_running"].as_bool(),
+        Some(false),
+        "the slideshow starts stopped"
+    );
+
+    app.post("/key", "s");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        app.get_state()["slideshow_running"].as_bool(),
+        Some(true),
+        "bare S starts the slideshow"
+    );
+
+    app.post("/key", "s");
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        app.get_state()["slideshow_running"].as_bool(),
+        Some(false),
+        "bare S stops it again"
+    );
+}
+
 // ── Live folder sync (image mode) ────────────────────────────────────────────────────────────
 //
 // These drive the real filesystem watcher: open an image, then mutate its folder from the
