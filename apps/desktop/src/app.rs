@@ -1352,7 +1352,7 @@ impl App {
             log::debug!(
                 "Evicted {} from memory - {} freed ({reason})",
                 e.file_name,
-                navigation::format_bytes(e.memory_cost),
+                crate::diagnostics::format_bytes(e.memory_cost),
             );
         }
     }
