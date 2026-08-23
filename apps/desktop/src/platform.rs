@@ -11,6 +11,7 @@ pub mod macos;
 pub mod windows;
 
 use std::sync::OnceLock;
+use std::time::Duration;
 
 /// Conservative assumption when the OS won't say how much RAM it has. Sized so
 /// the RAM-proportional budgets land at their floors rather than somewhere a
@@ -110,6 +111,44 @@ fn query_total_physical_ram_bytes() -> Option<u64> {
     None
 }
 
+/// What the OS calls "not a double-click any more", when it won't say.
+///
+/// macOS and Windows both ship 500 ms as their own default, and the app's own long-standing value
+/// was 400 ms; the middle of that is not worth inventing, so this is Windows' documented default
+/// and only Linux ever sees it.
+const DOUBLE_CLICK_FALLBACK: Duration = Duration::from_millis(500);
+
+/// How long after a click a second one still counts as a double-click.
+///
+/// It's a system-wide accessibility setting on both platforms that have one, and someone who
+/// slowed it down did so because a fixed 400 ms was too fast for them. Asked per click rather than
+/// cached: clicks happen at human speed, and the setting can change while the app runs.
+pub fn double_click_interval() -> Duration {
+    query_double_click_interval().unwrap_or(DOUBLE_CLICK_FALLBACK)
+}
+
+/// macOS: `NSEvent.doubleClickInterval`, in seconds.
+#[cfg(target_os = "macos")]
+fn query_double_click_interval() -> Option<Duration> {
+    let seconds = objc2_app_kit::NSEvent::doubleClickInterval();
+    (seconds > 0.0).then(|| Duration::from_secs_f64(seconds))
+}
+
+/// Windows: `GetDoubleClickTime`, in milliseconds.
+#[cfg(target_os = "windows")]
+fn query_double_click_interval() -> Option<Duration> {
+    // SAFETY: no arguments, no out-parameters, and it can't fail.
+    let millis = unsafe { ::windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() };
+    (millis > 0).then(|| Duration::from_millis(u64::from(millis)))
+}
+
+/// Any other platform: no desktop-wide setting to read (X11 and Wayland leave it to each toolkit),
+/// so callers get the fallback.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn query_double_click_interval() -> Option<Duration> {
+    None
+}
+
 /// A fixed environment table, for testing code that resolves per-platform
 /// paths out of environment variables. Lets a test assert about every
 /// platform's layout from whichever host runs it, without mutating the process
@@ -139,6 +178,17 @@ mod tests {
         let env = fixed_env(&[("HOME", "/home/dave")]);
         assert_eq!(env("HOME").as_deref(), Some("/home/dave".as_ref()));
         assert_eq!(env("APPDATA"), None);
+    }
+
+    /// Whatever this host says, it has to be a usable answer: a zero interval would make every
+    /// double-click impossible and a huge one would turn two separate clicks into one.
+    #[test]
+    fn the_double_click_interval_is_usable() {
+        let interval = double_click_interval();
+        assert!(
+            interval >= Duration::from_millis(100) && interval <= Duration::from_secs(5),
+            "got {interval:?}"
+        );
     }
 
     #[test]

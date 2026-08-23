@@ -3564,7 +3564,7 @@ impl ApplicationHandler<AppCommand> for App {
                     }
                     let now = Instant::now();
                     if let Some(last) = self.last_click_time
-                        && now.duration_since(last).as_millis() < 400
+                        && now.duration_since(last) < crate::platform::double_click_interval()
                     {
                         // A double-click on the title bar zooms the window like any native
                         // macOS app (our content view covers the title bar, so AppKit never
