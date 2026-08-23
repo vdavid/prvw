@@ -59,6 +59,11 @@ fn query_total_physical_ram_bytes() -> Option<u64> {
 /// reads `MemTotal:       16077216 kB`; the unit is always KB in practice, but
 /// we honour whatever it says rather than assuming. Split out so the parse is
 /// testable on any host.
+///
+/// A unit we don't recognise gives up rather than guessing, so the caller falls
+/// back to [`RAM_FALLBACK_BYTES`] and logs. Treating an unknown suffix as bytes
+/// would silently report a 16 GB machine as having 16 MB, which reads as a
+/// plausible number and quietly pins every RAM-proportional budget to its floor.
 #[cfg(any(target_os = "linux", test))]
 fn parse_meminfo_total_bytes(meminfo: &str) -> Option<u64> {
     let line = meminfo.lines().find(|line| line.starts_with("MemTotal:"))?;
@@ -67,7 +72,7 @@ fn parse_meminfo_total_bytes(meminfo: &str) -> Option<u64> {
     let multiplier = match fields.next() {
         Some("kB") | Some("KB") | None => 1024,
         Some("mB") | Some("MB") => 1024 * 1024,
-        Some(_) => 1,
+        Some(_) => return None,
     };
     value.checked_mul(multiplier).filter(|bytes| *bytes > 0)
 }
@@ -154,5 +159,13 @@ mod tests {
         assert_eq!(parse_meminfo_total_bytes(""), None);
         assert_eq!(parse_meminfo_total_bytes("MemTotal:       0 kB\n"), None);
         assert_eq!(parse_meminfo_total_bytes("MemTotal:\n"), None);
+    }
+
+    /// Giving up beats guessing: reading an unknown suffix as bytes would call
+    /// a 16 GB machine a 16 MB one, which is plausible enough to go unnoticed.
+    #[test]
+    fn meminfo_with_an_unknown_unit_is_none() {
+        assert_eq!(parse_meminfo_total_bytes("MemTotal:  16077216 gB\n"), None);
+        assert_eq!(parse_meminfo_total_bytes("MemTotal:  16077216 ?\n"), None);
     }
 }
