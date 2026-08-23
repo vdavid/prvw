@@ -13,12 +13,21 @@ use std::sync::OnceLock;
 /// Conservative assumption when the OS won't say how much RAM it has. Sized so
 /// the RAM-proportional budgets land at their floors rather than somewhere a
 /// small machine can't afford.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // see `total_physical_ram_bytes`
 const RAM_FALLBACK_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
-/// Total physical RAM in bytes, queried once and cached. Used to size
-/// RAM-proportional cache budgets (`previews`, `navigation::preloader`) so a
-/// small machine stays frugal and a big one gets headroom. Falls back to
-/// [`RAM_FALLBACK_BYTES`] if the query fails.
+/// Total physical RAM in bytes, queried once and cached. Sizes `previews`'
+/// RAM-proportional cache budget, so a small machine stays frugal and a big one
+/// gets headroom. Falls back to [`RAM_FALLBACK_BYTES`] if the query fails.
+///
+/// `navigation::preloader` deliberately does **not** use this: its window is
+/// capped and it drops everything outside that window on every navigation, so a
+/// bigger budget has nothing to buy (`docs/notes/preload-window-and-cache-budget.md`).
+/// That leaves `previews`, which is macOS-only until M3 of
+/// `docs/specs/cross-platform-plan.md` gives it a Windows tier — hence the
+/// `dead_code` allowance rather than a `cfg`. The per-OS queries below are
+/// written and tested now precisely so M3 finds them ready.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn total_physical_ram_bytes() -> u64 {
     static RAM: OnceLock<u64> = OnceLock::new();
     *RAM.get_or_init(|| {
