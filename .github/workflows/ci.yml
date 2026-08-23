@@ -35,6 +35,14 @@ jobs:
           filters: |
             rust:
               - 'apps/desktop/**'
+              # The workspace is wider than the app: `xtask` generates `docs/parity.md`, and a
+              # hand-edit of that file has to face the check that regenerates it.
+              - 'xtask/**'
+              - 'docs/parity.md'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
             website:
               - 'apps/website/**'
               - 'pnpm-lock.yaml'
@@ -88,6 +96,11 @@ jobs:
 
       - name: Run clippy
         run: ./scripts/check/check --check clippy --ci
+
+      # Only here, and not in the macOS or Windows jobs: the registries carry no `#[cfg]`, so
+      # every host generates the same table, and checking it three times would say nothing new.
+      - name: Check the parity table
+        run: ./scripts/check/check --check parity --ci
 
       - name: Run Rust tests
         run: ./scripts/check/check --check cargo-test --ci

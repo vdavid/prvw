@@ -63,6 +63,15 @@ var AllChecks = []CheckDefinition{
 		DependsOn:   []string{"desktop-rust-clippy"},
 		Run:         RunCargoTest,
 	},
+	{
+		ID:          "desktop-rust-parity-table",
+		Nickname:    "parity",
+		DisplayName: "parity table",
+		App:         AppDesktop,
+		Tech:        "🦀 Rust",
+		DependsOn:   nil,
+		Run:         RunParityTable,
+	},
 
 	// Website - Astro checks
 	{

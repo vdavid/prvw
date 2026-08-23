@@ -111,23 +111,38 @@ func KillAllProcesses() {
 	}
 }
 
-// RunCommand executes a command and captures its output.
+// RunCommand executes a command and captures its output, stderr appended to stdout.
 // The command is grouped so that all of its descendants can be killed together
 // on shutdown.
 func RunCommand(cmd *exec.Cmd, captureOutput bool) (string, error) {
-	var stdout, stderr bytes.Buffer
-	if captureOutput {
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-	} else {
+	if !captureOutput {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
+		return "", runTracked(cmd)
 	}
 
+	stdout, stderr, err := RunCommandSplit(cmd)
+	return stdout + stderr, err
+}
+
+// RunCommandSplit runs a command like RunCommand but keeps the two streams apart, for the
+// checks that consume stdout as data rather than as a report (the parity table is generated
+// this way, and anything cargo says on stderr would corrupt it).
+func RunCommandSplit(cmd *exec.Cmd) (string, string, error) {
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := runTracked(cmd)
+	return stdout.String(), stderr.String(), err
+}
+
+// runTracked starts a command in its own process group, waits for it, and untracks it, so
+// Ctrl+C takes down the whole tree it spawned.
+func runTracked(cmd *exec.Cmd) error {
 	prepareProcessGroup(cmd)
 
 	if err := cmd.Start(); err != nil {
-		return "", err
+		return err
 	}
 	trackProcessGroup(cmd)
 
@@ -142,11 +157,7 @@ func RunCommand(cmd *exec.Cmd, captureOutput bool) (string, error) {
 	processTracker.mu.Unlock()
 	releaseProcessGroup(cmd)
 
-	output := stdout.String()
-	if stderr.Len() > 0 {
-		output += stderr.String()
-	}
-	return output, err
+	return err
 }
 
 // CommandExists checks if a command exists in PATH.

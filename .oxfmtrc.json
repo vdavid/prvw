@@ -13,5 +13,5 @@
   "printWidth": 120,
   "proseWrap": "always",
   "sortPackageJson": false,
-  "ignorePatterns": ["node_modules/", "**/dist/", "**/build/", "**/.astro/", "pnpm-lock.yaml"]
+  "ignorePatterns": ["node_modules/", "**/dist/", "**/build/", "**/.astro/", "pnpm-lock.yaml", "docs/parity.md"]
 }
