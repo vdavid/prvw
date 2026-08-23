@@ -156,11 +156,8 @@ Verify a "no callers" against those before treating a symbol as dead.
 
 Solo workflow: branch off **local** `main`, work under `.claude/worktrees/`. To land: rebase onto current local `main`
 (it usually has advanced — unpushed commits land there directly), fast-forward `main` to the branch, then delete the
-worktree + branch. A fresh worktree needs these gitignored bits copied in (git won't carry them):
+worktree + branch. One gitignored bit is worth copying in (git won't carry it):
 
-- **`build/` for integration tests:** `cp -Rc apps/desktop/build <worktree>/apps/desktop/build`. The integration tests
-  load `build/icon.png` as their fixture image; without it `app_starts_and_loads_image` (and the tests that navigate
-  from it) panic on a missing file. Tiny and instant on APFS (`-c` clones).
 - **`target/` (optional, big speedup):** `cp -Rc target <worktree>/target` from the repo root (the workspace target is
   at the root, not per-app). Deps are fingerprinted on version/features/rustc/profile, so only workspace members
   rebuild.

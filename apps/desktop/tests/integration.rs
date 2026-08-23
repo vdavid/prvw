@@ -17,12 +17,30 @@ struct TestApp {
     // test invocations (ports get recycled), leaking state like `title_bar: false` from
     // one test into another and producing flakes.
     _data_dir: tempfile::TempDir,
+    // Temp `HOME` holding the generated default fixture, for `TestApp::start`. `None` when
+    // the test supplied its own image. Kept alive for the test's duration.
+    _fixture_home: Option<tempfile::TempDir>,
 }
 
 impl TestApp {
+    /// Start the app on the default fixture: a freshly generated image, alone in its own
+    /// folder, inside a fresh temp `HOME`.
+    ///
+    /// Generating it keeps the suite self-contained (no checked-in blob, no path outside the
+    /// repo's control) and makes two things the tests already assume true by construction
+    /// rather than by luck: the fixture is the only image in its directory (so the
+    /// single-file navigation test really sees one file), and it sits one level under `HOME`
+    /// (so browse mode's tree reveal is a short, deterministic walk instead of a descent from
+    /// the real home folder).
     fn start() -> Self {
-        let test_image = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("build/icon.png");
-        Self::start_with_image(&test_image)
+        let home = tempfile::tempdir().expect("Couldn't create temp home");
+        let folder = home.path().join("pictures");
+        std::fs::create_dir(&folder).expect("Couldn't create the fixture folder");
+        let image_path = folder.join("fixture.png");
+        create_fixture_image(&image_path);
+        let mut app = Self::start_with_arg_and_home(&image_path, Some(home.path()));
+        app._fixture_home = Some(home);
+        app
     }
 
     /// Start the app with a custom image file.
@@ -38,8 +56,8 @@ impl TestApp {
     }
 
     /// Start the app with a single CLI argument (a file or directory) and an optional `HOME`
-    /// override. The `HOME` override scopes the browse tree's home root so dir-arg-launch reveal
-    /// walks are short and deterministic (the target sits directly under home).
+    /// override. The `HOME` override scopes the browse tree's home root so reveal walks are short
+    /// and deterministic (the target sits directly under home).
     fn start_with_arg_and_home(arg: &std::path::Path, home: Option<&std::path::Path>) -> Self {
         // Find a free port by binding to :0, then closing the listener
         let port = {
@@ -96,6 +114,7 @@ impl TestApp {
             base_url,
             client,
             _data_dir: data_dir,
+            _fixture_home: None,
         }
     }
 
@@ -151,7 +170,7 @@ impl Drop for TestApp {
 fn app_starts_and_loads_image() {
     let app = TestApp::start();
     let state = app.get_state();
-    assert!(state["file"].as_str().unwrap().contains("icon.png"));
+    assert!(state["file"].as_str().unwrap().contains("fixture.png"));
     assert!(state["image_width"].as_u64().unwrap() > 0);
     assert!(state["image_height"].as_u64().unwrap() > 0);
 }
@@ -424,7 +443,7 @@ fn refresh_redisplays_image() {
 fn navigate_with_single_file() {
     let app = TestApp::start();
     let before = app.get_state();
-    // icon.png is the only file in its directory, so navigate should keep it
+    // The fixture is the only file in its directory, so navigate should keep it
     app.post("/navigate", "next");
     let after = app.get_state();
     if before["total_files"].as_u64().unwrap() == 1 {
@@ -442,6 +461,23 @@ fn window_geometry_changes_size() {
     let w = state["window_width"].as_u64().unwrap();
     let h = state["window_height"].as_u64().unwrap();
     assert!(w > 0 && h > 0, "window should have positive dimensions");
+}
+
+/// The default fixture's edge length. The zoom, auto-fit, and window-geometry tests are
+/// written against this natural fit size, so changing it moves their expectations.
+const FIXTURE_SIZE: u32 = 1024;
+
+/// Write the default fixture image: a vertical grayscale ramp.
+///
+/// The ramp gives a non-degenerate histogram while staying cheap on both ends: every row is a
+/// single color, so PNG's row filter flattens all but the first and both the encode here and
+/// the decode in the app's startup path stay well under a millisecond.
+fn create_fixture_image(path: &std::path::Path) {
+    let img = image::RgbaImage::from_fn(FIXTURE_SIZE, FIXTURE_SIZE, |_, y| {
+        let value = (y * 256 / FIXTURE_SIZE) as u8;
+        image::Rgba([value, value, value, 255])
+    });
+    img.save(path).expect("Failed to save the default fixture");
 }
 
 /// Create a solid white PNG image at the given path.
