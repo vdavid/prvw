@@ -102,6 +102,9 @@ jobs:
       - name: Check the parity table
         run: ./scripts/check/check --check parity --ci
 
+      # `tests/e2e_shared.rs` compiles here but skips itself: the runner has no `DISPLAY`, so
+      # the app can't open the window every test needs. Give this job a session (`xvfb-run`)
+      # and the 41 tests start running with no change on the Rust side.
       - name: Run Rust tests
         run: ./scripts/check/check --check cargo-test --ci
 
@@ -147,9 +150,9 @@ jobs:
       - name: Run clippy
         run: ./scripts/check/check --check clippy --ci
 
-      # macOS is the only platform that runs `tests/integration.rs`: the 60 E2E tests spawn a
-      # real window and wgpu surface, so they're `#![cfg(target_os = "macos")]` and headless
-      # Linux skips them entirely.
+      # macOS is the only platform that runs the whole E2E suite: `tests/e2e_macos.rs` covers
+      # browse mode, the settings window, and the AppKit fullscreen round trip, none of which
+      # exist elsewhere. `tests/e2e_shared.rs` runs here too, and on Windows.
       - name: Run Rust tests
         run: ./scripts/check/check --check cargo-test --ci
 
@@ -210,8 +213,11 @@ jobs:
       - name: Run clippy
         run: ./scripts/check/check.exe --check clippy --ci
 
-      # Windows runs the unit tests only. The 60 E2E tests in `tests/integration.rs` are
-      # `#![cfg(target_os = "macos")]`, so the file compiles to nothing here.
+      # This is where `tests/e2e_shared.rs` first meets a Windows box: 41 E2E tests that spawn
+      # a real window and drive it through the QA server. They compile and lint for Windows
+      # (`--check windows-cross`) and have never run, so treat the first red run as news about
+      # the app or the harness, not as a reason to gate them off. `tests/e2e_macos.rs` compiles
+      # to nothing here.
       - name: Run Rust tests
         run: ./scripts/check/check.exe --check cargo-test --ci
 

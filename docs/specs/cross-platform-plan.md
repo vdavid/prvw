@@ -79,8 +79,8 @@ in M1 live.
 type-checks on a second OS.
 
 Read that carefully, though: on Linux, nextest **compiles everything and runs the platform-neutral unit tests**. It does
-not run the full suite. `tests/integration.rs:5` and `tests/color_management.rs:7` are both
-`#![cfg(target_os = "macos")]`, and a large share of unit tests used to be macOS-gated too.
+not run the full suite. The E2E suite and `tests/color_management.rs:7` were both `#![cfg(target_os = "macos")]`, and a
+large share of unit tests used to be macOS-gated too.
 
 **M0 changed the second half of that.** The five `#[cfg(all(test, target_os = "macos"))]` gates on unit tests are gone
 (step 2 removed the reason for them), so Linux and Windows now run the color, decode, and DCP unit tests. The two
@@ -308,7 +308,7 @@ Two things rule out the obvious workaround and point at a better one:
   requires NASM on x86_64 Windows. `ring` 0.17.14 is already in `Cargo.lock` via `quinn-proto` and `rustls-webpki`, so
   this is checkable locally.
 - **`reqwest` appears in exactly four places**: `updater.rs:126` and `:175` (inside the macOS-gated `updater` module,
-  `main.rs:35-36`), and `tests/integration.rs:14` and `:96`. The test harness talks **plain HTTP to `127.0.0.1`**
+  `main.rs:35-36`), and twice in the E2E harness (`tests/e2e/app.rs`). The harness talks **plain HTTP to `127.0.0.1`**
   (`qa/server.rs:42`), so it needs no TLS provider at all.
 
 So: move `reqwest` into `[target.'cfg(target_os = "macos")'.dependencies]`, and add a dev-dependency with
@@ -535,9 +535,9 @@ gates, and the docs. Two things to know before you build on it:
   `--check linux-cross`), which type-check and lint but run no tests. The first push is the real shakedown.
 
 1. ✅ **Fix the macOS CI job first.** Add clippy and `cargo nextest run` to `desktop-rust-macos` (`ci.yml:101-127`).
-   Without this, step 2 changes color behavior on macOS with zero automated coverage. Expect a shakedown: the 60 E2E
-   tests in `tests/integration.rs` spawn real GPU windows and have never run on a hosted runner, so budget a flake pass.
-   If they're too slow for every push, run them on `main` or on a schedule, but run them somewhere.
+   Without this, step 2 changes color behavior on macOS with zero automated coverage. Expect a shakedown: the 59 E2E
+   tests spawn real GPU windows and have never run on a hosted runner, so budget a flake pass. If they're too slow for
+   every push, run them on `main` or on a schedule, but run them somewhere.
 2. ✅ **Replace the macOS system sRGB profile with a generated one.** `moxcms::ColorProfile::new_srgb()`
    (`moxcms/defaults.rs:255`) plus `.encode()` gives the bytes. `src/color/profiles.rs:20` already argues for exactly
    this ("nothing to license, nothing to bundle, nothing to keep in sync") and `profiles.rs:122`
@@ -667,11 +667,22 @@ Three layers, weakest to strongest. Build all three; each catches what the other
    than implicit.
    - **Do not hand-maintain this table.** A hand-written parity doc is wrong within a month and worse than nothing,
      because it looks authoritative.
-3. **One behavioural E2E suite, run against every platform.** The strongest evidence that two implementations agree, and
-   Prvw is unusually well set up for it: `tests/integration.rs` already drives the app through the QA HTTP server rather
-   than through the UI, so the same assertions run anywhere the server runs. Split it into a platform-neutral core (the
-   assertions about observable state) and thin per-platform drivers for the parts that must poke native widgets. Layer 1
-   proves a toggle exists on both; layer 3 proves it does the same thing.
+3. ✅ **One behavioural E2E suite, run against every platform.** The strongest evidence that two implementations agree,
+   and Prvw was unusually well set up for it: the suite already drove the app through the QA HTTP server rather than
+   through the UI, so the same assertions run anywhere the server runs. Layer 1 proves a toggle exists on both; layer 3
+   proves it does the same thing.
+   - **What landed.** The one `#![cfg(target_os = "macos")]` file became `tests/e2e_shared.rs` (41 tests, no `cfg`, runs
+     wherever the app does), `tests/e2e_macos.rs` (18 tests that poke a native widget), and `tests/e2e/` (the harness
+     both share). The macOS half is browse mode's `NSOutlineView` + `NSCollectionView`, the AppKit settings window, the
+     AppKit fullscreen round trip, and the `screencapture` MCP tool.
+   - **The split is enforced, not documented.** A shared test can only get an app through `SharedApp::start`, which
+     takes the `CommandKey` names it exercises and resolves them against `GET /parity` — layer 1's own answer. `done`
+     runs it, `not applicable` skips it with the registry's reason, `missing` fails it by name. The five title-bar tests
+     are the live case: they skip off macOS with the `TitleBar` reason and start running the day a platform claims the
+     setting. `shared_suite_stays_platform_neutral` rejects `target_os` and a raw `TestApp` in the shared file.
+   - **What's proven is compilation, not behaviour.** `--check windows-cross` and `--check linux-cross` build
+     `--all-targets`, so the shared suite type-checks and lints for both. Nobody has run it on either. The Linux job
+     skips it outright while the runner has no `DISPLAY`; give that job a session and it runs.
    - Explicitly **not** doing screenshot diffing across platforms. The two UIs are supposed to look different; that's
      the entire point of option (a). Pixel comparison across platforms would be pure noise. Per-platform screenshot
      baselines are fine later, but they answer a different question.
@@ -811,14 +822,16 @@ two sit near the end only because they're smaller.
 12. **Clipboard copy** (`CF_DIB` plus `CF_HDROP`) and **drag-and-drop** onto the window via winit's `DroppedFile`, a win
     on all three platforms. Keep the "load from the original file, not our transformed buffer" decision documented in
     `platform/macos/CLAUDE.md`; that reasoning is platform-independent.
-13. **Port the E2E harness.** Drop the crate-level `#![cfg(target_os = "macos")]` in `tests/integration.rs` (60 tests)
-    and gate only the genuinely macOS-specific ones (browse mode, file associations, onboarding). Start with one test on
-    `windows-latest` to see whether WARP is fast and stable enough, then port the rest.
+13. **Run the shared E2E suite on Windows.** M0.5 layer 3 did the split: `tests/e2e_shared.rs` compiles and lints for
+    Windows today and the `desktop-rust-windows` job already runs `cargo nextest run`, so the first push is when 41
+    tests meet a Windows box for the first time. Expect that to be the work, and budget for it.
     - The harness keeps test windows out of the way with `ActivationPolicy::Prohibited` (`main.rs:164-168`), which is
       `winit::platform::macos` only. On Windows the closest thing is `WindowAttributes::with_active(false)` plus leaving
       the window un-raised; there's no app-level "cannot be activated" lever, so expect this to be less airtight.
-    - `tests/integration.rs:87` sets `HOME` for the browse tests, and `:86` canonicalizes it so prefix matching works.
-      Account for both when deciding which tests to gate.
+    - The waits are all tuned to macOS: 500 ms after startup, 150 ms after a key press, and live-sync timeouts measured
+      against FSEvents. `ReadDirectoryChangesW` has its own latency.
+    - Check WARP against the real adapter early. If a hosted runner's GPU can't hold the suite, that decides whether
+      these run on every push or on `main`.
 14. **Pin the GPU backend and revisit adapter selection.** `renderer.rs:243` uses `Backends::all()`, so which backend
     wgpu picks on a given Windows machine isn't ours to decide. M2's entire HDR plan rests on
     `SurfaceColorSpace::ExtendedSrgbLinear`, which is a **DX12** capability, so pin `Backends::DX12` on Windows here

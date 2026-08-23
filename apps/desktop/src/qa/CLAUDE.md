@@ -32,6 +32,30 @@ An in-process HTTP server for automated QA: used by E2E tests, agent-driven work
   panels. Compile-time gated by `#[cfg(all(debug_assertions, target_os = "macos"))]` so release binaries neither
   register the tool nor link the dispatch arm. Requires Screen Recording permission; macOS prompts on first invocation.
 
+## The E2E suite this server exists for
+
+The suite drives the app through this server rather than through the UI, which is what lets the same assertions run on
+every platform (layer 3 of the parity harness, `docs/specs/cross-platform-plan.md` M0.5). Three pieces:
+
+- `tests/e2e/` — the harness. `TestApp` spawns the binary and talks to this server, `fixtures` generates the images,
+  `shared` holds the gate. Compiles everywhere.
+- `tests/e2e_shared.rs` — the platform-neutral core, 41 tests. No `cfg` anywhere in it.
+- `tests/e2e_macos.rs` — 18 tests that poke a native widget: browse mode, the settings window, the AppKit fullscreen
+  round trip, `screenshot_window`.
+
+**A shared test can't reach a `TestApp` directly.** It goes through `SharedApp::start`, naming the `CommandKey`s it
+exercises, and the gate resolves them against `GET /parity` — the same registries layer 1 checks at compile time. `done`
+runs the test, `not applicable` skips it with the registry's reason, `missing` fails it by name. So a behaviour a
+platform hasn't built shows up as a red test rather than a quiet pass, and a test skipped off macOS carries the sentence
+explaining why. Adding a shared test means naming what it needs; `shared_suite_stays_platform_neutral` rejects
+`target_os` and a raw `TestApp` in that file.
+
+**What is proven, and what isn't.** Only macOS has ever run these. Windows and Linux type-check and lint them
+(`./scripts/check.sh --check windows-cross` / `--check linux-cross` build `--all-targets`), which is a real guarantee
+about the harness compiling and a claim about nothing else. The Linux job skips the shared suite while its runner has no
+`DISPLAY`, because the app can't open a window there; give the job a session and it runs. The waits are all tuned to
+macOS. `tests/e2e/mod.rs` carries the full caveat list.
+
 ## Env vars
 
 - `PRVW_QA_PORT`: port to bind (default 19447). `0` disables the server.
@@ -47,6 +71,10 @@ An in-process HTTP server for automated QA: used by E2E tests, agent-driven work
   the build runs on, so it can't go stale (the hand-kept constant it replaced had, and was missing six items). It's
   `pub(super)` in `http.rs` because `mcp::mcp_resources_read` serves the same text at `prvw://menu`. Shortcuts aren't
   listed: `input::key_to_command` owns the keyboard.
+- **`content_offset_y` in `/state`** is the logical pixels reserved at the top before content starts, from
+  `App::content_offset_y`. It's non-zero only where the window draws behind its own title bar, so macOS today. Overlay
+  geometry hangs off it, which is why it's in the contract: a test aiming at the histogram reads it rather than assuming
+  a platform's value.
 - **`GET /parity`** serves the whole parity table (settings, menu items, commands, each platform's status and any
   `NotApplicable` reason) from `parity::report`. It answers the same on every host, because the registries carry no
   `#[cfg]`.
@@ -60,9 +88,9 @@ light) drive the two window-zoom paths without synthesizing OS mouse input. All 
 `#[cfg(all(debug_assertions, target_os = "macos"))]`, like `screenshot_window`.
 
 They exist because window-chrome bugs are invisible to `/state`: the traffic lights' clickable rect drifting away from
-their drawing, or a window keeping its fullscreen appearance after a restore, only show up in the AppKit geometry.
-`windowed_mode_blocks_appkit_from_starting_a_fullscreen_transition` (in `tests/integration.rs`) reads
-`collectionBehavior` out of this dump.
+their drawing, or a window keeping its fullscreen appearance after a restore, only show up in the AppKit geometry. No
+E2E test reads the dump today; `fullscreen_state_survives_a_round_trip_appkit_drove` (in `tests/e2e_macos.rs`) covers
+the restore case through `/state` instead.
 
 ## Browse-mode observability + driving hooks
 
@@ -91,8 +119,10 @@ before its stream started.
 
 That gap is a flake factory. `/state` answers before the watcher even exists, so a test that mutates a folder right
 after startup can get no event at all and then wait out its whole timeout, and the busier the machine the likelier that
-is. Every `live_sync_*` test in `tests/integration.rs` polls `TestApp::wait_for_watch` on its folder before touching it.
-Do the same in any new live-sync test; a `sleep` here only hides the race.
+is. Every `live_sync_*` test polls `TestApp::wait_for_watch` on its folder before touching it. Do the same in any new
+live-sync test; a `sleep` here only hides the race. (`folder_watch` rides the `notify` crate, so the backend is
+FSEvents, `ReadDirectoryChangesW`, or inotify depending on the host. The race and the barrier are the same on all three;
+only the latency differs.)
 
 The list is only worth blocking on if it can never name a dead watch, so `folder_watch::record_watch_outcome` arms a
 folder on exactly one outcome — a `Watch` that `notify` accepted — and disarms it on every other, a failed re-watch of

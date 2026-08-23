@@ -76,6 +76,9 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 - All Go checks: `./scripts/check.sh --go`
 - All checks: `./scripts/check.sh`
 - Specific Rust tests by name: `cd apps/desktop && cargo test <test_name>`
+- **E2E tests** spawn the real binary and drive it through the QA HTTP server. `tests/e2e_shared.rs` runs on every
+  platform, `tests/e2e_macos.rs` holds what has to poke a native widget, and `tests/e2e/` is the harness. A shared test
+  names the actions it exercises and the parity registries decide whether the host runs it: see `src/qa/CLAUDE.md`.
 - On Windows, `scripts/check.ps1` replaces `check.sh` (which is bash). Same flags, same exit code, same Go runner.
 - CI: Runs on PRs and pushes to main for changed files. A Rust change runs clippy and the tests on Linux, macOS, and
   Windows. Full run: Actions -> CI -> "Run workflow".
@@ -173,8 +176,8 @@ worktree + branch. One gitignored bit is worth copying in (git won't carry it):
   at the root, not per-app). Deps are fingerprinted on version/features/rustc/profile, so only workspace members
   rebuild.
 
-The integration-test windows open unfocused and behind everything (the harness sets `PRVW_BACKGROUND_WINDOW`), so a run
-won't grab your keystrokes. See `window::background_window_requested`.
+The E2E test windows open unfocused and behind everything (the harness sets `PRVW_BACKGROUND_WINDOW`), so a run won't
+grab your keystrokes. See `window::background_window_requested`.
 
 ## Workflow
 

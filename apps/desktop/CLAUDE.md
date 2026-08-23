@@ -93,4 +93,6 @@ See `platform/macos/CLAUDE.md` for the full list. Short version:
 
 - All Rust checks: `./scripts/check.sh --rust`
 - Specific test: `cd apps/desktop && cargo test <test_name>`
-- Integration tests drive the QA server; see `tests/integration.rs` and `qa/CLAUDE.md`.
+- E2E tests drive the QA server, split in two: `tests/e2e_shared.rs` runs on every platform, `tests/e2e_macos.rs` holds
+  what has to poke a native widget, and `tests/e2e/` is the harness both share. A shared test names the actions it
+  exercises and the parity registries decide whether the host runs it. See `qa/CLAUDE.md` and `tests/e2e/mod.rs`.

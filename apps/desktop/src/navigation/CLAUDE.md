@@ -213,8 +213,9 @@ must not block the loop). The result returns as `AppCommand::ActiveFolderRescann
   canvas), and flags `no_images_empty_state` so `render_frame` draws the centered "(No images)" glyphon overlay. The
   watch stays on the folder, so a newly-added image clears the empty state and opens (`Navigate { 0 }`).
 
-`SharedAppState.no_images` (and the `/state` `no_images` field) expose the empty state to QA/tests; the integration
-tests (`live_sync_*` in `tests/integration.rs`) drive the real FSEvents watcher with a temp folder.
+`SharedAppState.no_images` (and the `/state` `no_images` field) expose the empty state to QA/tests; the image-mode
+`live_sync_*` tests (in `tests/e2e_shared.rs`, so they run wherever the app does) drive the real watcher with a temp
+folder.
 
 **Requested is not armed.** `retarget_active_folder_watch` only queues the watch; the worker applies it, and FSEvents
 reports nothing that happened before its stream started. `/state`'s `watched_folders` lists what's actually applied, and

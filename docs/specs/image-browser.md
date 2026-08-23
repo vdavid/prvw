@@ -234,8 +234,8 @@ reviewed visually with David. The grid uses a fixed cell size until then; the de
 
 - **Headless unit tests:** the scheduler's nearest-first ordering + scroll re-prioritization, the 128 MB cache eviction,
   and the pure browse logic (reveal chain, launch classification, grid-preselect/reveal index, focus transitions).
-- **Integration tests** (`tests/integration.rs`, driven through the QA server, macOS-only): mode switch (Enter/Esc),
-  dir-arg launch booting into browse with the folder revealed + listed, selecting a folder by path lists its images, the
+- **E2E tests** (`tests/e2e_macos.rs`, driven through the QA server, macOS-only): mode switch (Enter/Esc), dir-arg
+  launch booting into browse with the folder revealed + listed, selecting a folder by path lists its images, the
   empty-folder zero-count + non-focusable grid, Tab focus flips reflected in `focused_pane`, the grid-selection → open
   round-trip, and entering browse from an image preselecting it. They poll `/state` (`browse_reveal_pending == false` +
   `browse_grid_count`) for a non-flaky barrier, each with its own temp `HOME` so the tree's home root scopes a short

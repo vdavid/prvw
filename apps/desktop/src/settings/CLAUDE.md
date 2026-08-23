@@ -54,7 +54,9 @@ of the data model in the registry, and no settings row anywhere that isn't named
    add a field to the panel's output struct and plumb the pointer into `SettingsDelegateIvars` in `window.rs`. Wire
    `setTarget`/`setAction` there too.
 9. QA/MCP: `qa/http.rs` + `qa/mcp.rs`.
-10. Integration test: `tests/integration.rs`.
+10. E2E test: `tests/e2e_shared.rs` if the setting's behaviour is observable through `/state` on any platform (name the
+    `CommandKey` in `SharedApp::start` and let the registry decide who runs it), `tests/e2e_macos.rs` if asserting it
+    means poking the AppKit form.
 
 ### Why a row can't skip the registry
 
