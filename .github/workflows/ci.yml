@@ -150,6 +150,68 @@ jobs:
         run: ./scripts/check/check --check cargo-test --ci
 
   # ===========================================
+  # Desktop app - Windows
+  # ===========================================
+  desktop-rust-windows:
+    name: Desktop (Rust, Windows)
+    runs-on: windows-latest
+    # Windows builds this crate roughly twice as slowly as the other two runners, and
+    # clippy and the test run don't share artifacts, so the budget is the loosest here.
+    timeout-minutes: 60
+    needs: changes
+    if: inputs.run_all || needs.changes.outputs.rust == 'true'
+
+    # Spelled out rather than relying on the runner default, since every command below is
+    # PowerShell rather than the bash the rest of this file assumes.
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install mise
+        uses: jdx/mise-action@1648a7812b9aeae629881980618f079932869151 # v4
+
+      - name: Install tools with mise
+        run: mise install
+
+      - name: Cache Cargo
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/registry/cache
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # Prebuilt binary, for the same reason as the Linux job. Windows ships it as a zip
+      # instead of a tarball, and `~/.cargo/bin` is already on the runner's PATH.
+      - name: Install cargo-nextest
+        run: |
+          Invoke-WebRequest -Uri https://get.nexte.st/0.9.143/windows -OutFile nextest.zip
+          Expand-Archive -Path nextest.zip -DestinationPath "$env:USERPROFILE\.cargo\bin" -Force
+          Remove-Item nextest.zip
+
+      # `-o check.exe`, not `-o check`: `go build` writes exactly the name it's given, and
+      # PowerShell won't run an extensionless file.
+      - name: Build check tool
+        run: go build -o check.exe .
+        working-directory: ./scripts/check
+
+      # Same two steps as the macOS job, for the same reasons: clippy runs `--all-targets`,
+      # and the test run links `prvw.exe` (cargo builds bin targets alongside the integration
+      # test), so a separate `cargo build` would add a third compile for no new signal.
+      # rustfmt is platform-independent and stays on the Linux job.
+      - name: Run clippy
+        run: ./scripts/check/check.exe --check clippy --ci
+
+      # Windows runs the unit tests only. The 60 E2E tests in `tests/integration.rs` are
+      # `#![cfg(target_os = "macos")]`, so the file compiles to nothing here.
+      - name: Run Rust tests
+        run: ./scripts/check/check.exe --check cargo-test --ci
+
+  # ===========================================
   # Website
   # ===========================================
   website:
@@ -302,7 +364,7 @@ jobs:
     name: CI OK
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [desktop-rust, desktop-rust-macos, website, scripts, changelog]
+    needs: [desktop-rust, desktop-rust-macos, desktop-rust-windows, website, scripts, changelog]
     if: always()
     steps:
       - name: Check all jobs passed
