@@ -14,8 +14,15 @@
 //!
 //! The debounce/coalesce logic is the pure, headless-tested `Coalescer`; the thread is a thin
 //! timing shell around it.
+//!
+//! Watching is asynchronous: `watch(path)` queues a request and the thread applies it. Because
+//! FSEvents only reports changes made after its stream starts, "requested" and "armed" are
+//! different states, and a change made in between is lost. So the thread posts
+//! `AppCommand::WatchedFoldersChanged` with the set it has actually applied, which the QA state
+//! exposes as `watched_folders` — the barrier the live-sync E2E tests wait on before touching a
+//! folder.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -187,9 +194,13 @@ fn watch_loop(
     proxy: EventLoopProxy<AppCommand>,
 ) {
     let mut coalescer = Coalescer::new();
+    // Folders whose `notify` watch is applied and live, mirrored to the main thread whenever it
+    // changes. `notify`'s macOS backend returns from `watch` only once the FSEvents stream covering
+    // the path has started, so membership here means events are actually flowing.
+    let mut armed = BTreeSet::new();
     loop {
         // Always service pending control messages first so a re-target takes effect promptly.
-        drain_control(&mut watcher, &control_rx);
+        drain_control(&mut watcher, &control_rx, &mut armed, &proxy);
 
         let recv = if coalescer.is_empty() {
             // Nothing buffered — block until the next event (or a control nudge wakes us via the
@@ -239,7 +250,13 @@ fn watch_loop(
 
 /// Apply every queued watch/unwatch request. Errors are logged, not fatal — a folder that vanished
 /// between request and apply just fails to watch.
-fn drain_control(watcher: &mut notify::RecommendedWatcher, control_rx: &mpsc::Receiver<Control>) {
+fn drain_control(
+    watcher: &mut notify::RecommendedWatcher,
+    control_rx: &mpsc::Receiver<Control>,
+    armed: &mut BTreeSet<PathBuf>,
+    proxy: &EventLoopProxy<AppCommand>,
+) {
+    let mut changed = false;
     while let Ok(msg) = control_rx.try_recv() {
         match msg {
             Control::Watch(path) => {
@@ -247,6 +264,7 @@ fn drain_control(watcher: &mut notify::RecommendedWatcher, control_rx: &mpsc::Re
                     log::debug!("Failed to watch {}: {e}", path.display());
                 } else {
                     log::debug!("Watching {}", path.display());
+                    changed |= armed.insert(path);
                 }
             }
             Control::Unwatch(path) => {
@@ -255,8 +273,16 @@ fn drain_control(watcher: &mut notify::RecommendedWatcher, control_rx: &mpsc::Re
                 } else {
                     log::debug!("Unwatched {}", path.display());
                 }
+                // Drop it either way: a folder that failed to unwatch (already gone, never
+                // watched) isn't delivering events, so reporting it as armed would be a lie.
+                changed |= armed.remove(&path);
             }
         }
+    }
+    if changed {
+        let _ = proxy.send_event(AppCommand::WatchedFoldersChanged {
+            folders: armed.iter().cloned().collect(),
+        });
     }
 }
 

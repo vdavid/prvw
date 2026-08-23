@@ -159,6 +159,11 @@ pub(crate) struct App {
     /// The folder currently being watched by `folder_watcher`, so a re-target can unwatch the old
     /// one before watching the new one. `None` before the first watch or in the empty state.
     pub(crate) watched_folder: Option<PathBuf>,
+    /// The folders whose watch the `folder_watch` worker has actually applied, as reported by
+    /// `AppCommand::WatchedFoldersChanged`. Lags `watched_folder` / `watched_tree_folders` (those
+    /// are requests; this is what FSEvents is really delivering for) and exists to be exposed as
+    /// `watched_folders` in shared state.
+    pub(crate) armed_watch_folders: Vec<PathBuf>,
     /// True when image mode is showing the "(No images)" empty state (the active folder has no
     /// images — e.g. the last one was deleted). Drives a clean black canvas + centered overlay.
     /// Cleared when an image is displayed (leaving the folder, or one appears).
@@ -251,6 +256,7 @@ impl App {
             _qa_handle: None,
             folder_watcher: None,
             watched_folder: None,
+            armed_watch_folders: Vec::new(),
             no_images_empty_state: false,
             rescan_lister: None,
             pending_modified: Vec::new(),

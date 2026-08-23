@@ -188,6 +188,10 @@ must not block the loop). The result returns as `AppCommand::ActiveFolderRescann
 `SharedAppState.no_images` (and the `/state` `no_images` field) expose the empty state to QA/tests; the integration
 tests (`live_sync_*` in `tests/integration.rs`) drive the real FSEvents watcher with a temp folder.
 
+**Requested is not armed.** `retarget_active_folder_watch` only queues the watch; the worker applies it, and FSEvents
+reports nothing that happened before its stream started. `/state`'s `watched_folders` lists what's actually applied, and
+every `live_sync_*` test polls it (`TestApp::wait_for_watch`) before mutating its folder. See `qa/CLAUDE.md`.
+
 ## Gotcha/Why: shared state on neighbour-only Ready
 
 `poll_preloader` only used to call `update_shared_state` when the arrived index matched `pending_current`. Background

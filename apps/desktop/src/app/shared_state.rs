@@ -87,6 +87,11 @@ pub struct SharedAppState {
     /// e.g. the last one was deleted via live folder sync). Lets QA/tests assert the empty state
     /// without a screenshot.
     pub no_images: bool,
+    /// The folders whose live-sync watch is armed — the FSEvents stream covering them has started,
+    /// so changes will be reported. Sorted. Tests poll for their folder to appear here before
+    /// mutating it; a change made before the stream starts is never delivered, so this is the
+    /// non-flaky barrier for live folder sync (the counterpart of `browse_reveal_pending`).
+    pub watched_folders: Vec<String>,
 }
 
 /// Snapshot of the preview scheduler, mirrored into shared state so the
@@ -161,6 +166,7 @@ impl Default for SharedAppState {
             browse_grid_count: 0,
             browse_reveal_pending: false,
             no_images: false,
+            watched_folders: Vec::new(),
         }
     }
 }
@@ -201,6 +207,11 @@ impl App {
         state.browse_grid_selected = self.browser.grid_selected();
         state.browse_grid_count = self.browser.grid_count();
         state.browse_reveal_pending = self.browser.reveal_pending();
+        state.watched_folders = self
+            .armed_watch_folders
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         // Cache is keyed by `PathBuf` (path-key refactor). For the QA/MCP
         // contract we still expose `cache_indices` — translate cached
         // paths back to directory indices via the current `dir_list`.

@@ -226,6 +226,7 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "browse_grid_count": s.browse_grid_count,
         "browse_reveal_pending": s.browse_reveal_pending,
         "no_images": s.no_images,
+        "watched_folders": s.watched_folders,
         "cache_indices": s.cache_indices,
         "window_x": s.window_x,
         "window_y": s.window_y,

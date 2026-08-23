@@ -138,6 +138,33 @@ impl TestApp {
             .expect("Failed to parse state JSON")
     }
 
+    /// Block until the app's live-sync watch on `folder` is armed, then return.
+    ///
+    /// `/state` answers well before the folder watcher exists, let alone before its FSEvents
+    /// stream starts, and FSEvents reports only what happens after the stream starts. A test that
+    /// mutates the folder in that window gets no event at all and then waits out its full
+    /// timeout — the single biggest source of flakes in this file, and one that gets worse the
+    /// busier the machine is. `watched_folders` reports what the watcher thread has actually
+    /// applied, so polling it closes the race instead of sleeping at it.
+    fn wait_for_watch(&self, folder: &std::path::Path) {
+        let canonical = std::fs::canonicalize(folder).unwrap_or_else(|_| folder.to_path_buf());
+        let wanted = canonical.to_string_lossy().into_owned();
+        let start = Instant::now();
+        loop {
+            let state = self.get_state();
+            let armed = state["watched_folders"]
+                .as_array()
+                .is_some_and(|f| f.iter().any(|p| p.as_str() == Some(wanted.as_str())));
+            if armed {
+                return;
+            }
+            if start.elapsed() > Duration::from_secs(10) {
+                panic!("Live-sync watch on {wanted} was never armed, state: {state}");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     fn post(&self, path: &str, body: &str) -> serde_json::Value {
         self.client
             .post(format!("{}{path}", self.base_url))
@@ -1607,6 +1634,9 @@ fn live_sync_added_image_grows_the_sequence() {
     let (dir, first) = create_multi_image_dir(3); // img-00..img-02
     let app = TestApp::start_with_image(&first);
     assert_eq!(app.get_state()["total_files"].as_u64(), Some(3));
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(dir.path());
 
     // Add a 4th image to the watched folder.
     write_png(&dir.path().join("img-03.png"), 9);
@@ -1629,6 +1659,9 @@ fn live_sync_delete_non_current_drops_it_and_keeps_current() {
     let (dir, first) = create_multi_image_dir(3); // img-00 (current) .. img-02
     let app = TestApp::start_with_image(&first);
     assert_eq!(app.get_state()["total_files"].as_u64(), Some(3));
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(dir.path());
 
     // Delete img-02 (not the current image).
     std::fs::remove_file(dir.path().join("img-02.png")).unwrap();
@@ -1646,6 +1679,9 @@ fn live_sync_delete_non_current_drops_it_and_keeps_current() {
 fn live_sync_delete_current_navigates_to_next() {
     let (dir, first) = create_multi_image_dir(3); // img-00 (current) .. img-02
     let app = TestApp::start_with_image(&first);
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(dir.path());
 
     // Delete the current image (img-00). Should navigate to the next (img-01).
     std::fs::remove_file(dir.path().join("img-00.png")).unwrap();
@@ -1670,6 +1706,9 @@ fn live_sync_delete_last_image_shows_empty_state() {
     write_png(&only, 5);
     let app = TestApp::start_with_image(&only);
     assert_eq!(app.get_state()["total_files"].as_u64(), Some(1));
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(dir.path());
 
     // Delete the only image → image-mode "(No images)" empty state.
     std::fs::remove_file(&only).unwrap();
@@ -1695,6 +1734,9 @@ fn live_sync_empty_state_recovers_when_an_image_appears() {
     let only = dir.path().join("only.png");
     write_png(&only, 5);
     let app = TestApp::start_with_image(&only);
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(dir.path());
 
     std::fs::remove_file(&only).unwrap();
     wait_for_state(&app, Duration::from_secs(8), |s| {
@@ -1717,6 +1759,9 @@ fn live_sync_modify_current_re_decodes_in_place() {
     let app = TestApp::start_with_image(&first);
     // img-00 is 8x8 (create_multi_image_dir). Confirm.
     assert_eq!(app.get_state()["image_width"].as_u64(), Some(8));
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(dir.path());
 
     // Overwrite the current image with a different-sized image. The watcher should evict + re-decode
     // it, and the displayed dimensions should update to the new size.
@@ -1752,6 +1797,9 @@ fn live_sync_browse_grid_grows_when_an_image_is_added() {
     let (home, images, _empty) = create_browse_home(4);
     let app = TestApp::start_browse_dir(&images, home.path());
     wait_for_browse_listed(&app, 4, Duration::from_secs(8));
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(&images);
 
     write_png(&images.join("img-99.png"), 13);
 
@@ -1775,6 +1823,9 @@ fn live_sync_browse_grid_shrinks_when_a_non_selected_image_is_deleted() {
     let app = TestApp::start_browse_dir(&images, home.path());
     wait_for_browse_listed(&app, 4, Duration::from_secs(8));
     assert_eq!(app.get_state()["browse_grid_selected"].as_u64(), Some(0));
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(&images);
 
     std::fs::remove_file(images.join("img-03.png")).unwrap();
 
@@ -1804,6 +1855,9 @@ fn live_sync_browse_grid_keeps_selection_by_path_when_an_earlier_image_is_delete
         s["browse_grid_selected"].as_u64() == Some(2)
     });
     assert_eq!(state["browse_grid_selected"].as_u64(), Some(2));
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(&images);
 
     std::fs::remove_file(images.join("img-00.png")).unwrap();
 
@@ -1826,6 +1880,9 @@ fn live_sync_browse_grid_empties_when_all_images_are_deleted() {
     let (home, images, _empty) = create_browse_home(2);
     let app = TestApp::start_browse_dir(&images, home.path());
     wait_for_browse_listed(&app, 2, Duration::from_secs(8));
+    // Live sync only reports what happens after the FSEvents stream starts, so wait for the
+    // watch to be armed before touching the folder.
+    app.wait_for_watch(&images);
 
     std::fs::remove_file(images.join("img-00.png")).unwrap();
     std::fs::remove_file(images.join("img-01.png")).unwrap();
