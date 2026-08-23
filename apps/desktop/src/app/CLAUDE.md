@@ -16,8 +16,9 @@ App holds three per-feature State structs (`zoom`, `color`, `navigation`) plus t
   `histogram: histogram::State`, `exif_overlay: exif_overlay::State`, `slideshow: slideshow::State`,
   `browser: browser::State` (browse mode — `ViewMode`, `focused_pane`, tree selection, grid selection, native handles).
   Each feature's runtime + setting-backed fields live in its own module.
-- **Launch**: `file_path`, `explicit_files`, `waiting_for_file`, `launch_directory` (a lone directory CLI arg → boot
-  into browse mode at that folder; see `browser::classify_launch_target` and `initialize_viewer`), `wait_start`.
+- **Launch**: `file_path`, `explicit_files`, `waiting_for_file`, `launch_directory` (a lone directory CLI arg → browse
+  mode on macOS, the folder's images in image mode elsewhere; see `browser::classify_launch_target`, `launch`, and
+  `initialize_viewer`), `wait_start`, `empty_state` (why image mode is showing no image, if it isn't).
 - **Handles**: `window`, `renderer`, `app_menu`.
 - **Cross-cutting toggle**: `title_bar` (affects window chrome, not enough to justify its own feature state struct).
 - **Runtime input**: `modifiers`, `drag_start`, `last_mouse_pos`, `last_click_time`, `needs_redraw`, `scale_factor`.

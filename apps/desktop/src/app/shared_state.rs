@@ -97,6 +97,10 @@ pub struct SharedAppState {
     /// e.g. the last one was deleted via live folder sync). Lets QA/tests assert the empty state
     /// without a screenshot.
     pub no_images: bool,
+    /// Why image mode is showing no image (`app::EmptyState::name`), or `None` while it shows
+    /// one. `"no_images"` is the same state `no_images` reports; `"nothing_open"` is the launch
+    /// that named nothing, which only the platforms without onboarding put up.
+    pub empty_state: Option<&'static str>,
     /// The folders whose live-sync watch is armed, meaning the FSEvents stream covering them has
     /// started and changes will be reported. Sorted. Tests poll for their folder to appear here before
     /// mutating it; a change made before the stream starts is never delivered, so this is the
@@ -178,6 +182,7 @@ impl Default for SharedAppState {
             browse_grid_count: 0,
             browse_reveal_pending: false,
             no_images: false,
+            empty_state: None,
             watched_folders: Vec::new(),
         }
     }
@@ -266,14 +271,15 @@ impl App {
             state.current_file = Some(dir.current().to_path_buf());
             state.current_index = dir.current_index();
             state.total_files = dir.len();
-        } else if self.no_images_empty_state {
-            // Image-mode "(No images)" empty state — the active folder has no images. Clear the
-            // stale current image so `/state` reflects it for QA/tests.
+        } else if self.empty_state.is_some() {
+            // Image mode is showing no image. Clear the stale current image so `/state`
+            // reflects it for QA/tests.
             state.current_file = None;
             state.current_index = 0;
             state.total_files = 0;
         }
-        state.no_images = self.no_images_empty_state;
+        state.empty_state = self.empty_state.map(super::EmptyState::name);
+        state.no_images = self.empty_state == Some(super::EmptyState::NoImages);
 
         if let Some((iw, ih)) = self.navigation.current_image_size {
             state.image_width = iw;

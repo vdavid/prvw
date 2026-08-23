@@ -1166,6 +1166,9 @@ fn live_sync_delete_last_image_shows_empty_state() {
         "empty state clears the current file"
     );
     assert_eq!(state["total_files"].as_u64(), Some(0));
+    // `empty_state` names which empty state it is, so the launch one ("nothing_open", the
+    // window a no-argument launch puts up) can't be mistaken for this one.
+    assert_eq!(state["empty_state"].as_str(), Some("no_images"));
 }
 
 #[test]
@@ -1189,6 +1192,10 @@ fn live_sync_empty_state_recovers_when_an_image_appears() {
         s["no_images"].as_bool() == Some(false) && s["total_files"].as_u64() == Some(1)
     });
     assert_eq!(state["no_images"].as_bool(), Some(false));
+    assert!(
+        state["empty_state"].is_null(),
+        "an image on screen is no empty state at all, got {state}"
+    );
     assert_eq!(state["total_files"].as_u64(), Some(1));
     assert!(state["file"].as_str().unwrap().contains("fresh"));
 }

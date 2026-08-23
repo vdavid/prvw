@@ -67,6 +67,51 @@ fn apply_custom_dcp_dir(dir: Option<&str>) {
     }
 }
 
+/// Why image mode is showing no image. Both draw a clean black canvas with one centered
+/// overlay; only the words differ, because only the way out differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EmptyState {
+    /// Nothing has been opened yet: a launch that named no file and no folder. Off macOS only,
+    /// since macOS waits for Finder's Apple Event and shows onboarding meanwhile
+    /// (`launch::waits_for_a_file`). The overlay says how to open something, and a click
+    /// anywhere does it.
+    NothingOpen,
+    /// The active folder has no images: the last one was deleted under live folder sync, or a
+    /// folder argument held none. On the live-sync route the folder stays watched, so an image
+    /// appearing there opens by itself; on the launch route nothing was ever watched.
+    NoImages,
+}
+
+impl EmptyState {
+    /// The name `/state` reports it under, for QA and the E2E suite.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            EmptyState::NothingOpen => "nothing_open",
+            EmptyState::NoImages => "no_images",
+        }
+    }
+
+    /// The centered overlay's text.
+    fn overlay(self) -> &'static str {
+        match self {
+            // Draft copy, for David to review. It opens the way `docs/specs/windows-ui-design.md`
+            // asks ("Open an image to start") and then names both ways in, because off macOS
+            // there's no menu bar attached to advertise File → Open (M4 for Windows, a spec of
+            // its own for Linux). One line, because the pill behind it is one line high
+            // (`render::text`). M6 is where the icon and the default-handler line join it, and
+            // M1 step 12 is where "or drop one here" becomes true.
+            EmptyState::NothingOpen => {
+                if cfg!(target_os = "macos") {
+                    "Open an image to start: click or press \u{2318}O"
+                } else {
+                    "Open an image to start: click or press Ctrl+O"
+                }
+            }
+            EmptyState::NoImages => "(No images)",
+        }
+    }
+}
+
 /// Application state, created before the event loop starts.
 /// The window and renderer are initialized in `resumed()` (required by winit 0.30 on macOS).
 pub(crate) struct App {
@@ -164,10 +209,10 @@ pub(crate) struct App {
     /// are requests; this is what FSEvents is really delivering for) and exists to be exposed as
     /// `watched_folders` in shared state.
     pub(crate) armed_watch_folders: Vec<PathBuf>,
-    /// True when image mode is showing the "(No images)" empty state (the active folder has no
-    /// images — e.g. the last one was deleted). Drives a clean black canvas + centered overlay.
-    /// Cleared when an image is displayed (leaving the folder, or one appears).
-    pub(crate) no_images_empty_state: bool,
+    /// Why image mode is showing no image, or `None` while it's showing one. Drives a clean
+    /// black canvas plus one centered overlay. Cleared when an image is displayed (leaving the
+    /// folder, opening a file, or one appearing in the watched folder).
+    pub(crate) empty_state: Option<EmptyState>,
     /// Background worker that re-scans the active folder off the main thread on a `FolderChanged`,
     /// posting `ActiveFolderRescanned` back. `None` until the viewer initializes.
     pub(crate) rescan_lister: Option<crate::folder_watch::RescanLister>,
@@ -257,7 +302,7 @@ impl App {
             folder_watcher: None,
             watched_folder: None,
             armed_watch_folders: Vec::new(),
-            no_images_empty_state: false,
+            empty_state: None,
             rescan_lister: None,
             pending_modified: Vec::new(),
             #[cfg(target_os = "macos")]
@@ -608,16 +653,36 @@ impl App {
         // The browse grid lists folder images in the same order, so opening a grid item lands on
         // the matching image-mode index.
         self.browser.set_sort_by(initial_sort_by);
-        // A directory launch boots into browse mode (handled at the end of this function), so there
-        // is no initial image and no directory list yet — the user opens one from the grid.
         let launch_directory = self.launch_directory.take();
-        self.navigation.dir_list = if launch_directory.is_some() {
-            None
+        self.navigation.dir_list = if let Some(dir) = &launch_directory {
+            // A folder argument. macOS boots into browse mode at it (handled at the end of this
+            // function), so there's no list and no initial image — the user opens one from the
+            // grid. No other platform has a browser yet (M5), and a window with no image and no
+            // way to get one is the defect M1 step 1 exists to fix, so the folder becomes an
+            // image-mode playlist instead: its images in the user's sort order, starting at the
+            // first. A folder with no images lands in the "(No images)" empty state below, and
+            // Cmd/Ctrl+O is the way out of it.
+            if cfg!(target_os = "macos") {
+                None
+            } else {
+                let images = crate::launch::images_in(dir);
+                log::info!(
+                    "Folder launch: {} image(s) in {}",
+                    images.len(),
+                    dir.display()
+                );
+                (!images.is_empty())
+                    .then(|| directory::DirectoryList::from_explicit(images, initial_sort_by))
+            }
         } else if let Some(files) = self.explicit_files.take() {
             Some(directory::DirectoryList::from_explicit(
                 files,
                 initial_sort_by,
             ))
+        } else if self.file_path.as_os_str().is_empty() {
+            // A launch that named nothing. The window still comes up; the empty state below
+            // says how to open something.
+            None
         } else {
             directory::DirectoryList::from_file(&self.file_path, initial_sort_by)
         };
@@ -653,10 +718,31 @@ impl App {
         // stays on the synchronous decode (fast enough not to need it). Skipped
         // for a directory launch — there's no initial image; browse mode opens
         // below and the user picks one from the grid.
-        if launch_directory.is_none() {
-            let initial_path = self.file_path.clone();
+        let initial_path = if !self.file_path.as_os_str().is_empty() {
+            Some(self.file_path.clone())
+        } else {
+            // A folder launch off macOS: no single file was named, so the list decides which
+            // image opens. `None` when the folder had none, or when browse mode is about to
+            // open over it (macOS).
+            self.navigation
+                .dir_list
+                .as_ref()
+                .map(|dir| dir.current().to_path_buf())
+        };
+        if let Some(initial_path) = initial_path {
             self.display_initial_image(&initial_path);
             self.warm_initial_neighbors();
+        } else if launch_directory.is_none() {
+            // Nothing was named at all. macOS never reaches this (it waits for Finder's Apple
+            // Event instead, see `launch::waits_for_a_file`); everywhere else this is the
+            // window that used to not exist.
+            self.empty_state = Some(EmptyState::NothingOpen);
+        } else if !cfg!(target_os = "macos") {
+            // A folder argument holding no images. Cmd/Ctrl+O is the way out. Unlike the
+            // live-sync route into this state, nothing watches the folder: the image-list watch
+            // follows the current image (`active_folder`) and there has never been one, so an
+            // image dropped in there won't open by itself.
+            self.empty_state = Some(EmptyState::NoImages);
         }
 
         // Pause the preview scheduler while the initial primary decode is
@@ -1145,7 +1231,7 @@ impl App {
                         sort_by,
                         index,
                     ));
-                self.no_images_empty_state = false;
+                self.empty_state = None;
                 // The index map shifted (adds/removes around the current image), so re-seed the
                 // preview folder + refresh the preload window against the new list.
                 self.reseed_after_rescan(index);
@@ -1167,7 +1253,7 @@ impl App {
                         sort_by,
                         index,
                     ));
-                self.no_images_empty_state = false;
+                self.empty_state = None;
                 self.navigation.pending_current = None;
                 self.navigation.last_direction = crate::navigation::directory::Direction::Unknown;
                 self.reseed_after_rescan(index);
@@ -1267,7 +1353,7 @@ impl App {
         self.navigation.dir_list = None;
         self.navigation.pending_current = None;
         self.navigation.current_image_size = None;
-        self.no_images_empty_state = true;
+        self.empty_state = Some(EmptyState::NoImages);
         if let Some(renderer) = &mut self.renderer {
             renderer.clear_image();
         }
@@ -1786,7 +1872,7 @@ impl App {
             // blocks the main thread on a full decode. With no image at all (nothing ever opened),
             // the renderer's black image-area fill keeps the canvas clean — never stale.
             if self.navigation.dir_list.is_some() {
-                self.no_images_empty_state = false;
+                self.empty_state = None;
                 self.display_open_target();
                 // Warm neighbors so arrow-key nav is instant (cache-miss queues them after `Ready`;
                 // this covers the cache-hit case where no `Ready` fires).
@@ -2460,12 +2546,11 @@ impl App {
         let mut text_blocks = self.build_text_overlay();
         let offset = self.content_offset_y();
 
-        // Image-mode "(No images)" empty state: a centered overlay on the clean black canvas
-        // (`enter_no_images_state` cleared the bound image, so the renderer fills the image area
-        // with opaque black). Built here, not in `build_text_overlay`, because that early-returns
-        // when there's no current image — exactly the empty-state case. Same glyphon pill styling
-        // as the "Loading…" overlay.
-        if self.no_images_empty_state
+        // The empty state: a centered overlay on the clean black canvas (nothing is bound to
+        // the renderer, so it fills the image area with opaque black). Built here, not in
+        // `build_text_overlay`, because that early-returns when there's no current image —
+        // exactly the empty-state case. Same glyphon pill styling as the "Loading…" overlay.
+        if let Some(empty_state) = self.empty_state
             && let Some(rend) = &self.renderer
         {
             let logical_width = rend.logical_width();
@@ -2473,7 +2558,7 @@ impl App {
             let line_height = 18.0_f32;
             let center_x = Logical(logical_width.0 / 2.0);
             let center_y = Logical((logical_height.0 - line_height) / 2.0);
-            let mut empty = text::TextBlock::new("(No images)", center_x, center_y);
+            let mut empty = text::TextBlock::new(empty_state.overlay(), center_x, center_y);
             empty.font_size = 14.0;
             empty.line_height = line_height;
             empty = empty.bold().align_center().pill(
@@ -3446,6 +3531,13 @@ impl ApplicationHandler<AppCommand> for App {
                 ..
             } => match state {
                 ElementState::Pressed => {
+                    // In the "nothing open yet" empty state the whole canvas is the way in, and
+                    // the overlay says so. There's no image to pan or fit, so nothing below
+                    // this wants the click.
+                    if self.empty_state == Some(EmptyState::NothingOpen) {
+                        self.execute_command(event_loop, AppCommand::ShowOpenDialog);
+                        return;
+                    }
                     let now = Instant::now();
                     if let Some(last) = self.last_click_time
                         && now.duration_since(last).as_millis() < 400

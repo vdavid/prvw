@@ -8,6 +8,7 @@ mod app;
 mod commands;
 mod folder_watch;
 mod input;
+mod launch;
 mod menu;
 // The registries answer for every platform at once, so whatever a given build's own UI doesn't
 // consume is unused there: Linux has no menu bar and no settings window, and Windows has no
@@ -139,27 +140,18 @@ fn main() {
             .collect()
     };
 
-    // Onboarding (the "waiting" path) only when there's neither a file nor a launch directory.
-    let waiting_for_file = resolved_files.is_empty() && launch_directory.is_none();
-
-    // Only macOS has something to wait for. There, Finder delivers the file through an Apple
-    // Event (`platform/macos/open_handler.rs`) and `onboarding` puts a window up meanwhile. Off
-    // macOS neither exists, and `resumed()` builds no window without a file, so waiting would
-    // leave a process with no window and no way to reach one — the normal outcome of a Start-menu
-    // or taskbar launch on Windows, which passes no argv. Say what to open and exit instead.
-    // M1 step 1 replaces this with an empty-state window plus File → Open.
-    #[cfg(not(target_os = "macos"))]
-    if waiting_for_file {
-        log::error!("Nothing to show. Pass an image or a folder: prvw <path>");
-        // 2, the way clap exits on a usage error, so a script can tell this from a crash.
-        std::process::exit(2);
-    }
+    // Onboarding (the "waiting" path) only where there's something to wait for: macOS, where
+    // Finder is about to deliver the file through an Apple Event. Everywhere else the window
+    // comes up on its empty state and File → Open is the way in. See `launch::waits_for_a_file`.
+    let nothing_named = resolved_files.is_empty() && launch_directory.is_none();
+    let waiting_for_file = launch::waits_for_a_file(nothing_named, parity::Platform::HOST);
 
     if launch_directory.is_some() {
         // Already logged above.
     } else if waiting_for_file {
-        // macOS only; every other platform exited above.
         log::info!("No files on CLI, waiting for Apple Event (Finder double-click)");
+    } else if nothing_named {
+        log::info!("Nothing to show yet — opening an empty window");
     } else if resolved_files.len() == 1 {
         log::info!("Opening {}", resolved_files[0].display());
     } else {

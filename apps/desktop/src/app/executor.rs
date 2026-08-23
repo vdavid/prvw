@@ -603,7 +603,7 @@ impl App {
                     .map(|d| d.sort_by())
                     .unwrap_or_default();
                 self.navigation.dir_list = directory::DirectoryList::from_file(&resolved, sort_by);
-                self.no_images_empty_state = false;
+                self.empty_state = None;
                 self.display_image(&resolved);
                 // Live folder sync: watch the newly opened file's folder.
                 self.retarget_active_folder_watch();

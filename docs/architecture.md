@@ -19,6 +19,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                                                      |
 | `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce + off-thread re-scan lister |
 | `input.rs`                  | Maps keys and QA keys to `AppCommand`                                                            |
+| `launch.rs`                 | What the command line asks Prvw to open: wait for a file, open a folder's images, or nothing     |
 | `menu/`                     | Menu bar and context menu via `muda` (macOS, Windows), and the seam for platforms with neither   |
 | `pixels.rs`                 | `Logical` / `Physical` newtypes for coordinate types                                             |
 | `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers)                                       |
@@ -37,7 +38,8 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `file_associations/` | LaunchServices FFI + File associations settings panel                                                       |
 | `histogram/`         | 256-bin RGB histogram overlay (toggle via View → Histogram or `H` key) + `histogram::State`                 |
 | `navigation/`        | Directory scan + background preloader + LRU cache + `navigation::State`                                     |
-| `onboarding/`        | Onboarding window (first launch without a file) + defaults-sentence generator + checkmark renderer          |
+| `onboarding/`        | Onboarding window (macOS launch without a file) + defaults-sentence generator + checkmark renderer          |
+| `open_dialog.rs`     | The native "Open an image" picker behind File → Open, run off the event-loop thread through `rfd`           |
 | `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                         |
 | `settings/`          | JSON persistence + Settings window shell + General panel                                                    |
 | `slideshow/`         | Timer-driven auto-advance (⌘S) + crossfade + Slideshow settings panel + `slideshow::State`                  |

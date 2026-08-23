@@ -13,6 +13,7 @@ src/
 ├── app.rs + app/            App struct, ApplicationHandler, command dispatcher, shared-state snapshot
 ├── commands.rs              AppCommand enum + global EventLoopProxy
 ├── input.rs                 Maps keys/QA keys → AppCommand
+├── launch.rs                What the command line asks Prvw to open (waiting vs. empty window, a folder's images)
 ├── menu/                    Menu bar + context menu (muda) on macOS and Windows; `absent.rs` covers platforms with no menu bar
 ├── parity/                  Registries of settings, menu items, and commands + each platform's coverage (M0.5 layer 1)
 ├── pixels.rs                Logical/Physical coordinate newtypes
@@ -30,6 +31,7 @@ src/
 ├── histogram/               256-bin RGB histogram overlay (toggle via View → Histogram or H key) + histogram::State
 ├── navigation/              Directory scan + preloader + LRU cache + navigation::State
 ├── onboarding/              Onboarding window + defaults-sentence generator + SVG checkmark renderer
+├── open_dialog.rs           The native "Open an image" picker behind File → Open (rfd, off the event-loop thread)
 ├── qa/                      Embedded HTTP + MCP server
 ├── settings/                JSON persistence + Settings window shell + widgets + General panel + RAW panel (Phase 3.7)
 ├── slideshow/               Timer-driven auto-advance + crossfade + Slideshow settings panel + slideshow::State
@@ -39,9 +41,9 @@ src/
 └── zoom/                    ViewState + zoom/pan math + Zoom settings panel + zoom::State
 ```
 
-Single-file features (`about.rs`, `diagnostics.rs`, `updater.rs`, `window.rs`) use their `//!` module docs in place of a
-`CLAUDE.md`. Directory-based features have a colocated `CLAUDE.md` or rely on `//!` docs on each submodule
-(`onboarding/`).
+Single-file features (`about.rs`, `diagnostics.rs`, `open_dialog.rs`, `updater.rs`, `window.rs`) use their `//!` module
+docs in place of a `CLAUDE.md`. Directory-based features have a colocated `CLAUDE.md` or rely on `//!` docs on each
+submodule (`onboarding/`).
 
 ## Per-feature state
 
@@ -50,11 +52,22 @@ Single-file features (`about.rs`, `diagnostics.rs`, `updater.rs`, `window.rs`) u
 cross-cutting state: handles (window, renderer, menu), launch flags (file_path, waiting_for_file, launch_directory),
 runtime input (modifiers, drag_start, etc.), and the single cross-feature toggle `title_bar`.
 
-**Gotcha: `waiting_for_file` is a macOS-only state.** `resumed()` builds no window in it, and what makes that safe on
-macOS is that Finder delivers the file through an Apple Event and `onboarding` puts a window up meanwhile. Neither
-exists elsewhere, so `main` logs and exits (code 2) rather than leaving a windowless process — which is what a Windows
-Start-menu or taskbar launch would otherwise produce, since those pass no argv. M1 step 1 of
-`docs/specs/cross-platform-plan.md` replaces the exit with an empty-state window plus File → Open.
+## What a launch opens
+
+`launch::waits_for_a_file` and `App::initialize_viewer` split it three ways, and only the first is macOS-only.
+
+- **Nothing named.** macOS sets `waiting_for_file`: `resumed()` builds no window, Finder delivers the double-clicked
+  file through an Apple Event, and `onboarding` puts a window up meanwhile. Nowhere else has anything to wait for (a
+  Start-menu shortcut, a taskbar pin, and a desktop icon all pass no argv), so the window comes up on
+  `EmptyState::NothingOpen`: black canvas, one centered line, and a click anywhere or Cmd/Ctrl+O opens the picker.
+- **A folder.** macOS boots into browse mode at it. Everywhere else there's no browser until M5, so the folder becomes
+  an image-mode playlist: its images in the user's sort order, starting at the first. A folder with no images lands in
+  `EmptyState::NoImages`.
+- **One or more files.** Unchanged everywhere.
+
+**Gotcha: `waiting_for_file` is a macOS-only state**, and it's the reason the launch empty state has never run on a Mac.
+Nothing in the shared E2E suite can reach it, because the gate in `tests/e2e/shared.rs` says "this test needs X", never
+"this test needs the platforms without X". `launch.rs`'s unit tests answer for every platform instead.
 
 ## Top-level principles
 
