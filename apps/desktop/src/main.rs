@@ -124,7 +124,7 @@ fn main() {
     } else if waiting_for_file {
         log::info!("No files on CLI, waiting for Apple Event (Finder double-click)");
     } else if nothing_named {
-        log::info!("Nothing to show yet — opening an empty window");
+        log::info!("Nothing to show yet. Opening an empty window.");
     } else if resolved_files.len() == 1 {
         log::info!("Opening {}", resolved_files[0].display());
     } else {
