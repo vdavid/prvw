@@ -715,9 +715,10 @@ impl App {
 
         // Load and display the initial image. RAW launches take the async
         // quick-preview path (mirrors cache-miss navigation); everything else
-        // stays on the synchronous decode (fast enough not to need it). Skipped
-        // for a directory launch — there's no initial image; browse mode opens
-        // below and the user picks one from the grid.
+        // stays on the synchronous decode (fast enough not to need it). There
+        // may be no initial image at all: a macOS directory launch opens browse
+        // mode below and the user picks from the grid, and the two empty states
+        // have nothing to show yet.
         let initial_path = if !self.file_path.as_os_str().is_empty() {
             Some(self.file_path.clone())
         } else {

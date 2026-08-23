@@ -48,6 +48,7 @@ impl MenuBuilder {
     /// coverage arm and watching `docs/parity.md` move, never adding a `#[cfg]` here. Image
     /// browser off macOS is today's case (M1 step 3 of `docs/specs/cross-platform-plan.md`);
     /// M5 flips it back by building the thing.
+    ///
     /// Takes the platform rather than reading `Platform::HOST`, so a Mac can check what
     /// Windows and Linux end up with. The registries carry no `#[cfg]` for the same reason.
     fn offers(key: MenuItemKey, platform: Platform) -> bool {
