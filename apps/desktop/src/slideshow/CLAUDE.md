@@ -36,8 +36,10 @@ next-cached requirement is skipped. While holding, `schedule_wakeup` waits on `d
 already-passed deadline, so it never busy-spins on `WaitUntil(past)`.
 
 `[` / `]` (and Slideshow → Increase/Decrease speed) call `adjust_slideshow_speed`, stepping `seconds` by one within
-`MIN_SECONDS..=MAX_SECONDS`. They adjust the setting whether or not a slideshow is running. ⌘S (Slideshow → Start/Stop)
-toggles `running`; the menu item's label flips between "Start slideshow" and "Stop slideshow".
+`MIN_SECONDS..=MAX_SECONDS`. They adjust the setting whether or not a slideshow is running. Bare `S` in image mode
+(everywhere), ⌘S (macOS menu accelerator), and Slideshow → Start/Stop all toggle `running`; the menu item's label flips
+between "Start slideshow" and "Stop slideshow". `S` is bound in image mode only, because browse mode's tree and list own
+bare letters for type-ahead select. `SharedAppState::slideshow_running` mirrors the flag for the QA server.
 
 Starting a slideshow does NOT enter fullscreen, jump to image 1, or hide overlays — it only arms the timer.
 
