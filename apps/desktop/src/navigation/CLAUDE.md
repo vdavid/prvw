@@ -1,12 +1,12 @@
 # Navigation
 
 Scan the parent directory for images, preload adjacent files in the background, and keep an LRU cache budgeted off
-physical RAM: `clamp(RAM / 64, 3 × 24 MP RGBA8, 512 MB)` for SDR, twice that for HDR (Phase 5). The ceiling is what the
-budget used to be fixed at, so scaling can only shrink the cache: 32 GB and up keep today's 512 MB / 1 GB pair, 24 GB
-gets 384 MB / 768 MB, and 16 GB and below get the floor. `sdr_memory_budget()` / `hdr_memory_budget()` in `preloader.rs`
-own the math, and `ImageCache` resolves both once at construction. The cache switches between them when the RAW
-pipeline's `hdr_output` flag flips or the display's EDR headroom crosses the 1.0 boundary; doubling the budget alongside
-RAW RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in both modes.
+physical RAM: `clamp(RAM / 32, 3 × 24 MP RGBA8, 512 MB)` for SDR, twice that for HDR (Phase 5). The ceiling is what the
+budget used to be fixed at, so scaling can only shrink the cache: 16 GB and up keep today's 512 MB / 1 GB pair, 12 GB
+gets 403 MB / 806 MB, and 8 GB gets the 288 MB / 576 MB floor. `sdr_memory_budget()` / `hdr_memory_budget()` in
+`preloader.rs` own the math, and `ImageCache` resolves both once at construction. The cache switches between them when
+the RAW pipeline's `hdr_output` flag flips or the display's EDR headroom crosses the 1.0 boundary; doubling the budget
+alongside RAW RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in both modes.
 
 ## Decision: the preload window is derived from the budget, never fixed
 
@@ -17,8 +17,22 @@ preloader was supposed to have already done. `preload_count()` therefore reads o
 
 A window of `n` holds `2n + 1` images, so the floor is three `LARGE_DECODE_BYTES` (one 24 MP RGBA8 decode each): the
 image on screen plus one neighbor each side, the narrowest window that keeps navigation instant whichever way the user
-turns. 32 GB and up get ±2; 24 GB and below get ±1. Browse mode's pre-warm reads the same `preload_count()`, because it
-fills this same cache.
+turns. 16 GB and up get ±2; below that, ±1. Browse mode's pre-warm reads the same `preload_count()`, because it fills
+this same cache.
+
+## Decision: the divisor is 1/32 because 16 GB is where the old flat budget sat
+
+**Why:** 16 GB / 32 is exactly the 512 MB ceiling, so the divisor isn't a number picked for feel — it says out loud what
+the flat 512 MB was implicitly tuned for. Everything at or above 16 GB is untouched by the scaling, and only smaller
+machines shrink. That's the case M0 step 5 of `docs/specs/cross-platform-plan.md` actually raised (an 8 GB laptop with
+no unified memory, paying for GPU-side copies separately); it never asked for a regression on the most common Mac
+configuration. `sixteen_gb_lands_exactly_on_the_ceiling` fails if the divisor and the ceiling ever drift apart.
+
+**Gotcha: this is deliberately four times more generous than `previews::budget_for_ram`, which takes 1/128.** A preview
+is ~4 MB against a decode's ~96 MB, so previews' 64 MB floor already holds 16 of them where ours has to clear three of a
+single unit. And the bytes buy different things: previews buy grid smoothness across a ±50 window and degrade to
+placeholders when short, while full decodes buy this image and the ones either side of it, where running short is a
+visible decode on an arrow key.
 
 **Gotcha:** `LARGE_DECODE_BYTES` is a sizing unit, not a per-entry charge. The cache charges exact
 `width * height * bytes_per_pixel`, so a folder of 12 MP phone photos holds far more than the window asks for. The

@@ -7,12 +7,27 @@ use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use winit::event_loop::EventLoopProxy;
 
-/// Fraction of physical RAM the SDR image cache may hold. 1/64 puts a 32 GB Mac
-/// on the 512 MB this budget is tuned for, and it scales the same way
-/// `previews` does rather than inventing a second scheme. The ratio matters
-/// more than the absolute number once we leave macOS: an 8 GB Windows laptop
-/// has no unified memory, so it pays for the GPU-side copies separately.
-const SDR_RAM_DIVISOR: usize = 64;
+/// Fraction of physical RAM the SDR image cache may hold.
+///
+/// 1/32 is not a round number picked for feel: 16 GB / 32 is exactly
+/// [`MAX_SDR_MEMORY_BUDGET`]. The budget this replaced was a flat 512 MB, which
+/// means it was implicitly tuned for a 16 GB machine all along, and the divisor
+/// just says so out loud. Everything at or above 16 GB is therefore untouched
+/// by the scaling, and only smaller machines shrink — down to
+/// [`MIN_SDR_MEMORY_BUDGET`] at about 8.6 GB. That's the case the scaling
+/// exists for: off macOS an 8 GB laptop has no unified memory, so it pays for
+/// the GPU-side copies separately, and 512 MB of decoded pixels is a different
+/// proposition there than on a 32 GB Mac.
+///
+/// **Deliberately four times more generous than `previews::budget_for_ram`,
+/// which takes 1/128.** Two reasons, both about what a byte buys. A preview is
+/// ~4 MB against a decode's ~96 MB, so previews' 64 MB floor already holds 16
+/// of them where ours has to clear three of a single unit. And previews buy
+/// grid smoothness across a ±50 window, degrading to placeholders when they run
+/// short; full decodes buy the thing the app is for — this image and the ones
+/// on either side of it — where running short costs a visible decode on an
+/// arrow key.
+const SDR_RAM_DIVISOR: usize = 32;
 
 /// One decoded 24 MP image as RGBA8: 24 million pixels at 4 bytes each. The
 /// unit both the budget floor and the preload window are expressed in.
@@ -49,14 +64,15 @@ const MAX_PRELOAD_AHEAD: usize = 2;
 /// only ever shrink the cache: a big machine keeps exactly the behavior it has
 /// today, and only small ones get frugal. It holds the full
 /// ±[`MAX_PRELOAD_AHEAD`] window with room to spare, and reaching further buys
-/// nothing.
+/// nothing. [`SDR_RAM_DIVISOR`] is set so a 16 GB machine lands on it exactly,
+/// which is why the ceiling and "what 16 GB gets" are the same number.
 const MIN_SDR_MEMORY_BUDGET: usize = 3 * LARGE_DECODE_BYTES;
 const MAX_SDR_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
 
-/// SDR cache budget: 1/[`SDR_RAM_DIVISOR`] of physical RAM, clamped. 32 GB and
-/// up land on the ceiling, 24 GB on 384 MB, and 16 GB and below on the floor.
-/// Every JPEG/PNG/WebP cached image comes out of the same budget. Queried once
-/// (RAM doesn't change at runtime).
+/// SDR cache budget: 1/[`SDR_RAM_DIVISOR`] of physical RAM, clamped. 16 GB and
+/// up land on the ceiling, 12 GB on 403 MB, and 8 GB on the floor. Every
+/// JPEG/PNG/WebP cached image comes out of the same budget. Queried once (RAM
+/// doesn't change at runtime).
 pub fn sdr_memory_budget() -> usize {
     static BUDGET: OnceLock<usize> = OnceLock::new();
     *BUDGET.get_or_init(|| sdr_budget_for_ram(crate::platform::total_physical_ram_bytes() as usize))
@@ -992,24 +1008,33 @@ mod tests {
         assert!(cache.len() <= 2); // at least one eviction happened
     }
 
+    const GB: usize = 1024 * 1024 * 1024;
+
     /// The budget tracks RAM between the floor and the ceiling.
     #[test]
     fn sdr_budget_scales_with_ram() {
-        let gb = 1024 * 1024 * 1024;
-        assert_eq!(sdr_budget_for_ram(24 * gb), 384 * 1024 * 1024);
-        assert_eq!(sdr_budget_for_ram(20 * gb), 320 * 1024 * 1024);
-        assert_eq!(sdr_budget_for_ram(16 * gb), MIN_SDR_MEMORY_BUDGET);
-        assert_eq!(sdr_budget_for_ram(8 * gb), MIN_SDR_MEMORY_BUDGET);
+        assert_eq!(sdr_budget_for_ram(12 * GB), 384 * 1024 * 1024);
+        assert_eq!(sdr_budget_for_ram(10 * GB), 320 * 1024 * 1024);
+        assert_eq!(sdr_budget_for_ram(8 * GB), MIN_SDR_MEMORY_BUDGET);
+    }
+
+    /// The divisor's whole justification: a 16 GB machine lands exactly on the
+    /// ceiling, so the scaling can only ever shrink a machine smaller than the
+    /// one the old flat 512 MB was implicitly tuned for. Change the divisor or
+    /// the ceiling without the other and this is what notices.
+    #[test]
+    fn sixteen_gb_lands_exactly_on_the_ceiling() {
+        assert_eq!(16 * GB / SDR_RAM_DIVISOR, MAX_SDR_MEMORY_BUDGET);
+        assert_eq!(sdr_budget_for_ram(16 * GB), MAX_SDR_MEMORY_BUDGET);
     }
 
     /// Scaling must never hand out *more* than the budget used to be fixed at.
     /// A 32 GB Mac and a 256 GB Mac Pro both keep today's 512 MB.
     #[test]
     fn sdr_budget_never_exceeds_the_old_fixed_size() {
-        let gb = 1024 * 1024 * 1024;
         assert_eq!(MAX_SDR_MEMORY_BUDGET, 512 * 1024 * 1024);
-        assert_eq!(sdr_budget_for_ram(32 * gb), MAX_SDR_MEMORY_BUDGET);
-        assert_eq!(sdr_budget_for_ram(256 * gb), MAX_SDR_MEMORY_BUDGET);
+        assert_eq!(sdr_budget_for_ram(32 * GB), MAX_SDR_MEMORY_BUDGET);
+        assert_eq!(sdr_budget_for_ram(256 * GB), MAX_SDR_MEMORY_BUDGET);
         assert_eq!(sdr_budget_for_ram(usize::MAX), MAX_SDR_MEMORY_BUDGET);
     }
 
@@ -1024,14 +1049,17 @@ mod tests {
     /// If this fails, every navigation evicts what the last one decoded.
     #[test]
     fn the_budget_always_holds_the_whole_preload_window() {
-        for budget in [
+        let real: Vec<usize> = [8, 10, 12, 16, 18, 24, 32, 64, 128]
+            .into_iter()
+            .map(|gb| sdr_budget_for_ram(gb * GB))
+            .collect();
+        for budget in real.into_iter().chain([
             MIN_SDR_MEMORY_BUDGET,
             MIN_SDR_MEMORY_BUDGET + 1,
-            300 * 1024 * 1024,
-            384 * 1024 * 1024,
+            MAX_SDR_MEMORY_BUDGET - 1,
             MAX_SDR_MEMORY_BUDGET,
             usize::MAX,
-        ] {
+        ]) {
             let resident = (2 * preload_count_for_budget(budget) + 1) * LARGE_DECODE_BYTES;
             assert!(
                 resident <= budget,
@@ -1055,6 +1083,29 @@ mod tests {
         // window still refuses to collapse to zero: a preloader that preloads
         // nothing is worse than a small one.
         assert_eq!(preload_count_for_budget(0), 1);
+    }
+
+    /// The retune's point, stated as behavior rather than as bytes: a machine
+    /// of the size Prvw is developed and mostly used on keeps the full window
+    /// it had before the budget was ever RAM-scaled. Only genuinely small
+    /// machines narrow, which is the case `docs/specs/cross-platform-plan.md`'s
+    /// M0 step 5 raised (an 8 GB laptop with no unified memory).
+    #[test]
+    fn sixteen_gb_and_up_keep_the_full_window() {
+        for gb in [16, 18, 24, 32, 36, 64, 128] {
+            assert_eq!(
+                preload_count_for_budget(sdr_budget_for_ram(gb * GB)),
+                MAX_PRELOAD_AHEAD,
+                "{gb} GB must keep the full window"
+            );
+        }
+        for gb in [8, 10, 12] {
+            assert_eq!(
+                preload_count_for_budget(sdr_budget_for_ram(gb * GB)),
+                1,
+                "{gb} GB narrows to one neighbor each side"
+            );
+        }
     }
 
     #[test]

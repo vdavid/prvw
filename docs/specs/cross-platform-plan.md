@@ -535,10 +535,16 @@ gates, and the docs. Two things to know before you build on it:
    on Linux.
 5. ✅ **`platform::total_physical_ram_bytes`**: `GlobalMemoryStatusEx` on Windows, `/proc/meminfo` on Linux. Un-gate it
    from macOS while you're there; it stops being previews-only the moment M3 lands.
-   - **While you're in there, connect it to the preloader's budgets.** `navigation/preloader.rs:12` sets
-     `SDR_MEMORY_BUDGET` to 512 MB and `:20` sets `HDR_MEMORY_BUDGET` to 1 GB, both absolute constants. On an 8 GB
+   - **While you're in there, connect it to the preloader's budgets.** `navigation/preloader.rs:12` set
+     `SDR_MEMORY_BUDGET` to 512 MB and `:20` set `HDR_MEMORY_BUDGET` to 1 GB, both absolute constants. On an 8 GB
      Windows laptop with no unified memory, a 1 GB HDR cache plus the GPU-side copies is a different proposition than on
      a 32 GB Mac. Scale them off total RAM the way `previews` already does.
+   - **Scale the preload window with them, or the budget makes things worse.** M0 shipped the budget half alone, and a
+     window of ±2 against a budget that retains two images means every preload evicts the last one. `preload_count()`
+     now derives from `sdr_memory_budget()`, the way `previews::generation_radius` derives from its own budget. The
+     divisor is 1/32 rather than `previews`' 1/128, so a 16 GB machine lands exactly on the 512 MB ceiling and only
+     smaller machines narrow — this bullet's 8 GB laptop is the case, and it was never a licence to regress 16 GB.
+     Numbers and rejected alternatives: `docs/notes/preload-window-and-cache-budget.md`.
 6. ✅ **Add `windows = "0.62.2"`** under `[target.'cfg(target_os = "windows")'.dependencies]`. It's already in
    `Cargo.lock` transitively, so nothing new is downloaded, but per `AGENTS.md`'s critical rules this is still a new
    direct dependency and needs a license check and a crates.io version check. (0.62.2 is current, published 2025-10-06,
