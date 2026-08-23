@@ -1502,11 +1502,13 @@ fn empty_folder_lists_zero_and_grid_stays_non_focusable() {
         "an empty folder leaves focus on the tree"
     );
 
-    // Tab toward the empty grid stays on the tree (the grid can't take focus).
-    app.post("/key", "Tab");
-    std::thread::sleep(Duration::from_millis(120));
+    // Tab toward the empty grid stays on the tree (the grid can't take focus). `SendKey` runs
+    // the mapped command inline (`app/executor.rs`) and `/key` answers only after the event
+    // loop's sync barrier, so its reply is already the post-Tab state — no sleep needed, and a
+    // sleep here would hide a regression that made Tab asynchronous rather than catch it.
+    let after_tab = app.post("/key", "Tab");
     assert_eq!(
-        app.get_state()["focused_pane"].as_str(),
+        after_tab["focused_pane"].as_str(),
         Some("tree"),
         "Tab on an empty grid stays on the tree"
     );
@@ -1583,6 +1585,52 @@ fn grid_selection_drives_open_round_trip() {
         state["browse_grid_selected"].as_u64(),
         Some(3),
         "re-entering browse from an image preselects that image in the grid"
+    );
+}
+
+/// Enter in browse means "open the selected grid image", but the tree can hold focus — Tab puts
+/// it there, and a folder with no images leaves it there. With no grid selection to open, Enter
+/// has to fall back to returning to image mode on the image we came from: never a stray open,
+/// never stuck in browse.
+///
+/// `enter_in_browse_returns_to_image_mode` can't pin this branch, because which route Enter takes
+/// there depends on whether the reveal's listing has landed. So wait for the listing (which moves
+/// focus to the grid), then Tab back to the tree, and the fallback is the only route left.
+#[test]
+fn tree_focused_enter_returns_to_the_image_we_came_from() {
+    let (home, images, _empty) = create_browse_home(5);
+    let first = images.join("img-00.png");
+    let app = TestApp::start_with_arg_and_home(&first, Some(home.path()));
+
+    app.post("/key", "Enter"); // image → browse
+    let state = wait_for_browse_listed(&app, 5, Duration::from_secs(8));
+    assert_eq!(
+        state["focused_pane"].as_str(),
+        Some("grid"),
+        "the reveal lands focus on the grid, which is what we Tab away from"
+    );
+
+    let state = app.post("/key", "Tab");
+    assert_eq!(
+        state["focused_pane"].as_str(),
+        Some("tree"),
+        "Tab off a non-empty grid moves focus to the tree"
+    );
+    assert_eq!(
+        state["view_mode"].as_str(),
+        Some("browse"),
+        "Tab must not leave browse mode"
+    );
+
+    let state = app.post("/key", "Enter");
+    assert_eq!(
+        state["view_mode"].as_str(),
+        Some("image"),
+        "tree-focused Enter leaves browse, got {state}"
+    );
+    assert!(
+        state["file"].as_str().unwrap().ends_with("img-00.png"),
+        "and lands on the image we came from, not a stray open: {state}"
     );
 }
 
