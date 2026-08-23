@@ -52,10 +52,25 @@ impl TestApp {
         Self::start_with_arg_and_home(dir, Some(home))
     }
 
+    /// Start the app on several image files, in the order given. That order is what the app
+    /// opens; the list it navigates is the same files in the user's sort order, so the two
+    /// disagree on purpose whenever the first argument isn't the one that sorts first.
+    pub fn start_with_images(images: &[&std::path::Path]) -> Self {
+        Self::start_with_args_and_home(images, None)
+    }
+
     /// Start the app with a single CLI argument (a file or directory) and an optional home
     /// override. The home override scopes the browse tree's home root so reveal walks are short
     /// and deterministic (the target sits directly under home).
     pub fn start_with_arg_and_home(arg: &std::path::Path, home: Option<&std::path::Path>) -> Self {
+        Self::start_with_args_and_home(&[arg], home)
+    }
+
+    /// Start the app with the given CLI arguments and an optional home override.
+    pub fn start_with_args_and_home(
+        args: &[&std::path::Path],
+        home: Option<&std::path::Path>,
+    ) -> Self {
         // Find a free port by binding to :0, then closing the listener
         let port = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -67,7 +82,7 @@ impl TestApp {
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_prvw"));
         command
-            .arg(arg)
+            .args(args)
             .env("PRVW_QA_PORT", port.to_string())
             .env("PRVW_DATA_DIR", data_dir.path())
             // Open the window unfocused and behind everything so a run's swarm of test

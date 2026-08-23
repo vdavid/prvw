@@ -148,6 +148,53 @@ fn navigate_with_single_file() {
     }
 }
 
+#[test]
+fn a_multi_file_launch_opens_the_named_file_at_its_own_index() {
+    // `prvw b.png a.png` opens b.png, because that's the one the user named first. The list it
+    // navigates is both files in the user's sort order, so b.png sits at slot 2 of 2 — and the
+    // index, the title, and the pixels on screen all have to agree about that. Different sizes
+    // per file make the pixels observable: `image_width` is whatever actually got displayed.
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.png");
+    let b = dir.path().join("b.png");
+    create_white_image(&a, 8, 8);
+    create_white_image(&b, 16, 16);
+
+    let Some(app) = SharedApp::start_with_images(&["NextPreviousImage"], &[&b, &a]) else {
+        return;
+    };
+
+    let state = app.get_state();
+    assert!(
+        state["file"].as_str().unwrap().contains("b.png"),
+        "the named file opens, not whichever sorts first: {state:?}"
+    );
+    assert_eq!(state["total_files"].as_u64(), Some(2));
+    assert_eq!(
+        state["index"].as_u64(),
+        Some(2),
+        "b.png sorts second, so the position reads 2 of 2: {state:?}"
+    );
+    assert_eq!(
+        state["image_width"].as_u64(),
+        Some(16),
+        "the pixels on screen are b.png's: {state:?}"
+    );
+
+    // And the other file is still reachable, as itself.
+    app.post("/navigate", "prev");
+    let state = app.wait_for_state(Duration::from_secs(3), |s| s["index"].as_u64() == Some(1));
+    assert!(
+        state["file"].as_str().unwrap().contains("a.png"),
+        "previous lands on a.png: {state:?}"
+    );
+    assert_eq!(
+        state["image_width"].as_u64(),
+        Some(8),
+        "and shows a.png's pixels, not the ones cached for the launch image: {state:?}"
+    );
+}
+
 // ── Zoom, fit, and the window it fits to ─────────────────────────────────────────────────────
 
 #[test]

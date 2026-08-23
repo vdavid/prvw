@@ -48,6 +48,15 @@ impl SharedApp {
         Self::gate(TestApp::start_with_image(image_path), commands)
     }
 
+    /// Start on several image files, in the order given, or return `None` when the host doesn't
+    /// apply. The first one is what opens; the rest join the list it navigates.
+    pub fn start_with_images(commands: &[&str], images: &[&std::path::Path]) -> Option<Self> {
+        if !display_available() {
+            return None;
+        }
+        Self::gate(TestApp::start_with_images(images), commands)
+    }
+
     fn gate(app: TestApp, commands: &[&str]) -> Option<Self> {
         let table = app.get_parity();
         for command in commands {

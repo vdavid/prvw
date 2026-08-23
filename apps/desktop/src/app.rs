@@ -672,12 +672,16 @@ impl App {
                     dir.display()
                 );
                 (!images.is_empty())
-                    .then(|| directory::DirectoryList::from_explicit(images, initial_sort_by))
+                    .then(|| directory::DirectoryList::from_explicit(images, initial_sort_by, None))
             }
         } else if let Some(files) = self.explicit_files.take() {
+            // The list sorts; the image that opens is the one named first on the command line
+            // (`self.file_path`), so the list has to sit on it rather than on whatever sorts
+            // first.
             Some(directory::DirectoryList::from_explicit(
                 files,
                 initial_sort_by,
+                Some(&self.file_path),
             ))
         } else if self.file_path.as_os_str().is_empty() {
             // A launch that named nothing. The window still comes up; the empty state below
@@ -1840,7 +1844,7 @@ impl App {
                 let sort_by = settings::Settings::load().sort_by;
                 let resolved =
                     crate::browser::resolve_reveal_index(&images, index, sort_by).unwrap_or(0);
-                let mut dir_list = directory::DirectoryList::from_explicit(images, sort_by);
+                let mut dir_list = directory::DirectoryList::from_explicit(images, sort_by, None);
                 if resolved > 0 {
                     dir_list.go_by(resolved as i32, false);
                 }

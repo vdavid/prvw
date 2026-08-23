@@ -58,20 +58,29 @@ impl DirectoryList {
         })
     }
 
-    /// Create a navigation list from an explicit set of files (multi-select open).
-    /// The first file in the list is the initial image.
-    pub fn from_explicit(mut files: Vec<PathBuf>, sort_by: SortBy) -> Self {
+    /// Create a navigation list from an explicit set of files (a multi-file open, a folder
+    /// played as a list, a grid reveal), positioned at `current`.
+    ///
+    /// The list sorts into the user's order, so the image the caller opens is rarely the one at
+    /// index 0: `prvw b.png a.png` opens b.png and sorts the list a, b. Positioning at the named
+    /// file is what keeps the index, the title, and the pixels on screen talking about the same
+    /// image. Pass `None` to start at the first file (a folder played from the top); a path
+    /// that isn't in the list starts there too.
+    pub fn from_explicit(mut files: Vec<PathBuf>, sort_by: SortBy, current: Option<&Path>) -> Self {
         sort_files(&mut files, sort_by);
+        let current_index = current
+            .and_then(|target| files.iter().position(|f| f == target))
+            .unwrap_or(0);
         log::info!("Using explicit file list: {} images", files.len());
-        if let Some(first) = files.first() {
+        if let Some(file) = files.get(current_index) {
             log::debug!(
-                "Current position: [0] {}",
-                first.file_name().unwrap_or_default().to_string_lossy()
+                "Current position: [{current_index}] {}",
+                file.file_name().unwrap_or_default().to_string_lossy()
             );
         }
         Self {
             files,
-            current_index: 0,
+            current_index,
             sort_by,
         }
     }
@@ -330,6 +339,30 @@ mod tests {
             fs::write(dir.path().join(name), b"fake").unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn explicit_list_sorts_but_sits_on_the_file_that_was_named() {
+        // `prvw b.png a.png`: the list sorts a, b, and the current position is b — the file the
+        // user named. Index and displayed image agreeing is what keeps the title honest and the
+        // cache keyed to the right slot.
+        let files = vec![PathBuf::from("b.png"), PathBuf::from("a.png")];
+        let list = DirectoryList::from_explicit(files, SortBy::Name, Some(Path::new("b.png")));
+        assert_eq!(list.current(), Path::new("b.png"));
+        assert_eq!(list.current_index(), 1);
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn explicit_list_starts_at_the_top_without_a_named_file() {
+        // A folder played as a list names no file, so it opens at the first image in sort order.
+        // A path that isn't in the list lands there too, rather than panicking or hunting.
+        let files = vec![PathBuf::from("b.png"), PathBuf::from("a.png")];
+        let from_top = DirectoryList::from_explicit(files.clone(), SortBy::Name, None);
+        assert_eq!(from_top.current(), Path::new("a.png"));
+        let stranger =
+            DirectoryList::from_explicit(files, SortBy::Name, Some(Path::new("elsewhere.png")));
+        assert_eq!(stranger.current(), Path::new("a.png"));
     }
 
     #[test]
