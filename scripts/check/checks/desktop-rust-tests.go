@@ -9,7 +9,8 @@ import (
 	"strconv"
 )
 
-// RunCargoTest runs Rust tests using cargo-nextest.
+// RunCargoTest runs Rust tests using cargo-nextest, across the whole workspace so the
+// `xtask` crate's tests run alongside the app's.
 func RunCargoTest(ctx *CheckContext) (CheckResult, error) {
 	rustDir := filepath.Join(ctx.RootDir, "apps", "desktop")
 
@@ -26,7 +27,7 @@ func RunCargoTest(ctx *CheckContext) (CheckResult, error) {
 		}
 	}
 
-	cmd := exec.Command("cargo", "nextest", "run")
+	cmd := exec.Command("cargo", "nextest", "run", "--workspace")
 	cmd.Dir = rustDir
 	output, err := RunCommand(cmd, true)
 	if err != nil {

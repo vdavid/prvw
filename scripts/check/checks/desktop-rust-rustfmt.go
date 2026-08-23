@@ -8,7 +8,8 @@ import (
 	"strings"
 )
 
-// RunRustfmt formats Rust code.
+// RunRustfmt formats Rust code across the workspace, so a second crate (`xtask`) is
+// formatted by the same run as the app.
 func RunRustfmt(ctx *CheckContext) (CheckResult, error) {
 	rustDir := filepath.Join(ctx.RootDir, "apps", "desktop")
 
@@ -18,10 +19,10 @@ func RunRustfmt(ctx *CheckContext) (CheckResult, error) {
 	}
 
 	// Count .rs files for the message
-	fileCount := countFiles(filepath.Join(rustDir, "src"), "*.rs")
+	fileCount := countFiles(filepath.Join(rustDir, "src"), "*.rs") + countFiles(filepath.Join(ctx.RootDir, "xtask", "src"), "*.rs")
 
 	// Check which files need formatting (--files-with-diff lists them)
-	checkCmd := exec.Command("cargo", "fmt", "--", "--check", "--files-with-diff")
+	checkCmd := exec.Command("cargo", "fmt", "--all", "--", "--check", "--files-with-diff")
 	checkCmd.Dir = rustDir
 	checkOutput, checkErr := RunCommand(checkCmd, true)
 
@@ -48,7 +49,7 @@ func RunRustfmt(ctx *CheckContext) (CheckResult, error) {
 
 	// Non-CI mode: format if needed
 	if len(needsFormat) > 0 {
-		fmtCmd := exec.Command("cargo", "fmt")
+		fmtCmd := exec.Command("cargo", "fmt", "--all")
 		fmtCmd.Dir = rustDir
 		output, err := RunCommand(fmtCmd, true)
 		if err != nil {

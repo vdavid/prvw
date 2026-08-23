@@ -43,7 +43,7 @@ func RunLinuxCross(ctx *CheckContext) (CheckResult, error) {
 		return CheckResult{}, err
 	}
 
-	cmd := exec.Command("cargo", "clippy", "--target", linuxCrossTarget, "--all-targets", "--", "-D", "warnings")
+	cmd := exec.Command("cargo", "clippy", "--workspace", "--target", linuxCrossTarget, "--all-targets", "--", "-D", "warnings")
 	cmd.Dir = rustDir
 	// cc-rs reads the triple with underscores; the linker variable is Cargo's own spelling.
 	// `zstd-sys` is the only C in the Linux graph, and these are what let it build.

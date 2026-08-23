@@ -40,7 +40,7 @@ func RunWindowsCross(ctx *CheckContext) (CheckResult, error) {
 		return CheckResult{}, err
 	}
 
-	cmd := exec.Command("cargo", "xwin", "clippy", "--target", windowsCrossTarget, "--all-targets", "--", "-D", "warnings")
+	cmd := exec.Command("cargo", "xwin", "clippy", "--workspace", "--target", windowsCrossTarget, "--all-targets", "--", "-D", "warnings")
 	cmd.Dir = rustDir
 	cmd.Env = append(os.Environ(), "PATH="+shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	output, err := RunCommand(cmd, true)

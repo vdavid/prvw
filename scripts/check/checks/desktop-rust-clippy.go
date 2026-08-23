@@ -10,6 +10,8 @@ import (
 )
 
 // RunClippy runs Clippy linter with auto-fix.
+//
+// `--workspace` so the `xtask` crate is linted too, not just the app.
 func RunClippy(ctx *CheckContext) (CheckResult, error) {
 	rustDir := filepath.Join(ctx.RootDir, "apps", "desktop")
 
@@ -20,13 +22,13 @@ func RunClippy(ctx *CheckContext) (CheckResult, error) {
 
 	// In local mode, first run with --fix to auto-fix what we can
 	if !ctx.CI {
-		fixCmd := exec.Command("cargo", "clippy", "--all-targets", "--fix", "--allow-dirty", "--allow-staged")
+		fixCmd := exec.Command("cargo", "clippy", "--workspace", "--all-targets", "--fix", "--allow-dirty", "--allow-staged")
 		fixCmd.Dir = rustDir
 		_, _ = RunCommand(fixCmd, true) // Ignore errors, we'll catch them in the check run
 	}
 
 	// Run clippy WITHOUT --fix to check for remaining issues (--fix ignores -D warnings)
-	cmd := exec.Command("cargo", "clippy", "--all-targets", "--", "-D", "warnings")
+	cmd := exec.Command("cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
 	cmd.Dir = rustDir
 	output, err := RunCommand(cmd, true)
 	if err != nil {
