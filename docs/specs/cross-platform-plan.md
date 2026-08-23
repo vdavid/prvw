@@ -1,6 +1,7 @@
 # Prvw: cross-platform plan (Windows first, Linux second)
 
-Status: proposal, not started. Written 2026-08-23 against `v0.15.1-2-gaefca22`.
+Status: M0 landed 2026-08-23 (`7a5a40a..7bf425f`); everything from M0.5 onward is still a proposal. Written 2026-08-23
+against `v0.15.1-2-gaefca22`, so file:line citations outside M0 predate that milestone's refactors.
 
 This plan answers one question: what does it take to run Prvw on Windows (and, with less priority, Linux), and in what
 order should we do it. It's written so an implementing agent can pick up any milestone without re-deriving the research.
@@ -61,8 +62,8 @@ portable code with macOS branches threaded through:
 - `src/browser/mod.rs`: **32 gates** in 1,132 lines.
 - `src/app/executor.rs`: **20 gates** in 803 lines.
 
-Then `src/commands.rs` (12), `src/main.rs` (7), `src/menu.rs` (6), `src/browser/tree_model.rs` (6), `src/platform.rs`
-(5), `src/settings/mod.rs` (4), and a long tail.
+Then `src/commands.rs` (12), `src/main.rs` (7), `src/menu/` (6), `src/browser/tree_model.rs` (6), `src/platform.rs` (5),
+`src/settings/mod.rs` (4), and a long tail.
 
 Most of those gates are browse-mode-shaped and land in M5. But an agent reading only the "macOS-only files" list would
 have no idea `app.rs` is involved at all, which is why this section exists. It's also where the launch and input defects
@@ -79,21 +80,26 @@ type-checks on a second OS.
 
 Read that carefully, though: on Linux, nextest **compiles everything and runs the platform-neutral unit tests**. It does
 not run the full suite. `tests/integration.rs:5` and `tests/color_management.rs:7` are both
-`#![cfg(target_os = "macos")]`, and a large share of unit tests are macOS-gated too (`decoding/raw.rs:1517`,
-`decoding/mod.rs:515`, `color/transform.rs:194`, `color/dcp/mod.rs:419`).
+`#![cfg(target_os = "macos")]`, and a large share of unit tests used to be macOS-gated too.
 
-**2. It compiles but it can't launch.** `color::State::from_settings` (`src/color/mod.rs:40`, whose body calls
-`srgb_icc_bytes()` at `:45`, reached from `src/app.rs:229`) reads `/System/Library/ColorSync/Profiles/sRGB Profile.icc`
-and **panics** when the file is missing (`src/color/transform.rs:10`). `App::new` builds that state unconditionally, so
-a Linux or Windows binary dies at startup. The codebase already knows: `src/color/dcp/mod.rs:419` gates tests "to avoid
-the `srgb_icc_bytes` panic on Linux". Fixing it takes about an hour (M0 step 2) and it's the highest-leverage change in
-this whole document.
+**M0 changed the second half of that.** The five `#[cfg(all(test, target_os = "macos"))]` gates on unit tests are gone
+(step 2 removed the reason for them), so Linux and Windows now run the color, decode, and DCP unit tests. The two
+crate-level gates on `tests/` stay: those suites spawn a real window.
+
+**2. It compiles but it can't launch. Fixed in M0 step 2.** `color::State::from_settings` (`src/color/mod.rs:40`, whose
+body calls `srgb_icc_bytes()` at `:45`) read `/System/Library/ColorSync/Profiles/sRGB Profile.icc` and **panicked** when
+the file was missing. `App::new` builds that state unconditionally, so a Linux or Windows binary died at startup.
+`srgb_icc_bytes` (`color/transform.rs:13`) now generates the profile with `moxcms`, and
+`color::tests::state_builds_without_reading_the_filesystem` holds the line.
 
 **3. Even with that fixed, launching Prvw the normal Windows way gives you an invisible process.** `app.rs:3257`: when
 `waiting_for_file` is true, `resumed()` sets `ControlFlow::Poll` and **returns without calling `initialize_viewer`**, so
 there's no window, no renderer, nothing. The 500 ms timer at `app.rs:3300` then calls
 `crate::onboarding::show_window()`, which is macOS-only (`main.rs:28-29` gates the whole module). And the File menu
-(`menu.rs:129-141`) is Print, a separator, and Close window: **there is no Open item anywhere in the app**.
+(`menu/native.rs:326-338`) is Print, a separator, and Close window: **there is no Open item anywhere in the app**.
+
+Still true after M0: nothing in that milestone touched `main.rs` or `resumed()`, so a no-argument launch off macOS logs
+one `info` line and then waits forever.
 
 On macOS none of that matters, because Finder delivers files through Apple Events (`platform/macos/open_handler.rs`). On
 Windows, a Start-menu shortcut, a taskbar pin, or a desktop icon are the normal ways to launch, and all of them pass no
@@ -101,9 +107,10 @@ argv. The user gets a process with no window and no way to recover, because `App
 from an Apple Event or the debug QA server. This is M1 step 1, and it's the single most important thing in the
 milestone.
 
-**4. The macOS side of CI is weaker than the Linux side.** `.github/workflows/ci.yml:101-127`: the `desktop-rust-macos`
-job's only step is `cargo build`. No rustfmt, no clippy, no tests. Combined with the crate-level gates above, **the E2E
-suite and the color-management suite never run in CI at all**, on any platform. They run on David's Mac or nowhere.
+**4. The macOS side of CI is weaker than the Linux side. Fixed in M0 step 1.** The `desktop-rust-macos` job's only step
+was `cargo build`. No rustfmt, no clippy, no tests. Combined with the crate-level gates above, **the E2E suite and the
+color-management suite never ran in CI at all**, on any platform. The job now runs clippy and `cargo nextest run`, and a
+`desktop-rust-windows` job sits beside it.
 
 This is a cross-platform problem before it's a tidiness one. M0 changes color behavior on macOS (see the
 `profiles_match` warning below), and every later milestone touches shared code. Without macOS tests in CI, "green on all
@@ -129,14 +136,14 @@ These need no work beyond compiling:
   `tree_model.rs` (631). `tree_model::build_roots` is already pure and platform-agnostic; only `enumerate_roots` /
   `enumerate_volumes` (the `NSFileManager` call) is macOS-specific. That seam is cut in the right place.
 - **`pixels.rs`** and **`diagnostics.rs`** (bar one `ps` call at `diagnostics.rs:59`). **`input.rs`** too, bar its Enter
-  binding at `input.rs:57`, which M1 step 3 turns off outside macOS.
+  binding at `input.rs:55`, which M1 step 3 turns off outside macOS.
 
 **Three things that look portable and aren't:**
 
 - **`commands.rs` (12 gates).** The `AppCommand` enum itself carries macOS-only variants.
-- **`qa/` (1,694 lines, 13 gates).** It compiles, but the debug endpoints at `qa/http.rs:138,154,164` and the
+- **`qa/` (1,694 lines, 13 gates).** It compiles, but the debug endpoints at `qa/http.rs:143,159,169` and the
   `screenshot_window` tool at `qa/mcp.rs:803` are `#[cfg(all(debug_assertions, target_os = "macos"))]` and shell out to
-  `/usr/sbin/screencapture`. Two browse routes have `not(macos)` stubs that return HTTP 400 (`qa/http.rs:487`, `:513`).
+  `/usr/sbin/screencapture`. Two browse routes have `not(macos)` stubs that return HTTP 400 (`qa/http.rs:492`, `:518`).
   So the tool agents use for visual QA on this project has no Windows implementation. See M1 step 11.
 - **`zoom/` (529 lines).** The math is portable, but the wheel and gesture handling that drives it lives in
   `app.rs:3443-3486` and is macOS-shaped in four separate ways. See M1 step 5, the highest-density collection of real
@@ -264,9 +271,11 @@ composes with winit's window procedure and `menu::poll_menu_event` keeps working
 with the `HACCEL` returned from `Menu::haccel`". winit's Windows event loop does not do that, so after the Cmd-to-Ctrl
 remap, Ctrl+C, Ctrl+P, Ctrl+= / Ctrl+-, and Ctrl+, would all silently do nothing. See M1 step 9.
 
-**Linux is worse.** muda offers only `init_for_gtk_window` there, and winit can't hand it a `gtk::Window`. `menu.rs:337`
-calls `init_for_nsapp()` as the sole wiring, so on Linux today the menu bar never attaches at all. Linux needs an in-app
-menu (drawn by us) or no menu bar.
+**Linux is worse.** muda offers only `init_for_gtk_window` there, and winit can't hand it a `gtk::Window`.
+`menu/native.rs:513` calls `init_for_nsapp()` as the sole wiring, so the menu bar never attached on Linux at all. M0
+step 8 acted on that: muda is now a macOS-and-Windows dependency, and `menu/absent.rs` is the Linux side of the seam.
+Linux still needs an in-app menu (drawn by us) when it gets a spec; `menu/CLAUDE.md` lists what is unreachable there
+meanwhile.
 
 ### 10. The small stuff, roughly 600 lines total
 
@@ -278,11 +287,13 @@ menu (drawn by us) or no menu bar.
   equivalent **for the double-click case**: Explorer passes paths as argv, which `clap` handles. It needs something else
   entirely for the no-argv case; see M1 step 1. If we later want "reuse the running window" (the roadmap's IPC daemon
   mode), that's an opt-in named pipe, and it'd serve the Cmdr integration too.
-- `platform.rs` `total_physical_ram_bytes` (`sysctlbyname`), and `diagnostics.rs:59` (`ps`). Note `libc` is a macOS-only
-  dependency in `Cargo.toml`, so the Linux versions have to be plain `/proc` file reads, which is fine.
+- `platform.rs` `total_physical_ram_bytes` (`sysctlbyname`), and `diagnostics.rs:59` (`ps`). Done in M0 steps 4 and 5:
+  Linux reads `/proc/meminfo` and `/proc/self/statm`, Windows asks `GlobalMemoryStatusEx` and `GetProcessMemoryInfo`.
+  `libc` is now a macOS **and** Linux dependency, for `sysconf(_SC_PAGESIZE)`.
 - `render/text.rs`: see M1 step 8; it's five call sites and a weight hack rather than one constant.
-- `settings/persistence.rs` `data_dir()` (`persistence.rs:184-190`): `$HOME/Library/Application Support/...` with a
-  `/tmp` fallback that resolves to a drive-relative `\tmp` on Windows.
+- `settings/persistence.rs` `data_dir()`: `$HOME/Library/Application Support/...` with a `/tmp` fallback that resolved
+  to a drive-relative `\tmp` on Windows. Done in M0 step 3; the per-platform layout now lives in `data_dir_for`
+  (`persistence.rs:229`) and the fallback is `std::env::temp_dir()`.
 
 ## Build, CI, and distribution
 
@@ -297,14 +308,14 @@ Two things rule out the obvious workaround and point at a better one:
   requires NASM on x86_64 Windows. `ring` 0.17.14 is already in `Cargo.lock` via `quinn-proto` and `rustls-webpki`, so
   this is checkable locally.
 - **`reqwest` appears in exactly four places**: `updater.rs:126` and `:175` (inside the macOS-gated `updater` module,
-  `main.rs:35-36`), and `tests/integration.rs:14` and `:74`. The test harness talks **plain HTTP to `127.0.0.1`**
+  `main.rs:35-36`), and `tests/integration.rs:14` and `:96`. The test harness talks **plain HTTP to `127.0.0.1`**
   (`qa/server.rs:42`), so it needs no TLS provider at all.
 
 So: move `reqwest` into `[target.'cfg(target_os = "macos")'.dependencies]`, and add a dev-dependency with
-`default-features = false, features = ["blocking", "json"]` for the harness. That removes `aws-lc-sys` from the Windows
-target entirely, retires the NASM question, and shrinks the Windows binary. Keep installing `nasm` in CI as the fallback
-if something unexpected still pulls it in. (When M7 brings a Windows updater, it'll need a TLS story again; Schannel via
-`native-tls` is the C-free choice then.)
+`default-features = false, features = ["blocking", "json"]` for the harness. Done in M0 step 7. That removes
+`aws-lc-sys` from the Windows target entirely, retires the NASM question, and shrinks the Windows binary. Keep
+installing `nasm` in CI as the fallback if something unexpected still pulls it in. (When M7 brings a Windows updater,
+it'll need a TLS story again; Schannel via `native-tls` is the C-free choice then.)
 
 ### Cross-compiling from macOS: Windows works, Linux doesn't yet
 
@@ -338,14 +349,17 @@ tree, in order:
 3. Then **muda itself stops compiling**: `platform_impl/mod.rs` gates its Linux backend behind the `gtk` feature and
    offers no fallback, so `default-features = false` leaves `pub(crate) use self::platform::*` unresolved (E0432). Step
    8's one-line change is therefore not enough on its own.
-4. Moving muda out of the Linux target entirely leaves exactly three errors, all in our code: `menu.rs:1`, `menu.rs:2`,
-   and `input.rs:9`. So step 8's real shape is "muda is a macOS and Windows dependency, and the menu module is
-   `cfg`-gated to match", after which Linux should type-check the same way Windows does.
+4. Moving muda out of the Linux target entirely leaves exactly three errors, all in our code: two `use muda::…` lines at
+   the top of the old `menu.rs`, and one in `input.rs`. So step 8's real shape is "muda is a macOS and Windows
+   dependency, and the menu module is `cfg`-gated to match", after which Linux type-checks the same way Windows does.
+   That is what M0 step 8 built: `menu/` is now `mod.rs` (the seam), `native.rs` (muda), and `absent.rs` (Linux), and
+   `input.rs` no longer mentions muda at all. `./scripts/check.sh --check linux-cross` covers it from a Mac.
 
 ### CI changes
 
 Add a `desktop-rust-windows` job on `windows-latest` running build, clippy, and tests, and add it to `ci-ok`'s `needs`
-list. Also fix the macOS job (M0 step 1). Three shape details a copy-paste of the Linux job gets wrong:
+list. Also fix the macOS job (M0 step 1). Both landed in M0, and all three shape details below were handled. They stay
+here because a fourth job (Linux release, say) hits the same traps.
 
 - Every job that runs checks builds `scripts/check/check` and invokes it by relative path (`ci.yml:85-96`). On
   `windows-latest` that's `check.exe` under a PowerShell default shell.
@@ -483,11 +497,20 @@ it's the riskiest change here, and M1 step 11's screenshot readback wants it don
 **Intent:** Today's Linux build type-checks but panics at startup, and macOS CI can't catch a regression because it only
 runs `cargo build`. Fix both before touching anything else, or every later milestone's "green in CI" claim is hollow.
 
-1. **Fix the macOS CI job first.** Add clippy and `cargo nextest run` to `desktop-rust-macos` (`ci.yml:101-127`).
+**Status: landed on 2026-08-23 in `7a5a40a..7bf425f`.** All ten steps are done, along with the tests, the five test
+gates, and the docs. Two things to know before you build on it:
+
+- **The Done-when's second half is not done.** A no-argument launch still logs one `info` line and waits, rather than
+  logging and exiting. It's M1 step 1's job and nothing here moved it.
+- **The new CI jobs have never run.** `main` is ahead of `origin/main`, so `desktop-rust-windows` and the reworked
+  `desktop-rust-macos` have only ever been exercised as local cross-compiles (`--check windows-cross`,
+  `--check linux-cross`), which type-check and lint but run no tests. The first push is the real shakedown.
+
+1. ✅ **Fix the macOS CI job first.** Add clippy and `cargo nextest run` to `desktop-rust-macos` (`ci.yml:101-127`).
    Without this, step 2 changes color behavior on macOS with zero automated coverage. Expect a shakedown: the 60 E2E
    tests in `tests/integration.rs` spawn real GPU windows and have never run on a hosted runner, so budget a flake pass.
    If they're too slow for every push, run them on `main` or on a schedule, but run them somewhere.
-2. **Replace the macOS system sRGB profile with a generated one.** `moxcms::ColorProfile::new_srgb()`
+2. ✅ **Replace the macOS system sRGB profile with a generated one.** `moxcms::ColorProfile::new_srgb()`
    (`moxcms/defaults.rs:255`) plus `.encode()` gives the bytes. `src/color/profiles.rs:20` already argues for exactly
    this ("nothing to license, nothing to bundle, nothing to keep in sync") and `profiles.rs:122`
    (`linear_rec2020_icc_bytes`) shows the encode pattern. Follow the precedent rather than shipping an `.icc` asset.
@@ -499,7 +522,7 @@ runs `cargo build`. Fix both before touching anything else, or every later miles
      generated one means images tagged with Apple's exact sRGB profile stop short-circuiting and go through a
      near-identity transform. It only bites when "match display" is off. Measure it on a 24 MP JPEG before and after; if
      it matters, compare parsed primaries and TRC instead of bytes.
-3. **Fix both `HOME` readers, not one.**
+3. ✅ **Fix both `HOME` readers, not one.**
    - `settings::persistence::data_dir()` (`persistence.rs:184`): `%APPDATA%\Prvw` on Windows, `$XDG_CONFIG_HOME` or
      `~/.config/prvw` on Linux. Replace the `/tmp` fallback too; on Windows it resolves to a drive-relative `\tmp`. Keep
      the `PRVW_DATA_DIR` override, the integration tests depend on it.
@@ -508,31 +531,36 @@ runs `cargo build`. Fix both before touching anything else, or every later miles
      Adobe camera profile is invisible and RAW rendering quietly falls back to the default pipeline. The Windows paths
      are `%APPDATA%\Adobe\CameraRaw\CameraProfiles` and `%PROGRAMDATA%\Adobe\CameraRaw\CameraProfiles`. More
      user-visible than the settings path, because RAW quality is a headline feature.
-4. **`diagnostics::get_process_rss_mb`** (`diagnostics.rs:59`): `GetProcessMemoryInfo` on Windows, `/proc/self/statm` on
-   Linux.
-5. **`platform::total_physical_ram_bytes`**: `GlobalMemoryStatusEx` on Windows, `/proc/meminfo` on Linux. Un-gate it
+4. ✅ **`diagnostics::get_process_rss_mb`** (`diagnostics.rs:59`): `GetProcessMemoryInfo` on Windows, `/proc/self/statm`
+   on Linux.
+5. ✅ **`platform::total_physical_ram_bytes`**: `GlobalMemoryStatusEx` on Windows, `/proc/meminfo` on Linux. Un-gate it
    from macOS while you're there; it stops being previews-only the moment M3 lands.
    - **While you're in there, connect it to the preloader's budgets.** `navigation/preloader.rs:12` sets
      `SDR_MEMORY_BUDGET` to 512 MB and `:20` sets `HDR_MEMORY_BUDGET` to 1 GB, both absolute constants. On an 8 GB
      Windows laptop with no unified memory, a 1 GB HDR cache plus the GPU-side copies is a different proposition than on
      a 32 GB Mac. Scale them off total RAM the way `previews` already does.
-6. **Add `windows = "0.62.2"`** under `[target.'cfg(target_os = "windows")'.dependencies]`. It's already in `Cargo.lock`
-   transitively, so nothing new is downloaded, but per `AGENTS.md`'s critical rules this is still a new direct
-   dependency and needs a license check and a crates.io version check. (0.62.2 is current, published 2025-10-06,
+6. ✅ **Add `windows = "0.62.2"`** under `[target.'cfg(target_os = "windows")'.dependencies]`. It's already in
+   `Cargo.lock` transitively, so nothing new is downloaded, but per `AGENTS.md`'s critical rules this is still a new
+   direct dependency and needs a license check and a crates.io version check. (0.62.2 is current, published 2025-10-06,
    MIT/Apache-2.0.)
-7. **Scope `reqwest` to macOS** and give the test harness a TLS-free dev-dependency, per the TLS section above. This
+7. ✅ **Scope `reqwest` to macOS** and give the test harness a TLS-free dev-dependency, per the TLS section above. This
    drops `aws-lc-sys` from the Windows target rather than working around it.
-8. **Drop muda from the Linux target.** muda's defaults are `["libxdo", "gtk"]`, the source of all nine GTK C
+8. ✅ **Drop muda from the Linux target.** muda's defaults are `["libxdo", "gtk"]`, the source of all nine GTK C
    dependencies in `Cargo.lock` and of the `apt-get` step in CI. muda's menu bar can't attach to a winit window on Linux
    anyway (see item 9 above), so that chain is dead weight. Dropping it removes the apt step, speeds up Linux CI, and
    makes a future AppImage genuinely dependency-free. Doing it here rather than in M8 pays off for every milestone in
    between.
-   - **`default-features = false` alone doesn't work**: muda has no Linux backend without the `gtk` feature, so the
-     crate fails to compile (E0432 on `self::platform`). Move `muda` under a
-     `cfg(any(target_os = "macos", target_os = "windows"))` dependency section and `cfg`-gate its three uses instead:
-     `menu.rs:1`, `menu.rs:2`, and `input.rs:9`. Those three are the only errors left once muda is out of the graph. See
-     the cross-compiling section above for the measurements.
-9. **Port the Go check runner to Windows. It does not compile there today, and this blocks step 10.** Verified with
+   - **`default-features = false` alone doesn't work**, so this is a module split rather than a one-line change. muda
+     has no Linux backend without the `gtk` feature: the crate itself fails to compile (E0432 on `self::platform`). So
+     muda moves under a `cfg(any(target_os = "macos", target_os = "windows"))` dependency section, and the menu module
+     gets `cfg`-gated to match. See the cross-compiling section above for the measurements.
+   - **What that turned into.** `menu.rs` is now a directory: `menu/mod.rs` picks an implementation and owns the API,
+     `menu/native.rs` is the muda-backed menu bar, and `menu/absent.rs` is the platform with none (`AppMenu` there is an
+     uninhabited enum and `create_menu_bar` returns `None`). `create_menu_bar` returns `Option<AppMenu>`, so `app.rs`
+     and `app/executor.rs` carry no menu `#[cfg]` at all. `input::menu_to_command` moved into `menu/native.rs` next to
+     the IDs it matches, and the 11 scattered `set_checked` calls collapsed into one `AppMenu::sync_from_settings`.
+     Details and the reachability list for Linux: `src/menu/CLAUDE.md`.
+9. ✅ **Port the Go check runner to Windows. It did not compile there, and this blocked step 10.** Verified with
    `GOOS=windows GOARCH=amd64 go build`: `scripts/check/checks/common.go:111` calls
    `syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)` and `:130` sets `SysProcAttr{Setpgid: true}`, and neither exists on
    `windows/amd64`. Both live in `RunCommand` / `KillAllProcesses`, which every check goes through. Six more call sites
@@ -541,7 +569,7 @@ runs `cargo build`. Fix both before touching anything else, or every later miles
    `scripts-go-gocyclo.go:35`, `scripts-go-misspell.go:25`. Split the process-group handling into `common_unix.go` /
    `common_windows.go` (job objects or `taskkill /T` on Windows) and replace the `find` shell-outs with
    `filepath.WalkDir`. Budget a day.
-10. **Add the `desktop-rust-windows` CI job** on `windows-latest`: build, clippy, `cargo nextest run`. Give it
+10. ✅ **Add the `desktop-rust-windows` CI job** on `windows-latest`: build, clippy, `cargo nextest run`. Give it
     `needs: changes` and `if: inputs.run_all || needs.changes.outputs.rust == 'true'` to match `ci.yml:54-55`, or it
     runs on every website-only push, and add it to `ci-ok`'s `needs`. Mind the shape details in the CI section, and
     **audit the POSIX path fixtures** that will now execute for the first time: `navigation/preloader.rs:766,894`,
@@ -549,20 +577,27 @@ runs `cargo build`. Fix both before touching anything else, or every later miles
     `browser/tree_model.rs:404-497`, and `folder_watch.rs:362-423` all hardcode POSIX absolute paths. Most are pure
     `PathBuf` string manipulation and will pass, but don't assume it.
 
-**Tests:** unit tests for the per-OS helpers and both `HOME` replacements. A test that constructs `color::State` without
-touching the filesystem. CI green on three platforms, with macOS finally running more than a build.
+**Tests:** ✅ unit tests for the per-OS helpers and both `HOME` replacements. A test that constructs `color::State`
+without touching the filesystem. CI green on three platforms, with macOS finally running more than a build. The helpers
+take their environment lookup as a parameter (`platform::fixed_env`), so every platform's path layout is asserted from
+whichever host runs the tests rather than only from its own.
 
-**Also re-open the five test gates step 2 retires.** `color/transform.rs:190`, `decoding/mod.rs:512`,
-`decoding/raw.rs:1482` and `:1515`, and `color/dcp/mod.rs:419` are all `#[cfg(all(test, target_os = "macos"))]`, and
+**Also re-open the five test gates step 2 retires.** ✅ `color/transform.rs:190`, `decoding/mod.rs:512`,
+`decoding/raw.rs:1482` and `:1515`, and `color/dcp/mod.rs:419` were all `#[cfg(all(test, target_os = "macos"))]`, and
 every one of their comments blames `srgb_icc_bytes` reading a macOS-only system file. Once that read is gone the
 comments are wrong (the repo's "describe current behavior, not history" rule) and the new Windows and Linux jobs are
 running less coverage than they could. Drop the gates the fix retires and delete the stale comments in the same pass.
 
-**Docs:** note the sRGB change in `src/color/CLAUDE.md`; add a supported-platforms line to `AGENTS.md`.
+**Docs:** ✅ note the sRGB change in `src/color/CLAUDE.md`; add a supported-platforms line to `AGENTS.md`.
 
 **Done when:** `cargo run -- some.jpg` on a Windows box shows the image, **and** `cargo run` with no arguments does
 something defensible rather than nothing. (That second half is M1 step 1's job; if it isn't done yet, at least make the
 no-argument case log and exit rather than hang invisibly.)
+
+**Where that landed:** the first half is as verified as a Mac can make it —
+`cargo xwin build --target x86_64-pc-windows-msvc` produces a `prvw.exe`, but nobody has started it on Windows yet. The
+second half is **not done**: `main.rs` is untouched, so a no-argument launch still logs
+`No files on CLI, waiting for Apple Event` at `info` and then waits forever off macOS. Carry it into M1 step 1.
 
 ### M0.5: the parity harness (one to two weeks)
 
@@ -623,8 +658,8 @@ two sit near the end only because they're smaller.
 
 1. **Make the no-argument launch work, and add File → Open.** See finding 3 above: `app.rs:3257` returns from
    `resumed()` without building a window when `waiting_for_file` is true, `app.rs:3300`'s fallback is macOS-only
-   onboarding, and `menu.rs:129-141` has no Open item. Off macOS that's an invisible process with no recovery. Do two
-   things:
+   onboarding, and `menu/native.rs:326-338` has no Open item. Off macOS that's an invisible process with no recovery. Do
+   two things:
    - Create the window unconditionally off macOS, showing an empty state (the black frame plus a hint) rather than
      nothing.
    - Add **File → Open…** to the menu on every platform, backed by a native file dialog. On Windows that's
@@ -642,9 +677,9 @@ two sit near the end only because they're smaller.
    no image and no error. Explorer's "Open with" on a folder and folder drag-and-drop both reach this, and step 12 adds
    drag-and-drop. Pick one: list the folder's images in image mode and open the first, or reject the argument with a
    message.
-3. **Suppress browse mode on Windows until M5.** `menu.rs:271` builds the "Image browser" item unconditionally, and off
-   macOS `App::set_view_mode` (`app.rs:1917`) calls `browser.toggle_mode()` and then stops requesting redraws. So
-   pressing Enter flips the app into `ViewMode::Browse` with no visible change, changed key routing, a changed menu
+3. **Suppress browse mode on Windows until M5.** `menu/native.rs:448` builds the "Image browser" item unconditionally,
+   and off macOS `App::set_view_mode` (`app.rs:1917`) calls `browser.toggle_mode()` and then stops requesting redraws.
+   So pressing Enter flips the app into `ViewMode::Browse` with no visible change, changed key routing, a changed menu
    label, and `SharedAppState` reporting Browse to the QA server. Hide the menu item and make Enter a no-op off macOS.
 4. **Give `previews::metadata` a Windows tier, and fix the catch-all arm.** `app.rs:843` gates `apply_preview_auto_fit`
    behind macOS, so a RAW launch keeps the window at its initial size until the full develop lands: a visible pop on the
@@ -699,7 +734,8 @@ two sit near the end only because they're smaller.
    and the `HACCEL` has to stay fresh across the runtime menu mutations Prvw already does (`set_browse_menu_label`, the
    slideshow Start/Stop swap, every `CheckMenuItem`). Also remap Cmd to Ctrl, restructure for Windows conventions (no
    app menu, so About moves to Help and Settings becomes "Options"), and audit every `PredefinedMenuItem`. Keep
-   `MenuIds` and `input.rs` as the single source of action mapping; only the construction in `menu.rs` forks.
+   `MenuIds` and `menu::native::menu_to_command` as the single source of menu action mapping (M0 moved it there from
+   `input.rs`, which now owns keys only); only the construction inside `menu/native.rs` forks.
    - **Knock-on effect:** a Win32 menu bar eats client area, so `window::resize_to_fit_image` and the auto-fit path have
      to account for the menu-bar height or images come up subtly cropped. That looks like a rendering bug and is
      actually a layout one, so check it early.
@@ -739,10 +775,10 @@ two sit near the end only because they're smaller.
 13. **Port the E2E harness.** Drop the crate-level `#![cfg(target_os = "macos")]` in `tests/integration.rs` (60 tests)
     and gate only the genuinely macOS-specific ones (browse mode, file associations, onboarding). Start with one test on
     `windows-latest` to see whether WARP is fast and stable enough, then port the rest.
-    - The harness keeps test windows out of the way with `ActivationPolicy::Prohibited` (`main.rs:164-166`), which is
+    - The harness keeps test windows out of the way with `ActivationPolicy::Prohibited` (`main.rs:164-168`), which is
       `winit::platform::macos` only. On Windows the closest thing is `WindowAttributes::with_active(false)` plus leaving
       the window un-raised; there's no app-level "cannot be activated" lever, so expect this to be less airtight.
-    - `tests/integration.rs:69` sets `HOME` for the browse tests, and `:68` canonicalizes it so prefix matching works.
+    - `tests/integration.rs:87` sets `HOME` for the browse tests, and `:86` canonicalizes it so prefix matching works.
       Account for both when deciding which tests to gate.
 14. **Pin the GPU backend and revisit adapter selection.** `renderer.rs:243` uses `Backends::all()`, so which backend
     wgpu picks on a given Windows machine isn't ours to decide. M2's entire HDR plan rests on
@@ -750,7 +786,7 @@ two sit near the end only because they're smaller.
     rather than leaving the flagship feature conditional on an unowned choice. Separately, `renderer.rs:256` asks for
     `PowerPreference::LowPower`; on a Windows laptop with hybrid graphics that picks the integrated GPU, which on many
     machines isn't the one driving the display the photographer calibrated. Decide deliberately.
-15. **Fix the rename semantics in `folder_watch`.** `folder_watch.rs:50-52` documents the invariant "Creates, removes,
+15. **Fix the rename semantics in `folder_watch`.** `folder_watch.rs:57-59` documents the invariant "Creates, removes,
     and renames are false" for `is_modify`, and `:111` implements it as `matches!(event.kind, EventKind::Modify(_))`.
     That holds on FSEvents and breaks on Windows: `notify-8.2.0/src/windows.rs:426` maps `FILE_ACTION_RENAMED_OLD_NAME`
     to `EventKind::Modify(ModifyKind::Name(RenameMode::From))` and `:434` maps the new name to `RenameMode::To`, so
