@@ -75,6 +75,7 @@ All endpoints also available as simple HTTP for cURL debugging. POST endpoints r
 | GET    | /state                | -                                                         | State JSON       |
 | GET    | /settings             | -                                                         | Settings JSON    |
 | GET    | /menu                 | -                                                         | Menu text        |
+| GET    | /parity               | -                                                         | Parity JSON      |
 | GET    | /screenshot           | -                                                         | PNG bytes        |
 | GET    | /diagnostics          | -                                                         | Diagnostics text |
 | POST   | /key                  | key name                                                  | State JSON       |

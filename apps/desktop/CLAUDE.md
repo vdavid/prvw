@@ -14,6 +14,7 @@ src/
 ├── commands.rs              AppCommand enum + global EventLoopProxy
 ├── input.rs                 Maps keys/QA keys → AppCommand
 ├── menu/                    Menu bar + context menu (muda) on macOS and Windows; `absent.rs` covers platforms with no menu bar
+├── parity/                  Registries of settings, menu items, and commands + each platform's coverage (M0.5 layer 1)
 ├── pixels.rs                Logical/Physical coordinate newtypes
 ├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers)
 ├── render.rs + render/      wgpu infrastructure (renderer, text, shaders)

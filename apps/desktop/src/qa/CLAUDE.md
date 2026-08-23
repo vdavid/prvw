@@ -43,9 +43,13 @@ An in-process HTTP server for automated QA: used by E2E tests, agent-driven work
 - **Read timeout = 5 s.** Malformed/stalled connections won't hold up the accept loop.
 - **`SharedAppState` lives in `crate::app`**, not here. Imported via `crate::app::SharedAppState`. It's the app-side
   snapshot; we're just a reader.
-- **`MENU_TEXT` is `pub(super)` in `http.rs`** because `mcp::mcp_resources_read` also serves it at `prvw://menu`. Kept
-  the const inside `http.rs` because the HTTP endpoint is its primary home; MCP reaches across for the same string
-  rather than duplicating.
+- **`menu_text()` is generated, not written down.** It renders the menu bar from `parity::menu_items` for the platform
+  the build runs on, so it can't go stale (the hand-kept constant it replaced had, and was missing six items). It's
+  `pub(super)` in `http.rs` because `mcp::mcp_resources_read` serves the same text at `prvw://menu`. Shortcuts aren't
+  listed: `input::key_to_command` owns the keyboard.
+- **`GET /parity`** serves the whole parity table (settings, menu items, commands, each platform's status and any
+  `NotApplicable` reason) from `parity::report`. It answers the same on every host, because the registries carry no
+  `#[cfg]`.
 
 ## Window-chrome diagnostics (debug builds, macOS)
 

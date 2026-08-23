@@ -71,7 +71,9 @@ macro_rules! menu_items {
                 match self { $( MenuItemKey::$variant => stringify!($variant), )* }
             }
 
-            /// What the item is called, without the cosmetic shortcut hint.
+            /// What the item is called, without the cosmetic shortcut hint. For the items the
+            /// toolkit builds (Hide, Quit, Close window) this is the name we call them: muda
+            /// and AppKit supply their own localized titles.
             pub const fn label(self) -> &'static str {
                 match self { $( MenuItemKey::$variant => $label, )* }
             }

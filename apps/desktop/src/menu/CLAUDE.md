@@ -5,7 +5,8 @@ The menu bar and the right-click context menu, plus the seam for platforms that 
 ## Layout
 
 - `mod.rs` picks the implementation and documents the API. Nothing else in the app carries a `#[cfg]` for the menu.
-- `native.rs` is the muda-backed menu bar, for macOS and Windows.
+- `native.rs` is the muda-backed menu bar, for macOS and Windows. Every item is built from a `MenuItemKey`
+  (`crate::parity::menu_items`) through `MenuBuilder`.
 - `absent.rs` is the platform with no menu bar (Linux today). `AppMenu` there is an uninhabited enum and
   `create_menu_bar` returns `None`.
 
@@ -30,6 +31,20 @@ that saves one of those settings calls it right after. Nothing else pokes a menu
 settings it displays. Same shape as `browser::sync_native`.
 
 Commands run the other way, through `poll_command`. The keyboard's twin table is `input::key_to_command`.
+
+## Decision: items come from the parity registry
+
+**Why:** the menu is one of the surfaces that gets built once per platform, so it's where drift starts. Building an item
+means naming a `MenuItemKey`: the key supplies the title (cosmetic shortcut hint included), the id table it registers
+turns a click back into a key, and `command_for` matches on that key exhaustively, so a new item can't be added without
+deciding what clicking it does. `MenuBuilder::finish` then checks the built set against what `parity::menu_items`
+declares for macOS.
+
+This replaced a 31-field `MenuIds` struct and a 30-branch if-else chain, so it's less code than what it guards.
+
+**Windows:** muda builds the same items there, but nothing calls `init_for_hwnd`, so the bar never attaches and the
+registry says `Missing` for every item. `finish` skips the audit off macOS for that reason. M4 attaches the bar, flips
+the arms to `Present`, and turns the audit on.
 
 ## What Linux loses
 

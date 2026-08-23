@@ -30,14 +30,50 @@ features).
 
 ## Adding a new setting
 
+`Settings` (`persistence.rs`) is the source of truth for what a setting **is**. `SettingKey`
+(`crate::parity::setting_keys`) is the source of truth for what a **UI owes it**. Keep that line clean: no second copy
+of the data model in the registry, and no settings row anywhere that isn't named by a key.
+
 1. `persistence.rs`: add the field with `#[serde(default)]`, update `Default` + tests.
-2. `crate::app::App` struct: add a field, initialize from `initial_settings`.
-3. `crate::commands::AppCommand`: add a `Set{Name}(bool)` variant.
-4. `app/executor.rs`: handle it: update App field, load/save `Settings`, call `self.sync_menu_from_settings(&s)` if the
+2. `parity/setting_keys.rs`: add a `SettingKey` variant with its label, panel, control kind, and the `Settings` field it
+   drives. Skipping this fails `every_settings_field_has_a_key`, which walks the serialized `Settings` and reports any
+   field no key claims.
+3. Answer for **every platform**. The new variant breaks `macos_coverage`, `windows_coverage`, and `linux_coverage`
+   until each says `Present`, `NotApplicable { reason }`, or `Missing`. That's the parity guarantee; `cargo check` here
+   catches the Windows arm too, and `./scripts/check.sh --check windows-cross --check linux-cross` compiles both.
+4. `crate::app::App` struct: add a field, initialize from `initial_settings`.
+5. `crate::commands::AppCommand`: add a `Set{Name}(bool)` variant, and give it a `CommandKey` in `parity_key` (or
+   declare it plumbing, which a setting never is).
+6. `app/executor.rs`: handle it: update App field, load/save `Settings`, call `self.sync_menu_from_settings(&s)` if the
    menu mirrors it, call `self.update_shared_state()`.
-5. Menu item (optional): `menu/native.rs`, both the item and the `sync_from_settings` line that drives its checkmark.
-6. Settings toggle: add it to the relevant feature's `settings_panel.rs`. If the delegate needs to mutate it
-   (cross-dependency), add a field to the panel's output struct and plumb the pointer into `SettingsDelegateIvars` in
-   `window.rs`. Wire `setTarget`/`setAction` there too.
-7. QA/MCP: `features/qa/http.rs` + `features/qa/mcp.rs`.
-8. Integration test: `tests/integration.rs`.
+7. Menu item (optional): add a `MenuItemKey`, build it in `menu/native.rs` through `MenuBuilder`, and add the
+   `sync_from_settings` line that drives its checkmark.
+8. Settings row: call `make_setting_row(audit, SettingKey::Yours, description, ...)` from the relevant panel. The title
+   comes from the key; the description stays an argument, because that copy talks about the platform's own hardware and
+   conventions ("wide-gamut (P3) screens like MacBooks"). If the delegate needs to mutate the widget (cross-dependency),
+   add a field to the panel's output struct and plumb the pointer into `SettingsDelegateIvars` in `window.rs`. Wire
+   `setTarget`/`setAction` there too.
+9. QA/MCP: `qa/http.rs` + `qa/mcp.rs`.
+10. Integration test: `tests/integration.rs`.
+
+### Why a row can't skip the registry
+
+The row factories take a `SettingKey` rather than a title string, so building a row registers it. `check_parity` in
+`window.rs` compares what the window built against what macOS declared, and `settings_opens_and_closes` (which opens the
+real window) is where a mismatch surfaces: a `Present` nobody built panics with the key's name. The compiler can't see
+inside a widget factory, so this is the half that catches a declaration nobody honoured.
+
+### The `NotApplicable` escape hatch
+
+`Coverage::NotApplicable { reason }` is for a setting that is **meaningless** on a platform, and the reason is data:
+layer 2 renders it in `docs/parity.md`, so a reader can judge it. `SettingKey::TitleBar` is the shape to copy: macOS
+draws content behind a transparent title bar, a Win32 client area starts below the caption, so there is nothing there to
+reserve space for.
+
+**Using it without a real reason is how this whole layer rots.** A reason like "n/a" or "doesn't fit our UI" turns a
+compile error into a shrug, and the next person copies the shrug. Two rules keep it honest:
+
+- Name the platform fact that makes the setting meaningless: a window model, an OS convention, an API that doesn't
+  exist. If the sentence would work for any setting, it isn't a reason.
+- "We haven't built it yet" is `Missing`, never `NotApplicable`. `Missing` is what the parity table counts as a gap, and
+  the point is that the gaps stay countable.
