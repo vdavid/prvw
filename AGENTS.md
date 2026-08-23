@@ -117,6 +117,17 @@ PATH="$(git rev-parse --show-toplevel)/target/cross-check-bin:$PATH" \
 That writes `target/x86_64-pc-windows-msvc/debug/prvw.exe`, a real PE32+ binary to copy into a Windows VM. Run the
 `windows-cross` check at least once first, so the `llvm-lib` link exists.
 
+It's a GUI-subsystem binary carrying its icon, application manifest, and version info, all built by `build.rs` with no
+resource compiler involved (see `apps/desktop/CLAUDE.md`). Read the PE back to check any of that from the Mac, with the
+`llvm-readobj` in `$(rustc --print sysroot)/lib/rustlib/<host-triple>/bin/` (the `llvm-tools` component):
+
+```bash
+llvm-readobj --file-headers --coff-resources target/x86_64-pc-windows-msvc/debug/prvw.exe
+```
+
+`Subsystem: IMAGE_SUBSYSTEM_WINDOWS_GUI` and 10 resources under `ICON`, `GROUP_ICON`, `VERSIONINFO`, and `MANIFEST` are
+what a good build looks like.
+
 `./scripts/check.sh --check linux-cross` is the Linux twin: the same clippy run against `x86_64-unknown-linux-gnu`, also
 slow-marked. One-time setup is `rustup target add x86_64-unknown-linux-gnu` and `mise install zig@latest`. zig supplies
 the Linux C toolchain that `zstd-sys` needs, since Apple's command line tools cross-compile to nothing. The check writes

@@ -20,9 +20,10 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce + off-thread re-scan lister |
 | `input.rs`                  | Maps keys and QA keys to `AppCommand`                                                            |
 | `launch.rs`                 | What the command line asks Prvw to open: wait for a file, open a folder's images, or nothing     |
+| `logging.rs`                | `env_logger` setup, and where a console-less Windows launch writes instead                       |
 | `menu/`                     | Menu bar and context menu via `muda` (macOS, Windows), and the seam for platforms with neither   |
 | `pixels.rs`                 | `Logical` / `Physical` newtypes for coordinate types                                             |
-| `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers)                                       |
+| `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach)           |
 | `render.rs` + `render/`     | wgpu infrastructure: renderer, text overlay, shaders                                             |
 
 **Features:**
