@@ -16,6 +16,8 @@ use objc2_app_kit::{
 };
 use objc2_foundation::NSString;
 
+use crate::parity::Audit;
+use crate::parity::setting_keys::SettingKey;
 use crate::platform::macos::ui_common::{FlippedView, as_view, make_label};
 
 /// Create a wrapping description label using `[NSTextField wrappingLabelWithString:]`.
@@ -33,8 +35,16 @@ pub(crate) fn make_wrapping_label(text: &str, max_width: f64) -> Retained<NSText
 
 /// Create a toggle row (label + NSSwitch) and a description label underneath.
 /// Returns (row_stack, toggle, desc_label).
+///
+/// The row is named by its [`SettingKey`], which is where the title comes from and what the
+/// row records itself as in `audit`. That's the parity harness: a settings row can't reach the
+/// screen without naming the key it satisfies, so what macOS declares in
+/// `parity::setting_keys` and what macOS builds are checked against each other every time the
+/// window opens. `description` stays a per-platform argument: the copy explains the setting in
+/// terms of the platform's own hardware and conventions.
 pub(crate) fn make_setting_row(
-    title: &str,
+    audit: &mut Audit<SettingKey>,
+    key: SettingKey,
     description: &str,
     is_on: bool,
     wrapping: bool,
@@ -45,7 +55,8 @@ pub(crate) fn make_setting_row(
     Retained<NSSwitch>,
     Retained<NSTextField>,
 ) {
-    let label = make_label(title, 14.0, mtm);
+    audit.record(key);
+    let label = make_label(key.label(), 14.0, mtm);
     label.setAlignment(NSTextAlignment(0));
 
     let toggle = NSSwitch::new(mtm);

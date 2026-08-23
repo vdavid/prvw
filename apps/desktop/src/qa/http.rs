@@ -12,6 +12,8 @@ use winit::event_loop::EventLoopProxy;
 use super::server::{format_state_json, write_response};
 use crate::app::SharedAppState;
 use crate::commands::AppCommand;
+use crate::parity::menu_items::{Menu as MenuName, MenuItemKey};
+use crate::parity::{Coverage, Platform};
 use crate::settings;
 
 /// Send an `AppCommand`, wait for the event loop to acknowledge via a `Sync` barrier,
@@ -49,43 +51,34 @@ pub(super) fn handle_post_close_settings(
     send_and_wait_http(stream, proxy, AppCommand::CloseSettings, state)
 }
 
-pub(super) const MENU_TEXT: &str = "\
-Prvw
-  About Prvw
-  ---
-  Hide Prvw
-  Hide others
-  Show all
-  ---
-  Quit Prvw    Cmd+Q
-File
-  Close        Cmd+W
-View
-  Zoom in      +/Cmd+=
-  Zoom out     -/Cmd+-
-  ---
-  Actual size  1/Cmd+1
-  Fit to window 0/Cmd+0
-  Auto-fit window (toggle)
-  Enlarge small images (toggle, disabled when auto-fit is on)
-  ---
-  Fullscreen   F/Enter/F11/Cmd+F
-  ---
-  Refresh
-Navigate
-  Previous ←   ←/;/Backspace
-  Next →        →/'/Space
-  ---
-  Go to first   Home
-  Go to last    End
-  ---
-  Loop navigation (toggle)   L
-Slideshow
-  Start/Stop slideshow   Cmd+S
-  ---
-  Increase speed   ]
-  Decrease speed   [
-";
+/// The menu bar as text, rendered from the menu registry for the platform this build runs on.
+///
+/// Generated rather than written down: a hand-kept copy of the menus drifts (this one had, and
+/// was missing Copy image, Print, Histogram, Exif info, Sort by, and the browse toggle), and a
+/// stale answer from a QA endpoint is worse than none. Items the registry marks absent here
+/// don't appear, so the text says what this platform actually offers. Shortcuts aren't listed:
+/// `input::key_to_command` owns the keyboard.
+pub(super) fn menu_text() -> String {
+    let mut text = String::new();
+    let mut current: Option<MenuName> = None;
+    for key in MenuItemKey::ALL {
+        if key.coverage(Platform::HOST) != Coverage::Present {
+            continue;
+        }
+        if current != Some(key.menu()) {
+            current = Some(key.menu());
+            text.push_str(key.menu().name());
+            text.push('\n');
+        }
+        text.push_str("  ");
+        text.push_str(key.title());
+        text.push('\n');
+    }
+    if text.is_empty() {
+        text.push_str("(no menus on this platform)\n");
+    }
+    text
+}
 
 pub(super) fn handle_get_state(
     stream: &mut std::net::TcpStream,
@@ -97,7 +90,43 @@ pub(super) fn handle_get_state(
 }
 
 pub(super) fn handle_get_menu(stream: &mut std::net::TcpStream) -> Result<(), String> {
-    write_response(stream, 200, "text/plain", MENU_TEXT.as_bytes(), &[])
+    write_response(stream, 200, "text/plain", menu_text().as_bytes(), &[])
+}
+
+/// The parity table: every settings key, menu item, and command, with each platform's status.
+///
+/// Answers the same on every host, because `parity::report` reads registries that carry no
+/// `#[cfg]`. That's what makes it useful from a test: a build can be asked what it claims to
+/// offer everywhere, not just here.
+pub(super) fn handle_get_parity(stream: &mut std::net::TcpStream) -> Result<(), String> {
+    let entries: Vec<Value> = crate::parity::report()
+        .into_iter()
+        .map(|entry| {
+            let platforms: Vec<Value> = entry
+                .coverage
+                .iter()
+                .map(|(platform, coverage)| {
+                    json!({
+                        "platform": platform.name(),
+                        "status": coverage.status(),
+                        "reason": coverage.reason(),
+                    })
+                })
+                .collect();
+            json!({
+                "registry": entry.registry.name(),
+                "name": entry.name,
+                "label": entry.label,
+                "group": entry.group,
+                "kind": entry.kind,
+                "field": entry.field,
+                "platforms": platforms,
+            })
+        })
+        .collect();
+    let body =
+        serde_json::to_string_pretty(&json!({ "entries": entries })).map_err(|e| e.to_string())?;
+    write_response(stream, 200, "application/json", body.as_bytes(), &[])
 }
 
 pub(super) fn handle_get_screenshot(

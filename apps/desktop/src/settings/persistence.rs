@@ -257,6 +257,7 @@ fn settings_path() -> PathBuf {
 mod tests {
     use super::*;
 
+    use crate::parity::setting_keys::SettingKey;
     use crate::platform::fixed_env;
 
     #[test]
@@ -332,6 +333,68 @@ mod tests {
         // And the fallback stays absolute even when the layout finds nothing.
         let fallback = std::env::temp_dir().join("prvw");
         assert!(fallback.is_absolute(), "got {fallback:?}");
+    }
+
+    /// Every field of `Settings` is claimed by exactly one `SettingKey`, and every key names
+    /// a field that exists.
+    ///
+    /// This is the half of the parity harness the compiler can't do: a new struct field
+    /// doesn't break any `match`, so nothing else would notice it. Once the key exists, every
+    /// platform's coverage match in `parity::setting_keys` stops compiling until it says what
+    /// that platform does with the setting. So the chain runs: add a field, this test fails;
+    /// add a key, the builds fail; handle the key everywhere, they pass.
+    #[test]
+    fn every_settings_field_has_a_key() {
+        let json = serde_json::to_value(Settings::default()).expect("Settings serializes");
+        let declared: Vec<&str> = SettingKey::ALL.iter().map(|key| key.field()).collect();
+
+        let mut claimed: Vec<String> = Vec::new();
+        let mut unclaimed: Vec<String> = Vec::new();
+        walk_fields("", &json, &declared, &mut claimed, &mut unclaimed);
+
+        assert!(
+            unclaimed.is_empty(),
+            "these `Settings` fields have no `SettingKey`, so no platform's UI owes them \
+             anything: {unclaimed:?}. Add a variant in `parity::setting_keys`."
+        );
+        let orphans: Vec<&&str> = declared
+            .iter()
+            .filter(|field| !claimed.iter().any(|found| found == *field))
+            .collect();
+        assert!(
+            orphans.is_empty(),
+            "these `SettingKey`s name a `Settings` field that isn't there: {orphans:?}"
+        );
+    }
+
+    /// Walk the serialized settings, recording which leaves a key claims and which nothing
+    /// does. A field a key claims outright is a leaf even when it serializes as an object
+    /// (`previous_handlers` is the whole File associations panel); anything else that's an
+    /// object is a group of settings, so we go inside it (`raw`).
+    fn walk_fields(
+        path: &str,
+        value: &serde_json::Value,
+        declared: &[&str],
+        claimed: &mut Vec<String>,
+        unclaimed: &mut Vec<String>,
+    ) {
+        if !path.is_empty() && declared.contains(&path) {
+            claimed.push(path.to_string());
+            return;
+        }
+        match value.as_object() {
+            Some(fields) if !fields.is_empty() => {
+                for (name, child) in fields {
+                    let child_path = if path.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{path}.{name}")
+                    };
+                    walk_fields(&child_path, child, declared, claimed, unclaimed);
+                }
+            }
+            _ => unclaimed.push(path.to_string()),
+        }
     }
 
     #[test]

@@ -768,7 +768,7 @@ fn mcp_resources_read(params: &Value, state: &Arc<Mutex<SharedAppState>>) -> Res
             "contents": [{
                 "uri": uri,
                 "mimeType": "text/plain",
-                "text": super::http::MENU_TEXT
+                "text": super::http::menu_text()
             }]
         })),
         "prvw://diagnostics" => {

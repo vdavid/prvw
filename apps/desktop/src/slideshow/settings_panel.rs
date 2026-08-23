@@ -18,6 +18,8 @@ use objc2_app_kit::{
 use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 
 use crate::commands::{self, AppCommand};
+use crate::parity::Audit;
+use crate::parity::setting_keys::SettingKey;
 use crate::platform::macos::ui_common::{as_view, make_label};
 use crate::settings::Settings;
 use crate::slideshow::{MAX_SECONDS, MIN_SECONDS, clamp_seconds};
@@ -91,6 +93,7 @@ pub(crate) struct SlideshowPanel {
 }
 
 pub(crate) fn build(
+    audit: &mut Audit<SettingKey>,
     settings: &Settings,
     content_max_width: f64,
     retained_views: &mut Vec<Retained<AnyObject>>,
@@ -99,7 +102,10 @@ pub(crate) fn build(
     let seconds = clamp_seconds(settings.slideshow_seconds);
 
     // ── Time-per-image slider row ─────────────────────────────────────
-    let title_label = make_label("Time per image", 14.0, mtm);
+    // Built by hand rather than through `make_setting_row` (it's a slider, not a switch), so
+    // it records itself with the parity audit here.
+    audit.record(SettingKey::SlideshowSeconds);
+    let title_label = make_label(SettingKey::SlideshowSeconds.label(), 14.0, mtm);
     title_label.setAlignment(NSTextAlignment(0));
 
     let slider = NSSlider::new(mtm);
@@ -153,7 +159,8 @@ pub(crate) fn build(
     // ── Crossfade + loop toggles ──────────────────────────────────────
     let (crossfade_row, crossfade_toggle, crossfade_desc) =
         crate::settings::widgets::make_setting_row(
-            "Crossfade",
+            audit,
+            SettingKey::SlideshowCrossfade,
             "Fade between images instead of cutting.",
             settings.slideshow_crossfade,
             false,
@@ -161,7 +168,8 @@ pub(crate) fn build(
             mtm,
         );
     let (loop_row, loop_toggle, loop_desc) = crate::settings::widgets::make_setting_row(
-        "Loop",
+        audit,
+        SettingKey::SlideshowLoop,
         "Start over from the first image after the last one.",
         settings.slideshow_loop,
         false,

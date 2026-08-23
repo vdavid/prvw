@@ -8,42 +8,88 @@ use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem,
 
 use crate::commands::AppCommand;
 use crate::navigation::SortBy;
+use crate::parity::Audit;
+use crate::parity::command_keys::CommandParity;
+use crate::parity::menu_items::MenuItemKey;
+#[cfg(target_os = "macos")]
+use crate::parity::{Mismatch, Platform};
 use crate::settings::Settings;
 
-/// Identifiers for custom menu actions. Private to this module: `menu_to_command` is the only
-/// thing that reads them, so the rest of the app never handles a raw `MenuId`.
-struct MenuIds {
-    about: MenuId,
-    settings: MenuId,
-    copy: MenuId,
-    context_copy: MenuId,
-    print: MenuId,
-    context_print: MenuId,
-    zoom_in: MenuId,
-    zoom_out: MenuId,
-    actual_size: MenuId,
-    fit_to_window: MenuId,
-    auto_fit_window: MenuId,
-    enlarge_small_images: MenuId,
-    icc_color_management: MenuId,
-    color_match_display: MenuId,
-    relative_colorimetric: MenuId,
-    fullscreen: MenuId,
-    refresh: MenuId,
-    histogram: MenuId,
-    exif_info: MenuId,
-    sort_by_name: MenuId,
-    sort_by_date: MenuId,
-    sort_by_file_type: MenuId,
-    browse_toggle: MenuId,
-    previous: MenuId,
-    next: MenuId,
-    go_to_first: MenuId,
-    go_to_last: MenuId,
-    loop_navigation: MenuId,
-    slideshow_toggle: MenuId,
-    slideshow_increase_speed: MenuId,
-    slideshow_decrease_speed: MenuId,
+/// Builds menu items from registry keys, and remembers what it built.
+///
+/// Every item goes through here, so an item can't reach a menu without naming the
+/// [`MenuItemKey`] it satisfies: the key is where the title comes from, and the pairing it
+/// records is how a click finds its command. [`MenuBuilder::finish`] then checks the built set
+/// against what the registry says this platform owes, which is the runtime half of the parity
+/// guarantee (`parity::menu_items`).
+struct MenuBuilder {
+    ids: Vec<(MenuId, MenuItemKey)>,
+    audit: Audit<MenuItemKey>,
+}
+
+impl MenuBuilder {
+    fn new() -> Self {
+        Self {
+            ids: Vec::new(),
+            audit: Audit::new(),
+        }
+    }
+
+    /// A plain item that dispatches a command when clicked.
+    fn item(&mut self, key: MenuItemKey, accelerator: Option<Accelerator>) -> MenuItem {
+        let item = MenuItem::new(key.title(), true, accelerator);
+        self.ids.push((item.id().clone(), key));
+        self.audit.record(key);
+        item
+    }
+
+    /// A checkable item. Built unchecked and enabled; `sync_from_settings` gives it its real
+    /// state, so settings-to-menu stays one mapping.
+    fn check_item(&mut self, key: MenuItemKey, accelerator: Option<Accelerator>) -> CheckMenuItem {
+        let item = CheckMenuItem::new(key.title(), true, false, accelerator);
+        self.ids.push((item.id().clone(), key));
+        self.audit.record(key);
+        item
+    }
+
+    /// One of muda's predefined items, which the toolkit and the OS act on themselves. There's
+    /// no id to route: `MenuItemKey::command` says `None` for exactly these.
+    fn predefined(&mut self, key: MenuItemKey, item: PredefinedMenuItem) -> PredefinedMenuItem {
+        self.audit.record(key);
+        item
+    }
+
+    /// Hand over the id table, after checking the menu against what the registry declared.
+    fn finish(self) -> Vec<(MenuId, MenuItemKey)> {
+        // Windows joins this when M4 attaches the menu bar (`init_for_hwnd` has no call site
+        // yet) and flips its arms in `parity::menu_items` from `Missing` to `Present`. Until
+        // then muda builds the items there but nobody can reach them, so checking the built
+        // set against the declaration would only report that known gap 30 times over.
+        #[cfg(target_os = "macos")]
+        {
+            let mismatches = self
+                .audit
+                .mismatches(MenuItemKey::declared(Platform::MacOs));
+            for mismatch in &mismatches {
+                match mismatch {
+                    Mismatch::Declared(key) => log::error!(
+                        "Menu parity: macOS declares {} present, but no item was built for it",
+                        key.name()
+                    ),
+                    Mismatch::Undeclared(key, coverage) => log::error!(
+                        "Menu parity: an item was built for {}, which macOS declares {}",
+                        key.name(),
+                        coverage.status()
+                    ),
+                }
+            }
+            debug_assert!(
+                mismatches.is_empty(),
+                "the menu bar and parity::menu_items disagree: {mismatches:?}"
+            );
+        }
+        self.ids
+    }
 }
 
 /// The menu bar and its action IDs. The `Menu` must be kept alive for the entire app lifetime,
@@ -54,14 +100,16 @@ pub struct AppMenu {
     _menu: Menu,
     /// Right-click context menu, shown via `show_image_context_menu`. Kept alive for the same
     /// reason as `_menu`: dropping it frees its MenuChild backing. Its items dispatch through
-    /// the same `MenuIds` table as the menu bar.
+    /// the same id table as the menu bar.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     context_menu: Menu,
     /// Menu delegates that strip AppKit's auto-injected items. AppKit holds delegates
     /// weakly, so these must live for the app's lifetime.
     #[cfg(target_os = "macos")]
     _menu_pruners: Vec<objc2::rc::Retained<objc2::runtime::AnyObject>>,
-    ids: MenuIds,
+    /// Every custom item's muda id, paired with the registry key it was built from. A click
+    /// arrives as an id; this is what turns it back into a key `command_for` can match on.
+    ids: Vec<(MenuId, MenuItemKey)>,
     /// The checkable items, each mirroring one setting. `sync_from_settings` writes them all.
     auto_fit_item: CheckMenuItem,
     enlarge_small_item: CheckMenuItem,
@@ -89,7 +137,7 @@ fn browse_toggle_label(browsing: bool) -> &'static str {
     if browsing {
         "Image view"
     } else {
-        "Image browser        ⏎"
+        MenuItemKey::BrowseToggle.title()
     }
 }
 
@@ -98,7 +146,7 @@ fn slideshow_toggle_label(running: bool) -> &'static str {
     if running {
         "Stop slideshow"
     } else {
-        "Start slideshow"
+        MenuItemKey::SlideshowToggle.title()
     }
 }
 
@@ -153,44 +201,99 @@ impl AppMenu {
     pub fn poll_command(&self) -> Option<AppCommand> {
         let event = MenuEvent::receiver().try_recv().ok()?;
         let id = event.id();
-
-        // A CheckMenuItem auto-toggles on click, so these five read the item's new state and
-        // carry it in the command. The other checkable items (Histogram, Exif info, Loop
-        // navigation) map to a Toggle command that flips app state instead, so `menu_to_command`
-        // handles them and their checkmark catches up through `sync_from_settings`.
-        if id == &self.ids.auto_fit_window {
-            let enabled = self.auto_fit_item.is_checked();
-            log::debug!("Menu: Auto-fit window -> {enabled}");
-            return Some(AppCommand::SetAutoFitWindow(enabled));
-        }
-        if id == &self.ids.enlarge_small_images {
-            let enabled = self.enlarge_small_item.is_checked();
-            log::debug!("Menu: Enlarge small images -> {enabled}");
-            return Some(AppCommand::SetEnlargeSmallImages(enabled));
-        }
-        if id == &self.ids.icc_color_management {
-            let enabled = self.icc_color_management_item.is_checked();
-            log::debug!("Menu: ICC color management -> {enabled}");
-            return Some(AppCommand::SetIccColorManagement(enabled));
-        }
-        if id == &self.ids.color_match_display {
-            let enabled = self.color_match_item.is_checked();
-            log::debug!("Menu: Color match display -> {enabled}");
-            return Some(AppCommand::SetColorMatchDisplay(enabled));
-        }
-        if id == &self.ids.relative_colorimetric {
-            let enabled = self.relative_colorimetric_item.is_checked();
-            log::debug!("Menu: Relative colorimetric -> {enabled}");
-            return Some(AppCommand::SetRelativeColorimetric(enabled));
-        }
-
-        let command = menu_to_command(id, &self.ids);
-        if command.is_some() {
-            log::debug!("Menu event: {id:?}");
-        } else {
+        let Some(key) = self.key_for(id) else {
+            // Not one of ours: muda's predefined items and the ones AppKit injects come
+            // through here too, and the toolkit has already acted on them.
             log::debug!("Menu: unhandled event {id:?}");
-        }
+            return None;
+        };
+        log::debug!("Menu: {}", key.label());
+        self.command_for(key)
+    }
+
+    /// Which registry item a muda click came from.
+    fn key_for(&self, id: &MenuId) -> Option<MenuItemKey> {
+        self.ids
+            .iter()
+            .find(|(candidate, _)| candidate == id)
+            .map(|(_, key)| *key)
+    }
+
+    /// What a click on `key` runs, checked against the action the registry says the item is
+    /// for. The registry works at the level of a feature and `dispatch` at the level of one
+    /// command with its payload (three Sort by items, one `SetSortBy`), so neither can be
+    /// derived from the other. This is what keeps them from drifting apart: in a debug build,
+    /// an item wired to the wrong command trips the first time it's clicked.
+    fn command_for(&self, key: MenuItemKey) -> Option<AppCommand> {
+        let command = self.dispatch(key);
+        debug_assert_eq!(
+            command.as_ref().map(AppCommand::parity_key),
+            key.command().map(CommandParity::Action),
+            "the {} menu item runs something other than the action it's registered for",
+            key.name()
+        );
         command
+    }
+
+    /// The single table from menu item to command, for the menu bar and the context menu
+    /// alike. The keyboard's twin lives in `input::key_to_command`.
+    ///
+    /// Exhaustive with no `_` arm on purpose: a new menu item can't be built without deciding
+    /// what clicking it does. `None` is for the items the toolkit acts on itself.
+    fn dispatch(&self, key: MenuItemKey) -> Option<AppCommand> {
+        match key {
+            MenuItemKey::About => Some(AppCommand::ShowAbout),
+            MenuItemKey::Settings => Some(AppCommand::ShowSettings),
+            MenuItemKey::Copy | MenuItemKey::ContextCopy => Some(AppCommand::CopyImage),
+            MenuItemKey::Print | MenuItemKey::ContextPrint => Some(AppCommand::Print),
+            MenuItemKey::ZoomIn => Some(AppCommand::ZoomIn),
+            MenuItemKey::ZoomOut => Some(AppCommand::ZoomOut),
+            MenuItemKey::ActualSize => Some(AppCommand::ActualSize),
+            MenuItemKey::FitToWindow => Some(AppCommand::FitToWindow),
+            MenuItemKey::Histogram => Some(AppCommand::ToggleHistogram),
+            MenuItemKey::ExifInfo => Some(AppCommand::ToggleExifInfo),
+            MenuItemKey::LoopNavigation => Some(AppCommand::ToggleLoopNavigation),
+            MenuItemKey::SortByName => Some(AppCommand::SetSortBy(SortBy::Name)),
+            MenuItemKey::SortByDate => Some(AppCommand::SetSortBy(SortBy::Date)),
+            MenuItemKey::SortByFileType => Some(AppCommand::SetSortBy(SortBy::FileType)),
+            MenuItemKey::Fullscreen => Some(AppCommand::ToggleFullscreen),
+            MenuItemKey::Refresh => Some(AppCommand::Refresh),
+            MenuItemKey::Previous => Some(AppCommand::NavigateDebounced(false)),
+            MenuItemKey::Next => Some(AppCommand::NavigateDebounced(true)),
+            MenuItemKey::GoToFirst => Some(AppCommand::GoToFirst),
+            MenuItemKey::GoToLast => Some(AppCommand::GoToLast),
+            MenuItemKey::BrowseToggle => Some(AppCommand::ToggleBrowseMode),
+            MenuItemKey::SlideshowToggle => Some(AppCommand::ToggleSlideshow),
+            MenuItemKey::SlideshowIncreaseSpeed => Some(AppCommand::IncreaseSlideshowSpeed),
+            MenuItemKey::SlideshowDecreaseSpeed => Some(AppCommand::DecreaseSlideshowSpeed),
+
+            // A CheckMenuItem auto-toggles on click, so these five carry the item's new state
+            // in the command. The other checkable items (Histogram, Exif info, Loop
+            // navigation) toggle app state instead, and their checkmark catches up through
+            // `sync_from_settings`.
+            MenuItemKey::AutoFitWindow => Some(AppCommand::SetAutoFitWindow(
+                self.auto_fit_item.is_checked(),
+            )),
+            MenuItemKey::EnlargeSmallImages => Some(AppCommand::SetEnlargeSmallImages(
+                self.enlarge_small_item.is_checked(),
+            )),
+            MenuItemKey::IccColorManagement => Some(AppCommand::SetIccColorManagement(
+                self.icc_color_management_item.is_checked(),
+            )),
+            MenuItemKey::ColorMatchDisplay => Some(AppCommand::SetColorMatchDisplay(
+                self.color_match_item.is_checked(),
+            )),
+            MenuItemKey::RelativeColorimetric => Some(AppCommand::SetRelativeColorimetric(
+                self.relative_colorimetric_item.is_checked(),
+            )),
+
+            // Handled by muda and the OS, so there's nothing for the app to run.
+            MenuItemKey::Hide
+            | MenuItemKey::HideOthers
+            | MenuItemKey::ShowAll
+            | MenuItemKey::Quit
+            | MenuItemKey::CloseWindow => None,
+        }
     }
 
     /// Pop up the right-click context menu at the cursor, over the given `NSView`.
@@ -207,65 +310,6 @@ impl AppMenu {
             self.context_menu
                 .show_context_menu_for_nsview(ns_view, None);
         }
-    }
-}
-
-/// Map a menu item's ID to an `AppCommand`. The single table for both the menu bar and the
-/// context menu; the keyboard's twin lives in `input::key_to_command`.
-///
-/// Returns `None` for the checkable items that carry a value: `poll_command` handles those
-/// first, because it has to read the item's freshly-toggled state.
-fn menu_to_command(id: &MenuId, ids: &MenuIds) -> Option<AppCommand> {
-    if id == &ids.about {
-        Some(AppCommand::ShowAbout)
-    } else if id == &ids.settings {
-        Some(AppCommand::ShowSettings)
-    } else if id == &ids.copy || id == &ids.context_copy {
-        Some(AppCommand::CopyImage)
-    } else if id == &ids.print || id == &ids.context_print {
-        Some(AppCommand::Print)
-    } else if id == &ids.zoom_in {
-        Some(AppCommand::ZoomIn)
-    } else if id == &ids.zoom_out {
-        Some(AppCommand::ZoomOut)
-    } else if id == &ids.actual_size {
-        Some(AppCommand::ActualSize)
-    } else if id == &ids.fit_to_window {
-        Some(AppCommand::FitToWindow)
-    } else if id == &ids.histogram {
-        Some(AppCommand::ToggleHistogram)
-    } else if id == &ids.exif_info {
-        Some(AppCommand::ToggleExifInfo)
-    } else if id == &ids.loop_navigation {
-        Some(AppCommand::ToggleLoopNavigation)
-    } else if id == &ids.sort_by_name {
-        Some(AppCommand::SetSortBy(SortBy::Name))
-    } else if id == &ids.sort_by_date {
-        Some(AppCommand::SetSortBy(SortBy::Date))
-    } else if id == &ids.sort_by_file_type {
-        Some(AppCommand::SetSortBy(SortBy::FileType))
-    } else if id == &ids.fullscreen {
-        Some(AppCommand::ToggleFullscreen)
-    } else if id == &ids.refresh {
-        Some(AppCommand::Refresh)
-    } else if id == &ids.previous {
-        Some(AppCommand::NavigateDebounced(false))
-    } else if id == &ids.next {
-        Some(AppCommand::NavigateDebounced(true))
-    } else if id == &ids.go_to_first {
-        Some(AppCommand::GoToFirst)
-    } else if id == &ids.go_to_last {
-        Some(AppCommand::GoToLast)
-    } else if id == &ids.browse_toggle {
-        Some(AppCommand::ToggleBrowseMode)
-    } else if id == &ids.slideshow_toggle {
-        Some(AppCommand::ToggleSlideshow)
-    } else if id == &ids.slideshow_increase_speed {
-        Some(AppCommand::IncreaseSlideshowSpeed)
-    } else if id == &ids.slideshow_decrease_speed {
-        Some(AppCommand::DecreaseSlideshowSpeed)
-    } else {
-        None
     }
 }
 
@@ -300,14 +344,14 @@ pub fn create_menu_bar() -> Option<AppMenu> {
     #[cfg(target_os = "macos")]
     suppress_auto_edit_menu_items();
 
+    let mut build = MenuBuilder::new();
     let menu = Menu::new();
 
     // App menu (macOS puts the first menu under the app name)
     let app_menu = Submenu::new("Prvw", true);
-    let about = MenuItem::new("About Prvw", true, None);
-    let settings_item = MenuItem::new(
-        "Settings\u{2026}",
-        true,
+    let about = build.item(MenuItemKey::About, None);
+    let settings_item = build.item(
+        MenuItemKey::Settings,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::Comma)),
     );
     app_menu
@@ -315,35 +359,39 @@ pub fn create_menu_bar() -> Option<AppMenu> {
             &about,
             &settings_item,
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::hide(None),
-            &PredefinedMenuItem::hide_others(None),
-            &PredefinedMenuItem::show_all(None),
+            &build.predefined(MenuItemKey::Hide, PredefinedMenuItem::hide(None)),
+            &build.predefined(
+                MenuItemKey::HideOthers,
+                PredefinedMenuItem::hide_others(None),
+            ),
+            &build.predefined(MenuItemKey::ShowAll, PredefinedMenuItem::show_all(None)),
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::quit(None),
+            &build.predefined(MenuItemKey::Quit, PredefinedMenuItem::quit(None)),
         ])
         .expect("Failed to build app menu");
 
     // File menu
     let file_menu = Submenu::new("File", true);
-    let print = MenuItem::new(
-        "Print\u{2026}",
-        true,
+    let print = build.item(
+        MenuItemKey::Print,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyP)),
     );
     file_menu
         .append_items(&[
             &print,
             &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::close_window(None),
+            &build.predefined(
+                MenuItemKey::CloseWindow,
+                PredefinedMenuItem::close_window(None),
+            ),
         ])
         .expect("Failed to build file menu");
 
     // Edit menu. Only Copy — Cut/Paste/Select All make no sense in a viewer, and
     // showing them disabled would look broken.
     let edit_menu = Submenu::new("Edit", true);
-    let copy = MenuItem::new(
-        "Copy image",
-        true,
+    let copy = build.item(
+        MenuItemKey::Copy,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyC)),
     );
     edit_menu
@@ -352,66 +400,57 @@ pub fn create_menu_bar() -> Option<AppMenu> {
 
     // View menu
     let view_menu = Submenu::new("View", true);
-    let zoom_in = MenuItem::new(
-        "Zoom in",
-        true,
+    let zoom_in = build.item(
+        MenuItemKey::ZoomIn,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::Equal)),
     );
-    let zoom_out = MenuItem::new(
-        "Zoom out",
-        true,
+    let zoom_out = build.item(
+        MenuItemKey::ZoomOut,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::Minus)),
     );
-    let actual_size = MenuItem::new(
-        "Actual size",
-        true,
+    let actual_size = build.item(
+        MenuItemKey::ActualSize,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::Digit0)),
     );
-    let fit_to_window = MenuItem::new("Fit to window", true, None);
+    let fit_to_window = build.item(MenuItemKey::FitToWindow, None);
     // "Auto-fit window" and "Enlarge small images" stay enabled unconditionally: even with
     // auto-fit on, enlarging governs fullscreen, where auto-fit is inert.
-    let auto_fit_window = CheckMenuItem::new("Auto-fit window", true, false, None);
-    let enlarge_small_images = CheckMenuItem::new("Enlarge small images", true, false, None);
-    let icc_color_management = CheckMenuItem::new(
-        "ICC color management",
-        true,
-        false,
+    let auto_fit_window = build.check_item(MenuItemKey::AutoFitWindow, None);
+    let enlarge_small_images = build.check_item(MenuItemKey::EnlargeSmallImages, None);
+    let icc_color_management = build.check_item(
+        MenuItemKey::IccColorManagement,
         Some(Accelerator::new(
             Some(Modifiers::SUPER | Modifiers::SHIFT),
             Code::KeyI,
         )),
     );
-    let color_match_display = CheckMenuItem::new(
-        "Color match display",
-        true,
-        false,
+    let color_match_display = build.check_item(
+        MenuItemKey::ColorMatchDisplay,
         Some(Accelerator::new(
             Some(Modifiers::SUPER | Modifiers::SHIFT),
             Code::KeyC,
         )),
     );
-    let relative_colorimetric = CheckMenuItem::new(
-        "Relative colorimetric",
-        true,
-        false,
+    let relative_colorimetric = build.check_item(
+        MenuItemKey::RelativeColorimetric,
         Some(Accelerator::new(
             Some(Modifiers::SUPER | Modifiers::SHIFT),
             Code::KeyR,
         )),
     );
-    // Bare-letter shortcuts (F, H, E) are shown cosmetically — padded into the title, like
-    // the Navigate arrows — rather than as real accelerators: a bare-letter menu key
-    // equivalent is app-global and would hijack typing those letters into the Settings text
-    // fields. The bare keys themselves are handled in `input`.
-    let fullscreen = MenuItem::new("Fullscreen        F", true, None);
-    let refresh = MenuItem::new("Refresh", true, None);
-    let histogram = CheckMenuItem::new("Histogram        H", true, false, None);
-    let exif_info = CheckMenuItem::new("Exif info        E", true, false, None);
+    // Bare-letter shortcuts (F, H, E) are shown cosmetically — the registry keeps them in the
+    // item's title, like the Navigate arrows — rather than as real accelerators: a bare-letter
+    // menu key equivalent is app-global and would hijack typing those letters into the
+    // Settings text fields. The bare keys themselves are handled in `input`.
+    let fullscreen = build.item(MenuItemKey::Fullscreen, None);
+    let refresh = build.item(MenuItemKey::Refresh, None);
+    let histogram = build.check_item(MenuItemKey::Histogram, None);
+    let exif_info = build.check_item(MenuItemKey::ExifInfo, None);
 
     let sort_by_submenu = Submenu::new("Sort by", true);
-    let sort_by_name = CheckMenuItem::new("Name", true, false, None);
-    let sort_by_date = CheckMenuItem::new("Date", true, false, None);
-    let sort_by_file_type = CheckMenuItem::new("File type", true, false, None);
+    let sort_by_name = build.check_item(MenuItemKey::SortByName, None);
+    let sort_by_date = build.check_item(MenuItemKey::SortByDate, None);
+    let sort_by_file_type = build.check_item(MenuItemKey::SortByFileType, None);
     sort_by_submenu
         .append_items(&[&sort_by_name, &sort_by_date, &sort_by_file_type])
         .expect("Failed to build sort by submenu");
@@ -445,16 +484,18 @@ pub fn create_menu_bar() -> Option<AppMenu> {
     // Top item swaps the main screen between the image viewer and the browse screen. Its label
     // flips by mode (`set_browse_mode`), like the slideshow Start/Stop item. `Enter` in image
     // mode is handled in `input`.
-    let browse_toggle = MenuItem::new(browse_toggle_label(false), true, None);
-    let previous = MenuItem::new("Previous      ←", true, None);
-    let next = MenuItem::new("Next            →", true, None);
-    let go_to_first = MenuItem::new(
-        "Go to first",
-        true,
+    let browse_toggle = build.item(MenuItemKey::BrowseToggle, None);
+    let previous = build.item(MenuItemKey::Previous, None);
+    let next = build.item(MenuItemKey::Next, None);
+    let go_to_first = build.item(
+        MenuItemKey::GoToFirst,
         Some(Accelerator::new(None, Code::Home)),
     );
-    let go_to_last = MenuItem::new("Go to last", true, Some(Accelerator::new(None, Code::End)));
-    let loop_navigation = CheckMenuItem::new("Loop navigation", true, false, None);
+    let go_to_last = build.item(
+        MenuItemKey::GoToLast,
+        Some(Accelerator::new(None, Code::End)),
+    );
+    let loop_navigation = build.check_item(MenuItemKey::LoopNavigation, None);
     nav_menu
         .append_items(&[
             &browse_toggle,
@@ -471,17 +512,13 @@ pub fn create_menu_bar() -> Option<AppMenu> {
 
     // Slideshow menu
     let slideshow_menu = Submenu::new("Slideshow", true);
-    let slideshow_toggle = MenuItem::new(
-        slideshow_toggle_label(false),
-        true,
+    let slideshow_toggle = build.item(
+        MenuItemKey::SlideshowToggle,
         Some(Accelerator::new(Some(Modifiers::SUPER), Code::KeyS)),
     );
-    // `]` / `[` are shown cosmetically (padded into the title, like the
-    // Navigate arrows) rather than as real accelerators: bare-key menu
-    // equivalents are app-global and would hijack typing into Settings text
-    // fields. The bare `]` / `[` keys are handled in `input`.
-    let slideshow_increase_speed = MenuItem::new("Increase speed      ]", true, None);
-    let slideshow_decrease_speed = MenuItem::new("Decrease speed     [", true, None);
+    // `]` / `[` are shown cosmetically, for the same reason the bare letters above are.
+    let slideshow_increase_speed = build.item(MenuItemKey::SlideshowIncreaseSpeed, None);
+    let slideshow_decrease_speed = build.item(MenuItemKey::SlideshowDecreaseSpeed, None);
     slideshow_menu
         .append_items(&[
             &slideshow_toggle,
@@ -517,32 +554,15 @@ pub fn create_menu_bar() -> Option<AppMenu> {
     }
 
     // Right-click context menu. A separate menu (not part of the menu bar) with its own
-    // Copy and Print items; both routes funnel to the same commands via
-    // `input::menu_to_command`.
+    // Copy and Print items; both routes funnel to the same commands via `command_for`.
     let context_menu = Menu::new();
-    let context_copy = MenuItem::new("Copy image", true, None);
-    let context_print = MenuItem::new("Print\u{2026}", true, None);
+    let context_copy = build.item(MenuItemKey::ContextCopy, None);
+    let context_print = build.item(MenuItemKey::ContextPrint, None);
     context_menu
         .append_items(&[&context_copy, &context_print])
         .expect("Failed to build context menu");
 
     log::debug!("Menu bar created");
-
-    let auto_fit_id = auto_fit_window.id().clone();
-    let enlarge_small_id = enlarge_small_images.id().clone();
-    let icc_color_management_id = icc_color_management.id().clone();
-    let color_match_id = color_match_display.id().clone();
-    let relative_colorimetric_id = relative_colorimetric.id().clone();
-    let histogram_id = histogram.id().clone();
-    let exif_info_id = exif_info.id().clone();
-    let sort_by_name_id = sort_by_name.id().clone();
-    let sort_by_date_id = sort_by_date.id().clone();
-    let sort_by_file_type_id = sort_by_file_type.id().clone();
-    let loop_navigation_id = loop_navigation.id().clone();
-    let slideshow_toggle_id = slideshow_toggle.id().clone();
-    let browse_toggle_id = browse_toggle.id().clone();
-    let slideshow_increase_speed_id = slideshow_increase_speed.id().clone();
-    let slideshow_decrease_speed_id = slideshow_decrease_speed.id().clone();
 
     let app_menu = AppMenu {
         auto_fit_item: auto_fit_window,
@@ -562,39 +582,7 @@ pub fn create_menu_bar() -> Option<AppMenu> {
         context_menu,
         #[cfg(target_os = "macos")]
         _menu_pruners: menu_pruners,
-        ids: MenuIds {
-            about: about.id().clone(),
-            settings: settings_item.id().clone(),
-            copy: copy.id().clone(),
-            context_copy: context_copy.id().clone(),
-            print: print.id().clone(),
-            context_print: context_print.id().clone(),
-            zoom_in: zoom_in.id().clone(),
-            zoom_out: zoom_out.id().clone(),
-            actual_size: actual_size.id().clone(),
-            fit_to_window: fit_to_window.id().clone(),
-            auto_fit_window: auto_fit_id,
-            enlarge_small_images: enlarge_small_id,
-            icc_color_management: icc_color_management_id,
-            color_match_display: color_match_id,
-            relative_colorimetric: relative_colorimetric_id,
-            fullscreen: fullscreen.id().clone(),
-            refresh: refresh.id().clone(),
-            histogram: histogram_id,
-            exif_info: exif_info_id,
-            sort_by_name: sort_by_name_id,
-            sort_by_date: sort_by_date_id,
-            sort_by_file_type: sort_by_file_type_id,
-            browse_toggle: browse_toggle_id,
-            previous: previous.id().clone(),
-            next: next.id().clone(),
-            go_to_first: go_to_first.id().clone(),
-            go_to_last: go_to_last.id().clone(),
-            loop_navigation: loop_navigation_id,
-            slideshow_toggle: slideshow_toggle_id,
-            slideshow_increase_speed: slideshow_increase_speed_id,
-            slideshow_decrease_speed: slideshow_decrease_speed_id,
-        },
+        ids: build.finish(),
     };
 
     // The one place settings become menu state. Building the items unchecked and syncing here

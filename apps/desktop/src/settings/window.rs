@@ -15,10 +15,39 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
+use crate::parity::setting_keys::SettingKey;
+use crate::parity::{Audit, Mismatch, Platform};
 use crate::platform::macos::ui_common::{
     FlippedView, add_vibrancy_background, as_view, center_window, is_window_already_open,
     make_close_button, make_escape_button, order_window_in,
 };
+
+/// Check what the window built against what macOS declared it owes.
+///
+/// The compiler makes every platform answer for every `SettingKey`, but it can't see whether
+/// an answer of `Present` came with a widget. This closes that gap: a `Present` nobody built,
+/// or a row for a key macOS didn't declare, shows up the first time the window opens. It runs
+/// on every build, and it panics where a developer will see it.
+fn check_parity(audit: &Audit<SettingKey>) {
+    let mismatches = audit.mismatches(SettingKey::panel_coverage(Platform::MacOs));
+    for mismatch in &mismatches {
+        match mismatch {
+            Mismatch::Declared(key) => log::error!(
+                "Settings parity: macOS declares {} present, but no row was built for it",
+                key.name()
+            ),
+            Mismatch::Undeclared(key, coverage) => log::error!(
+                "Settings parity: a row was built for {}, which macOS declares {}",
+                key.name(),
+                coverage.status()
+            ),
+        }
+    }
+    debug_assert!(
+        mismatches.is_empty(),
+        "the settings window and parity::setting_keys disagree: {mismatches:?}"
+    );
+}
 
 // ─── Delegate ─────────────────────────────────────────────────────────────
 
@@ -337,21 +366,50 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
 
     // ── Build each panel ──────────────────────────────────────────────
 
-    let general =
-        super::panels::general::build(&settings, content_max_width, &mut retained_views, mtm);
-    let zoom =
-        crate::zoom::settings_panel::build(&settings, content_max_width, &mut retained_views, mtm);
-    let color =
-        crate::color::settings_panel::build(&settings, content_max_width, &mut retained_views, mtm);
-    let raw = super::panels::raw::build(&settings, content_max_width, &mut retained_views, mtm);
+    // Every row records the `SettingKey` it satisfies as it's built (the row factories take
+    // one), so `audit` ends up holding what this window actually offers. `check_parity` below
+    // compares that against what `parity::setting_keys` says macOS owes.
+    let mut audit: Audit<SettingKey> = Audit::new();
+
+    let general = super::panels::general::build(
+        &mut audit,
+        &settings,
+        content_max_width,
+        &mut retained_views,
+        mtm,
+    );
+    let zoom = crate::zoom::settings_panel::build(
+        &mut audit,
+        &settings,
+        content_max_width,
+        &mut retained_views,
+        mtm,
+    );
+    let color = crate::color::settings_panel::build(
+        &mut audit,
+        &settings,
+        content_max_width,
+        &mut retained_views,
+        mtm,
+    );
+    let raw = super::panels::raw::build(
+        &mut audit,
+        &settings,
+        content_max_width,
+        &mut retained_views,
+        mtm,
+    );
     let slideshow = crate::slideshow::settings_panel::build(
+        &mut audit,
         &settings,
         content_max_width,
         &mut retained_views,
         mtm,
     );
     let file_assoc_panel =
-        crate::file_associations::settings_panel::build(&mut retained_views, mtm);
+        crate::file_associations::settings_panel::build(&mut audit, &mut retained_views, mtm);
+
+    check_parity(&audit);
 
     // ── Create the main settings delegate with refs to panel widgets ──
 

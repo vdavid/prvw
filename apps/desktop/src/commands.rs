@@ -13,6 +13,8 @@ use std::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
 
 use crate::decoding::RawPipelineFlags;
+use crate::parity::command_keys::{CommandKey, CommandParity};
+use crate::parity::{Coverage, Platform};
 
 /// Global event loop proxy, set once in `resumed()`. Allows non-main-loop code (like the
 /// native Settings window delegate) to send commands into the event loop.
@@ -43,6 +45,131 @@ pub fn event_loop_proxy() -> EventLoopProxy<AppCommand> {
         .get()
         .expect("event loop proxy must be set before the grid submits thumbnail requests")
         .clone()
+}
+
+impl AppCommand {
+    /// What this command means to the parity registries.
+    ///
+    /// Exhaustive with no `_` arm: a new command has to declare itself a user-facing
+    /// [`CommandKey`] or plumbing before it compiles. [`CommandParity::Internal`] is for
+    /// worker wakeups, watcher results, and the QA driving hooks the integration tests use
+    /// because they can't synthesize a native click. It is not a shortcut for an action that
+    /// nobody got around to registering.
+    pub fn parity_key(&self) -> CommandParity {
+        use CommandParity::{Action, Internal};
+        match self {
+            // ── Navigation ───────────────────────────────────────────
+            AppCommand::Navigate(_) | AppCommand::NavigateDebounced(_) => {
+                Action(CommandKey::NextPreviousImage)
+            }
+            AppCommand::GoToFirst => Action(CommandKey::GoToFirst),
+            AppCommand::GoToLast => Action(CommandKey::GoToLast),
+            AppCommand::OpenFile(_) => Action(CommandKey::OpenFile),
+            AppCommand::ToggleLoopNavigation => Action(CommandKey::LoopNavigation),
+            AppCommand::SetSortBy(_) => Action(CommandKey::SortBy),
+            AppCommand::Refresh => Action(CommandKey::Refresh),
+
+            // ── View ─────────────────────────────────────────────────
+            AppCommand::ZoomIn => Action(CommandKey::ZoomIn),
+            AppCommand::ZoomOut => Action(CommandKey::ZoomOut),
+            AppCommand::SetZoom(_) => Action(CommandKey::SetZoom),
+            AppCommand::FitToWindow => Action(CommandKey::FitToWindow),
+            AppCommand::ActualSize => Action(CommandKey::ActualSize),
+            AppCommand::ToggleFit => Action(CommandKey::ToggleFit),
+            AppCommand::ToggleFullscreen | AppCommand::SetFullscreen(_) => {
+                Action(CommandKey::Fullscreen)
+            }
+            AppCommand::SetAutoFitWindow(_) => Action(CommandKey::AutoFitWindow),
+            AppCommand::SetEnlargeSmallImages(_) => Action(CommandKey::EnlargeSmallImages),
+            AppCommand::SetIccColorManagement(_) => Action(CommandKey::IccColorManagement),
+            AppCommand::SetColorMatchDisplay(_) => Action(CommandKey::ColorMatchDisplay),
+            AppCommand::SetRelativeColorimetric(_) => Action(CommandKey::RelativeColorimetric),
+            AppCommand::SetScrollToZoom(_) => Action(CommandKey::ScrollToZoom),
+            AppCommand::SetPreloadNeighbors(_) => Action(CommandKey::PreloadNeighbors),
+            AppCommand::SetTitleBar(_) => Action(CommandKey::TitleBar),
+            AppCommand::ToggleHistogram => Action(CommandKey::Histogram),
+            AppCommand::ToggleExifInfo => Action(CommandKey::ExifInfo),
+
+            // ── Browse mode ──────────────────────────────────────────
+            AppCommand::ToggleBrowseMode | AppCommand::EnterImageMode => {
+                Action(CommandKey::BrowseMode)
+            }
+            AppCommand::ToggleBrowseFocus => Action(CommandKey::BrowseFocus),
+            AppCommand::BrowseOpenSelected => Action(CommandKey::BrowseOpenSelected),
+
+            // ── Slideshow ────────────────────────────────────────────
+            AppCommand::ToggleSlideshow => Action(CommandKey::Slideshow),
+            AppCommand::SetSlideshowSeconds(_) => Action(CommandKey::SlideshowSeconds),
+            AppCommand::SetSlideshowCrossfade(_) => Action(CommandKey::SlideshowCrossfade),
+            AppCommand::SetSlideshowLoop(_) => Action(CommandKey::SlideshowLoop),
+            AppCommand::IncreaseSlideshowSpeed | AppCommand::DecreaseSlideshowSpeed => {
+                Action(CommandKey::SlideshowSpeed)
+            }
+
+            // ── RAW ──────────────────────────────────────────────────
+            AppCommand::SetRawPipelineFlags(_) => Action(CommandKey::RawPipelineFlags),
+            AppCommand::SetCustomDcpDir(_) => Action(CommandKey::CustomDcpDir),
+
+            // ── App ──────────────────────────────────────────────────
+            AppCommand::CopyImage => Action(CommandKey::CopyImage),
+            AppCommand::Print => Action(CommandKey::Print),
+            AppCommand::ShowAbout => Action(CommandKey::About),
+            AppCommand::ShowSettings
+            | AppCommand::ShowSettingsSection(_)
+            | AppCommand::CloseSettings => Action(CommandKey::Settings),
+            AppCommand::Exit => Action(CommandKey::Exit),
+
+            // ── Plumbing: worker results, OS notifications, QA hooks ──
+            AppCommand::SetCursorPosition { .. }
+            | AppCommand::FolderChanged { .. }
+            | AppCommand::ActiveFolderRescanned { .. }
+            | AppCommand::WatchedFoldersChanged { .. }
+            | AppCommand::SetWindowGeometry { .. }
+            | AppCommand::ScrollZoom { .. }
+            | AppCommand::SendKey(_)
+            | AppCommand::TakeScreenshot(_)
+            | AppCommand::Sync(_)
+            | AppCommand::PreloaderProgress => Internal,
+            #[cfg(target_os = "macos")]
+            AppCommand::DisplayChanged => Internal,
+            #[cfg(target_os = "macos")]
+            AppCommand::PreviewsAvailable => Internal,
+            // The browse screen's own event wiring: tree and grid callbacks, background
+            // listing results, and the QA hook that stands in for a native click. Browse mode
+            // as a feature is `CommandKey::BrowseMode`.
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseSelectFolder(_)
+            | AppCommand::BrowseTreeChildrenLoaded { .. }
+            | AppCommand::BrowseTreeFolderExpanded(_)
+            | AppCommand::BrowseTreeFolderCollapsed(_)
+            | AppCommand::BrowseFolderListed { .. }
+            | AppCommand::BrowseThumbnailsAvailable
+            | AppCommand::BrowseGridSelected(_)
+            | AppCommand::BrowseQaSelectGrid(_) => Internal,
+            #[cfg(all(debug_assertions, target_os = "macos"))]
+            AppCommand::GetWindowNumber(_)
+            | AppCommand::WindowDiagnostics(_)
+            | AppCommand::ZoomWindow
+            | AppCommand::ClickZoomButton => Internal,
+        }
+    }
+
+    /// Say so in the log when the action behind this command isn't built on the running
+    /// platform, instead of doing nothing and leaving the user wondering. `execute_command`
+    /// calls it for every command, which is what keeps `parity::command_keys` honest: a
+    /// registry that says `Missing` for something that works, or `Present` for a stub, shows
+    /// up the moment someone runs it.
+    pub fn log_if_unimplemented(&self) {
+        if let CommandParity::Action(key) = self.parity_key()
+            && key.coverage(Platform::HOST) == Coverage::Missing
+        {
+            log::info!(
+                "{} isn't implemented on {} yet",
+                key.label(),
+                Platform::HOST.name()
+            );
+        }
+    }
 }
 
 /// Commands that drive all app behavior. Keyboard, mouse, menu, QA server, and MCP all

@@ -39,6 +39,8 @@ use crate::decoding::{
     BASELINE_EXPOSURE_OFFSET_RANGE, CLARITY_AMOUNT_RANGE, CLARITY_RADIUS_RANGE, HDR_GAIN_RANGE,
     MIDTONE_ANCHOR_RANGE, RawPipelineFlags, SATURATION_BOOST_RANGE, SHARPEN_AMOUNT_RANGE,
 };
+use crate::parity::Audit;
+use crate::parity::setting_keys::SettingKey;
 use crate::platform::macos::ui_common::{FlippedView, as_view, make_bold_label, make_label};
 use crate::settings::Settings;
 
@@ -402,13 +404,15 @@ struct FlagRow {
 }
 
 fn build_flag_row(
-    title: &str,
+    audit: &mut Audit<SettingKey>,
+    key: SettingKey,
     description: &str,
     is_on: bool,
     tag: isize,
     mtm: MainThreadMarker,
 ) -> FlagRow {
-    let title_label = make_label(title, 13.0, mtm);
+    audit.record(key);
+    let title_label = make_label(key.label(), 13.0, mtm);
     title_label.setAlignment(NSTextAlignment(0));
 
     let desc_label = make_label(description, 11.0, mtm);
@@ -497,7 +501,8 @@ impl LabelFormat {
 
 #[allow(clippy::too_many_arguments)] // Straight-through factory; struct-ifying obscures the AppKit wiring.
 fn build_slider_row(
-    title: &str,
+    audit: &mut Audit<SettingKey>,
+    key: SettingKey,
     description: &str,
     value: f32,
     min: f32,
@@ -506,7 +511,8 @@ fn build_slider_row(
     label_format: LabelFormat,
     mtm: MainThreadMarker,
 ) -> SliderRow {
-    let title_label = make_label(title, 13.0, mtm);
+    audit.record(key);
+    let title_label = make_label(key.label(), 13.0, mtm);
     title_label.setAlignment(NSTextAlignment(0));
 
     let desc_label = make_label(description, 11.0, mtm);
@@ -597,6 +603,7 @@ fn make_section_header(title: &str, mtm: MainThreadMarker) -> Retained<NSTextFie
 /// Browse + Clear buttons. Returns the outer stack view plus the path
 /// field (the delegate rewrites its text on browse / clear actions).
 fn build_custom_dcp_row(
+    audit: &mut Audit<SettingKey>,
     current_path: Option<&str>,
     mtm: MainThreadMarker,
     retained_views: &mut Vec<Retained<AnyObject>>,
@@ -606,7 +613,8 @@ fn build_custom_dcp_row(
     Retained<NSButton>,
     Retained<NSButton>,
 ) {
-    let title = make_bold_label("Custom DCP directory", 13.0, mtm);
+    audit.record(SettingKey::CustomDcpDir);
+    let title = make_bold_label(SettingKey::CustomDcpDir.label(), 13.0, mtm);
     title.setAlignment(NSTextAlignment(0));
 
     let caption = make_label(
@@ -693,6 +701,7 @@ fn build_custom_dcp_row(
 }
 
 pub(crate) fn build(
+    audit: &mut Audit<SettingKey>,
     settings: &Settings,
     _content_max_width: f64,
     retained_views: &mut Vec<Retained<AnyObject>>,
@@ -703,105 +712,120 @@ pub(crate) fn build(
     // ── All ten per-stage rows ────────────────────────────────────────
     let rows: Vec<FlagRow> = vec![
         build_flag_row(
-            "DNG OpcodeList 1",
+            audit,
+            SettingKey::RawDngOpcodeList1,
             "Pre-linearization gain maps and bad-pixel fixes (DNG only).",
             flags.dng_opcode_list_1,
             TAG_OPCODE_1,
             mtm,
         ),
         build_flag_row(
-            "DNG OpcodeList 2",
+            audit,
+            SettingKey::RawDngOpcodeList2,
             "CFA-level gain maps and bad-pixel fixes (DNG only, iPhone ProRAW).",
             flags.dng_opcode_list_2,
             TAG_OPCODE_2,
             mtm,
         ),
         build_flag_row(
-            "DNG OpcodeList 3",
+            audit,
+            SettingKey::RawDngOpcodeList3,
             "Post-color lens distortion correction (DNG only).",
             flags.dng_opcode_list_3,
             TAG_OPCODE_3,
             mtm,
         ),
         build_flag_row(
-            "Baseline exposure",
+            audit,
+            SettingKey::RawBaselineExposure,
             "Apply the camera's intended baseline exposure (or a neutral default) plus the user offset below.",
             flags.baseline_exposure,
             TAG_BASELINE_EXPOSURE,
             mtm,
         ),
         build_flag_row(
-            "DCP HueSatMap",
+            audit,
+            SettingKey::RawDcpHueSatMap,
             "Per-camera color calibration table from the profile.",
             flags.dcp_hue_sat_map,
             TAG_DCP_HUE_SAT_MAP,
             mtm,
         ),
         build_flag_row(
-            "DCP LookTable",
+            audit,
+            SettingKey::RawDcpLookTable,
             "Adobe \u{201C}Look\u{201D} refinement applied after HueSatMap.",
             flags.dcp_look_table,
             TAG_DCP_LOOK_TABLE,
             mtm,
         ),
         build_flag_row(
-            "Saturation boost",
+            audit,
+            SettingKey::RawSaturationBoost,
             "Mild global chroma lift in linear Rec.2020.",
             flags.saturation_boost,
             TAG_SATURATION_BOOST,
             mtm,
         ),
         build_flag_row(
-            "Highlight recovery",
+            audit,
+            SettingKey::RawHighlightRecovery,
             "Desaturate near-clip pixels toward their own luminance.",
             flags.highlight_recovery,
             TAG_HIGHLIGHT_RECOVERY,
             mtm,
         ),
         build_flag_row(
-            "Default tone curve",
+            audit,
+            SettingKey::RawDefaultToneCurve,
             "Prvw's filmic S-curve: shadow lift and highlight shoulder.",
             flags.default_tone_curve,
             TAG_DEFAULT_TONE_CURVE,
             mtm,
         ),
         build_flag_row(
-            "DCP tone curve",
+            audit,
+            SettingKey::RawDcpToneCurve,
             "Per-camera curve from a matched DCP profile. Auto-skipped for fuzzy-family matches.",
             flags.dcp_tone_curve,
             TAG_DCP_TONE_CURVE,
             mtm,
         ),
         build_flag_row(
-            "Clarity (local contrast)",
+            audit,
+            SettingKey::RawClarity,
             "Larger-radius unsharp mask on luminance. Lifts midtone features so the image reads crisper.",
             flags.clarity,
             TAG_CLARITY,
             mtm,
         ),
         build_flag_row(
-            "Capture sharpening",
+            audit,
+            SettingKey::RawCaptureSharpening,
             "Mild unsharp mask on luminance in display space.",
             flags.capture_sharpening,
             TAG_CAPTURE_SHARPENING,
             mtm,
         ),
         build_flag_row(
-            "Chroma noise reduction",
+            audit,
+            SettingKey::RawChromaDenoise,
             "Mild Gaussian blur on color channels; keeps luminance sharp.",
             flags.chroma_denoise,
             TAG_CHROMA_DENOISE,
             mtm,
         ),
         build_flag_row(
-            "Lens correction",
+            audit,
+            SettingKey::RawLensCorrection,
             "Distortion, TCA, and vignetting from the LensFun database.",
             flags.lens_correction,
             TAG_LENS_CORRECTION,
             mtm,
         ),
         build_flag_row(
-            "HDR / EDR output",
+            audit,
+            SettingKey::RawHdrOutput,
             "Keep highlights above display-white alive when the screen supports it.",
             flags.hdr_output,
             TAG_HDR_OUTPUT,
@@ -830,7 +854,8 @@ pub(crate) fn build(
     // share a single `AppCommand::SetRawPipelineFlags` path with the
     // toggles.
     let baseline_exposure_offset_row = build_slider_row(
-        "Baseline exposure offset",
+        audit,
+        SettingKey::RawBaselineExposureOffset,
         "User offset in EV stops on top of the camera / default baseline.",
         flags.baseline_exposure_offset,
         BASELINE_EXPOSURE_OFFSET_RANGE.0,
@@ -840,7 +865,8 @@ pub(crate) fn build(
         mtm,
     );
     let sharpen_row = build_slider_row(
-        "Sharpening amount",
+        audit,
+        SettingKey::RawSharpenAmount,
         "Unsharp-mask strength on the luminance-only capture sharpen pass.",
         flags.sharpen_amount,
         SHARPEN_AMOUNT_RANGE.0,
@@ -850,7 +876,8 @@ pub(crate) fn build(
         mtm,
     );
     let saturation_row = build_slider_row(
-        "Saturation amount",
+        audit,
+        SettingKey::RawSaturationAmount,
         "Chroma lift strength in linear Rec.2020 (post-tone, pre-ICC).",
         flags.saturation_boost_amount,
         SATURATION_BOOST_RANGE.0,
@@ -860,7 +887,8 @@ pub(crate) fn build(
         mtm,
     );
     let midtone_row = build_slider_row(
-        "Tone midtone anchor",
+        audit,
+        SettingKey::RawToneMidtoneAnchor,
         "Where the filmic S-curve's midtone line passes through (x, x).",
         flags.midtone_anchor,
         MIDTONE_ANCHOR_RANGE.0,
@@ -870,7 +898,8 @@ pub(crate) fn build(
         mtm,
     );
     let clarity_radius_row = build_slider_row(
-        "Clarity radius",
+        audit,
+        SettingKey::RawClarityRadius,
         "Gaussian σ in pixels for the local-contrast pass. Larger = bigger features.",
         flags.clarity_radius,
         CLARITY_RADIUS_RANGE.0,
@@ -880,7 +909,8 @@ pub(crate) fn build(
         mtm,
     );
     let clarity_amount_row = build_slider_row(
-        "Clarity amount",
+        audit,
+        SettingKey::RawClarityAmount,
         "Strength of the local-contrast unsharp mask (0 = off, 1 = aggressive).",
         flags.clarity_amount,
         CLARITY_AMOUNT_RANGE.0,
@@ -890,7 +920,8 @@ pub(crate) fn build(
         mtm,
     );
     let hdr_gain_row = build_slider_row(
-        "HDR brightness gain",
+        audit,
+        SettingKey::RawHdrGain,
         "Multiplier pushing scene white into EDR headroom. 1.0 = off, 2.0 = double brightness.",
         flags.hdr_gain,
         HDR_GAIN_RANGE.0,
@@ -929,8 +960,12 @@ pub(crate) fn build(
 
     // ── Custom DCP dir row + Reset button ─────────────────────────────
     let dcp_header = make_section_header("DCP profile", mtm);
-    let (custom_dcp_outer, custom_dcp_field, browse_btn, clear_btn) =
-        build_custom_dcp_row(settings.custom_dcp_dir.as_deref(), mtm, retained_views);
+    let (custom_dcp_outer, custom_dcp_field, browse_btn, clear_btn) = build_custom_dcp_row(
+        audit,
+        settings.custom_dcp_dir.as_deref(),
+        mtm,
+        retained_views,
+    );
 
     let reset_btn = unsafe {
         let b = NSButton::buttonWithTitle_target_action(

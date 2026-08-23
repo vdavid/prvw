@@ -7,6 +7,8 @@ use objc2_app_kit::{
     NSLayoutAttribute, NSLayoutConstraint, NSLayoutRelation, NSStackView, NSSwitch, NSTextField,
 };
 
+use crate::parity::Audit;
+use crate::parity::setting_keys::SettingKey;
 use crate::platform::macos::ui_common::{as_view, make_vertical_stack};
 use crate::settings::Settings;
 use crate::settings::widgets::make_setting_row;
@@ -18,13 +20,15 @@ pub(crate) struct ZoomPanel {
 }
 
 pub(crate) fn build(
+    audit: &mut Audit<SettingKey>,
     settings: &Settings,
     content_max_width: f64,
     retained_views: &mut Vec<Retained<AnyObject>>,
     mtm: MainThreadMarker,
 ) -> ZoomPanel {
     let (auto_fit_row, auto_fit_toggle, auto_fit_desc) = make_setting_row(
-        "Auto-fit window",
+        audit,
+        SettingKey::AutoFitWindow,
         "Resize the window to match each image.",
         settings.auto_fit_window,
         false,
@@ -33,7 +37,8 @@ pub(crate) fn build(
     );
 
     let (enlarge_row, enlarge_toggle, enlarge_desc) = make_setting_row(
-        "Enlarge small images",
+        audit,
+        SettingKey::EnlargeSmallImages,
         "Scale up images smaller than the window. Off by default to avoid pixelation.",
         settings.enlarge_small_images,
         false,

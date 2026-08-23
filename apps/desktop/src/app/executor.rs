@@ -18,6 +18,7 @@ impl App {
     /// Central command executor. All user actions — keyboard, mouse, menu, QA server —
     /// are mapped to `AppCommand` and dispatched here.
     pub(super) fn execute_command(&mut self, event_loop: &ActiveEventLoop, command: AppCommand) {
+        command.log_if_unimplemented();
         match command {
             AppCommand::SendKey(key_name) => {
                 // Branch by mode, mirroring the winit keyboard handler: browse mode routes

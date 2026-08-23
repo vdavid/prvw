@@ -8,6 +8,8 @@ use objc2_app_kit::{
 };
 
 use super::super::widgets::make_setting_row;
+use crate::parity::Audit;
+use crate::parity::setting_keys::SettingKey;
 use crate::platform::macos::ui_common::as_view;
 use crate::settings::Settings;
 
@@ -23,13 +25,15 @@ pub(crate) struct GeneralPanel {
 }
 
 pub(crate) fn build(
+    audit: &mut Audit<SettingKey>,
     settings: &Settings,
     content_max_width: f64,
     retained_views: &mut Vec<Retained<AnyObject>>,
     mtm: MainThreadMarker,
 ) -> GeneralPanel {
     let (auto_update_row, auto_update_toggle, auto_update_desc) = make_setting_row(
-        "Auto-update",
+        audit,
+        SettingKey::AutoUpdate,
         "Check for updates when Prvw starts.",
         settings.auto_update,
         false,
@@ -43,7 +47,8 @@ pub(crate) fn build(
         "You can still zoom with trackpad pinch and \u{2318}+/\u{2318}\u{2212}."
     };
     let (scroll_to_zoom_row, scroll_to_zoom_toggle, scroll_to_zoom_desc) = make_setting_row(
-        "Scroll to zoom",
+        audit,
+        SettingKey::ScrollToZoom,
         scroll_to_zoom_desc_text,
         settings.scroll_to_zoom,
         false,
@@ -53,7 +58,8 @@ pub(crate) fn build(
 
     let (preload_neighbors_row, preload_neighbors_toggle, preload_neighbors_desc) =
         make_setting_row(
-            "Preload next/prev images",
+            audit,
+            SettingKey::PreloadNeighbors,
             "Decode adjacent images in the background so navigation is instant. Turn off to benchmark a single cold-start decode.",
             settings.preload_neighbors,
             false,
@@ -62,7 +68,8 @@ pub(crate) fn build(
         );
 
     let (title_bar_row, title_bar_toggle, title_bar_desc) = make_setting_row(
-        "Title bar",
+        audit,
+        SettingKey::TitleBar,
         "Reserve space at the top so the title bar doesn\u{2019}t cover the image.",
         settings.title_bar,
         false,

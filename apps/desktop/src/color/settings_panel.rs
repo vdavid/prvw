@@ -7,6 +7,8 @@ use objc2_app_kit::{
     NSLayoutAttribute, NSLayoutConstraint, NSLayoutRelation, NSStackView, NSSwitch, NSTextField,
 };
 
+use crate::parity::Audit;
+use crate::parity::setting_keys::SettingKey;
 use crate::platform::macos::ui_common::{as_view, make_vertical_stack};
 use crate::settings::Settings;
 use crate::settings::widgets::make_setting_row;
@@ -19,13 +21,15 @@ pub(crate) struct ColorPanel {
 }
 
 pub(crate) fn build(
+    audit: &mut Audit<SettingKey>,
     settings: &Settings,
     content_max_width: f64,
     retained_views: &mut Vec<Retained<AnyObject>>,
     mtm: MainThreadMarker,
 ) -> ColorPanel {
     let (icc_row, icc_toggle, icc_desc) = make_setting_row(
-        "ICC color management",
+        audit,
+        SettingKey::IccColorManagement,
         "Corrects colors in images that have an embedded color profile, like photos from professional cameras. Without this, some images \u{2014} especially those shot in Adobe RGB or ProPhoto \u{2014} can look washed out or have wrong colors.",
         settings.icc_color_management,
         true,
@@ -34,7 +38,8 @@ pub(crate) fn build(
     );
 
     let (cm_row, cm_toggle, cm_desc) = make_setting_row(
-        "Color match display",
+        audit,
+        SettingKey::ColorMatchDisplay,
         "Adapts colors to your specific display instead of assuming a standard sRGB screen. Different monitors reproduce colors differently, and this ensures you see the most accurate colors on yours. Makes the most difference on wide-gamut (P3) screens like MacBooks and Studio Displays.",
         settings.color_match_display,
         true,
@@ -44,7 +49,8 @@ pub(crate) fn build(
     cm_toggle.setEnabled(settings.icc_color_management);
 
     let (rc_row, rc_toggle, rc_desc) = make_setting_row(
-        "Relative colorimetric",
+        audit,
+        SettingKey::RelativeColorimetric,
         "Changes how colors outside your display\u{2019}s range are handled. By default, Prvw smoothly adjusts all colors to fit (perceptual). With this on, colors that your display can show stay pixel-perfect, but out-of-range colors get clipped. The difference is subtle \u{2014} photographers comparing specific color values may prefer this.",
         settings.use_relative_colorimetric,
         true,

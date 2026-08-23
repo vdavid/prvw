@@ -24,6 +24,8 @@ use objc2_app_kit::{
 use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
 
 use crate::file_associations::{self, GroupState, SUPPORTED_RAW_UTIS, SUPPORTED_STANDARD_UTIS};
+use crate::parity::Audit;
+use crate::parity::setting_keys::SettingKey;
 use crate::platform::macos::ui_common::{FlippedView, as_view, make_bold_label, make_label};
 
 const STANDARD_COUNT: usize = SUPPORTED_STANDARD_UTIS.len();
@@ -488,9 +490,13 @@ fn build_uti_row(
 /// Build the File associations panel. Wires toggles, starts the 1-second polling timer,
 /// and returns the outer view for the Settings window to slot into its layout.
 pub(crate) fn build(
+    audit: &mut Audit<SettingKey>,
     retained_views: &mut Vec<Retained<AnyObject>>,
     mtm: MainThreadMarker,
 ) -> Retained<NSStackView> {
+    // The whole panel is one parity entry: the list of types Prvw opens, plus the two master
+    // rows. Every platform owes the same feature through whatever its own association API is.
+    audit.record(SettingKey::FileAssociations);
     // ── Master rows + per-UTI rows ────────────────────────────────────
     let mut standard_master = build_master_row(
         "Set all standard formats as default",

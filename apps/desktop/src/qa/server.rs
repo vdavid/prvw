@@ -149,6 +149,7 @@ fn handle_request(
         // Simple HTTP endpoints
         ("GET", "/state") => http::handle_get_state(stream, state),
         ("GET", "/menu") => http::handle_get_menu(stream),
+        ("GET", "/parity") => http::handle_get_parity(stream),
         ("GET", "/screenshot") => http::handle_get_screenshot(stream, proxy),
         ("GET", "/diagnostics") => http::handle_get_diagnostics(stream, state),
         #[cfg(all(debug_assertions, target_os = "macos"))]

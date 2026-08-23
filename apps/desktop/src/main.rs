@@ -9,6 +9,12 @@ mod commands;
 mod folder_watch;
 mod input;
 mod menu;
+// The registries answer for every platform at once, so whatever a given build's own UI doesn't
+// consume is unused there: Linux has no menu bar and no settings window, and Windows has no
+// chrome until M4. macOS has all of it, so it's the build that still catches a registry entry
+// nothing reads any more.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod parity;
 mod pixels;
 mod platform;
 mod render;
