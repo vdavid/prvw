@@ -273,8 +273,14 @@ impl App {
     }
 
     /// Compute the content offset based on the title_bar setting and fullscreen state.
+    ///
+    /// macOS only: the strip exists because the window draws its content behind a transparent
+    /// title bar (`window::configure_macos_window`). A Win32 or X11 client area starts below
+    /// the decorations, so reserving space there would leave a black band under a title bar
+    /// that was never in the way. `parity::setting_keys` says the same thing about
+    /// `SettingKey::TitleBar`.
     fn content_offset_y(&self) -> Logical<f32> {
-        if self.title_bar && !self.is_fullscreen() {
+        if cfg!(target_os = "macos") && self.title_bar && !self.is_fullscreen() {
             Logical(TITLE_BAR_HEIGHT)
         } else {
             Logical(0.0)
