@@ -35,6 +35,16 @@ var AllChecks = []CheckDefinition{
 		Run:         RunClippy,
 	},
 	{
+		ID:          "desktop-rust-windows-cross",
+		Nickname:    "windows-cross",
+		DisplayName: "Windows cross-check",
+		App:         AppDesktop,
+		Tech:        "🦀 Rust",
+		IsSlow:      true,
+		DependsOn:   nil,
+		Run:         RunWindowsCross,
+	},
+	{
 		ID:          "desktop-rust-tests",
 		Nickname:    "cargo-test",
 		DisplayName: "tests",

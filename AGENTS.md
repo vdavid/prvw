@@ -69,6 +69,26 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 - Specific Rust tests by name: `cd apps/desktop && cargo test <test_name>`
 - CI: Runs on PRs and pushes to main for changed files. Full run: Actions -> CI -> "Run workflow".
 
+### Checking the Windows build from macOS
+
+`./scripts/check.sh --check windows-cross` type-checks and lints the desktop app for `x86_64-pc-windows-msvc` without a
+Windows machine, so Windows-only code gets a real feedback loop. It's marked slow, so a plain `./scripts/check.sh`
+leaves it out.
+
+One-time setup:
+
+- `cargo install cargo-xwin --locked`
+- `rustup target add x86_64-pc-windows-msvc`
+- `rustup component add llvm-tools`
+
+The first run downloads the MSVC CRT and Windows SDK headers into `~/Library/Caches/cargo-xwin/`, which takes about a
+minute; later runs are incremental and finish in seconds. The check links rustup's `llvm-ar` into
+`target/cross-check-bin/llvm-lib` on its own, because cargo-xwin ships clang-cl and lld-link but no MSVC archiver.
+`aarch64-pc-windows-msvc` works with the same recipe once you add that target.
+
+It compiles, it doesn't link or run, so it catches `cfg` and API-shape mistakes and says nothing about runtime behavior.
+There's no Linux equivalent yet; `docs/specs/cross-platform-plan.md` records what blocks it.
+
 ## Debugging
 
 - **Logging**: Use `RUST_LOG=debug` or target specific modules with `RUST_LOG=prvw::render::renderer=debug`.

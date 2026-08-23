@@ -306,11 +306,39 @@ target entirely, retires the NASM question, and shrinks the Windows binary. Keep
 if something unexpected still pulls it in. (When M7 brings a Windows updater, it'll need a TLS story again; Schannel via
 `native-tls` is the C-free choice then.)
 
-### Cross-compiling from macOS doesn't work
+### Cross-compiling from macOS: Windows works, Linux doesn't yet
 
-Verified: `cargo check --target x86_64-pc-windows-msvc` from a Mac dies in `aws-lc-sys`'s `cc` invocation, and the Linux
-target additionally needs glib and gtk headers for muda. Use real runners. GitHub's `windows-latest` and `ubuntu-latest`
-have everything.
+**Windows type-checks from a Mac, and it's wired up.** `./scripts/check.sh --check windows-cross` runs
+`cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings` and comes back green on the current
+tree. `aarch64-pc-windows-msvc` passes the same way. Setup steps live in `AGENTS.md`; the check is marked slow, so a
+plain `./scripts/check.sh` leaves it out. Two things had to be true, and both are now:
+
+- Step 7 scoping `reqwest` to macOS removed `aws-lc-sys`, which is what the earlier attempt died in.
+- `zstd-sys` still compiles C for the target. `cargo-xwin` supplies the MSVC CRT and Windows SDK headers plus clang-cl
+  and lld-link, and the last missing piece is `llvm-lib`, the MSVC archiver, which Apple's command line tools don't
+  ship. rustup's `llvm-tools` component provides `llvm-ar`, and `llvm-ar` under the name `llvm-lib` **is** that
+  archiver, so the check symlinks it into `target/cross-check-bin/` on every run.
+
+Plain `cargo check --target x86_64-pc-windows-msvc` without cargo-xwin still fails, in `zstd-sys`:
+`fatal error: 'stdlib.h' file not found`. Headers are the only thing it lacks.
+
+This buys a compile-error feedback loop, nothing more. It never links a binary, never runs a test, and says nothing
+about runtime behavior, so the VM and the CI runners still decide whether Windows Prvw actually works.
+
+**Linux is three `cfg` gates and a C toolchain away, and step 8 as written would break it.** Measured on the current
+tree, in order:
+
+1. `cargo check --target x86_64-unknown-linux-gnu` fails in `glib-sys`, `gobject-sys`, and `gio-sys`:
+   `pkg-config has not been configured to support cross-compilation`. That's muda's GTK chain.
+2. With `muda = { default-features = false }`, the GTK chain disappears and the next failure is `zstd-sys` looking for
+   `x86_64-linux-gnu-gcc`. `zig cc` covers that: point `CC_x86_64_unknown_linux_gnu` at a wrapper that drops cc-rs's
+   `--target=` flag and calls `zig cc -target x86_64-linux-gnu`, and `AR_x86_64_unknown_linux_gnu` at `zig ar`.
+3. Then **muda itself stops compiling**: `platform_impl/mod.rs` gates its Linux backend behind the `gtk` feature and
+   offers no fallback, so `default-features = false` leaves `pub(crate) use self::platform::*` unresolved (E0432). Step
+   8's one-line change is therefore not enough on its own.
+4. Moving muda out of the Linux target entirely leaves exactly three errors, all in our code: `menu.rs:1`, `menu.rs:2`,
+   and `input.rs:9`. So step 8's real shape is "muda is a macOS and Windows dependency, and the menu module is
+   `cfg`-gated to match", after which Linux should type-check the same way Windows does.
 
 ### CI changes
 
@@ -492,11 +520,16 @@ runs `cargo build`. Fix both before touching anything else, or every later miles
    MIT/Apache-2.0.)
 7. **Scope `reqwest` to macOS** and give the test harness a TLS-free dev-dependency, per the TLS section above. This
    drops `aws-lc-sys` from the Windows target rather than working around it.
-8. **Set `muda = { default-features = false }` on Linux.** muda's defaults are `["libxdo", "gtk"]`, the source of all
-   nine GTK C dependencies in `Cargo.lock` and of the `apt-get` step in CI. muda's menu bar can't attach to a winit
-   window on Linux anyway (see item 9 above), so that chain is dead weight. Dropping it removes the apt step, speeds up
-   Linux CI, and makes a future AppImage genuinely dependency-free. Doing it here rather than in M8 pays off for every
-   milestone in between.
+8. **Drop muda from the Linux target.** muda's defaults are `["libxdo", "gtk"]`, the source of all nine GTK C
+   dependencies in `Cargo.lock` and of the `apt-get` step in CI. muda's menu bar can't attach to a winit window on Linux
+   anyway (see item 9 above), so that chain is dead weight. Dropping it removes the apt step, speeds up Linux CI, and
+   makes a future AppImage genuinely dependency-free. Doing it here rather than in M8 pays off for every milestone in
+   between.
+   - **`default-features = false` alone doesn't work**: muda has no Linux backend without the `gtk` feature, so the
+     crate fails to compile (E0432 on `self::platform`). Move `muda` under a
+     `cfg(any(target_os = "macos", target_os = "windows"))` dependency section and `cfg`-gate its three uses instead:
+     `menu.rs:1`, `menu.rs:2`, and `input.rs:9`. Those three are the only errors left once muda is out of the graph. See
+     the cross-compiling section above for the measurements.
 9. **Port the Go check runner to Windows. It does not compile there today, and this blocks step 10.** Verified with
    `GOOS=windows GOARCH=amd64 go build`: `scripts/check/checks/common.go:111` calls
    `syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)` and `:130` sets `SysProcAttr{Setpgid: true}`, and neither exists on
