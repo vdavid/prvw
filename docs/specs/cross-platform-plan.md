@@ -19,7 +19,8 @@ So the difficulty splits in three:
 - **The first Windows window showing an image: one to two weeks.** That's M0. Most of it is deleting macOS assumptions
   from code that's already portable; the rest is making CI able to see all three platforms.
 - **A Windows build a photographer would actually use** (viewer, RAW, display-aware color, real menus, no settings UI):
-  **six to nine weeks.** M0 through M3.
+  **six to nine weeks.** M0 through M3. Not a ship target given the full-parity decision, but the point where the thing
+  becomes usable enough to dogfood.
 - **Windows parity with what macOS ships today: three to six months.** Most of that is re-implementing UI we already
   have, in a second toolkit, forever.
 
@@ -377,12 +378,34 @@ also fits "minimal chrome" and render-on-demand (draw only when the panel change
 fullscreen, slideshow, histogram, EXIF overlay, real Win32 menus. Settings live in `settings.json` with no UI. No browse
 mode, no onboarding, no auto-update. Then watch what Windows users complain about before spending three months on it.
 
-**Recommendation: (c), then (b).** Ship the two thirds that already work, learn from real users, then build the shared
-UI once rather than twice. The milestones are sequenced for exactly that, and M4 is the deliberate decision point.
+**Decision (David, 2026-08-23): full parity from the start.** Windows ships matching macOS, so there is no viewer-only
+beta and (c) is off the table as an endpoint.
+
+**That makes (b) the strong recommendation.** Under full parity every one of those roughly 8,800 chrome lines gets
+written for Windows regardless, and again for Linux if Linux ships. (a) writes them two more times and taxes every
+future setting forever; (b) writes them once, on the GPU surface the app already owns, and deletes the AppKit originals
+in the same pass. The case for (a) was always "native feel where the user notices", and the pieces users actually
+perceive as native (the menu bar, window chrome, file dialogs, clipboard, print, shell thumbnails) stay native under (b)
+anyway. What moves to the GPU is settings, onboarding, about, and browse mode, none of which a user reads as an OS
+widget.
+
+If (b) wins, M4 stops being a decision point and becomes the milestone that builds the shared widget layer, and M5 and
+M6 become its consumers rather than separate ports. Reorder accordingly.
 
 ## Milestones
 
-Each milestone is independently landable and leaves `main` green on all platforms in CI. Do them in order.
+Each milestone is independently landable and leaves `main` green on all platforms in CI.
+
+**Ordering, given the full-parity decision.** The numbering is no longer a shipping sequence, because everything ships
+together. It's a dependency order, and four dependencies are real:
+
+- **M0 gates everything.** Nothing else compiles or runs off macOS until it lands.
+- **M1 step 4 (the `previews::metadata` Windows tier) gates M3**, and M1 step 10 (path handling) gates M5.
+- **M1 step 14 (pinning DX12) gates M2's HDR path**, because `ExtendedSrgbLinear` is a DX12 capability.
+- **M4's widget layer gates M5 and M6** if the answer to the UI question is (b).
+
+Everything else can move. In particular, M2's wgpu 29-to-30 bump is worth pulling forward next to M0: it's isolated,
+it's the riskiest change here, and M1 step 11's screenshot readback wants it done first.
 
 ### M0: make the non-macOS build run, and make CI able to tell (one to two weeks)
 
@@ -829,8 +852,8 @@ and a module restructure in a few days.
 1. **(a), (b), or (c) on the UI?** The design principles say "fork by OS", but that was written with Cmdr as the
    reference, and Cmdr is a Tauri app with a shared webview UI. For Prvw, forking means writing about 8,800 lines of
    chrome twice, then three times. Is that still the call, or is a GPU-drawn shared UI worth reconsidering?
-2. **How much does Windows need to match macOS at launch?** A viewer-only Windows build is six to nine weeks away. Full
-   parity is three to six months. Which one is the goal?
+2. ~~How much does Windows need to match macOS at launch?~~ **Answered 2026-08-23: full parity.** So the number that
+   matters is 12 to 24 weeks, and the six-to-nine-week figure is a progress marker rather than a ship date.
 3. **Windows 10 or Windows 11 only?** The advanced-color APIs M2 wants (`ColorProfileGetDisplayDefault`, and Auto Color
    Management's behavior) are Windows 11. Mica and Acrylic turn out to be irrelevant here, since a wgpu swapchain
    occludes them either way. So this is a color-management question rather than a looks question: dropping Windows 10
