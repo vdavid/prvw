@@ -137,6 +137,7 @@ pub fn create_window(event_loop: &ActiveEventLoop, file_path: &Path) -> Arc<Wind
         // Don't take focus on creation (see `background_window_requested`).
         attrs = attrs.with_active(false);
     }
+    attrs = with_app_icon(attrs);
 
     let window = event_loop
         .create_window(attrs)
@@ -149,6 +150,38 @@ pub fn create_window(event_loop: &ActiveEventLoop, file_path: &Path) -> Arc<Wind
     configure_macos_window(&window);
 
     window
+}
+
+/// Give the window the app icon, for the title bar, the taskbar button, and Alt+Tab.
+///
+/// Windows takes it straight out of our own executable: `build.rs` embeds `RT_GROUP_ICON` 1, and
+/// the shell picks whichever size it needs from the seven in there. Nothing to decode at startup,
+/// and no second copy of the artwork in the binary.
+///
+/// macOS gets its icon from the `.app` bundle. X11 would want raw RGBA here and Wayland ignores
+/// window icons entirely (it reads the `.desktop` file), so Linux keeps waiting for M8.
+#[cfg(target_os = "windows")]
+fn with_app_icon(attrs: WindowAttributes) -> WindowAttributes {
+    use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
+
+    /// Has to match `PRIMARY_ID` in `build-support/win_resources.rs`.
+    const APP_ICON_RESOURCE: u16 = 1;
+
+    // `None` means "the size Windows asks for", which is the large icon at the current system DPI.
+    match winit::window::Icon::from_resource(APP_ICON_RESOURCE, None) {
+        Ok(icon) => attrs
+            .with_window_icon(Some(icon.clone()))
+            .with_taskbar_icon(Some(icon)),
+        Err(e) => {
+            log::warn!("Couldn't load the app icon out of the executable: {e}");
+            attrs
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn with_app_icon(attrs: WindowAttributes) -> WindowAttributes {
+    attrs
 }
 
 /// Set macOS-specific window properties via NSWindow.
