@@ -738,8 +738,10 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
         // Enter Full Screen) before each open. Must run after `init_for_nsapp`.
         menu_pruners = crate::platform::macos::menu_cleanup::install();
     }
-    // Windows hangs the bar off the window, and points the message hook at the accelerator
-    // table the items just filled. Must run after the items are in, or the table is empty.
+    // Windows hangs the bar off the window, and points the message hook at its accelerator
+    // table. Last, so the window gets a finished bar in one `DrawMenuBar` rather than watching
+    // one grow. The table itself is already right whenever this runs: `top_level` is what
+    // decides that, and the hook reads the `HACCEL` fresh on every message.
     #[cfg(target_os = "windows")]
     chrome::attach(&menu, window);
 
