@@ -27,6 +27,10 @@
 //! `shared_suite_stays_platform_neutral` (in `e2e_shared.rs`) closes the back door by rejecting
 //! `target_os` and bare `TestApp` in that file.
 //!
+//! Rust has no way for a test to report itself skipped, so a skipped one reports as passing and
+//! writes a `SKIP <test>: <reason>` line to stderr. `cargo nextest run --no-capture` is how you
+//! read those; `docs/parity.md` is how you predict them.
+//!
 //! ## Off-macOS caveats
 //!
 //! The shared suite compiles for Windows and Linux and has run on neither, so its value is

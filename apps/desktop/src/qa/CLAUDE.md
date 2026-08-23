@@ -50,6 +50,9 @@ platform hasn't built shows up as a red test rather than a quiet pass, and a tes
 explaining why. Adding a shared test means naming what it needs; `shared_suite_stays_platform_neutral` rejects
 `target_os` and a raw `TestApp` in that file.
 
+A skipped shared test reports as passing (Rust has no skip) and writes a `SKIP <test>: <reason>` line to stderr, so
+`cargo nextest run --no-capture` is how you read them and `docs/parity.md` is how you predict them.
+
 **What is proven, and what isn't.** Only macOS has ever run these. Windows and Linux type-check and lint them
 (`./scripts/check.sh --check windows-cross` / `--check linux-cross` build `--all-targets`), which is a real guarantee
 about the harness compiling and a claim about nothing else. The Linux job skips the shared suite while its runner has no

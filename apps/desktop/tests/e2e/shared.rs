@@ -31,8 +31,8 @@ impl SharedApp {
     ///
     /// `commands` names the `CommandKey` variants the test exercises. Pass `&[]` for a test that
     /// asserts about a subsystem no platform forks (the state contract itself, live folder sync,
-    /// window geometry); that empty list is a claim, and it's the one the reviewer should push
-    /// back on if it's wrong.
+    /// window geometry). An empty list is a claim that nothing here is forked, so it's worth a
+    /// second look before writing one.
     pub fn start(commands: &[&str]) -> Option<Self> {
         if !display_available() {
             return None;
