@@ -17,12 +17,12 @@ about, browse mode) with no Windows equivalent, which would have to be written a
 So the difficulty splits in three:
 
 - **The first Windows window showing an image: one to two weeks.** That's M0. Most of it is deleting macOS assumptions
-  from code that's already portable; the rest is making CI able to see all three platforms.
-- **A Windows build a photographer would actually use** (viewer, RAW, display-aware color, real menus, no settings UI):
-  **six to nine weeks.** M0 through M3. Not a ship target given the full-parity decision, but the point where the thing
-  becomes usable enough to dogfood.
-- **Windows parity with what macOS ships today: three to six months.** Most of that is re-implementing UI we already
-  have, in a second toolkit, forever.
+  from code that's already portable; the rest is making CI able to see every platform it builds for.
+- **A Windows build worth dogfooding daily** (viewer, RAW, display-aware color, real menus, no settings UI): **seven to
+  11 weeks.** M0 through M3. Not a ship target given the full-parity decision, but the checkpoint that tells you whether
+  the rest is on track.
+- **Windows parity with what macOS ships today: four to six months.** Most of that is re-implementing UI we already
+  have, in a second toolkit, which the option (a) decision accepts deliberately.
 
 The gap between the first and second bullets is the interesting part. Everything genuinely hard about Prvw (RAW
 decoding, ICC transforms, GPU rendering, preloading) is already platform-neutral. What isn't portable is the **launch
@@ -329,6 +329,41 @@ run there. Treat that as a hypothesis to test in M1 rather than a given: the run
 back to WARP (the software rasterizer), which is slow enough to make timing-sensitive tests flaky. Prove it with one
 test before porting the other 59.
 
+### Where Windows actually gets tested
+
+Decided 2026-08-23: build (a) and (b) now, add (c) when the hardware is connected.
+
+- **(a) A Windows 11 ARM64 VM in UTM on the M1 Max agent box.** Free (Apple's Virtualization framework, so near-native
+  CPU), and the fast loop. Windows ships OpenSSH Server, so an agent can build and run inside the guest; better still,
+  the E2E harness already drives the app over HTTP (`qa/server.rs:42` binds `127.0.0.1:19447`), so the whole suite runs
+  in-guest with no host plumbing, and forwarding that one port lets a macOS-side agent drive the running app directly.
+  With M1 step 11's screenshot path, that channel carries visual QA too.
+- **(b) A `windows-latest` job in GitHub Actions.** Free on a public repo, real x64, and the thing that keeps `main`
+  honest.
+- **(c) A physical Windows PC on the home LAN**, connected later. The M1 box is denied the NAS and the Hetzner VPS by
+  tailnet policy, but the home LAN works, so the same SSH-plus-HTTP loop reaches it.
+
+**The gap this leaves, and it is not a small one.** Neither (a) nor (b) has a real GPU. UTM does not virtualize a GPU
+for Windows guests, and paying doesn't fix it: Parallels and VMware Fusion both stop at DirectX 11 on Apple Silicon,
+while M2 needs DX12 for `ExtendedSrgbLinear`. GitHub's runners fall back to WARP for the same reason. So both available
+environments run wgpu on a software rasterizer.
+
+That means **M2 is the one milestone this setup cannot verify**: no HDR round-trip, no real monitor ICC profile, no Auto
+Color Management coexistence, no GPU performance numbers. It's also the differentiator. Two consequences for whoever
+builds M2:
+
+- **Write it to be verifiable offline.** Compute reference pixel values on macOS for a fixed set of input images and
+  profiles, assert them in `tests/color_management.rs`, and make the Windows path produce the same numbers under WARP.
+  Then connecting (c) is a confirmation pass rather than a discovery pass.
+- **Treat M2 as provisional until (c) exists.** Don't call it done, and don't put an HDR claim on the website, on the
+  strength of a software rasterizer.
+
+Two smaller notes on the VM. It's ARM64, so either test the `aarch64-pc-windows-msvc` build natively (tests the code,
+not the shipping binary) or run x64 under Prism emulation (tests the binary, but every timing assertion becomes
+meaningless). And **Windows 10 cannot be tested there at all**: there's no practical Windows 10 ARM64 image, so the
+full-fidelity-on-Windows-10 decision is unverified until (c), unless someone runs Windows 10 x64 under UTM's much slower
+emulation mode for spot checks.
+
 ### Release and signing
 
 **Release matrix:** add `x86_64-pc-windows-msvc`, and decide about `aarch64-pc-windows-msvc`. The proposed CI job is
@@ -353,44 +388,50 @@ top: the first few hundred downloads will see SmartScreen warnings whatever we s
 uninstall, and update handoff. WiX (MSI), Inno Setup, or NSIS. MSIX is the modern option and gives clean install and
 uninstall, but its sandbox complicates both the auto-updater and the QA server's localhost port.
 
-## The decision this plan can't make for you
+## Decisions
 
-`docs/design-principles.md` says: "Cross-platform comes later, but never at the cost of native feel. When we go
-cross-platform, fork by OS (same approach as Cmdr)."
+All five open questions were answered on 2026-08-23. This section is the record; the milestones below implement it.
 
-Worth flagging that comparison. Cmdr is Tauri: its UI is a webview, so "fork by OS" there forks a thin native layer
-while the entire interface stays shared. Prvw has no such layer. Forking Prvw by OS means writing the settings window,
-onboarding, about, and browse mode a second time in Win32, a third time for Linux, and then adding every future setting
-in N places. The RAW panel alone is 1,157 lines with 16 toggles and eight sliders.
+**1. Fork the UI per OS (option (a)), with automated parity guarantees.** `docs/design-principles.md` already said "fork
+by OS", and that stands: every platform gets its own native chrome, written against its own toolkit. Windows settings,
+onboarding, about, and browse mode are Win32, not a shared GPU-drawn layer.
 
-Three ways forward:
+The recommendation on the table was the opposite, so the reasoning behind overriding it matters and is worth writing
+down: a native fork buys real native feel in the four places a user spends the most time outside the image itself, and
+Prvw's whole premise is being the app that feels made for the platform it's on. The cost is that "parity" stops being
+structural and becomes something you have to enforce. So the fork comes with a condition:
 
-**(a) Full native fork.** Win32 for everything AppKit does. Best native feel, a permanent two-to-three-times UI cost,
-and a tax on every future feature.
+**Parity is guaranteed by tooling, not by discipline.** M0.5 builds that harness before any Windows chrome exists,
+because retrofitting registries after 3,400 lines of Win32 forms is far harder than growing them alongside. Nothing in
+M4 through M6 starts until M0.5 lands.
 
-**(b) Native shell, GPU-drawn app UI.** Keep native what users actually perceive as native: the menu bar, window chrome,
-file dialogs, clipboard, print, shell thumbnails. Move settings, onboarding, about, and browse mode into wgpu, drawn by
-Prvw. One implementation, three platforms. It costs a macOS rewrite of those panels too, but the count stops growing. It
-also fits "minimal chrome" and render-on-demand (draw only when the panel changes), and it retires an entire class of
-`Retained<>` lifetime segfaults the AppKit code documents at length.
+**2. Full parity from the start.** Windows ships matching macOS. There is no viewer-only beta, so the number that
+matters is the parity number in the effort summary, and the milestone order below is a dependency graph rather than a
+release sequence.
 
-**(c) Windows-lite first, decide later.** Ship image mode only: viewer, decode, RAW, color management, zoom, pan,
-fullscreen, slideshow, histogram, EXIF overlay, real Win32 menus. Settings live in `settings.json` with no UI. No browse
-mode, no onboarding, no auto-update. Then watch what Windows users complain about before spending three months on it.
+**3. Windows 10 is supported, at full fidelity.** Windows 11 is the primary target and gets the first-class treatment,
+but Windows 10 is not a degraded tier. See M2, which turns out to make this cheap: scRGB HDR through
+`IDXGISwapChain3::SetColorSpace1` has worked since Windows 10 1703, and `GetICMProfileW` covers display profiles on
+both. Exactly one API in the plan is genuinely unavailable on Windows 10 client, and its absence costs almost nothing.
 
-**Decision (David, 2026-08-23): full parity from the start.** Windows ships matching macOS, so there is no viewer-only
-beta and (c) is off the table as an endpoint.
+**4. Linux keeps working, but gets no parity effort here.** The constraint is **no regressions against what Linux does
+today**, which the `desktop-rust` CI job already enforces and M0 improves on (the build stops panicking at startup).
+Linux parity is a separate spec, later. M0 step 8 stays in scope because dropping muda's GTK features is a strict
+improvement rather than a regression: muda's menu bar has never attached to a winit window on Linux, so nothing that
+works today stops working.
 
-**That makes (b) the strong recommendation.** Under full parity every one of those roughly 8,800 chrome lines gets
-written for Windows regardless, and again for Linux if Linux ships. (a) writes them two more times and taxes every
-future setting forever; (b) writes them once, on the GPU surface the app already owns, and deletes the AppKit originals
-in the same pass. The case for (a) was always "native feel where the user notices", and the pieces users actually
-perceive as native (the menu bar, window chrome, file dialogs, clipboard, print, shell thumbnails) stay native under (b)
-anyway. What moves to the GPU is settings, onboarding, about, and browse mode, none of which a user reads as an OS
-widget.
+**5. Two macOS-only defects get fixed in this effort**, because both are broken today regardless of platform:
+`desktop-rust-macos` running only `cargo build` (M0 step 1), and the missing File → Open (M1 step 1).
 
-If (b) wins, M4 stops being a decision point and becomes the milestone that builds the shared widget layer, and M5 and
-M6 become its consumers rather than separate ports. Reorder accordingly.
+### What option (a) costs, stated plainly
+
+So the implementing agent knows what it signed up for. Every user-visible setting now has to be added in two places and
+kept in step, and the RAW panel alone is 1,157 lines with 16 toggles and eight sliders. `src/settings/CLAUDE.md`'s
+"adding a new setting" recipe goes from seven steps to roughly eleven. When Linux gets its own spec, it becomes three
+places.
+
+That is the accepted trade. M0.5 exists so the cost is paid in mechanical work the compiler and CI enforce, rather than
+in drift nobody notices until a Windows user files an issue.
 
 ## Milestones
 
@@ -487,6 +528,53 @@ running less coverage than they could. Drop the gates the fix retires and delete
 **Done when:** `cargo run -- some.jpg` on a Windows box shows the image, **and** `cargo run` with no arguments does
 something defensible rather than nothing. (That second half is M1 step 1's job; if it isn't done yet, at least make the
 no-argument case log and exit rather than hang invisibly.)
+
+### M0.5: the parity harness (one to two weeks)
+
+**Intent:** Option (a) means the same feature gets built twice, so "are they the same?" has to be a question the build
+answers, not one a human remembers to ask. Build the harness **before** any Windows chrome exists. Retrofitting it onto
+3,400 lines of finished Win32 forms is a different and much worse job.
+
+Numbered M0.5 rather than M1 because it's a cross-cutting prerequisite rather than a stage, and because renumbering the
+16 steps of M1 would break every cross-reference in this document.
+
+Three layers, weakest to strongest. Build all three; each catches what the others miss.
+
+1. **Compile-time exhaustiveness for "does it exist".** This is the only layer that gives an actual guarantee, so lean
+   on it hardest.
+   - Give each settings field a variant in a `SettingKey` enum, and make every platform's panel builder consume it
+     through an exhaustive `match` with **no** `_` arm. Adding a field then fails the build on every platform until each
+     one handles it. That's the guarantee; everything else is a smoke alarm.
+   - Same shape for `MenuIds` and for `AppCommand`: each platform's menu builder and command dispatcher matches
+     exhaustively, and a variant that genuinely doesn't apply somewhere is spelled
+     `SettingKey::Foo => NotApplicable { reason: "..." }` rather than silently omitted. The reason string feeds layer 2.
+   - `Settings` (`settings/persistence.rs`) stays the single source of truth for what a setting _is_; `SettingKey` is
+     the source of truth for what a UI owes it.
+2. **A generated parity table, checked in CI.** A `cargo xtask parity` (or a new check in `scripts/check/checks/`) reads
+   the registries and emits `docs/parity.md`: a matrix of feature by platform by status, where status is `done`,
+   `not applicable` plus the reason string, or `missing`. Then a check fails when the generated file differs from the
+   committed one. That's exactly the pattern `changelog-commit-links.go` already uses, so it fits the existing runner.
+   The point of committing the generated file is that the diff shows up in review, so parity changes are visible rather
+   than implicit.
+   - **Do not hand-maintain this table.** A hand-written parity doc is wrong within a month and worse than nothing,
+     because it looks authoritative.
+3. **One behavioural E2E suite, run against every platform.** The strongest evidence that two implementations agree, and
+   Prvw is unusually well set up for it: `tests/integration.rs` already drives the app through the QA HTTP server rather
+   than through the UI, so the same assertions run anywhere the server runs. Split it into a platform-neutral core (the
+   assertions about observable state) and thin per-platform drivers for the parts that must poke native widgets. Layer 1
+   proves a toggle exists on both; layer 3 proves it does the same thing.
+   - Explicitly **not** doing screenshot diffing across platforms. The two UIs are supposed to look different; that's
+     the entire point of option (a). Pixel comparison across platforms would be pure noise. Per-platform screenshot
+     baselines are fine later, but they answer a different question.
+
+**Tests:** the harness needs its own tests. A deliberate omission (a `SettingKey` variant a platform doesn't handle)
+must fail the build; a deliberate `NotApplicable` must pass and show up in the table with its reason.
+
+**Docs:** rewrite the "adding a new setting" recipe in `src/settings/CLAUDE.md` around the new registries, and document
+the `NotApplicable` escape hatch, including that using it without a real reason is how this whole layer rots.
+
+**Done when:** adding a settings field to `Settings` and nothing else fails the Windows build, the macOS build, and the
+parity check, with three messages that each say what's missing and where.
 
 ### M1: Windows image mode at parity (three to four weeks)
 
@@ -651,15 +739,39 @@ constants, and the path-comparison helper.
 
 **Intent:** The differentiator. Don't ship Windows without it.
 
+**Windows 10 is a full-fidelity target here, and it turns out to be nearly free.** Checked against the API requirements:
+
+- `IDXGISwapChain3::SetColorSpace1` with `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709` (scRGB, what wgpu 30 calls
+  `ExtendedSrgbLinear`) has worked since **Windows 10 1703**. So the HDR path is not a Windows 11 feature.
+- `GetICMProfileW` and `MonitorFromWindow` are ancient. Display profile detection is identical on both.
+- `longPathAware`, `IFileOpenDialog`, `IShellItemImageFactory`, and `PrintWindow` are all Windows 10 or older.
+- **Exactly one API is genuinely unavailable**: `ColorProfileGetDisplayDefault` requires build 20348, and Windows 10
+  client tops out at 19045 (22H2), so it's Windows 11 and Server 2022 only in practice. It returns the advanced-color
+  profile for a display in HDR mode, which is a refinement over `GetICMProfileW`, not a replacement. Fall back to
+  `GetICMProfileW` on Windows 10 and the difference is confined to one narrow case.
+- Auto Color Management is Windows 11 22H2 and later. Its absence on Windows 10 makes that platform **simpler**, not
+  worse: there's no competing system transform to coexist with.
+
+So Windows 10 gets the same pipeline. Set the minimum to **Windows 10 1703** for the HDR path (1607 for
+`longPathAware`), and treat the one Windows 11 API as an enhancement guarded by a version check.
+
 1. **Display profile detection.** `MonitorFromWindow` for the window's current monitor, `GetICMProfileW` on its DC for
-   the ICC path, read the bytes, hand them to `color::State.display_icc`. Use `ColorProfileGetDisplayDefault` for
-   advanced-color displays, which `WcsGetDefaultColorProfile` doesn't cover.
+   the ICC path, read the bytes, hand them to `color::State.display_icc`. On Windows 11, prefer
+   `ColorProfileGetDisplayDefault` when the display is in HDR mode, guarded by a runtime version check with a
+   `GetICMProfileW` fallback.
 2. **React to monitor changes.** The macOS version re-detects when the window moves between screens. On Windows, hook
    winit's `Moved` and `ScaleFactorChanged`, and consider `WM_DISPLAYCHANGE` for profile changes that happen in place.
    This shares plumbing with M1 step 6's per-monitor DPI work, so do them with that in mind.
 3. **HDR and EDR.** Bump wgpu from the resolved 29.0.4 to 30 (30.0.0 landed 2026-07-01; 30.0.1 landed 2026-08-22, so
    check the three-day release-age rule before pinning it) and use `SurfaceColorSpace::ExtendedSrgbLinear` on the
    `Rgba16Float` surface. Verify Windows output against the Metal EDR path on the same file and the same monitor class.
+   - **HDR is a user toggle on Windows, and that's a genuine behavioral difference from macOS, not a bug.** macOS EDR
+     gives headroom whenever the display has it. On Windows, values above 1.0 only reach the display when the user has
+     turned HDR on in Settings, and the app is expected to query `DXGI_OUTPUT_DESC1` and fall back to
+     `DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709` when it's off. So the "HDR / EDR output" setting means something
+     different per platform: on macOS it's ours to decide, on Windows it's ours to _respect_. Decide what the settings
+     UI says when the display isn't in HDR mode, and check whether wgpu 30's `Surface::display_hdr_info` gives us the
+     query or whether we need `IDXGIOutput6` through `as_hal`.
    - **Bonus to check:** the macOS code pokes `CAMetalLayer.colorspace` by hand. Once wgpu owns surface color space,
      some of `display_profile.rs`'s CG plumbing may become redundant. Deleting it would be a real simplification, so
      look before assuming both are needed.
@@ -718,31 +830,47 @@ gap annoys real users.
 
 **Docs:** `src/previews/CLAUDE.md` opens "Previews (macOS-only)". Restructure it per platform.
 
-### M4: the settings decision point (half a day to four weeks)
+### M4: the Windows settings window (four weeks)
 
-**Intent:** This is where the fork-versus-unify question gets answered with real information instead of speculation. By
-now there's a Windows build people can use, and the feedback tells us how much settings UI Windows users actually need.
+**Intent:** Build the Win32 counterpart of the AppKit settings window, registered through M0.5 so it can't drift.
 
-**Before starting, decide (a), (b), or (c) from the section above.** The plan differs completely:
+**Blocked on M0.5.** Starting this before the registries exist means retrofitting them into finished code.
 
-- **If (a) native fork:** roughly 3,400 lines of Win32 forms. Budget four weeks and accept the ongoing tax.
-- **If (b) GPU-drawn:** design a small widget layer on top of the existing wgpu renderer (rows, toggles, sliders, a
-  sidebar), render it only when something changes so render-on-demand holds, then port the six panels onto it. Migrate
-  macOS to the same layer and delete the AppKit settings code. Budget four weeks, then it never costs again.
-- **If (c) defer:** ship Windows with settings in `settings.json` and a menu item that opens the file. Honest, and a
-  real option for a beta. Budget half a day.
+Roughly 3,400 lines of AppKit to mirror: `settings/window.rs` (863), `widgets.rs` (87), `panels/general.rs` (133),
+`panels/raw.rs` (1,157), plus the per-feature panels that live with their features (`color/settings_panel.rs` 106,
+`zoom/settings_panel.rs` 87, `slideshow/settings_panel.rs` 237, `file_associations/settings_panel.rs` 748).
 
-Whichever way it goes, the "adding a new setting" recipe in `src/settings/CLAUDE.md` needs rewriting. That recipe is the
-thing that gets twice as expensive under (a).
+1. **Pick the Win32 UI approach first, and write down why.** Raw `CreateWindowEx` plus `WM_COMMAND` is the lowest
+   dependency and the most tedious. A dialog-template approach is less code but awkward for the dynamic enable and
+   disable relationships the panels already have (ICC off disables Color match and Relative colorimetric). Whatever
+   wins, it also has to look right under per-monitor DPI, which M1 step 6 sets up.
+2. **Mirror the structure, not the pixels.** Same six panels in the same sidebar order (General, Zoom, Color, RAW,
+   Slideshow, File associations), same immediate-apply-through-`AppCommand` behavior, same Close button. Windows
+   conventions where they differ: this is "Options", and the window is a property sheet rather than a preferences
+   window.
+3. **Register every field through `SettingKey`** as M0.5 requires. The exhaustive match is what makes this milestone
+   finishable: when it compiles, no setting is missing.
+4. **File associations is the panel that can't mirror.** Windows removed programmatic default-handler setting, so the
+   16-toggle grid becomes registration plus a button that opens `ms-settings:defaultapps`. This is the one panel where
+   `NotApplicable` is the honest answer for most of the rows, and the reason strings will show up in `docs/parity.md`.
+   Write new copy for it.
+
+**Tests:** M0.5 layer 3 assertions for every toggle and slider, running on both platforms.
+
+**Docs:** `src/settings/CLAUDE.md` gets the Windows half of the recipe.
 
 ### M5: browse mode on Windows (three to six weeks)
 
-**Intent:** The largest remaining feature, and the one most likely to be worth drawing ourselves.
+**Intent:** The largest remaining feature. Native Win32, per the option (a) decision, and **blocked on M0.5**.
+
+`SysTreeView32` for the tree and an owner-drawn `ListView` (or a custom control) for the thumbnail grid. The pure cores
+come along unchanged: `grid_model`, `grid_scheduler`, `thumbnail_cache`, and `tree_model` are already platform-neutral
+and tested, so this milestone is the shell around them.
 
 The constraint carried over from macOS: the GPU surface occludes anything behind it, so native child controls have to
-sit in front of it, and the two screens swap rather than composite. That applies on DXGI too. A GPU-drawn grid sidesteps
-it entirely and reuses `grid_model`, `grid_scheduler`, `thumbnail_cache`, and `tree_model`, all already pure, tested,
-and platform-neutral.
+sit in front of it, and the two screens swap rather than composite. That applies on DXGI too, and it's the biggest
+source of surprise waiting in this milestone. Read `src/browser/CLAUDE.md`'s "The swap" section before starting; the
+z-order and hide-one-show-the-other reasoning transfers even though the API doesn't.
 
 The Windows-specific pieces that must be native regardless:
 
@@ -759,8 +887,11 @@ before any porting starts.
 
 ### M6: onboarding and about on Windows (one to two weeks)
 
-Depends on M4's answer. Under (b) these become two more GPU-drawn screens and are cheap. Under (a) they're another 2,349
-lines of Win32 (`onboarding/` is three files totalling 2,097, plus `about.rs` at 252).
+Native Win32, per option (a), and **blocked on M0.5**. That's 2,349 lines of AppKit to mirror (`onboarding/` is three
+files totalling 2,097, plus `about.rs` at 252). One thing gets easier: the macOS versions run before `EventLoop::new()`
+to dodge the nested-run-loop segfault, and Windows has no autorelease pools, so these can be ordinary windows. One thing
+gets harder: they're modal-shaped, and M1 step 1's warning applies, because a Win32 modal loop blocks winit's pump the
+same way.
 
 Content changes regardless: the macOS onboarding's three steps are "open an image", "set as default viewer", and "move
 to /Applications". On Windows, step three is meaningless (the installer handles placement) and step two can only
@@ -786,37 +917,45 @@ Microsoft rather than on us.
 5. **Release workflow.** Add the Windows matrix legs alongside the macOS ones, and extend `latest.json` to carry
    per-platform artifacts.
 
-### M8: Linux (about a week)
+### M8: Linux stays green, and gets its own spec later
 
-Mostly free once Windows is done, because M0 step 8 already removed the GTK dependency chain:
+**Not a milestone in this effort.** The decision is no regressions against what Linux does today, and no deliberate
+parity work. What that means in practice:
 
-- **Menus.** With muda's GTK backend gone, either draw an in-app menu (which M4's (b) answer would already provide) or
-  ship without a menu bar. It never worked on Linux anyway.
-- **Volume enumeration:** parse `/proc/mounts`, or talk to `udisks2` for friendly labels.
-- **Packaging:** AppImage is the least-effort single-file option, and genuinely so with GTK out of the picture. Flatpak
-  if we want the software centers, at the cost of sandbox work.
-- **Wayland and X11:** winit handles both, but fullscreen, DPI, and window positioning behave differently. Test both.
+- **Keep the `desktop-rust` CI job on `ubuntu-latest` green** through every milestone. It's the canary that has kept the
+  non-macOS build compiling, and it's the whole enforcement mechanism for "no regressions".
+- **Linux gets strictly better from M0 anyway**, for free: the `srgb_icc_bytes` fix means the Linux build stops
+  panicking at startup, and the `data_dir()` fix gives it a correct config path. Neither was a goal; both fall out.
+- **M0 step 8 (dropping muda's GTK features) stays in scope.** It isn't a regression: muda's menu bar has never attached
+  to a winit window on Linux, so nothing that works today stops working, and CI gets faster for every milestone after
+  it.
+- **What a future Linux spec owes:** an in-app menu (muda can't help), volume enumeration through `/proc/mounts` or
+  `udisks2`, AppImage or Flatpak packaging, and Wayland-versus-X11 testing for fullscreen, DPI, and window positioning.
+  Plus its own pass through M0.5's registries, which is where the parity harness earns its keep a second time.
 
 ## Effort summary
 
+Recomputed after the option (a) decision, which adds M0.5 and fixes M4 at its native-fork estimate, and after Linux
+dropped out of scope.
+
 - **M0**, non-macOS build runs and CI can tell: one to two weeks. Cumulative: one to two weeks.
-- **M1**, Windows image mode: three to four weeks. Cumulative: four to six weeks.
-- **M2**, color management: one to two weeks. Cumulative: five to eight weeks.
-- **M3**, previews: three to five days. Cumulative: six to nine weeks.
-- **M4**, settings and the decision point: half a day to four weeks. Cumulative: six to 13 weeks.
-- **M5**, browse mode: three to six weeks. Cumulative: nine to 19 weeks.
-- **M6**, onboarding and about: one to two weeks. Cumulative: 10 to 21 weeks.
-- **M7**, distribution: one to two weeks. Cumulative: 11 to 23 weeks.
-- **M8**, Linux: about a week. Cumulative: 12 to 24 weeks.
+- **M0.5**, the parity harness: one to two weeks. Cumulative: two to four weeks.
+- **M1**, Windows image mode: three to four weeks. Cumulative: five to eight weeks.
+- **M2**, color management including Windows 10: one to two weeks. Cumulative: six to 10 weeks.
+- **M3**, previews: three to five days. Cumulative: seven to 11 weeks.
+- **M4**, the Windows settings window: four weeks. Cumulative: 11 to 15 weeks.
+- **M5**, browse mode: three to six weeks. Cumulative: 14 to 21 weeks.
+- **M6**, onboarding and about: one to two weeks. Cumulative: 15 to 23 weeks.
+- **M7**, distribution: one to two weeks. Cumulative: 16 to 25 weeks.
+- **M8**, Linux: out of scope, zero. Keeping the Linux CI job green is a constraint on every milestone above rather than
+  work of its own.
 
-A **usable Windows beta** (M0 through M3, settings deferred) lands at **six to nine weeks**. Full parity is **12 to 24
-weeks, so three to six months**, and M4 plus M5 are about a third of that, which is why the (a)-versus-(b) decision
-deserves a real answer rather than a default.
+**Full Windows parity: 16 to 25 weeks, so four to six months.** M0 through M3 (about seven to 11 weeks) is the point
+where the thing is worth dogfooding daily, which is a useful checkpoint even though it isn't a ship target.
 
-Two of those look larger than their headline suggests. M0 carries the Go check-runner port (step 9) and the first-ever
-run of 60 GPU-window E2E tests on a hosted runner, either of which can eat a week on its own. M2 carries the wgpu
-29-to-30 bump, which this plan elsewhere calls its riskiest single change, so it doesn't fit next to display detection
-and a module restructure in a few days.
+The option (a) decision costs roughly four weeks against the alternative: M0.5 is new, and M4 lands at four weeks rather
+than being shared work. It buys native chrome on both platforms and, through M0.5, a build that refuses to compile when
+the two drift.
 
 ## Risks and unknowns
 
@@ -847,20 +986,22 @@ and a module restructure in a few days.
   `IFileOpenDialog` (M1 step 1) spins its own modal message loop on the calling thread and blocks winit's pump the same
   way. Different cause, same rule.
 
-## Questions for David
+## Open questions
 
-1. **(a), (b), or (c) on the UI?** The design principles say "fork by OS", but that was written with Cmdr as the
-   reference, and Cmdr is a Tauri app with a shared webview UI. For Prvw, forking means writing about 8,800 lines of
-   chrome twice, then three times. Is that still the call, or is a GPU-drawn shared UI worth reconsidering?
-2. ~~How much does Windows need to match macOS at launch?~~ **Answered 2026-08-23: full parity.** So the number that
-   matters is 12 to 24 weeks, and the six-to-nine-week figure is a progress marker rather than a ship date.
-3. **Windows 10 or Windows 11 only?** The advanced-color APIs M2 wants (`ColorProfileGetDisplayDefault`, and Auto Color
-   Management's behavior) are Windows 11. Mica and Acrylic turn out to be irrelevant here, since a wgpu swapchain
-   occludes them either way. So this is a color-management question rather than a looks question: dropping Windows 10
-   buys a cleaner HDR and wide-gamut story, keeping it buys users.
-4. **Is the Linux CI job load-bearing, or incidental?** It's currently the only thing keeping the non-macOS build
-   compiling, and it does that job well. Worth keeping either way, but it's worth knowing whether Linux is a real target
-   or a canary for portability.
-5. **Should M0 step 1 and M1 step 1 land regardless of cross-platform?** Two findings here are worth fixing even if
-   Windows never happens: `desktop-rust-macos` running only `cargo build` means the E2E and color-management suites
-   never run anywhere but your laptop, and there is no File → Open anywhere in the app on any platform.
+All five questions this plan opened with were answered on 2026-08-23; see **Decisions** above. Two smaller ones came out
+of those answers and are still open:
+
+1. **What's the Windows 10 floor?** The plan assumes **1703** (the oldest build with scRGB through `SetColorSpace1`) and
+   notes 1607 for `longPathAware`. 22H2 is the only Windows 10 still receiving consumer ESU, and that ends 2026-10-13,
+   so there's a case for setting the floor at 22H2 and dropping several version checks. Cheaper to decide now than after
+   the manifest and the guarded API calls are written.
+2. **Does the Windows PC for test environment (c) exist, or does it need buying?** It's the only way to verify M2, and
+   M2 is the differentiator. If it needs buying, the thing that matters is a real GPU and an HDR-capable,
+   profile-calibrated monitor, since that's precisely what neither the VM nor GitHub's runners can provide.
+
+## Decision log
+
+- **2026-08-23**: fork the UI per OS (option (a)), with M0.5's parity harness as the condition. Full parity from the
+  start. Windows 10 supported at full fidelity, Windows 11 first. Linux held to no-regressions with its own spec later.
+  The two macOS-only defects (macOS CI, File → Open) fixed in this effort. Test environments (a) UTM VM and (b) GitHub
+  Actions now, (c) physical Windows PC when connected.
