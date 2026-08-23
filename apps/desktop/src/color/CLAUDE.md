@@ -65,8 +65,8 @@ per-rayon-task closure → `decoding::load_image` → `color::transform_icc`. On
 
 - **`CGColorRef`/`CGColorSpaceRef` confuse `msg_send!`**. They're `*const c_void` (encoded `^v`); ObjC expects
   `^{CGColor=}`. Use raw `objc2::ffi::objc_msgSend` + `transmute`. See `display_profile.rs`.
-- **Display profile fallback.** If `CGDisplayCopyColorSpace` returns null (headless, SSH, CI), falls back to
-  `/System/Library/ColorSync/Profiles/sRGB Profile.icc`.
+- **Display profile fallback.** If `CGDisplayCopyColorSpace` returns null (headless, SSH, CI), `State::new` falls
+  back to the generated `srgb_icc_bytes()`, so the path never touches the filesystem.
 - **Linear vs gamma Metal layer colorspace must match the pipeline output.** The HDR path uses
   `kCGColorSpaceExtendedLinearDisplayP3` paired with linear f16 values (direct Rec.2020 → P3 matrix). A previous
   iteration used the gamma variant `kCGColorSpaceExtendedDisplayP3` paired with moxcms's gamma-encoded output. Both
