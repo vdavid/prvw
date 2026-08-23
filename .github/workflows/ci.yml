@@ -64,16 +64,6 @@ jobs:
       - name: Install tools with mise
         run: mise install
 
-      # `apt-get` has hung here for hours on a stalled mirror, so it gets its own short
-      # timeout and retries rather than sitting on the job's whole budget.
-      - name: Install Linux dependencies
-        timeout-minutes: 10
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y -o Acquire::Retries=3 libglib2.0-dev libgtk-3-dev libxdo-dev
-
       - name: Cache Cargo
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
