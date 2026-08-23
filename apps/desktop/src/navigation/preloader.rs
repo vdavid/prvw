@@ -54,7 +54,7 @@ const MIN_SDR_MEMORY_BUDGET: usize = 3 * LARGE_DECODE_BYTES;
 const MAX_SDR_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
 
 /// SDR cache budget: 1/[`SDR_RAM_DIVISOR`] of physical RAM, clamped. 32 GB and
-/// up land on the ceiling, 24 GB on 384 MiB, and 16 GB and below on the floor.
+/// up land on the ceiling, 24 GB on 384 MB, and 16 GB and below on the floor.
 /// Every JPEG/PNG/WebP cached image comes out of the same budget. Queried once
 /// (RAM doesn't change at runtime).
 pub fn sdr_memory_budget() -> usize {
