@@ -25,6 +25,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `pixels.rs`                 | `Logical` / `Physical` newtypes for coordinate types                                             |
 | `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach)           |
 | `render.rs` + `render/`     | wgpu infrastructure: renderer, text overlay, shaders                                             |
+| `scroll.rs`                 | What a wheel notch or a trackpad swipe means, per platform: zoom modifier, zoom steps, images    |
 
 **Features:**
 
