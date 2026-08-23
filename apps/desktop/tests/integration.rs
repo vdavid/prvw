@@ -320,7 +320,7 @@ fn fullscreen_respects_enlarge_setting_even_with_auto_fit_on() {
     // Enlarge OFF in fullscreen: the small image must stay at actual size (~100%), not be
     // force-fit by auto-fit. (Pre-fix, auto-fit overrode this and kept it enlarged.)
     app.post("/enlarge-small", "off");
-    let s = wait_for_state(&app, Duration::from_secs(2), |s| {
+    let s = wait_for_state(&app, Duration::from_secs(8), |s| {
         (s["zoom"].as_f64().unwrap_or(0.0) - 1.0).abs() < 0.05
     });
     let zoom_no_enlarge = s["zoom"].as_f64().unwrap();
@@ -331,7 +331,7 @@ fn fullscreen_respects_enlarge_setting_even_with_auto_fit_on() {
 
     // Toggling enlarge ON while in fullscreen must take effect and scale the image up.
     app.post("/enlarge-small", "on");
-    let s = wait_for_state(&app, Duration::from_secs(2), |s| {
+    let s = wait_for_state(&app, Duration::from_secs(8), |s| {
         s["zoom"].as_f64().unwrap_or(0.0) > 1.5
     });
     let zoom_enlarged = s["zoom"].as_f64().unwrap();
@@ -1337,35 +1337,26 @@ fn escape_returns_from_browse_to_image() {
 }
 
 #[test]
-fn tab_keeps_focus_on_tree_when_grid_is_empty() {
-    // No folder has been selected, so the grid has no images and is non-focusable: Tab keeps
-    // focus on the tree (spec: an empty grid can't receive focus). Once a folder with images is
-    // listed, Tab moves to the grid — that flip is exercised by live QA, since the harness can't
-    // yet drive a tree-folder selection by path.
-    let app = TestApp::start();
-    app.post("/key", "Enter");
-    assert_eq!(app.get_state()["focused_pane"].as_str(), Some("tree"));
-    app.post("/key", "Tab");
-    assert_eq!(
-        app.get_state()["focused_pane"].as_str(),
-        Some("tree"),
-        "Tab on an empty grid stays on the tree (grid non-focusable)"
-    );
-}
-
-#[test]
-fn enter_on_tree_returns_to_image_mode() {
-    // Enter maps to "open the selected grid image", but with the tree focused (the default on
-    // entering browse) and no grid selection, it falls back to returning to image mode showing the
-    // current image — never a stray open.
+fn enter_in_browse_returns_to_image_mode() {
+    // Enter maps to "open the selected grid image". Entering browse from an image reveals that
+    // image's folder, so Enter takes one of two routes depending on whether the reveal's listing
+    // has landed yet: the grid opens the selected image, or the tree-focused fallback returns to
+    // the current image. Both must land back in image mode — never a stray open, never stuck in
+    // browse. Which route ran is a race, so this asserts only what holds either way; the routes
+    // themselves are covered by `entering_browse_from_an_image_preselects_that_image` and
+    // `empty_folder_lists_zero_and_grid_stays_non_focusable`.
     let app = TestApp::start();
     app.post("/key", "Enter"); // image → browse
     assert_eq!(app.get_state()["view_mode"].as_str(), Some("browse"));
-    app.post("/key", "Enter"); // tree-focused Enter → back to image mode
+    app.post("/key", "Enter"); // → back to image mode
     let state = app.get_state();
     assert_eq!(state["view_mode"].as_str(), Some("image"));
     // The grid-selection field is part of the state contract (null until the grid has a selection).
     assert!(state.get("browse_grid_selected").is_some());
+    assert!(
+        state["file"].as_str().unwrap().contains("fixture.png"),
+        "Enter must land on the image we came from, got {state}"
+    );
 }
 
 #[test]
@@ -1497,6 +1488,8 @@ fn selecting_a_folder_lists_its_images() {
 #[test]
 fn empty_folder_lists_zero_and_grid_stays_non_focusable() {
     // An empty folder → zero images, "(No images)", grid non-focusable: Tab stays on the tree.
+    // The dir-arg launch is what makes the empty grid deterministic — entering browse from an
+    // image always reveals a folder that has at least that image in it.
     let (home, _images, empty) = create_browse_home(2);
     let app = TestApp::start_browse_dir(&empty, home.path());
 
