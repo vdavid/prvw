@@ -322,8 +322,10 @@ plain `./scripts/check.sh` leaves it out. Two things had to be true, and both ar
 Plain `cargo check --target x86_64-pc-windows-msvc` without cargo-xwin still fails, in `zstd-sys`:
 `fatal error: 'stdlib.h' file not found`. Headers are the only thing it lacks.
 
-This buys a compile-error feedback loop, nothing more. It never links a binary, never runs a test, and says nothing
-about runtime behavior, so the VM and the CI runners still decide whether Windows Prvw actually works.
+The same toolchain **links a working binary too**: `cargo xwin build --target x86_64-pc-windows-msvc -p prvw` produces a
+PE32+ `prvw.exe` in about 40 seconds warm, which is a real artifact to drop into the VM. So the Mac covers compile
+errors and produces something to run; what it can't tell you is whether the thing behaves once it starts. The VM and the
+CI runners still decide that.
 
 **Linux is three `cfg` gates and a C toolchain away, and step 8 as written would break it.** Measured on the current
 tree, in order:

@@ -86,7 +86,17 @@ minute; later runs are incremental and finish in seconds. The check links rustup
 `target/cross-check-bin/llvm-lib` on its own, because cargo-xwin ships clang-cl and lld-link but no MSVC archiver.
 `aarch64-pc-windows-msvc` works with the same recipe once you add that target.
 
-It compiles, it doesn't link or run, so it catches `cfg` and API-shape mistakes and says nothing about runtime behavior.
+The check stops at compiling, so it catches `cfg` and API-shape mistakes and says nothing about runtime behavior. For a
+binary you can actually run, the same toolchain links one:
+
+```bash
+PATH="$(git rev-parse --show-toplevel)/target/cross-check-bin:$PATH" \
+  cargo xwin build --target x86_64-pc-windows-msvc -p prvw
+```
+
+That writes `target/x86_64-pc-windows-msvc/debug/prvw.exe`, a real PE32+ binary to copy into a Windows VM. Run the
+`windows-cross` check at least once first, so the `llvm-lib` link exists.
+
 There's no Linux equivalent yet; `docs/specs/cross-platform-plan.md` records what blocks it.
 
 ## Debugging
