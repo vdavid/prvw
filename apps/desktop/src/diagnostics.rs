@@ -12,9 +12,11 @@
 //! - **`NavigationRecord` lives here** because it's a measurement type (from/to index,
 //!   cache hit, duration, timestamp). The ring buffer lives on `navigation::State`;
 //!   diagnostics just formats it.
-//! - **Process RSS is per-platform and best-effort.** macOS shells out to `ps`, Linux
+//! - **Process RSS is per-platform and best-effort.** macOS asks `proc_pidinfo`, Linux
 //!   reads `/proc/self/statm`, Windows asks `GetProcessMemoryInfo`. Returns 0.0 on
-//!   failure. Fine because it's diagnostic output, not a gate on anything.
+//!   failure. Fine because it's diagnostic output, not a gate on anything. All three
+//!   have to be cheap: `build_text` runs from `update_shared_state`, which a pan drag
+//!   reaches once per mouse-move event.
 //!
 //! ## Format
 //!
@@ -60,20 +62,35 @@ pub fn get_process_rss_mb() -> f64 {
     process_rss_bytes().map_or(0.0, |bytes| bytes as f64 / (1024.0 * 1024.0))
 }
 
-/// macOS: `ps` reports RSS in KB. A subprocess is heavier than `task_info`, but
-/// this runs on state changes rather than per frame, and it needs no `unsafe`.
+/// macOS: `proc_pidinfo`'s `pti_resident_size` is the RSS, already in bytes.
+///
+/// This used to shell out to `ps`, on the stated grounds that a subprocess is
+/// heavier than asking the kernel directly but that it "runs on state changes
+/// rather than per frame". That premise was wrong: `build_text` runs from
+/// `App::update_shared_state`, and `update_transform_and_redraw` calls that on
+/// every zoom step and on every mouse-move event of a pan drag. So dragging an
+/// image forked and exec'd a process per frame, on the main thread, for a number
+/// nobody was reading. `proc_pidinfo` is a single syscall.
 #[cfg(target_os = "macos")]
 fn process_rss_bytes() -> Option<u64> {
-    let pid = std::process::id();
-    let output = std::process::Command::new("ps")
-        .args(["-o", "rss=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    let kb: u64 = String::from_utf8_lossy(&output.stdout)
-        .trim()
-        .parse()
-        .ok()?;
-    kb.checked_mul(1024)
+    let mut info = std::mem::MaybeUninit::<libc::proc_taskinfo>::uninit();
+    let size = size_of::<libc::proc_taskinfo>() as i32;
+    // SAFETY: `proc_pidinfo` writes at most `size` bytes into our correctly-sized
+    // buffer and reports how many it wrote. We only read `info` on a full write.
+    let written = unsafe {
+        libc::proc_pidinfo(
+            std::process::id() as i32,
+            libc::PROC_PIDTASKINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if written != size {
+        return None;
+    }
+    // SAFETY: `proc_pidinfo` filled the whole struct, as checked above.
+    Some(unsafe { info.assume_init() }.pti_resident_size)
 }
 
 /// Linux: `/proc/self/statm`'s second field is the resident set in pages.
