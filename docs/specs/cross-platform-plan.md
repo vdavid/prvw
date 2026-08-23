@@ -785,9 +785,9 @@ two sit near the end only because they're smaller.
    doc example is literally this case. Two consequences: the `EventLoop` construction in `main.rs` forks per platform,
    and the `HACCEL` has to stay fresh across the runtime menu mutations Prvw already does (`set_browse_menu_label`, the
    slideshow Start/Stop swap, every `CheckMenuItem`). Also remap Cmd to Ctrl, restructure for Windows conventions (no
-   app menu, so About moves to Help and Settings becomes "Options"), and audit every `PredefinedMenuItem`. Keep
-   `MenuIds` and `menu::native::menu_to_command` as the single source of menu action mapping (M0 moved it there from
-   `input.rs`, which now owns keys only); only the construction inside `menu/native.rs` forks.
+   app menu, so About moves to Help and Settings moves to Tools, keeping its shared "Settings…" label), and audit every
+   `PredefinedMenuItem`. Keep `MenuIds` and `menu::native::menu_to_command` as the single source of menu action mapping
+   (M0 moved it there from `input.rs`, which now owns keys only); only the construction inside `menu/native.rs` forks.
    - **Knock-on effect:** a Win32 menu bar eats client area, so `window::resize_to_fit_image` and the auto-fit path have
      to account for the menu-bar height or images come up subtly cropped. That looks like a rendering bug and is
      actually a layout one, so check it early.
