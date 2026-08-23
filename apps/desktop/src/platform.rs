@@ -7,6 +7,8 @@
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 use std::sync::OnceLock;
 
@@ -89,7 +91,8 @@ fn parse_meminfo_total_bytes(meminfo: &str) -> Option<u64> {
 /// Windows: `GlobalMemoryStatusEx` reports installed physical memory in bytes.
 #[cfg(target_os = "windows")]
 fn query_total_physical_ram_bytes() -> Option<u64> {
-    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // Leading `::` because this module has a `windows` submodule of its own now.
+    use ::windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
     let mut status = MEMORYSTATUSEX {
         dwLength: u32::try_from(size_of::<MEMORYSTATUSEX>()).ok()?,

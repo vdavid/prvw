@@ -14,10 +14,11 @@ src/
 ├── commands.rs              AppCommand enum + global EventLoopProxy
 ├── input.rs                 Maps keys/QA keys → AppCommand
 ├── launch.rs                What the command line asks Prvw to open (waiting vs. empty window, a folder's images)
+├── logging.rs               `env_logger` setup, and where a console-less Windows launch writes instead
 ├── menu/                    Menu bar + context menu (muda) on macOS and Windows; `absent.rs` covers platforms with no menu bar
 ├── parity/                  Registries of settings, menu items, and commands + each platform's coverage (M0.5 layer 1)
 ├── pixels.rs                Logical/Physical coordinate newtypes
-├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers)
+├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach)
 ├── render.rs + render/      wgpu infrastructure (renderer, text, shaders)
 │
 │   Features:
@@ -101,6 +102,12 @@ See `platform/macos/CLAUDE.md` for the full list. Short version:
 - Release: `cd apps/desktop && cargo run --release -- <image_path>`
 - Verbose: `RUST_LOG=debug cargo run -- <image_path>`
 - Target a feature: `RUST_LOG=prvw::navigation::preloader=debug ...`
+
+**Where the logs come out on Windows.** `prvw.exe` is a GUI-subsystem binary (`windows_subsystem` in `main.rs`), so no
+console window opens behind it and the process starts with no stderr. `logging::init` takes the first of these that
+works: an stderr the parent already handed us (`cargo run`, a redirect, the E2E harness's pipe), the parent console
+(`AttachConsole`, which is what a bare `prvw.exe` in PowerShell gets), or `prvw.log` in the app data directory
+(`%APPDATA%\Prvw\`, or wherever `PRVW_DATA_DIR` points). Colors go on only for a real console.
 
 ## Tests
 

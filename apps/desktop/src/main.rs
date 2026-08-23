@@ -3,12 +3,17 @@
 //! Parses the CLI, sets up logging, creates the winit event loop, and hands off to
 //! `app::App` which owns all runtime state.
 
+// No console window behind the app on Windows. It costs us stderr, which `logging` gets back
+// through the parent console or a log file. Every other target ignores this attribute.
+#![windows_subsystem = "windows"]
+
 // Infrastructure
 mod app;
 mod commands;
 mod folder_watch;
 mod input;
 mod launch;
+mod logging;
 mod menu;
 // The registries answer for every platform at once, so whatever a given build's own UI doesn't
 // consume is unused there: Linux has no menu bar and no settings window, and Windows has no
@@ -65,40 +70,7 @@ struct Cli {
 }
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .filter_module("wgpu", log::LevelFilter::Warn)
-        .filter_module("wgpu_core", log::LevelFilter::Warn)
-        .filter_module("wgpu_hal", log::LevelFilter::Warn)
-        .filter_module("naga", log::LevelFilter::Warn)
-        .filter_module("muda", log::LevelFilter::Warn)
-        // rawler emits best-effort WARNs the user can't act on: "Decoder has no
-        // preview image support" (our quick-preview probes every RAW for one),
-        // lens-DB match misses, and TIFF-parse noise on exotic files. Show only
-        // errors. Our own `decoding::*` logs are a different target, unaffected.
-        .filter_module("rawler", log::LevelFilter::Error)
-        .format(|buf, record| {
-            use std::io::Write;
-            let now = chrono::Local::now();
-            let ts = now.format("%H:%M:%S%.3f");
-            let target = record
-                .target()
-                .strip_prefix("prvw::")
-                .unwrap_or(record.target());
-            let level = record.level();
-            let color = match level {
-                log::Level::Error => "\x1b[31m",
-                log::Level::Warn => "\x1b[33m",
-                log::Level::Info => "\x1b[32m",
-                log::Level::Debug => "\x1b[36m",
-                log::Level::Trace => "\x1b[35m",
-            };
-            writeln!(
-                buf,
-                "{ts} {color}{level:<5}\x1b[0m {target:<16} {}",
-                record.args()
-            )
-        })
-        .init();
+    logging::init();
 
     let version = env!("CARGO_PKG_VERSION");
     log::info!("Prvw {version} starting");

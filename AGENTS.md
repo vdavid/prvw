@@ -128,7 +128,9 @@ runs on a developer's Mac. The check finds it through `mise where zig` instead.
 
 ## Debugging
 
-- **Logging**: Use `RUST_LOG=debug` or target specific modules with `RUST_LOG=prvw::render::renderer=debug`.
+- **Logging**: Use `RUST_LOG=debug` or target specific modules with `RUST_LOG=prvw::render::renderer=debug`. On Windows
+  the app has no console of its own, so a launch from Explorer logs to `%APPDATA%\Prvw\prvw.log` instead;
+  `apps/desktop/CLAUDE.md` has the full order of preference.
 - **GPU issues**: `wgpu` logs adapter/device info at `info` level. Check `RUST_LOG=wgpu=info` for GPU backend details.
 
 ## Code intelligence
