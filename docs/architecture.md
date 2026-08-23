@@ -37,7 +37,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `file_associations/` | LaunchServices FFI + File associations settings panel                                                       |
 | `histogram/`         | 256-bin RGB histogram overlay (toggle via View → Histogram or `H` key) + `histogram::State`                 |
 | `navigation/`        | Directory scan + background preloader + LRU cache + `navigation::State`                                     |
-| `onboarding.rs`      | Onboarding window (first launch without a file)                                                             |
+| `onboarding/`        | Onboarding window (first launch without a file) + defaults-sentence generator + checkmark renderer          |
 | `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                         |
 | `settings/`          | JSON persistence + Settings window shell + General panel                                                    |
 | `slideshow/`         | Timer-driven auto-advance (⌘S) + crossfade + Slideshow settings panel + `slideshow::State`                  |
