@@ -94,6 +94,9 @@ The runner builds and runs on macOS, Linux, and Windows. Three things carry that
 - **`go run .`, not `go run *.go`.** The explicit file list breaks the moment a file carries a build tag, which several
   now do. Both `check.sh` and `check.ps1` use `go run .`.
 
+**Gotcha**: `EnsureGoTool` returns a path with no `.exe`. That is fine, because `os/exec` appends Windows extensions
+when it starts a command given a full path.
+
 ## The parity check
 
 `desktop-rust-parity-table` (nickname `parity`) regenerates `docs/parity.md` from the registries in
@@ -111,6 +114,3 @@ are load-bearing:
 
 The Rust checks all run workspace-wide (`cargo fmt --all`, `cargo clippy --workspace`, `cargo nextest run --workspace`),
 so the `xtask` crate is linted, formatted, cross-checked, and tested by the same runs as the app.
-
-**Gotcha**: `EnsureGoTool` returns a path with no `.exe`. That is fine, because `os/exec` appends Windows extensions
-when it starts a command given a full path.
