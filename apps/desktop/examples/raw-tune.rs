@@ -132,7 +132,12 @@ const SHARPEN_LUMA_B: f32 = 0.0722;
 
 const SHARPEN_DARK_EPSILON: f32 = 1.0e-4;
 
-const SRGB_PROFILE_PATH: &str = "/System/Library/ColorSync/Profiles/sRGB Profile.icc";
+/// sRGB as a `ColorProfile`, generated rather than read from the system, the
+/// same way `src/color/transform.rs::srgb_icc_bytes` does it. Keeps the
+/// example runnable on any platform.
+fn srgb_profile() -> ColorProfile {
+    ColorProfile::new_srgb()
+}
 
 const DEFAULT_ANCHORS: &[f32] = &[0.25, 0.30, 0.35, 0.40, 0.45, 0.50];
 const DEFAULT_AMOUNTS: &[f32] = &[0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65];
@@ -246,8 +251,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Prebuild the ICC transform once. Every combo and every input reuses it.
-    let srgb_bytes = std::fs::read(SRGB_PROFILE_PATH)?;
-    let target = ColorProfile::new_from_slice(&srgb_bytes)?;
+    let target = srgb_profile();
     let source = linear_rec2020_profile();
     let icc: Arc<dyn InPlaceTransformExecutor<f32> + Send + Sync> = source
         .create_in_place_transform_f32(

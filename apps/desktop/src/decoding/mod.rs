@@ -509,10 +509,7 @@ fn format_decoded_size(bytes: usize) -> String {
     }
 }
 
-// Gated to macOS because `color::srgb_icc_bytes` reads a macOS-only system
-// profile path. All tests in this block are `#[ignore]`'d anyway, but the gate
-// keeps Linux CI from panicking on test discovery.
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::color;

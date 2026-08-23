@@ -95,7 +95,12 @@ const REC2020_TO_XYZ_D65: [[f32; 3]; 3] = [
     [0.0000000, 0.0280727, 1.0609851],
 ];
 
-const SRGB_PROFILE_PATH: &str = "/System/Library/ColorSync/Profiles/sRGB Profile.icc";
+/// sRGB as a `ColorProfile`, generated rather than read from the system, the
+/// same way `src/color/transform.rs::srgb_icc_bytes` does it. Keeps the
+/// example runnable on any platform.
+fn srgb_profile() -> ColorProfile {
+    ColorProfile::new_srgb()
+}
 
 #[derive(Parser, Debug)]
 #[command(about = "Dump each RAW pipeline stage to labeled PNGs")]
@@ -1488,8 +1493,7 @@ fn cfa_preview(raw: &RawImage) -> Vec<u8> {
 }
 
 fn transform_f32_rec2020_to_srgb(rgb: &mut [f32]) {
-    let srgb_bytes = std::fs::read(SRGB_PROFILE_PATH).expect("system sRGB profile missing");
-    let target = ColorProfile::new_from_slice(&srgb_bytes).expect("couldn't parse sRGB profile");
+    let target = srgb_profile();
     let source = linear_rec2020_profile();
     let options = TransformOptions {
         rendering_intent: RenderingIntent::Perceptual,

@@ -2,22 +2,26 @@ use moxcms::{ColorProfile, InPlaceTransformExecutor, Layout, RenderingIntent, Tr
 use std::sync::OnceLock;
 use std::time::Instant;
 
-/// The macOS system sRGB ICC profile path. Always present on macOS.
-const SRGB_PROFILE_PATH: &str = "/System/Library/ColorSync/Profiles/sRGB Profile.icc";
-
-/// Returns the sRGB ICC profile bytes, loaded once from the macOS system profile.
-/// Panics if the system profile is missing (should never happen on macOS).
+/// Returns the sRGB ICC profile bytes, generated once by `moxcms` from the
+/// spec's primaries and transfer curve.
+///
+/// Generated rather than read from the operating system: every platform keeps
+/// its system sRGB profile somewhere different, and a Linux box often has none
+/// at all. `moxcms` can build the profile itself, so there's nothing to
+/// license, nothing to bundle, and nothing to keep in sync. Same argument as
+/// [`crate::color::profiles`]'s linear Rec.2020 factory.
 pub fn srgb_icc_bytes() -> &'static [u8] {
     static SRGB: OnceLock<Vec<u8>> = OnceLock::new();
     SRGB.get_or_init(|| {
-        std::fs::read(SRGB_PROFILE_PATH).unwrap_or_else(|e| {
-            panic!("Couldn't read system sRGB profile at {SRGB_PROFILE_PATH}: {e}")
-        })
+        ColorProfile::new_srgb()
+            .encode()
+            .expect("moxcms' sRGB profile always encodes cleanly")
     })
 }
 
 /// Transform RGBA8 pixels from a source ICC profile to a target ICC profile, in-place.
-/// Skips the transform if the profiles match (byte-equal).
+/// Skips the transform when the profiles are byte-equal, and again when the
+/// built transform turns out to be a no-op (see [`transform_is_negligible`]).
 /// Silently returns on malformed profiles (the image displays as-is).
 pub fn transform_icc(
     rgba: &mut [u8],
@@ -66,6 +70,11 @@ pub fn transform_icc(
                 return;
             }
         };
+
+    if transform_is_negligible(transform.as_ref()) {
+        log::debug!("Source and target ICC profiles describe the same colors, skipping transform");
+        return;
+    }
 
     let start = Instant::now();
     if let Err(e) = transform.transform(rgba) {
@@ -169,6 +178,68 @@ pub fn profiles_match(a: &[u8], b: &[u8]) -> bool {
     a == b
 }
 
+/// Largest per-channel 8-bit difference a transform may produce and still count
+/// as a no-op. One step out of 255 is below what any display resolves, and it's
+/// the size of the rounding noise two encodings of the same color space produce
+/// against each other.
+const NEGLIGIBLE_DELTA: u8 = 1;
+
+/// Steps per channel in [`probe_lattice`]. 18 values spanning 0..=255 land on
+/// both endpoints, so every primary, every secondary, and the whole neutral
+/// axis is in the probe.
+const PROBE_STEPS: u16 = 18;
+
+/// An RGBA8 lattice covering the cube, used to ask a built transform whether it
+/// actually moves any pixels. Built once; callers copy it into a scratch buffer.
+fn probe_lattice() -> &'static [u8] {
+    static LATTICE: OnceLock<Vec<u8>> = OnceLock::new();
+    LATTICE.get_or_init(|| {
+        let step = 255 / (PROBE_STEPS - 1);
+        let levels: Vec<u8> = (0..PROBE_STEPS)
+            .map(|i| (i * step).min(255) as u8)
+            .collect();
+        let mut out = Vec::with_capacity(levels.len().pow(3) * 4);
+        for &r in &levels {
+            for &g in &levels {
+                for &b in &levels {
+                    out.extend_from_slice(&[r, g, b, 255]);
+                }
+            }
+        }
+        out
+    })
+}
+
+/// True if the transform can't move any probe channel by more than
+/// [`NEGLIGIBLE_DELTA`], meaning running it over the real image would burn time
+/// to change nothing a viewer could see.
+///
+/// [`profiles_match`] alone isn't enough, because two encodings of the same
+/// color space aren't byte-equal. macOS tags exports with a 3,144-byte sRGB
+/// profile whose transfer curve is a 1,024-entry table; [`srgb_icc_bytes`]
+/// generates a 612-byte one with the parametric curve. Both describe sRGB, and
+/// converting between them moves a channel by at most 1 while costing ~42 ms on
+/// a 24 MP image.
+///
+/// Probing the built transform beats comparing parsed colorants and curves: it
+/// answers the question that actually matters, it needs no tolerance tuning per
+/// field, and it works for LUT-based profiles where no field-by-field
+/// comparison would. It costs ~11 µs, against a transform that already had to
+/// be built. Genuinely different profiles aren't close to the threshold: system
+/// sRGB to Display P3 moves a probe channel by 116.
+fn transform_is_negligible(transform: &(dyn InPlaceTransformExecutor<u8> + Send + Sync)) -> bool {
+    let reference = probe_lattice();
+    let mut probe = reference.to_vec();
+    if transform.transform(&mut probe).is_err() {
+        // Let the real call report the failure with the pixel count in hand.
+        return false;
+    }
+    reference
+        .iter()
+        .zip(probe.iter())
+        .all(|(a, b)| a.abs_diff(*b) <= NEGLIGIBLE_DELTA)
+}
+
 /// Extract a human-readable description from an ICC profile, for logging.
 fn profile_description(profile: &ColorProfile) -> String {
     use moxcms::ProfileText;
@@ -187,11 +258,7 @@ fn profile_description(profile: &ColorProfile) -> String {
     desc.unwrap_or("unknown").to_string()
 }
 
-// Gated for macOS because `srgb_icc_bytes()` reads the system profile at
-// `/System/Library/ColorSync/Profiles/sRGB Profile.icc`, which only exists on macOS.
-// These assertions are about moxcms correctness, not platform behavior — running
-// them on one platform is enough.
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -304,6 +371,101 @@ mod tests {
     #[test]
     fn profiles_match_different() {
         assert!(!profiles_match(ADOBE_RGB_ICC, srgb_icc()));
+    }
+
+    /// The startup path (`color::State::from_settings`) calls this on every
+    /// platform, so it has to produce bytes without touching the filesystem.
+    #[test]
+    fn srgb_bytes_are_a_parseable_icc_profile() {
+        let bytes = srgb_icc();
+        assert!(bytes.len() > 128, "ICC blob suspiciously small");
+        assert_eq!(
+            u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize,
+            bytes.len(),
+            "ICC header size doesn't match blob length"
+        );
+        let parsed = ColorProfile::new_from_slice(bytes).expect("should parse back");
+        assert_eq!(parsed.color_space, moxcms::DataColorSpace::Rgb);
+    }
+
+    /// An sRGB profile shaped the way operating systems ship it: same
+    /// colorimetry, but the transfer curve as a 1,024-entry table instead of
+    /// the parametric form. This is what macOS tags exports with, so it's the
+    /// profile most likely to arrive as a source alongside our generated one
+    /// as the target.
+    fn table_trc_srgb_icc() -> Vec<u8> {
+        let mut profile = ColorProfile::new_srgb();
+        let lut: Vec<u16> = (0..1024)
+            .map(|i| {
+                let linear = i as f32 / 1023.0;
+                let encoded = if linear <= 0.003_130_8 {
+                    linear * 12.92
+                } else {
+                    1.055 * linear.powf(1.0 / 2.4) - 0.055
+                };
+                (encoded * 65535.0).round() as u16
+            })
+            .collect();
+        let curve = moxcms::ToneReprCurve::Lut(lut);
+        profile.red_trc = Some(curve.clone());
+        profile.green_trc = Some(curve.clone());
+        profile.blue_trc = Some(curve);
+        profile.encode().expect("table-TRC sRGB encodes cleanly")
+    }
+
+    /// Two encodings of sRGB aren't byte-equal, so `profiles_match` lets them
+    /// through. The transform they build has to be recognised as a no-op, or
+    /// every system-tagged image pays a full pass for nothing.
+    #[test]
+    fn equivalent_srgb_encodings_skip_the_transform() {
+        let table_srgb = table_trc_srgb_icc();
+        assert!(
+            !profiles_match(&table_srgb, srgb_icc()),
+            "the two encodings differ byte-wise; that's the case under test"
+        );
+
+        let mut pixels = [200, 100, 50, 255, 12, 200, 240, 128];
+        let original = pixels;
+        transform_icc(&mut pixels, &table_srgb, srgb_icc(), false);
+        assert_eq!(
+            pixels, original,
+            "an sRGB-to-sRGB transform must leave the buffer untouched"
+        );
+    }
+
+    /// The negligible check must not swallow a real conversion.
+    #[test]
+    fn different_color_spaces_still_transform() {
+        let mut pixel = [146, 0, 0, 255];
+        transform_icc(&mut pixel, ADOBE_RGB_ICC, srgb_icc(), false);
+        assert_ne!(
+            pixel,
+            [146, 0, 0, 255],
+            "Adobe RGB to sRGB is a real conversion and must run"
+        );
+    }
+
+    #[test]
+    fn probe_lattice_covers_the_cube_corners() {
+        let lattice = probe_lattice();
+        assert_eq!(lattice.len(), (PROBE_STEPS as usize).pow(3) * 4);
+        let has = |rgb: [u8; 3]| {
+            lattice
+                .chunks_exact(4)
+                .any(|p| p[0] == rgb[0] && p[1] == rgb[1] && p[2] == rgb[2])
+        };
+        for corner in [
+            [0, 0, 0],
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [255, 255, 0],
+            [255, 0, 255],
+            [0, 255, 255],
+            [255, 255, 255],
+        ] {
+            assert!(has(corner), "lattice is missing corner {corner:?}");
+        }
     }
 
     #[test]

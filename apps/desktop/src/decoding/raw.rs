@@ -111,7 +111,7 @@ use rawler::rawsource::RawSource;
 use rawler::tags::DngTag;
 use rayon::prelude::*;
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 use super::PixelBuffer;
 use super::dng_opcodes::{
     Opcode, OpcodeId, apply_fix_bad_pixels_constant, apply_fix_bad_pixels_list, apply_gain_map_cfa,
@@ -1479,10 +1479,7 @@ fn skip_unknown_opcode(label: &str, opcode: &Opcode, path: &Path) {
     }
 }
 
-// Gated to macOS because these tests go through `color::srgb_icc_bytes`, which
-// loads the system sRGB profile from `/System/Library/ColorSync/Profiles/` and
-// panics on other platforms. The RAW decoder itself is cross-platform.
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1512,9 +1509,6 @@ mod tests {
         }
     }
 
-    // Gated to macOS because `color::srgb_icc_bytes` reads a macOS-only
-    // system profile path. Linux CI can't run these.
-    #[cfg(target_os = "macos")]
     #[test]
     fn malformed_bytes_return_error() {
         let bytes = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03];
@@ -1529,7 +1523,6 @@ mod tests {
         assert!(result.is_err(), "expected error for malformed bytes");
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn cancellation_short_circuits() {
         let flag = AtomicBool::new(true);

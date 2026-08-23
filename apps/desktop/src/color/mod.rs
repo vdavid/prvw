@@ -46,3 +46,22 @@ impl State {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `App::new` builds this on every platform, and it used to reach for a
+    /// macOS-only system file to do it, so the app died at startup elsewhere.
+    /// The target profile now comes from `moxcms`, so this touches no disk.
+    #[test]
+    fn state_builds_without_reading_the_filesystem() {
+        let state = State::from_settings(&Settings::default());
+        assert!(
+            !state.display_icc.is_empty(),
+            "the default target profile must have bytes"
+        );
+        moxcms::ColorProfile::new_from_slice(&state.display_icc)
+            .expect("the default target profile must parse");
+    }
+}
