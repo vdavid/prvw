@@ -212,7 +212,7 @@ pub struct AppMenu {
     /// Right-click context menu, shown via `show_image_context_menu`. Kept alive for the same
     /// reason as `_menu`: dropping it frees its MenuChild backing. Its items dispatch through
     /// the same id table as the menu bar.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
     context_menu: Menu,
     /// Menu delegates that strip AppKit's auto-injected items. AppKit holds delegates
     /// weakly, so these must live for the app's lifetime.
@@ -464,6 +464,27 @@ impl AppMenu {
         unsafe {
             self.context_menu
                 .show_context_menu_for_nsview(ns_view, None);
+        }
+    }
+
+    /// Pop up the right-click context menu at the cursor, over the given window.
+    ///
+    /// `TrackPopupMenu` behind this runs a message loop of its own, which the "never open a
+    /// nested loop" rule allows because it isn't ours: a popup menu is system-owned, exactly
+    /// like the bar's own drop-downs, and winit's pump resumes when the menu closes. The chosen
+    /// item arrives as a `MenuEvent` on the next `about_to_wait`, the same route a menu-bar
+    /// click takes.
+    ///
+    /// # Safety
+    ///
+    /// `hwnd` must be a live window handle.
+    #[cfg(target_os = "windows")]
+    pub unsafe fn show_image_context_menu(&self, hwnd: isize) {
+        use muda::ContextMenu;
+        // SAFETY: the caller guarantees a live `HWND`. A `None` position tells muda to use the
+        // current cursor location.
+        unsafe {
+            self.context_menu.show_context_menu_for_hwnd(hwnd, None);
         }
     }
 }
@@ -803,10 +824,10 @@ mod tests {
         }
     }
 
-    /// What each platform drops, and why. Windows' list is what M1 leaves behind: the
-    /// clipboard, the print sheet, the settings window, the about box, and browse mode, each
-    /// suppressed because `parity::command_keys` says `Missing`, so building the feature is
-    /// what brings the item back rather than an edit to this file.
+    /// What each platform drops, and why. Windows' list is what M1 leaves behind: the print
+    /// sheet, the settings window, the about box, and browse mode, each suppressed because
+    /// `parity::command_keys` says `Missing`, so building the feature is what brings the item
+    /// back rather than an edit to this file.
     #[test]
     fn platforms_without_the_feature_dont_offer_the_item() {
         assert_eq!(
@@ -819,9 +840,7 @@ mod tests {
                 "ShowAll",
                 "Print",
                 "CloseWindow",
-                "Copy",
                 "BrowseToggle",
-                "ContextCopy",
                 "ContextPrint",
             ]
         );

@@ -11,6 +11,7 @@ src/
 │
 │   Infrastructure:
 ├── app.rs + app/            App struct, ApplicationHandler, command dispatcher, shared-state snapshot
+├── clipboard.rs             The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`), pure and testable anywhere
 ├── commands.rs              AppCommand enum + global EventLoopProxy
 ├── input.rs                 Maps keys/QA keys → AppCommand
 ├── launch.rs                What the command line asks Prvw to open (waiting vs. empty window, a folder's images)
@@ -19,7 +20,7 @@ src/
 ├── parity/                  Registries of settings, menu items, and commands + each platform's coverage (M0.5 layer 1)
 ├── paths.rs                 What "the same path" means, per platform (verbatim prefixes, case, display)
 ├── pixels.rs                Logical/Physical coordinate newtypes
-├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach and message hook)
+├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers, the two clipboards, the Windows console attach and message hook)
 ├── render.rs + render/      wgpu infrastructure (renderer, text, shaders)
 ├── scroll.rs                What a wheel notch or a trackpad swipe means, per platform (zoom modifier, steps, images)
 │

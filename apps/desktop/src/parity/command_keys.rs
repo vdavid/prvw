@@ -193,8 +193,9 @@ impl CommandKey {
     }
 
     /// Windows runs the whole platform-neutral half of `execute_command` already. What's
-    /// missing is what the arms gate behind `#[cfg(target_os = "macos")]`: the clipboard, the
-    /// print sheet, and the three AppKit windows.
+    /// missing is what the arms gate behind `#[cfg(target_os = "macos")]`: the print sheet and
+    /// the three AppKit windows. The clipboard is Windows' own now
+    /// (`platform::windows::clipboard`).
     const fn windows_coverage(self) -> Coverage {
         match self {
             CommandKey::TitleBar => Coverage::NotApplicable {
@@ -231,19 +232,23 @@ impl CommandKey {
             | CommandKey::SlideshowSpeed
             | CommandKey::RawPipelineFlags
             | CommandKey::CustomDcpDir
+            | CommandKey::CopyImage
             | CommandKey::Exit => Coverage::Present,
             CommandKey::BrowseMode
             | CommandKey::BrowseFocus
             | CommandKey::BrowseOpenSelected
-            | CommandKey::CopyImage
             | CommandKey::Print
             | CommandKey::About
             | CommandKey::Settings => Coverage::Missing,
         }
     }
 
-    /// Linux matches Windows: the platform-neutral arms all run, and everything behind the
-    /// AppKit gates is absent. Most of it is unreachable there anyway for want of a menu bar.
+    /// Linux keeps the platform-neutral arms and has nothing else: the AppKit gates are absent,
+    /// and so is the clipboard, which is a decision rather than an oversight. Copy can't be
+    /// invoked there at all (no menu bar, and `input::key_to_command` binds no copy key), and
+    /// owning an X11 or Wayland selection is a Linux spec's problem to solve rather than a
+    /// `#[cfg]` arm's — see `crate::clipboard`. Most of the rest is unreachable there anyway
+    /// for want of a menu bar.
     const fn linux_coverage(self) -> Coverage {
         match self {
             CommandKey::TitleBar => Coverage::NotApplicable {
@@ -306,8 +311,8 @@ mod tests {
         }
     }
 
-    /// The four macOS-only windows and the clipboard are the whole Windows gap in
-    /// `execute_command` today. If that list shrinks, this test is where it gets noticed.
+    /// The AppKit windows and browse mode are the whole Windows gap in `execute_command`
+    /// today. If that list shrinks, this test is where it gets noticed.
     #[test]
     fn windows_gap_is_the_appkit_arms() {
         let missing: Vec<&str> = CommandKey::ALL
@@ -321,7 +326,6 @@ mod tests {
                 "BrowseMode",
                 "BrowseFocus",
                 "BrowseOpenSelected",
-                "CopyImage",
                 "Print",
                 "About",
                 "Settings",

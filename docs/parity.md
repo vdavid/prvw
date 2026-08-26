@@ -12,14 +12,14 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 ## Summary
 
 - macOS: 116 of 116 done, 0 not applicable, 0 missing
-- Windows: 57 of 116 done, 6 not applicable, 53 missing
+- Windows: 60 of 116 done, 6 not applicable, 50 missing
 - Linux: 31 of 116 done, 5 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
 - Settings (40 entries): macOS 40 / 0 / 0, Windows 0 / 1 / 39, Linux 0 / 1 / 39
-- Menu items (37 entries): macOS 37 / 0 / 0, Windows 26 / 4 / 7, Linux 0 / 3 / 34
-- Commands (39 entries): macOS 39 / 0 / 0, Windows 31 / 1 / 7, Linux 31 / 1 / 7
+- Menu items (37 entries): macOS 37 / 0 / 0, Windows 28 / 4 / 5, Linux 0 / 3 / 34
+- Commands (39 entries): macOS 39 / 0 / 0, Windows 32 / 1 / 6, Linux 31 / 1 / 7
 
 ## What each platform still owes
 
@@ -29,7 +29,7 @@ Nothing missing.
 
 ### Windows
 
-53 missing:
+50 missing:
 
 - Setting, General: `AutoUpdate`, `ScrollToZoom`, `PreloadNeighbors`
 - Setting, Zoom: `AutoFitWindow`, `EnlargeSmallImages`
@@ -40,11 +40,10 @@ Nothing missing.
 - Setting, Menu only: `HistogramVisible`, `ExifVisible`, `LoopNavigation`, `SortBy`
 - Menu item, Prvw: `About`, `Settings`
 - Menu item, File: `Print`
-- Menu item, Edit: `Copy`
 - Menu item, Navigate: `BrowseToggle`
-- Menu item, Context menu: `ContextCopy`, `ContextPrint`
+- Menu item, Context menu: `ContextPrint`
 - Command, Browse mode: `BrowseMode`, `BrowseFocus`, `BrowseOpenSelected`
-- Command, App: `CopyImage`, `Print`, `About`, `Settings`
+- Command, App: `Print`, `About`, `Settings`
 
 ### Linux
 
@@ -142,7 +141,7 @@ Nothing missing.
 - `Open` "Open…" (menu item, File menu): macOS done, Windows done, Linux missing
 - `Print` "Print…" (menu item, File menu): macOS done, Windows missing, Linux missing
 - `CloseWindow` "Close window" (menu item, File menu): macOS done, Windows not applicable, Linux missing
-- `Copy` "Copy image" (menu item, Edit menu): macOS done, Windows missing, Linux missing
+- `Copy` "Copy image" (menu item, Edit menu): macOS done, Windows done, Linux missing
 - `ZoomIn` "Zoom in" (menu item, View menu): macOS done, Windows done, Linux missing
 - `ZoomOut` "Zoom out" (menu item, View menu): macOS done, Windows done, Linux missing
 - `ActualSize` "Actual size" (menu item, View menu): macOS done, Windows done, Linux missing
@@ -168,7 +167,7 @@ Nothing missing.
 - `SlideshowToggle` "Start slideshow" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
 - `SlideshowIncreaseSpeed` "Increase speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
 - `SlideshowDecreaseSpeed` "Decrease speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
-- `ContextCopy` "Copy image" (menu item, Context menu): macOS done, Windows missing, Linux missing
+- `ContextCopy` "Copy image" (menu item, Context menu): macOS done, Windows done, Linux missing
 - `ContextPrint` "Print…" (menu item, Context menu): macOS done, Windows missing, Linux missing
 
 ### Commands
@@ -207,7 +206,7 @@ Nothing missing.
 - `SlideshowSpeed` "Increase / decrease speed" (command, Slideshow): macOS done, Windows done, Linux done
 - `RawPipelineFlags` "RAW pipeline stages" (command, RAW): macOS done, Windows done, Linux done
 - `CustomDcpDir` "Custom DCP directory" (command, RAW): macOS done, Windows done, Linux done
-- `CopyImage` "Copy image" (command, App): macOS done, Windows missing, Linux missing
+- `CopyImage` "Copy image" (command, App): macOS done, Windows done, Linux missing
 - `Print` "Print" (command, App): macOS done, Windows missing, Linux missing
 - `About` "About Prvw" (command, App): macOS done, Windows missing, Linux missing
 - `Settings` "Settings window" (command, App): macOS done, Windows missing, Linux missing

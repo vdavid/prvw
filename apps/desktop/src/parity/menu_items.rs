@@ -260,17 +260,17 @@ impl MenuItemKey {
             | MenuItemKey::LoopNavigation
             | MenuItemKey::SlideshowToggle
             | MenuItemKey::SlideshowIncreaseSpeed
-            | MenuItemKey::SlideshowDecreaseSpeed => Coverage::Present,
-            // Each of these waits on its own action: the clipboard and the print sheet (M1
-            // step 12), the settings window (M4), the about box (M6), and browse mode (M5).
-            // The context menu waits on the same two as Copy and Print, and on a right-click
-            // route of its own.
+            | MenuItemKey::SlideshowDecreaseSpeed
+            | MenuItemKey::Copy
+            | MenuItemKey::ContextCopy => Coverage::Present,
+            // Each of these waits on its own action: the print sheet (M3), the settings window
+            // (M4), the about box (M6), and browse mode (M5). Copy's two items are no longer
+            // among them: the clipboard is built (M1 step 12), and a right-click over the
+            // image pops the same context menu macOS shows.
             MenuItemKey::About
             | MenuItemKey::Settings
             | MenuItemKey::Print
-            | MenuItemKey::Copy
             | MenuItemKey::BrowseToggle
-            | MenuItemKey::ContextCopy
             | MenuItemKey::ContextPrint => Coverage::Missing,
         }
     }

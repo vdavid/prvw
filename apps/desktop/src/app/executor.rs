@@ -515,7 +515,16 @@ impl App {
                         if crate::platform::macos::clipboard::copy_image_file(&path) {
                             log::info!("Copied image to clipboard: {}", path.display());
                         }
-                        #[cfg(not(target_os = "macos"))]
+                        // Windows re-decodes the file to sRGB, which is slow enough for a RAW
+                        // to freeze the window, so the whole copy runs on a worker and logs
+                        // its own outcome.
+                        #[cfg(target_os = "windows")]
+                        crate::platform::windows::clipboard::copy_image_file(
+                            &path,
+                            self.raw_flags,
+                            self.color.relative_col,
+                        );
+                        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
                         {
                             let _ = path;
                             log::debug!("Copy image is not supported on this platform");

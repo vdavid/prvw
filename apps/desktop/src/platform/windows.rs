@@ -1,6 +1,7 @@
 //! Windows-specific glue. Mirrors `platform::macos`: submodules live in the `windows/` directory
 //! beside this file, and the small queries that don't warrant one stay here.
 
+pub mod clipboard;
 pub mod msg_hook;
 /// Debug-only window photograph, served by the QA server's `screenshot_window` tool.
 #[cfg(debug_assertions)]

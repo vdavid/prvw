@@ -9,6 +9,11 @@
 
 // Infrastructure
 mod app;
+// Windows' clipboard formats are byte layouts, so they're written and tested here rather than
+// behind a `#[cfg]` (`clipboard.rs` says why). macOS builds `NSPasteboard` objects instead and
+// Linux has no clipboard yet, so on those two the module is only its own tests' subject.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod clipboard;
 mod commands;
 mod folder_watch;
 mod input;

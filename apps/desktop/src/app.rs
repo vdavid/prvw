@@ -3182,10 +3182,14 @@ impl App {
         Some(handle.hwnd.get() as u64)
     }
 
-    /// Pop up the right-click context menu (currently just "Copy image") at the cursor.
-    /// No-op when no image is open. The selected item posts a `MenuEvent` picked up by
-    /// `handle_menu_event` on the next `about_to_wait`, same path as the menu bar.
-    #[cfg(target_os = "macos")]
+    /// Pop up the right-click context menu at the cursor. No-op when no image is open. The
+    /// selected item posts a `MenuEvent` picked up by `handle_menu_event` on the next
+    /// `about_to_wait`, same path as the menu bar.
+    ///
+    /// Both platforms with a menu bar have it; what the menu holds is the registry's answer
+    /// (`parity::menu_items`), which today is Copy on Windows and Copy plus Print on macOS.
+    /// Linux has no menu of any kind, so a right-click there does nothing.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn show_image_context_menu(&self) {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -3198,12 +3202,26 @@ impl App {
         let Some(win) = &self.window else {
             return;
         };
-        let Ok(RawWindowHandle::AppKit(handle)) = win.window_handle().map(|h| h.as_raw()) else {
+        let Ok(raw) = win.window_handle().map(|h| h.as_raw()) else {
             return;
         };
-        let ns_view = handle.ns_view.as_ptr() as *const std::ffi::c_void;
-        // SAFETY: winit gives us a valid `NSView*` for the main window.
-        unsafe { app_menu.show_image_context_menu(ns_view) };
+        #[cfg(target_os = "macos")]
+        {
+            let RawWindowHandle::AppKit(handle) = raw else {
+                return;
+            };
+            let ns_view = handle.ns_view.as_ptr() as *const std::ffi::c_void;
+            // SAFETY: winit gives us a valid `NSView*` for the main window.
+            unsafe { app_menu.show_image_context_menu(ns_view) };
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let RawWindowHandle::Win32(handle) = raw else {
+                return;
+            };
+            // SAFETY: winit gives us a valid `HWND` for the main window.
+            unsafe { app_menu.show_image_context_menu(handle.hwnd.get()) };
+        }
     }
 
     fn show_settings_dialog(&self) {
@@ -3613,7 +3631,7 @@ impl ApplicationHandler<AppCommand> for App {
                 button: MouseButton::Right,
                 ..
             } => {
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 self.show_image_context_menu();
             }
 
