@@ -10,5 +10,9 @@
 mod http;
 mod mcp;
 pub mod server;
+/// The debug-only `screenshot_window` tool. macOS and Windows have a way to photograph a
+/// window; nothing on Linux does yet, so the tool isn't registered there.
+#[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
+mod window_capture;
 
 pub use server::start;

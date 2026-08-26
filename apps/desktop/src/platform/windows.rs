@@ -2,6 +2,9 @@
 //! beside this file, and the small queries that don't warrant one stay here.
 
 pub mod msg_hook;
+/// Debug-only window photograph, served by the QA server's `screenshot_window` tool.
+#[cfg(debug_assertions)]
+pub mod window_capture;
 
 use windows::Win32::Foundation::{GENERIC_WRITE, HANDLE};
 use windows::Win32::Storage::FileSystem::{

@@ -146,9 +146,10 @@ impl AppCommand {
             | AppCommand::BrowseThumbnailsAvailable
             | AppCommand::BrowseGridSelected(_)
             | AppCommand::BrowseQaSelectGrid(_) => Internal,
+            #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
+            AppCommand::GetNativeWindowId(_) => Internal,
             #[cfg(all(debug_assertions, target_os = "macos"))]
-            AppCommand::GetWindowNumber(_)
-            | AppCommand::WindowDiagnostics(_)
+            AppCommand::WindowDiagnostics(_)
             | AppCommand::ZoomWindow
             | AppCommand::ClickZoomButton => Internal,
         }
@@ -432,11 +433,12 @@ pub enum AppCommand {
     SendKey(String),
     /// Capture a screenshot. The sender receives PNG bytes.
     TakeScreenshot(mpsc::Sender<Vec<u8>>),
-    /// Get the NSWindow `windowNumber` of the main viewer window, for the debug-only
-    /// `screenshot_window` MCP tool that shells out to `screencapture -l`. Sender
-    /// receives 0 if the window doesn't exist yet.
-    #[cfg(all(debug_assertions, target_os = "macos"))]
-    GetWindowNumber(mpsc::Sender<u32>),
+    /// Get the operating system's own handle for the main viewer window, for the debug-only
+    /// `screenshot_window` MCP tool: the `NSWindow.windowNumber` on macOS, the `HWND` on
+    /// Windows. One command rather than two, so the QA layer above it has one shape to talk to.
+    /// Sender receives 0 if the window doesn't exist yet.
+    #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
+    GetNativeWindowId(mpsc::Sender<u64>),
     /// Dump the main window's AppKit view/layer tree (debug-only `GET /window-diagnostics`).
     /// Runs on the event loop because it talks to AppKit.
     #[cfg(all(debug_assertions, target_os = "macos"))]

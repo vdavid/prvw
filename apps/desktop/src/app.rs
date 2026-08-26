@@ -3163,13 +3163,12 @@ impl App {
         self.apply_edr_surface_state();
     }
 
-    /// Return the AppKit `NSWindow.windowNumber` of the main viewer window.
-    /// Used by the debug-only `screenshot_window` MCP tool, which shells out to
-    /// `/usr/sbin/screencapture -l <number>` to capture the window as the user sees
-    /// it (overlays, vibrancy, title bar, the lot). Returns `None` if the window
-    /// hasn't been created yet or the number is non-positive.
+    /// The operating system's own handle for the main viewer window: the AppKit
+    /// `NSWindow.windowNumber`. Used by the debug-only `screenshot_window` MCP tool, which
+    /// photographs the window as a person sees it (overlays, vibrancy, title bar, the lot).
+    /// `None` while the window doesn't exist yet or the number is non-positive.
     #[cfg(all(debug_assertions, target_os = "macos"))]
-    pub(crate) fn main_window_number(&self) -> Option<u32> {
+    pub(crate) fn native_window_id(&self) -> Option<u64> {
         use objc2::msg_send;
         use objc2_app_kit::NSWindow;
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -3191,8 +3190,21 @@ impl App {
         if number <= 0 {
             None
         } else {
-            Some(number as u32)
+            Some(number as u64)
         }
+    }
+
+    /// The `HWND` of the main viewer window, as a `u64`. The Windows half of
+    /// [`Self::native_window_id`]; `None` while the window doesn't exist yet.
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    pub(crate) fn native_window_id(&self) -> Option<u64> {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        let win = self.window.as_ref()?;
+        let RawWindowHandle::Win32(handle) = win.window_handle().ok()?.as_raw() else {
+            return None;
+        };
+        Some(handle.hwnd.get() as u64)
     }
 
     /// Pop up the right-click context menu (currently just "Copy image") at the cursor.

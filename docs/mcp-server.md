@@ -49,10 +49,12 @@ both a text confirmation and a `state` field with the current app state as JSON.
 - **key**: Simulate a key press. Params: `key` (web convention name).
 - **screenshot**: Capture current view as base64 PNG. Renders through the offscreen wgpu path, so the result has no
   overlays, no title-bar strip, and no vibrancy.
-- **screenshot_window** (debug builds only): Capture the entire native window as the user sees it, including histogram
-  and EXIF overlays, title bar, vibrancy, and any modal panels. Shells out to
-  `/usr/sbin/screencapture -l <windowNumber>`. Requires macOS Screen Recording permission — the system prompts on first
-  use, and the first call may return a black frame until you grant it. Not registered in release builds.
+- **screenshot_window** (debug builds only, macOS and Windows): Capture the entire native window as a person sees it,
+  including histogram and EXIF overlays, title bar, window chrome, and any modal panels. Same base64 PNG contract on
+  both platforms, so nothing above it branches. macOS shells out to `/usr/sbin/screencapture -l <windowNumber>` and
+  needs Screen Recording permission: the system prompts on first use, and the first call may come back black until you
+  grant it. Windows asks the window to draw itself with `PrintWindow`, which needs no permission and works on a window
+  that's unfocused or occluded. Not registered in release builds, and not on Linux, which has no capture path yet.
 
 ## Resources
 

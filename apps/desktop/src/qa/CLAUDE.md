@@ -27,10 +27,20 @@ An in-process HTTP server for automated QA: used by E2E tests, agent-driven work
   modules can reach them.
 - **Screenshots via offscreen render target.** A separate wgpu render target + buffer readback + PNG encoding. Stripped
   path (no pills, no title bar viewport). Pixel tests of the live window's appearance need a different approach.
-- **`screenshot_window` (debug builds only).** Sibling MCP tool that shells out to
-  `/usr/sbin/screencapture -l <windowNumber>` to capture the full native window — overlays, title bar, vibrancy, modal
-  panels. Compile-time gated by `#[cfg(all(debug_assertions, target_os = "macos"))]` so release binaries neither
-  register the tool nor link the dispatch arm. Requires Screen Recording permission; macOS prompts on first invocation.
+- **`screenshot_window` (debug builds only).** Sibling MCP tool that photographs the whole native window: overlays,
+  title bar, window chrome, modal panels. `qa/window_capture.rs` owns it, gated by
+  `#[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]` so release binaries neither register
+  the tool nor link the dispatch arm. macOS shells out to `/usr/sbin/screencapture -l <windowNumber>` and needs Screen
+  Recording permission (macOS prompts on first invocation); Windows calls `PrintWindow` through
+  `platform::windows::window_capture` and needs no permission. Both hand back PNG bytes, and `mcp_image_content` in
+  `mcp.rs` is the single place the base64 contract is built, shared with `screenshot`.
+
+**Which of the two a QA task wants.** `screenshot` is portable and exact about the image, and shows nothing else, so it
+answers "did the right pixels get decoded and transformed?". `screenshot_window` is the only one that can answer "does
+it look right?", because everything a person reads off the screen (the zoom pill, the EXIF panel, the histogram, the
+title strip, the frame around it) lives outside the offscreen render target. A wgpu surface readback would land between
+the two: it would pick up the overlays but still miss the chrome the window manager draws, so it isn't a replacement for
+either.
 
 ## The E2E suite this server exists for
 

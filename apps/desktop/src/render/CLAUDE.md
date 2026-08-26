@@ -89,7 +89,8 @@ with the same faces, or a layout pass disagrees with what gets drawn.
   though `bind_group` was replaced.
 - **Screenshot path differs from main render.** `capture_screenshot` strips the viewport offset, pills, and text. Pixel
   tests of the live window's appearance need a different approach. For QA work that needs the full window (overlays,
-  title bar, vibrancy), use the debug-only `screenshot_window` MCP tool, which shells out to `screencapture -l`.
+  title bar, window chrome), use the debug-only `screenshot_window` MCP tool in `qa/window_capture.rs`, which
+  photographs the real window on macOS and Windows.
 - **Surface format is `Bgra8UnormSrgb` on macOS in the SDR path.** Screenshot readback swizzles BGRA → RGBA before PNG
   encoding. Phase 5.1: when the current image is an HDR RAW and the display reports EDR headroom, the surface flips to
   `Rgba16Float` and the CAMetalLayer EDR properties go on. Screenshots still render through an SDR offscreen target

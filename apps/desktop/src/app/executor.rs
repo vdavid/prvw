@@ -698,10 +698,9 @@ impl App {
                 };
                 let _ = sender.send(png_bytes);
             }
-            #[cfg(all(debug_assertions, target_os = "macos"))]
-            AppCommand::GetWindowNumber(sender) => {
-                let number = self.main_window_number().unwrap_or(0);
-                let _ = sender.send(number);
+            #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
+            AppCommand::GetNativeWindowId(sender) => {
+                let _ = sender.send(self.native_window_id().unwrap_or(0));
             }
             #[cfg(all(debug_assertions, target_os = "macos"))]
             AppCommand::WindowDiagnostics(sender) => {

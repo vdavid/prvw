@@ -13,7 +13,8 @@
 //!   `missing` elsewhere.
 //! - **The fullscreen round trip** is about AppKit's `toggleFullScreen:` and `winit`'s stale
 //!   cache. Plain fullscreen behaviour is shared; this specific failure mode isn't.
-//! - **`screenshot_window`** shells out to `/usr/sbin/screencapture`.
+//! - **`screenshot_window`** exists on Windows too, but only the macOS path needs a granted
+//!   Screen Recording permission, which is what keeps this test `#[ignore]`d.
 //!
 //! When Windows grows any of these, its own driver file is the place for the equivalent, and the
 //! parts that turn out to be genuinely the same move to the shared suite.

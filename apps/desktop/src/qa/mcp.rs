@@ -331,13 +331,19 @@ fn mcp_tools_list() -> Result<Value, Value> {
         }
     ]);
 
-    // Debug-only: full-window screenshot via `/usr/sbin/screencapture`. Compile-time
-    // gated so release builds neither expose the tool nor link the dispatch arm.
-    #[cfg(all(debug_assertions, target_os = "macos"))]
+    // Debug-only: the whole native window, however this platform photographs one. Compile-time
+    // gated so release builds neither expose the tool nor link the dispatch arm, and absent on
+    // Linux, which has no capture path yet.
+    #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
     if let Some(arr) = tools.as_array_mut() {
+        let caveat = if cfg!(target_os = "macos") {
+            "Requires Screen Recording permission: macOS prompts on first use, and the first call may come back black until it's granted."
+        } else {
+            "Works on a window that's unfocused or behind other windows, which is how the E2E harness leaves it."
+        };
         arr.push(json!({
             "name": "screenshot_window",
-            "description": "Debug builds only. Capture the entire native window as the user sees it (overlays, title bar, vibrancy, modal panels). Requires Screen Recording permission — macOS will prompt on first use, and the first call may return a black frame until the user grants it. Returns a base64-encoded PNG image.",
+            "description": format!("Debug builds only. Capture the entire native window as a person sees it (overlays, title bar, window chrome, modal panels). {caveat} Returns a base64-encoded PNG image."),
             "inputSchema": { "type": "object", "properties": {} }
         }));
     }
@@ -564,17 +570,12 @@ fn mcp_tools_call(
             if png_bytes.is_empty() {
                 return Err(json_rpc_error(-32603, "No image loaded"));
             }
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
-            Ok(json!({
-                "content": [{
-                    "type": "image",
-                    "data": b64,
-                    "mimeType": "image/png"
-                }]
-            }))
+            Ok(mcp_image_content(&png_bytes))
         }
-        #[cfg(all(debug_assertions, target_os = "macos"))]
-        "screenshot_window" => screenshot_window(proxy),
+        #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
+        "screenshot_window" => super::window_capture::capture_main_window(proxy)
+            .map(|png| mcp_image_content(&png))
+            .map_err(|why| json_rpc_error(-32603, &why)),
         "show_settings" => {
             let section = args["section"].as_str().unwrap_or("").to_string();
             if section.is_empty() {
@@ -793,69 +794,16 @@ fn mcp_text_content(text: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": text }] })
 }
 
-/// Debug-only: capture the entire native window as the user sees it via
-/// `/usr/sbin/screencapture -l <windowNumber>`. Cheaper to maintain than the
-/// `CGWindowListCreateImage` FFI dance (which is also deprecated as of macOS
-/// 14.4). The ~300–500 ms spawn cost is fine for a QA tool.
-///
-/// Requires macOS Screen Recording permission. macOS prompts the user on first
-/// use; the first call may return a black/empty frame until they grant it.
-#[cfg(all(debug_assertions, target_os = "macos"))]
-fn screenshot_window(proxy: &EventLoopProxy<AppCommand>) -> Result<Value, Value> {
-    use std::process::Command;
-
-    // 1. Ask the main thread for the NSWindow number.
-    let (tx, rx) = mpsc::channel();
-    proxy
-        .send_event(AppCommand::GetWindowNumber(tx))
-        .map_err(|_| json_rpc_error(-32603, "Event loop closed"))?;
-    let window_number = rx
-        .recv_timeout(SYNC_TIMEOUT)
-        .map_err(|_| json_rpc_error(-32603, "Window number timeout"))?;
-    if window_number == 0 {
-        return Err(json_rpc_error(-32603, "Main window not yet ready"));
-    }
-
-    // 2. Shell out. `-o` no shadow, `-x` silent (no shutter sound), `-t png`,
-    //    file path last. Skip stdout capture — `screencapture` writes a fixed
-    //    string we don't need, and ignoring it dodges interleaving.
-    let tmp = std::env::temp_dir().join(format!(
-        "prvw-screenshot-window-{}-{}.png",
-        std::process::id(),
-        window_number
-    ));
-    let output = Command::new("/usr/sbin/screencapture")
-        .args(["-l", &window_number.to_string(), "-o", "-x", "-t", "png"])
-        .arg(&tmp)
-        .output()
-        .map_err(|e| json_rpc_error(-32603, &format!("Couldn't run screencapture: {e}")))?;
-    if !output.status.success() {
-        let _ = std::fs::remove_file(&tmp);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(json_rpc_error(
-            -32603,
-            &format!("screencapture exited with {}: {stderr}", output.status),
-        ));
-    }
-
-    // 3. Read the PNG and clean up.
-    let png_bytes = std::fs::read(&tmp)
-        .map_err(|e| json_rpc_error(-32603, &format!("Couldn't read screenshot: {e}")))?;
-    let _ = std::fs::remove_file(&tmp);
-
-    if png_bytes.is_empty() {
-        return Err(json_rpc_error(
-            -32603,
-            "Screenshot is empty. Grant Screen Recording permission to prvw and try again.",
-        ));
-    }
-
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
-    Ok(json!({
+/// Wrap PNG bytes in an MCP image content response. Every screenshot tool answers in this
+/// shape, on every platform, so the QA tooling and the E2E harness need no per-platform branch
+/// above it.
+fn mcp_image_content(png: &[u8]) -> Value {
+    let data = base64::engine::general_purpose::STANDARD.encode(png);
+    json!({
         "content": [{
             "type": "image",
-            "data": b64,
+            "data": data,
             "mimeType": "image/png"
         }]
-    }))
+    })
 }
