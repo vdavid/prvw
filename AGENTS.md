@@ -149,7 +149,10 @@ runs on a developer's Mac. The check finds it through `mise where zig` instead.
 - **Logging**: Use `RUST_LOG=debug` or target specific modules with `RUST_LOG=prvw::render::renderer=debug`. On Windows
   the app has no console of its own, so a launch from Explorer logs to `%APPDATA%\Prvw\prvw.log` instead;
   `apps/desktop/CLAUDE.md` has the full order of preference.
-- **GPU issues**: `wgpu` logs adapter/device info at `info` level. Check `RUST_LOG=wgpu=info` for GPU backend details.
+- **GPU issues**: Prvw logs the adapter it chose, its device type, the backend, and the driver at `info` on startup
+  (`render::renderer`), which is the line a QA report from unfamiliar hardware should carry. wgpu keeps its own account
+  of the same decision, including every adapter it considered and rejected, at `debug`: `RUST_LOG=wgpu_core=debug`.
+  `render/gpu.rs` decides what it's asked for in the first place.
 
 ## Code intelligence
 
