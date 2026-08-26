@@ -102,11 +102,15 @@ fn read_raw_dimensions(path: &Path) -> Option<Dimensions> {
     let decoder = rawler::get_decoder(&src).ok()?;
     let params = RawDecodeParams::default();
     let raw = decoder.raw_image(&src, &params, true).ok()?;
+    // rawler counts pixels in `usize`. A rectangle that doesn't fit a `u32` is
+    // a corrupt header, and dropping it is better than a truncating cast.
+    let rect =
+        |r: rawler::imgop::Rect| Some((u32::try_from(r.d.w).ok()?, u32::try_from(r.d.h).ok()?));
     let (w, h) = developed_raw_dimensions(
         u32::try_from(raw.width).ok()?,
         u32::try_from(raw.height).ok()?,
-        raw.crop_area.map(|r| (r.d.w as u32, r.d.h as u32)),
-        raw.active_area.map(|r| (r.d.w as u32, r.d.h as u32)),
+        raw.crop_area.and_then(rect),
+        raw.active_area.and_then(rect),
     );
     let orientation = decoder
         .raw_metadata(&src, &params)
