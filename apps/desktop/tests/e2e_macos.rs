@@ -358,6 +358,34 @@ fn dropping_a_folder_browses_it() {
 }
 
 #[test]
+fn dropping_an_image_while_browsing_comes_back_to_the_viewer() {
+    // An image has to be shown in image mode, so a drop while the browser is up brings the
+    // viewer back. Without that the picture opens behind the browser and the drop looks ignored.
+    let (home, images, _empty) = create_browse_home(3);
+    let app = TestApp::start_browse_dir(&images, home.path());
+    wait_for_browse_listed(&app, 3, Duration::from_secs(8));
+
+    let dropped = home.path().join("dropped.png");
+    let img = image::RgbaImage::from_pixel(24, 16, image::Rgba([90, 90, 90, 255]));
+    img.save(&dropped).unwrap();
+    app.post("/drop", dropped.to_str().unwrap());
+
+    let state = app.wait_for_state(Duration::from_secs(5), |s| {
+        s["view_mode"].as_str() == Some("image")
+    });
+    assert_eq!(
+        state["view_mode"].as_str(),
+        Some("image"),
+        "a dropped image brings image mode back, got {state}"
+    );
+    assert!(
+        state["file"].as_str().unwrap().ends_with("dropped.png"),
+        "the dropped image is the one showing, got {state}"
+    );
+    assert_eq!(state["image_width"].as_u64(), Some(24));
+}
+
+#[test]
 fn empty_folder_lists_zero_and_grid_stays_non_focusable() {
     // An empty folder → zero images, "(No images)", grid non-focusable: Tab stays on the tree.
     // The dir-arg launch is what makes the empty grid deterministic: entering browse from an

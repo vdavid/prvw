@@ -809,6 +809,15 @@ impl App {
             );
         }
 
+        // An image on screen means image mode. Dropping one (or picking one from File → Open)
+        // while the browser is up would otherwise open it behind the browser, with nothing to
+        // show for the gesture. Painting it first means the viewer is unhidden onto the new
+        // image rather than onto the black frame browse entry left there (`browser/CLAUDE.md`).
+        if self.browser.is_browse() {
+            self.render_frame();
+            self.set_view_mode(crate::browser::ViewMode::Image);
+        }
+
         self.update_shared_state();
     }
 
