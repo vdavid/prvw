@@ -182,11 +182,15 @@ pub fn dib_v5_bgra32(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
 /// A `CF_HDROP` block: a `DROPFILES` header followed by the paths as UTF-16, each terminated,
 /// and one more terminator closing the list.
 ///
-/// `None` when no path survived [`shell_path`], since an empty file list is worse than no file
+/// `None` when no path survived [`crate::paths::shell_path`], since an empty file list is worse than no file
 /// list: the clipboard would offer Explorer a format with nothing in it.
 #[must_use]
 pub fn hdrop(paths: &[&Path]) -> Option<Vec<u8>> {
-    let shell_paths: Vec<String> = paths.iter().copied().filter_map(shell_path).collect();
+    let shell_paths: Vec<String> = paths
+        .iter()
+        .copied()
+        .filter_map(crate::paths::shell_path)
+        .collect();
     if shell_paths.is_empty() {
         return None;
     }
@@ -206,87 +210,6 @@ pub fn hdrop(paths: &[&Path]) -> Option<Vec<u8>> {
     }
     out.extend_from_slice(&0u16.to_le_bytes()); // The empty entry that ends the list.
     Some(out)
-}
-
-/// A path in the form a Win32 shell API accepts, or `None` when there isn't one.
-///
-/// This is the shell boundary `crate::paths` describes and deliberately leaves to its first
-/// caller, which is this one. The rule it sets out, and what each half is protecting:
-///
-/// - **The verbatim prefix comes off**, because `CF_HDROP`'s consumers reject `\\?\` outright.
-///   Everywhere else in the app the prefix stays: it's what lifts the 260-character `MAX_PATH`
-///   limit, and stripping it app-wide would stop deep photo libraries opening.
-/// - **Only when what's left is still a legal Win32 path.** Stripping the prefix puts the path
-///   back under every limit the prefix was lifting, so a path that then breaks one would be
-///   silently mangled by the shell rather than rejected. `None` says "offer no file", and the
-///   caller still offers the pixels.
-///
-/// A UNC path canonicalises to `\\?\UNC\naspi\photos\…`, whose shell form is
-/// `\\naspi\photos\…`. That case is here because the photo libraries this viewer is built for
-/// live on a NAS.
-///
-/// Windows rules throughout, though nothing here is `#[cfg]`ed: it's only ever called on a
-/// Windows target, and being callable everywhere is what lets a Mac test it.
-#[must_use]
-pub fn shell_path(path: &Path) -> Option<String> {
-    let text = path.to_string_lossy();
-    let plain = if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{share}")
-    } else if let Some(local) = text.strip_prefix(r"\\?\") {
-        // Only a drive path survives de-verbatiming. `\\?\Volume{…}` GUID paths have no plain
-        // spelling at all, and handing one to the shell names nothing.
-        let mut chars = local.chars();
-        let is_drive = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-            && chars.next() == Some(':')
-            && chars.next() == Some('\\');
-        if !is_drive {
-            return None;
-        }
-        local.to_string()
-    } else {
-        // Never had a prefix, so nothing was lifted and nothing has to be checked: this is the
-        // spelling the rest of Windows already handed us.
-        return Some(text.into_owned());
-    };
-    legal_win32_path(&plain).then_some(plain)
-}
-
-/// Whether a de-verbatimed path is one Win32 will still resolve to the file it names.
-///
-/// Three ways it might not, all of them things the `\\?\` prefix was suspending:
-fn legal_win32_path(path: &str) -> bool {
-    // The path fits in `MAX_PATH`, whose 260 counts the terminating null.
-    if path.chars().count() > 259 {
-        return false;
-    }
-    path.split('\\')
-        .filter(|part| !part.is_empty())
-        .all(|part| {
-            // No component ends in a dot or a space, both of which Win32 trims away, leaving a
-            // path that names a different file (or none).
-            if part.ends_with('.') || part.ends_with(' ') {
-                return false;
-            }
-            // No component is a reserved DOS device name, which Win32 resolves to the device
-            // wherever it appears, extension and all: `NUL.jpg` is the null device.
-            let stem = part.split('.').next().unwrap_or(part);
-            !is_dos_device(stem)
-        })
-}
-
-/// Whether `name` is one of the DOS device names Win32 still reserves, in any casing.
-fn is_dos_device(name: &str) -> bool {
-    const DEVICES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
-    const NUMBERED: [&str; 2] = ["COM", "LPT"];
-    let upper = name.to_ascii_uppercase();
-    if DEVICES.contains(&upper.as_str()) {
-        return true;
-    }
-    NUMBERED.iter().any(|prefix| {
-        upper.strip_prefix(prefix).is_some_and(|digit| {
-            matches!(digit, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-        })
-    })
 }
 
 /// Bytes one row of `width` pixels occupies at `bits_per_pixel`, rounded up to the 4-byte
@@ -485,65 +408,6 @@ mod tests {
         assert_eq!(
             String::from_utf16(&units).unwrap(),
             r"C:\Bilder\Lujza på ön 🎈.jpg"
-        );
-    }
-
-    /// What `canonicalize` hands back is not what the shell takes. Both prefixes it can
-    /// produce have to come off, and a path that never had one is left exactly as it is.
-    #[test]
-    fn the_shell_form_drops_the_verbatim_prefix() {
-        let shell = |text: &str| shell_path(Path::new(text));
-        assert_eq!(
-            shell(r"\\?\C:\photos\a.jpg").as_deref(),
-            Some(r"C:\photos\a.jpg")
-        );
-        // The NAS case, which is the one this viewer's users actually hit.
-        assert_eq!(
-            shell(r"\\?\UNC\naspolya\photos\a.jpg").as_deref(),
-            Some(r"\\naspolya\photos\a.jpg")
-        );
-        assert_eq!(
-            shell(r"C:\photos\a.jpg").as_deref(),
-            Some(r"C:\photos\a.jpg")
-        );
-        assert_eq!(
-            shell(r"\\naspolya\photos").as_deref(),
-            Some(r"\\naspolya\photos")
-        );
-    }
-
-    /// Stripping the prefix puts the path back under every limit the prefix was lifting, so a
-    /// path that then breaks one has no shell form at all. Handing one over anyway would have
-    /// the shell quietly resolve something else: a truncated path, or a device.
-    #[test]
-    fn a_path_that_needs_its_prefix_has_no_shell_form() {
-        let shell = |text: &str| shell_path(Path::new(text));
-
-        // Past MAX_PATH, which is exactly what the prefix was there for.
-        let deep = format!(r"\\?\C:\{}a.jpg", "photos\\".repeat(40));
-        assert!(deep.len() > 260);
-        assert_eq!(shell(&deep), None);
-        // The same shape while it still fits.
-        let shallow = format!(r"\\?\C:\{}a.jpg", "photos\\".repeat(10));
-        assert!(shell(&shallow).is_some());
-
-        // A component Win32 would trim, leaving a path that names something else.
-        assert_eq!(shell(r"\\?\C:\photos.\a.jpg"), None);
-        assert_eq!(shell(r"\\?\C:\photos \a.jpg"), None);
-
-        // A DOS device name, which Win32 resolves as the device wherever it sits, extension and
-        // all. A camera naming a file `AUX.jpg` is unusual; a folder called `con` isn't.
-        assert_eq!(shell(r"\\?\C:\photos\NUL.jpg"), None);
-        assert_eq!(shell(r"\\?\C:\con\a.jpg"), None);
-        assert_eq!(shell(r"\\?\C:\photos\com4.jpg"), None);
-        // Not devices: a longer name that merely starts with one, and a two-digit port.
-        assert!(shell(r"\\?\C:\photos\console.jpg").is_some());
-        assert!(shell(r"\\?\C:\photos\com10.jpg").is_some());
-
-        // A volume GUID path has no plain spelling to fall back on.
-        assert_eq!(
-            shell(r"\\?\Volume{b75e2c83-0000-0000-0000-602f00000000}\a.jpg"),
-            None
         );
     }
 
