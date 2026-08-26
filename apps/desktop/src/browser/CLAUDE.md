@@ -62,6 +62,11 @@ shows the image you're _currently_ viewing, never the stale selection from the l
 (`docs/specs/live-folder-sync.md` Part 1). Esc/Enter right after opening round-trips to the same image. Empty / no-image
 cases fall back gracefully to the last browse state (first image, or the tree for an empty folder).
 
+**One entry names its own folder instead: a dropped one.** `App::browse_folder` (what a folder drop calls) passes the
+folder through `enter_view_mode`'s `reveal` argument, which replaces the "reveal where you already are" step rather than
+following it. Queueing both would put two tree walks in flight for one entry, and whichever landed last would decide the
+selection. Already in browse mode, the same call just re-reveals, so dropping a folder onto the browser moves the tree.
+
 **Re-reveal into the already-selected folder.** When the current image's folder is already the one selected in the tree
 (re-entering browse without changing folders), `select_and_scroll_to`'s `selectRowIndexes:` is a no-op, so
 `outlineViewSelectionDidChange:` never fires and the grid would keep its stale selection. So `select_and_scroll_to`

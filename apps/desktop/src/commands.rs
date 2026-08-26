@@ -65,6 +65,7 @@ impl AppCommand {
             AppCommand::GoToFirst => Action(CommandKey::GoToFirst),
             AppCommand::GoToLast => Action(CommandKey::GoToLast),
             AppCommand::OpenFile(_) | AppCommand::ShowOpenDialog => Action(CommandKey::OpenFile),
+            AppCommand::OpenDropped(_) => Action(CommandKey::DropToOpen),
             AppCommand::ToggleLoopNavigation => Action(CommandKey::LoopNavigation),
             AppCommand::SetSortBy(_) => Action(CommandKey::SortBy),
             AppCommand::Refresh => Action(CommandKey::Refresh),
@@ -385,6 +386,12 @@ pub enum AppCommand {
     /// The window moved to a different display — re-query the display ICC profile.
     #[cfg(target_os = "macos")]
     DisplayChanged,
+
+    /// Files were dropped on the window (or handed over by the QA server's `/drop`). The
+    /// executor classifies them with `launch::classify_open_request` and opens what it finds:
+    /// an image, a set of them, or a folder. winit reports a drop one path at a time, so
+    /// `App` batches the paths and sends this once per drop.
+    OpenDropped(Vec<PathBuf>),
 
     // ── Clipboard ────────────────────────────────────────────────────
     /// Copy the current image to the system clipboard. Writes the original

@@ -401,6 +401,27 @@ pub(super) fn handle_post_open(
     send_and_wait_http(stream, proxy, AppCommand::OpenFile(path), state)
 }
 
+/// `POST /drop` — the drag-and-drop route, which the QA path can't reach any other way: a real
+/// drop is an OS drag session, and no HTTP request can synthesise one. The body is one absolute
+/// path per line, standing in for the paths winit would deliver.
+pub(super) fn handle_post_drop(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    let paths: Vec<PathBuf> = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    if paths.is_empty() {
+        return write_response(stream, 400, "text/plain", b"Missing paths in body", &[]);
+    }
+    send_and_wait_http(stream, proxy, AppCommand::OpenDropped(paths), state)
+}
+
 pub(super) fn handle_post_window_geometry(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,

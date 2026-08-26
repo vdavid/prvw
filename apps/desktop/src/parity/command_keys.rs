@@ -77,6 +77,7 @@ command_keys! {
     GoToFirst { label: "Go to first", area: Navigation, }
     GoToLast { label: "Go to last", area: Navigation, }
     OpenFile { label: "Open a file", area: Navigation, }
+    DropToOpen { label: "Drop files onto the window", area: Navigation, }
     LoopNavigation { label: "Loop navigation", area: Navigation, }
     SortBy { label: "Sort by", area: Navigation, }
     Refresh { label: "Refresh", area: Navigation, }
@@ -154,6 +155,7 @@ impl CommandKey {
             | CommandKey::GoToFirst
             | CommandKey::GoToLast
             | CommandKey::OpenFile
+            | CommandKey::DropToOpen
             | CommandKey::LoopNavigation
             | CommandKey::SortBy
             | CommandKey::Refresh
@@ -206,6 +208,7 @@ impl CommandKey {
             | CommandKey::GoToFirst
             | CommandKey::GoToLast
             | CommandKey::OpenFile
+            | CommandKey::DropToOpen
             | CommandKey::LoopNavigation
             | CommandKey::SortBy
             | CommandKey::Refresh
@@ -259,6 +262,7 @@ impl CommandKey {
             | CommandKey::GoToFirst
             | CommandKey::GoToLast
             | CommandKey::OpenFile
+            | CommandKey::DropToOpen
             | CommandKey::LoopNavigation
             | CommandKey::SortBy
             | CommandKey::Refresh

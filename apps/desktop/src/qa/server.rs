@@ -169,6 +169,7 @@ fn handle_request(
         }
         ("POST", "/title-bar") => http::handle_post_title_bar(stream, proxy, &body, state),
         ("POST", "/open") => http::handle_post_open(stream, proxy, &body, state),
+        ("POST", "/drop") => http::handle_post_drop(stream, proxy, &body, state),
         ("POST", "/window-geometry") => {
             http::handle_post_window_geometry(stream, proxy, &body, state)
         }

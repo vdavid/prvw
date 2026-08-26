@@ -326,6 +326,38 @@ fn selecting_a_folder_lists_its_images() {
 }
 
 #[test]
+fn dropping_a_folder_browses_it() {
+    // A folder dropped on the window opens browse mode at that folder, the same answer a folder
+    // on the command line gets. The shared suite only checks that browse mode came up, because
+    // where the tree landed needs a scoped home to keep the reveal walk short and deterministic
+    // (`TestApp::start_with_arg_and_home`); this is the half that needs one.
+    let (home, images, _empty) = create_browse_home(4);
+    let launch_image = images.join("img-00.png");
+    let app = TestApp::start_with_arg_and_home(&launch_image, Some(home.path()));
+    assert_eq!(
+        app.get_state()["view_mode"].as_str(),
+        Some("image"),
+        "an image argument starts in image mode"
+    );
+
+    app.post("/drop", images.to_str().unwrap());
+
+    let state = wait_for_browse_listed(&app, 4, Duration::from_secs(8));
+    let selected = state["browse_selected_folder"]
+        .as_str()
+        .expect("the dropped folder is selected in the tree");
+    assert!(
+        selected.ends_with("pics"),
+        "the selected folder is the one dropped, got {selected}"
+    );
+    assert_eq!(
+        state["browse_grid_count"].as_u64(),
+        Some(4),
+        "the dropped folder's four images are listed"
+    );
+}
+
+#[test]
 fn empty_folder_lists_zero_and_grid_stays_non_focusable() {
     // An empty folder → zero images, "(No images)", grid non-focusable: Tab stays on the tree.
     // The dir-arg launch is what makes the empty grid deterministic: entering browse from an

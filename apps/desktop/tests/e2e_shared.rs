@@ -1275,3 +1275,128 @@ fn live_sync_modify_current_re_decodes_in_place() {
     assert!(state["file"].as_str().unwrap().contains("img-00"));
     assert_eq!(state["total_files"].as_u64(), Some(3));
 }
+
+// ── Drag and drop ────────────────────────────────────────────────────────────────────────────
+//
+// A real drop is an OS drag session no HTTP request can synthesise, so these go through
+// `POST /drop`, which hands the app the same path list winit delivers one `DroppedFile` at a
+// time. What the paths then mean is `launch::classify_open_request`, unit-tested per platform;
+// these prove the wiring from a drop to what's on screen.
+
+#[test]
+fn dropping_an_image_opens_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let dropped = dir.path().join("dropped.png");
+    create_white_image(&dropped, 24, 16);
+    let Some(app) = SharedApp::start(&["DropToOpen"]) else {
+        return;
+    };
+
+    app.post("/drop", dropped.to_str().unwrap());
+
+    let state = app.wait_for_state(Duration::from_secs(5), |s| {
+        s["file"].as_str().is_some_and(|f| f.contains("dropped"))
+    });
+    assert!(
+        state["file"].as_str().unwrap().contains("dropped.png"),
+        "the dropped image should be the one on screen, got {state}"
+    );
+    assert_eq!(state["image_width"].as_u64(), Some(24));
+    assert_eq!(state["image_height"].as_u64(), Some(16));
+}
+
+#[test]
+fn dropping_several_images_opens_the_first_and_lists_them_all() {
+    // Dropped out of sorted order on purpose: the one that opens is the first the drop carried,
+    // the way the command line opens the first file named, while the list it navigates is all
+    // three in the user's sort order.
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.png");
+    let b = dir.path().join("b.png");
+    let c = dir.path().join("c.png");
+    create_white_image(&a, 8, 8);
+    create_white_image(&b, 16, 16);
+    create_white_image(&c, 8, 8);
+    let Some(app) = SharedApp::start(&["DropToOpen"]) else {
+        return;
+    };
+
+    let body = format!(
+        "{}\n{}\n{}",
+        b.to_str().unwrap(),
+        a.to_str().unwrap(),
+        c.to_str().unwrap()
+    );
+    app.post("/drop", &body);
+
+    let state = app.wait_for_state(Duration::from_secs(5), |s| {
+        s["total_files"].as_u64() == Some(3)
+    });
+    assert!(
+        state["file"].as_str().unwrap().contains("b.png"),
+        "the first image dropped is the one that opens, got {state}"
+    );
+    assert_eq!(state["total_files"].as_u64(), Some(3));
+    assert_eq!(
+        state["index"].as_u64(),
+        Some(2),
+        "b.png sorts second of three, and the position has to agree, got {state}"
+    );
+}
+
+#[test]
+fn dropping_a_folder_shows_that_folder() {
+    // The platforms answer this differently by design, and both answers are right: macOS opens
+    // browse mode at the folder, everywhere else its images become the image-mode list until M5
+    // builds a browser there. Same fork a folder on the command line takes, so what's shared is
+    // that the drop is answered at all — one of the two screens ends up showing the folder.
+    // Which folder the macOS tree landed on is `dropping_a_folder_browses_it` in
+    // `e2e_macos.rs`, where the harness can scope the tree's roots to keep the walk short.
+    let (dir, _first) = create_multi_image_dir(3);
+    let Some(app) = SharedApp::start(&["DropToOpen"]) else {
+        return;
+    };
+    let folder = std::fs::canonicalize(dir.path()).unwrap();
+    let folder_str = folder.to_string_lossy().into_owned();
+
+    app.post("/drop", &folder_str);
+
+    let answered = |s: &serde_json::Value| {
+        s["view_mode"].as_str() == Some("browse")
+            || s["file"]
+                .as_str()
+                .is_some_and(|f| f.starts_with(folder_str.as_str()))
+    };
+    let state = app.wait_for_state(Duration::from_secs(8), answered);
+    assert!(
+        answered(&state),
+        "a dropped folder should be browsed or played, got {state}"
+    );
+}
+
+#[test]
+fn dropping_something_prvw_cant_open_leaves_the_image_alone() {
+    // Opening it would put a decode error in the title bar and take the picture on screen away,
+    // which is a worse answer than the drop simply not landing.
+    let dir = tempfile::tempdir().unwrap();
+    let notes = dir.path().join("notes.txt");
+    std::fs::write(&notes, b"not an image").unwrap();
+    let Some(app) = SharedApp::start(&["DropToOpen"]) else {
+        return;
+    };
+    let before = app.get_state();
+
+    app.post("/drop", notes.to_str().unwrap());
+    std::thread::sleep(Duration::from_millis(300));
+
+    let after = app.get_state();
+    assert_eq!(
+        before["file"].as_str(),
+        after["file"].as_str(),
+        "the image on screen should have survived the drop, got {after}"
+    );
+    assert_eq!(
+        before["image_width"].as_u64(),
+        after["image_width"].as_u64()
+    );
+}

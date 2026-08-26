@@ -11,15 +11,15 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 
 ## Summary
 
-- macOS: 116 of 116 done, 0 not applicable, 0 missing
-- Windows: 60 of 116 done, 6 not applicable, 50 missing
-- Linux: 31 of 116 done, 5 not applicable, 80 missing
+- macOS: 117 of 117 done, 0 not applicable, 0 missing
+- Windows: 61 of 117 done, 6 not applicable, 50 missing
+- Linux: 32 of 117 done, 5 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
 - Settings (40 entries): macOS 40 / 0 / 0, Windows 0 / 1 / 39, Linux 0 / 1 / 39
 - Menu items (37 entries): macOS 37 / 0 / 0, Windows 28 / 4 / 5, Linux 0 / 3 / 34
-- Commands (39 entries): macOS 39 / 0 / 0, Windows 32 / 1 / 6, Linux 31 / 1 / 7
+- Commands (40 entries): macOS 40 / 0 / 0, Windows 33 / 1 / 6, Linux 32 / 1 / 7
 
 ## What each platform still owes
 
@@ -176,6 +176,7 @@ Nothing missing.
 - `GoToFirst` "Go to first" (command, Navigation): macOS done, Windows done, Linux done
 - `GoToLast` "Go to last" (command, Navigation): macOS done, Windows done, Linux done
 - `OpenFile` "Open a file" (command, Navigation): macOS done, Windows done, Linux done
+- `DropToOpen` "Drop files onto the window" (command, Navigation): macOS done, Windows done, Linux done
 - `LoopNavigation` "Loop navigation" (command, Navigation): macOS done, Windows done, Linux done
 - `SortBy` "Sort by" (command, Navigation): macOS done, Windows done, Linux done
 - `Refresh` "Refresh" (command, Navigation): macOS done, Windows done, Linux done

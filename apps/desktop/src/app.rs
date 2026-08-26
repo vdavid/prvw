@@ -94,16 +94,15 @@ impl EmptyState {
     fn overlay(self) -> &'static str {
         match self {
             // Draft copy, for David to review. It opens the way `docs/specs/windows-ui-design.md`
-            // asks ("Open an image to start") and then names both ways in, because Linux has no
+            // asks ("Open an image to start") and then names every way in, because Linux has no
             // menu bar to advertise File → Open and a Windows user reaching for the keyboard
             // shouldn't have to find one. One line, because the pill behind it is one line high
-            // (`render::text`). M6 is where the icon and the default-handler line join it, and
-            // M1 step 12 is where "or drop one here" becomes true.
+            // (`render::text`). M6 is where the icon and the default-handler line join it.
             EmptyState::NothingOpen => {
                 if cfg!(target_os = "macos") {
-                    "Open an image to start: click or press \u{2318}O"
+                    "Open an image to start: drop one here, click, or press \u{2318}O"
                 } else {
-                    "Open an image to start: click or press Ctrl+O"
+                    "Open an image to start: drop one here, click, or press Ctrl+O"
                 }
             }
             EmptyState::NoImages => "(No images)",
@@ -174,6 +173,14 @@ pub(crate) struct App {
     // ── Runtime input / rendering ───────────────────────────────────
     pub(crate) modifiers: ModifiersState,
     pub(crate) drag_start: Option<(Logical<f64>, Logical<f64>)>,
+    /// Paths from a drop in progress. winit reports one `DroppedFile` per file with no event
+    /// marking the end of the batch, so they pile up here and `about_to_wait` — which runs once
+    /// the whole batch is drained — opens them as one request. See `App::open_dropped`.
+    pub(crate) pending_drops: Vec<PathBuf>,
+    /// Whether a drag is hovering files over the window right now, which puts a "Drop to open"
+    /// pill on the canvas. Set by `HoveredFile`, cleared by `HoveredFileCancelled` and by the
+    /// drop itself (winit sends no cancel once a drop lands).
+    pub(crate) files_hovering: bool,
     pub(crate) last_mouse_pos: (Logical<f64>, Logical<f64>),
     pub(crate) last_click_time: Option<Instant>,
     /// What a scroll event means here: the platform's zoom modifier, and the running conversion
@@ -289,6 +296,8 @@ impl App {
             current_image_is_hdr: false,
             modifiers: ModifiersState::empty(),
             drag_start: None,
+            pending_drops: Vec::new(),
+            files_hovering: false,
             last_mouse_pos: (Logical(0.0), Logical(0.0)),
             last_click_time: None,
             scroll: scroll::Scroll::for_host(),
@@ -1996,9 +2005,34 @@ impl App {
     }
 
     pub(crate) fn set_view_mode(&mut self, target: crate::browser::ViewMode) {
+        self.enter_view_mode(target, None);
+    }
+
+    /// Enter browse mode showing `folder`, whatever was on screen before. A dropped folder is
+    /// what this is for: it names where to go, so the "reveal where you already are" step
+    /// [`Self::set_view_mode`] runs would be a walk to the wrong place, and two reveals racing
+    /// each other for the tree selection.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn browse_folder(&mut self, folder: &Path) {
+        self.enter_view_mode(crate::browser::ViewMode::Browse, Some(folder));
+    }
+
+    /// The mode switch itself. `reveal` names the folder browse should open at; `None` means
+    /// "wherever the current image is", which is what every route but a dropped folder wants.
+    fn enter_view_mode(&mut self, target: crate::browser::ViewMode, reveal: Option<&Path>) {
         if self.browser.mode() == target {
+            // Already there, so there's no mode to switch — but a named folder still has to be
+            // shown, or dropping one onto the browser would do nothing.
+            #[cfg(target_os = "macos")]
+            if let Some(folder) = reveal {
+                self.browser.reveal_to_folder(folder, None);
+                self.update_shared_state();
+            }
             return;
         }
+        // Only the macOS branch below has a tree to reveal anything in.
+        #[cfg(not(target_os = "macos"))]
+        let _ = reveal;
 
         #[cfg(target_os = "macos")]
         match self.window.clone() {
@@ -2021,10 +2055,14 @@ impl App {
                     // Live folder sync (Part B): the split view (and tree) are now built — watch the
                     // roots (idempotent, so re-entering browse is harmless).
                     self.watch_tree_roots();
-                    // Browse-open positioning: reveal + select the current image's folder in the
-                    // tree (async walk) and preselect that image in the grid, so browse opens
-                    // already showing where you are and Esc/Enter round-trips back to it.
-                    self.reveal_current_image_in_browse();
+                    // Browse-open positioning: reveal + select the folder in the tree (async
+                    // walk) and preselect an image in the grid, so browse opens already showing
+                    // where you are and Esc/Enter round-trips back to it. A dropped folder
+                    // names its own target instead.
+                    match reveal {
+                        Some(folder) => self.browser.reveal_to_folder(folder, None),
+                        None => self.reveal_current_image_in_browse(),
+                    }
                 }
                 crate::browser::ViewMode::Image => self.browser.enter_image(&win),
             },
@@ -2590,6 +2628,31 @@ impl App {
                 Logical(7.0),
             );
             text_blocks.push(empty);
+        }
+
+        // Files are hovering: say the window takes them. Without this a drag over a viewer that
+        // does accept drops looks exactly like one over a viewer that doesn't. Same pill as the
+        // empty state, and it replaces that one rather than stacking on it.
+        if self.files_hovering
+            && let Some(rend) = &self.renderer
+        {
+            let line_height = 18.0_f32;
+            let center_x = Logical(rend.logical_width().0 / 2.0);
+            let center_y = Logical((rend.logical_height().0 - line_height) / 2.0);
+            // Draft copy, for David to review.
+            let mut hint = text::TextBlock::new("Drop to open", center_x, center_y);
+            hint.font_size = 14.0;
+            hint.line_height = line_height;
+            hint = hint.bold().align_center().pill(
+                [0.0, 0.0, 0.0, 0.55],
+                Logical(11.0),
+                Logical(5.0),
+                Logical(7.0),
+            );
+            if self.empty_state.is_some() {
+                text_blocks.pop();
+            }
+            text_blocks.push(hint);
         }
 
         // When the title bar is on (and not fullscreen), the native title/zoom labels
@@ -3379,6 +3442,13 @@ impl ApplicationHandler<AppCommand> for App {
         self.poll_preloader();
         self.handle_menu_event();
 
+        // A drop's paths all arrive within one turn of the loop, so by the time the loop is
+        // about to wait the batch is complete and can be opened as one request.
+        if !self.pending_drops.is_empty() {
+            let paths = std::mem::take(&mut self.pending_drops);
+            self.execute_command(event_loop, AppCommand::OpenDropped(paths));
+        }
+
         // Debounced navigation: fire once the quiet window passes. Between
         // queue and fire we hold `ControlFlow::WaitUntil(deadline)`, so winit
         // wakes us exactly at the deadline.
@@ -3489,6 +3559,33 @@ impl ApplicationHandler<AppCommand> for App {
                 } else if let Some(win) = &self.window {
                     win.request_redraw();
                 }
+            }
+
+            // A drag carrying files entered the window. winit sends one of these per file and
+            // no event when the batch ends, so the pill goes up on the first and the paths are
+            // ignored until the drop: telling the user whether Prvw can open them would mean
+            // stat-ing every file of a drag that may never land.
+            WindowEvent::HoveredFile(_) => {
+                if !self.files_hovering {
+                    self.files_hovering = true;
+                    self.request_redraw();
+                }
+            }
+
+            // The drag left without dropping.
+            WindowEvent::HoveredFileCancelled => {
+                if self.files_hovering {
+                    self.files_hovering = false;
+                    self.request_redraw();
+                }
+            }
+
+            // One file of a drop that landed. The batch is opened in `about_to_wait`, once
+            // every path of it has arrived.
+            WindowEvent::DroppedFile(path) => {
+                self.files_hovering = false;
+                self.pending_drops.push(path);
+                self.request_redraw();
             }
 
             WindowEvent::ModifiersChanged(mods) => {

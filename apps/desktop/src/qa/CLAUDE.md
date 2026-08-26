@@ -123,6 +123,10 @@ native outline/collection-view click (and `SendKey` in browse maps only Tab/Ente
 
 All three are macOS-only (browse mode is); off macOS they return 400. Each returns the post-command `/state` snapshot.
 
+`POST /drop` (body = one absolute path per line) is the fourth of the same kind, and it runs everywhere: a real drop is
+an OS drag session no HTTP request can synthesise, so this hands the app the path list winit would deliver one
+`DroppedFile` at a time (`AppCommand::OpenDropped`). What the paths mean is `launch::classify_open_request`.
+
 ## Live-sync observability
 
 `GET /state`'s `watched_folders` lists the folders whose filesystem watch the `folder_watch` worker has **applied**: the

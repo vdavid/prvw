@@ -27,10 +27,13 @@ toggling fullscreen (Enter no longer does). A directory CLI argument boots into 
 exists yet (M5): Enter does nothing there, the menu doesn't offer the browser, and a directory argument opens the
 folder's images in image mode instead. See `docs/specs/image-browser.md` and `src/browser/CLAUDE.md`.
 
-**How a file reaches the app.** A path on the command line, a Finder double-click (macOS, through an Apple Event), or
-**File → Open…** (Cmd+O on macOS, Ctrl+O elsewhere), which works on every platform (`src/open_dialog.rs`). A launch with
-nothing to open waits for Finder on macOS and puts up an empty window everywhere else; `src/launch.rs` decides, and
-`apps/desktop/CLAUDE.md` has the full picture.
+**How a file reaches the app.** A path on the command line, a Finder double-click (macOS, through an Apple Event),
+**File → Open…** (Cmd+O on macOS, Ctrl+O elsewhere, every platform, `src/open_dialog.rs`), or a **drop onto the window**
+(every platform, through winit's `DroppedFile`). A drop follows the same rule as the command line, in
+`launch::classify_open_request`: images open as a set, a lone folder is browsed on macOS and played in image mode
+elsewhere, and anything Prvw can't decode is ignored rather than opened and failed. A launch with nothing to open waits
+for Finder on macOS and puts up an empty window everywhere else; `src/launch.rs` decides, and `apps/desktop/CLAUDE.md`
+has the full picture.
 
 - Desktop app: `cd apps/desktop && cargo run -- <image_path_or_dir>`
 - Website dev: `cd apps/website && pnpm dev`

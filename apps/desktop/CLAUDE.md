@@ -14,7 +14,7 @@ src/
 ├── clipboard.rs             The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`), pure and testable anywhere
 ├── commands.rs              AppCommand enum + global EventLoopProxy
 ├── input.rs                 Maps keys/QA keys → AppCommand
-├── launch.rs                What the command line asks Prvw to open (waiting vs. empty window, a folder's images)
+├── launch.rs                What Prvw is asked to open, by argument or by drop (waiting vs. empty window, a folder's images)
 ├── logging.rs               `env_logger` setup, and where a console-less Windows launch writes instead
 ├── menu/                    Menu bar + context menu (muda) on macOS and Windows; `absent.rs` covers platforms with no menu bar
 ├── parity/                  Registries of settings, menu items, and commands + each platform's coverage (M0.5 layer 1)
@@ -88,6 +88,23 @@ state: handles (window, renderer, menu), launch flags (file_path, waiting_for_fi
   an image-mode playlist: its images in the user's sort order, starting at the first. A folder with no images lands in
   `EmptyState::NoImages`.
 - **One or more files.** Unchanged everywhere.
+
+## What a drop opens
+
+Same three answers, decided by `launch::classify_open_request` so a drop and a command line can't drift: images open as
+a set (the first one dropped is the one shown, the rest join the list in sort order), a lone folder is browsed on macOS
+and becomes the image-mode list elsewhere, and a folder alongside anything else is ignored, because Prvw shows one set
+at a time.
+
+Two things a drop does differently, both because it's a bulk gesture rather than a typed path:
+
+- **Files Prvw can't decode are ignored.** Opening one would replace the picture on screen with a title-bar error.
+- **A dropped folder with no images changes nothing**, where a folder _argument_ lands in `EmptyState::NoImages`. At
+  launch there was nothing to lose; at runtime there's an image on screen worth keeping.
+
+**Gotcha: winit reports a drop one path at a time**, and sends no event to say the batch ended. `App` collects them in
+`pending_drops` and opens them in `about_to_wait`, which runs once the whole batch has been drained. Handling
+`DroppedFile` inline would open a three-file drop as three separate single-file opens.
 
 **Gotcha: `waiting_for_file` is a macOS-only state**, and it's the reason the launch empty state has never run on a Mac.
 Nothing in the shared E2E suite can reach it, because the gate in `tests/e2e/shared.rs` says "this test needs X", never

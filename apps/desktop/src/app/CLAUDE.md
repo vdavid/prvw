@@ -26,7 +26,9 @@ App holds three per-feature State structs (`zoom`, `color`, `navigation`) plus t
 - **Handles**: `window`, `renderer`, `app_menu`.
 - **Cross-cutting toggle**: `title_bar` (affects window chrome, not enough to justify its own feature state struct).
 - **Runtime input**: `modifiers`, `drag_start`, `last_mouse_pos`, `last_click_time`, `scroll` (`crate::scroll::Scroll` —
-  the platform's zoom modifier plus the running delta-to-images conversion), `needs_redraw`, `scale_factor`.
+  the platform's zoom modifier plus the running delta-to-images conversion), `needs_redraw`, `scale_factor`,
+  `pending_drops` + `files_hovering` (a drop in progress: winit reports one path per event and nothing to mark the end
+  of the batch, so the paths pile up and `about_to_wait` opens them as one request — see `App::open_dropped`).
 - **Cross-thread**: `shared_state`, `event_loop_proxy`, `_qa_handle`.
 
 App doesn't implement any feature's logic. The handler arms in `execute_command` mutate `self.zoom`, `self.color`,

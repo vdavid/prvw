@@ -597,34 +597,10 @@ impl App {
                     return;
                 }
 
-                self.file_path = resolved.clone();
-                let sort_by = self
-                    .navigation
-                    .dir_list
-                    .as_ref()
-                    .map(|d| d.sort_by())
-                    .unwrap_or_default();
-                self.navigation.dir_list = directory::DirectoryList::from_file(&resolved, sort_by);
-                self.empty_state = None;
-                self.display_image(&resolved);
-                // Live folder sync: watch the newly opened file's folder.
-                self.retarget_active_folder_watch();
-
-                if let Some(dir) = &self.navigation.dir_list
-                    && let Some(win) = &self.window
-                {
-                    window::set_title_keeping_buttons(
-                        win,
-                        &window::window_title_with_position(
-                            &resolved,
-                            dir.current_index(),
-                            dir.len(),
-                        ),
-                    );
-                }
-
-                self.update_shared_state();
+                let list = directory::DirectoryList::from_file(&resolved, self.sort_by());
+                self.show_image_list(list, &resolved);
             }
+            AppCommand::OpenDropped(paths) => self.open_dropped(&paths, event_loop),
             AppCommand::SetWindowGeometry {
                 x,
                 y,
@@ -797,6 +773,106 @@ impl App {
                     self.display_preview_placeholder(index);
                 }
                 self.pump_preview_requests();
+            }
+        }
+    }
+
+    /// The sort order the folder list is being shown in, or the saved default when there's no
+    /// list yet.
+    fn sort_by(&self) -> crate::navigation::SortBy {
+        self.navigation
+            .dir_list
+            .as_ref()
+            .map(|dir| dir.sort_by())
+            .unwrap_or_default()
+    }
+
+    /// Put a freshly built list on screen at `current`: display the image, re-point the folder
+    /// watch, retitle the window, and publish state.
+    ///
+    /// Every route that opens something new ends here — File → Open, a Finder double-click, a
+    /// drop — so they can't drift on the bookkeeping that follows the image itself.
+    fn show_image_list(&mut self, list: Option<directory::DirectoryList>, current: &Path) {
+        self.file_path = current.to_path_buf();
+        self.navigation.dir_list = list;
+        self.empty_state = None;
+        self.display_image(current);
+        // Live folder sync: watch the newly opened file's folder.
+        self.retarget_active_folder_watch();
+
+        if let Some(dir) = &self.navigation.dir_list
+            && let Some(win) = &self.window
+        {
+            window::set_title_keeping_buttons(
+                win,
+                &window::window_title_with_position(current, dir.current_index(), dir.len()),
+            );
+        }
+
+        self.update_shared_state();
+    }
+
+    /// Open what was dropped on the window.
+    ///
+    /// `launch::classify_open_request` decides what the paths amount to, and it's the same rule
+    /// the command line follows, so dropping a folder does what passing one does: browse it on
+    /// macOS, play its images in image mode elsewhere (M5 gives the other two a browser). What
+    /// Prvw can't open is ignored rather than opened and failed, so a stray text file in a
+    /// dragged selection can't take the picture on screen away.
+    fn open_dropped(&mut self, paths: &[std::path::PathBuf], event_loop: &ActiveEventLoop) {
+        let targets: Vec<(std::path::PathBuf, crate::browser::LaunchTarget)> = paths
+            .iter()
+            .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+            .map(|path| {
+                let kind = crate::browser::classify_launch_target(path.is_file(), path.is_dir());
+                (path, kind)
+            })
+            .collect();
+
+        match crate::launch::classify_open_request(&targets) {
+            crate::launch::OpenRequest::Nothing => {
+                log::info!("Dropped {} path(s), none of them openable", paths.len());
+            }
+            crate::launch::OpenRequest::Images(images) => {
+                log::info!("Dropped {} image(s)", images.len());
+                if let [only] = images.as_slice() {
+                    // One image is exactly File → Open, including the macOS launch path where
+                    // the window doesn't exist yet.
+                    self.execute_command(event_loop, AppCommand::OpenFile(only.clone()));
+                    return;
+                }
+                // The list sorts, but the image that opens is the first one dropped, the same
+                // way the command line opens the first file named rather than the first sorted.
+                let first = images[0].clone();
+                let list =
+                    directory::DirectoryList::from_explicit(images, self.sort_by(), Some(&first));
+                self.show_image_list(Some(list), &first);
+            }
+            crate::launch::OpenRequest::Folder(folder) => {
+                #[cfg(target_os = "macos")]
+                {
+                    log::info!("Dropped the folder {}", folder.display());
+                    self.browse_folder(&folder);
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let images = crate::launch::images_in(&folder);
+                    log::info!(
+                        "Dropped the folder {} ({} image(s))",
+                        folder.display(),
+                        images.len()
+                    );
+                    if images.is_empty() {
+                        // Unlike a folder argument at launch, there may be an image on screen,
+                        // and taking it away to show "(No images)" would be a worse answer than
+                        // leaving the drop unanswered.
+                        return;
+                    }
+                    let list =
+                        directory::DirectoryList::from_explicit(images, self.sort_by(), None);
+                    let first = list.current().to_path_buf();
+                    self.show_image_list(Some(list), &first);
+                }
             }
         }
     }
