@@ -1,0 +1,11 @@
+# Standalone, kept out of the app's workspace so a benchmark run never rebuilds the app.
+[workspace]
+
+[package]
+name = "directory-index-lookup-bench"
+version = "0.1.0"
+edition = "2024"
+
+# No dependencies on purpose: the whole point is to time `std::fs` against itself, and a
+# dependency-free crate builds anywhere the toolchain does, Windows included.
+[dependencies]

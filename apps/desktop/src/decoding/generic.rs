@@ -25,16 +25,21 @@ pub(super) fn decode(
     let cursor = Cursor::new(&bytes);
     let reader = image::ImageReader::new(cursor)
         .with_guessed_format()
-        .map_err(|e| format!("Couldn't identify format for {}: {e}", path.display()))?;
+        .map_err(|e| {
+            format!(
+                "Couldn't identify format for {}: {e}",
+                crate::paths::for_display(path)
+            )
+        })?;
 
     let mut decoder = reader
         .into_decoder()
-        .map_err(|e| format!("Couldn't decode {}: {e}", path.display()))?;
+        .map_err(|e| format!("Couldn't decode {}: {e}", crate::paths::for_display(path)))?;
 
     let icc_profile = decoder.icc_profile().ok().flatten();
 
     let img = image::DynamicImage::from_decoder(decoder)
-        .map_err(|e| format!("Couldn't decode {}: {e}", path.display()))?;
+        .map_err(|e| format!("Couldn't decode {}: {e}", crate::paths::for_display(path)))?;
 
     let rgba = img.to_rgba8();
     let (width, height) = rgba.dimensions();

@@ -14,6 +14,12 @@ transform, settings, navigation); Linux has the core and no menu bar at all. Nei
 and Linux from this Mac with `./scripts/check.sh --check windows-cross --check linux-cross` (see below), and prefer a
 cross-platform implementation over a `#[cfg]` fence when the cost is comparable.
 
+**Never compare paths with `==` or `Path::starts_with`.** Both are byte-wise, and on Windows the same folder arrives
+spelled three ways: `canonicalize` returns `\\?\C:\...`, argv returns whatever the user typed, and a drive enumeration
+uppercases. `src/paths.rs` owns the rule, holds each platform's policy as data so any host can test all three, and says
+where a verbatim prefix may be stripped (display and shell APIs) and where it must not (filesystem I/O, or deep
+libraries stop opening).
+
 The main window has two top-level screens that swap: **image mode** (the wgpu viewer) and **browse mode** (a macOS-only
 native AppKit folder tree + thumbnail grid; `src/browser/`). Enter (in image mode) enters browse; `f`/`F11` keep
 toggling fullscreen (Enter no longer does). A directory CLI argument boots into browse at that folder. Off macOS neither

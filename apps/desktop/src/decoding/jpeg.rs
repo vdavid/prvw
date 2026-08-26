@@ -27,15 +27,18 @@ pub(super) fn decode(
     let cursor = std::io::Cursor::new(bytes);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(cursor, options);
 
-    let mut rgba = decoder
-        .decode()
-        .map_err(|e| format!("Couldn't decode JPEG {}: {e}", path.display()))?;
+    let mut rgba = decoder.decode().map_err(|e| {
+        format!(
+            "Couldn't decode JPEG {}: {e}",
+            crate::paths::for_display(path)
+        )
+    })?;
 
     let icc_profile = decoder.icc_profile();
 
     let info = decoder
         .info()
-        .ok_or_else(|| format!("No image info for {}", path.display()))?;
+        .ok_or_else(|| format!("No image info for {}", crate::paths::for_display(path)))?;
 
     let width = info.width as u32;
     let height = info.height as u32;

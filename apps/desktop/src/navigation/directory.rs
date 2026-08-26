@@ -1,5 +1,6 @@
 use crate::decoding;
 use crate::navigation::sort::{SortBy, sort_files};
+use crate::paths;
 use std::path::{Path, PathBuf};
 
 /// Tracks the list of image files in a directory and the current position.
@@ -33,10 +34,7 @@ impl DirectoryList {
             return None;
         }
 
-        let current_index = files
-            .iter()
-            .position(|f| f.canonicalize().ok().as_ref() == Some(&canonical_target))
-            .unwrap_or(0);
+        let current_index = index_of(&files, dir, &canonical_target).unwrap_or(0);
 
         log::info!(
             "Scanned directory: {} images in {}",
@@ -69,7 +67,7 @@ impl DirectoryList {
     pub fn from_explicit(mut files: Vec<PathBuf>, sort_by: SortBy, current: Option<&Path>) -> Self {
         sort_files(&mut files, sort_by);
         let current_index = current
-            .and_then(|target| files.iter().position(|f| f == target))
+            .and_then(|target| files.iter().position(|f| paths::same_path(f, target)))
             .unwrap_or(0);
         log::info!("Using explicit file list: {} images", files.len());
         if let Some(file) = files.get(current_index) {
@@ -320,6 +318,45 @@ pub enum Direction {
     Unknown,
 }
 
+/// Which entry of `files` is `canonical_target`? `files` all came from `read_dir(dir)`, so they
+/// share one parent and the whole question splits in two: is `dir` the target's folder, and which
+/// name in it is the target's. That's at most one `canonicalize` plus a name comparison each.
+///
+/// The obvious loop canonicalizes every entry instead, and it sits on the launch path. On APFS
+/// that's a `realpath` per file; on Windows it's a `CreateFileW` + `GetFinalPathNameByHandleW`
+/// per file, and over SMB a network round trip per file. Opening an image in the middle of a
+/// 5,000-file folder measured 29 ms that way against 0.09 ms this way, on a local APFS disk where
+/// the call is cheapest: `docs/notes/directory-index-lookup.md`.
+///
+/// The per-entry scan stays as the fallback, because it answers the one case names can't: a
+/// symlink pointing at a file in another folder, whose real name isn't in `dir` at all. Reaching
+/// it costs what the old code always cost, and only a symlinked or vanished target reaches it.
+fn index_of(files: &[PathBuf], dir: &Path, canonical_target: &Path) -> Option<usize> {
+    if canonical_target
+        .parent()
+        .is_some_and(|folder| is_same_folder(dir, folder))
+        && let Some(index) = files
+            .iter()
+            .position(|f| paths::same_file_name(f, canonical_target))
+    {
+        return Some(index);
+    }
+    files.iter().position(|f| {
+        f.canonicalize()
+            .is_ok_and(|resolved| paths::same_path(&resolved, canonical_target))
+    })
+}
+
+/// Is `dir` the folder `canonical` names? Free when the caller already passed a canonical path,
+/// which every launch path does; one `canonicalize` when it didn't (a symlinked parent, the
+/// `/var` -> `/private/var` that every macOS temp directory sits behind).
+fn is_same_folder(dir: &Path, canonical: &Path) -> bool {
+    paths::same_path(dir, canonical)
+        || dir
+            .canonicalize()
+            .is_ok_and(|resolved| paths::same_path(&resolved, canonical))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +437,41 @@ mod tests {
             "cherry.gif"
         );
         assert_eq!(list.current_index(), 2);
+    }
+
+    /// The case the per-entry fallback exists for: the opened path is a symlink into another
+    /// folder, so the target's real name isn't among this folder's entries and only resolving
+    /// each one finds it.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_into_another_folder_still_lands_on_the_link() {
+        let real = create_test_dir();
+        let links = tempfile::tempdir().unwrap();
+        // One image of its own, plus a link named later in sort order than that one.
+        std::fs::write(links.path().join("apple.jpg"), b"x").unwrap();
+        let link = links.path().join("zebra.gif");
+        std::os::unix::fs::symlink(real.path().join("cherry.gif"), &link).unwrap();
+
+        let list = DirectoryList::from_file(&link, SortBy::Name).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.current(), link, "the link is where the viewer is");
+        assert_eq!(list.current_index(), 1);
+    }
+
+    /// Nothing to find is not a panic and not a wrong answer: the list opens at the top, the way
+    /// a folder played from the start does.
+    #[test]
+    fn a_target_that_left_the_folder_opens_at_the_first_image() {
+        let dir = create_test_dir();
+        let gone = dir.path().join("cherry.gif");
+        let list = DirectoryList::from_file(&gone, SortBy::Name).unwrap();
+        assert_eq!(list.current_index(), 2);
+        std::fs::remove_file(&gone).unwrap();
+        let list = DirectoryList::from_file(&gone, SortBy::Name);
+        assert!(
+            list.is_none(),
+            "a target that can't be resolved has no list"
+        );
     }
 
     #[test]

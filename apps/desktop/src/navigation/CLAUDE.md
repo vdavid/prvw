@@ -6,6 +6,24 @@ constants, and `ImageCache` resolves both once at construction. The cache switch
 `hdr_output` flag flips or the display's EDR headroom crosses the 1.0 boundary; doubling the budget alongside RAW
 RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in both modes.
 
+## Decision: the current image is found by name, not by canonicalizing every entry
+
+**Why:** `DirectoryList::from_file` sits on the launch path, before the first pixel. Resolving every entry to find the
+one the user opened costs a filesystem call per file: a cheap `realpath` on APFS, a `CreateFileW` +
+`GetFinalPathNameByHandleW` per file on Windows, and a network round trip per file over SMB, which is where the photo
+libraries this viewer is built for actually live.
+
+Every entry came from one `read_dir`, so they share a parent, and the question splits: settle the folder once, then
+compare names. Opening a photo in the middle of a 5,000-file folder went from 29 ms to 0.09 ms on local APFS, the
+filesystem where the old shape was cheapest. The per-entry scan is kept as the fallback for the one case names can't
+answer, a symlink into another folder, and only a symlinked or vanished target reaches it.
+
+Numbers, the Windows and SMB reasoning, and the benchmark:
+[`docs/notes/directory-index-lookup.md`](../../../../docs/notes/directory-index-lookup.md).
+
+Path comparison itself goes through `crate::paths`, never `==`, so a canonical `\\?\C:\pics\a.jpg` and the plain
+`C:\Pics\A.JPG` are one file on Windows and two names on Linux.
+
 ## Decision: the preload window is derived from the budget, never stated separately
 
 **Why:** a window wider than the budget retains is worse than a narrow one. Each preload evicts the previous one, and

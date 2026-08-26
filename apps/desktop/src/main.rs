@@ -21,6 +21,7 @@ mod menu;
 // a registry entry nothing reads any more.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod parity;
+mod paths;
 mod pixels;
 mod platform;
 mod render;

@@ -12,20 +12,21 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 
 **Infrastructure:**
 
-| Path                        | Role                                                                                             |
-| --------------------------- | ------------------------------------------------------------------------------------------------ |
-| `main.rs`                   | Thin entry: CLI, logger, event-loop setup                                                        |
-| `app.rs` + `app/`           | `App`, `ApplicationHandler`, command dispatcher, `SharedAppState`                                |
-| `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                                                      |
-| `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce + off-thread re-scan lister |
-| `input.rs`                  | Maps keys and QA keys to `AppCommand`                                                            |
-| `launch.rs`                 | What the command line asks Prvw to open: wait for a file, open a folder's images, or nothing     |
-| `logging.rs`                | `env_logger` setup, and where a console-less Windows launch writes instead                       |
-| `menu/`                     | Menu bar and context menu via `muda` (macOS, Windows), and the seam for platforms with neither   |
-| `pixels.rs`                 | `Logical` / `Physical` newtypes for coordinate types                                             |
-| `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach)           |
-| `render.rs` + `render/`     | wgpu infrastructure: renderer, text overlay, shaders                                             |
-| `scroll.rs`                 | What a wheel notch or a trackpad swipe means, per platform: zoom modifier, zoom steps, images    |
+| Path                        | Role                                                                                                  |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `main.rs`                   | Thin entry: CLI, logger, event-loop setup                                                             |
+| `app.rs` + `app/`           | `App`, `ApplicationHandler`, command dispatcher, `SharedAppState`                                     |
+| `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                                                           |
+| `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce + off-thread re-scan lister      |
+| `input.rs`                  | Maps keys and QA keys to `AppCommand`                                                                 |
+| `launch.rs`                 | What the command line asks Prvw to open: wait for a file, open a folder's images, or nothing          |
+| `logging.rs`                | `env_logger` setup, and where a console-less Windows launch writes instead                            |
+| `menu/`                     | Menu bar and context menu via `muda` (macOS, Windows), and the seam for platforms with neither        |
+| `paths.rs`                  | What "the same path" means per platform: verbatim `\\?\` prefixes, case folding, the display boundary |
+| `pixels.rs`                 | `Logical` / `Physical` newtypes for coordinate types                                                  |
+| `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach)                |
+| `render.rs` + `render/`     | wgpu infrastructure: renderer, text overlay, shaders                                                  |
+| `scroll.rs`                 | What a wheel notch or a trackpad swipe means, per platform: zoom modifier, zoom steps, images         |
 
 **Features:**
 

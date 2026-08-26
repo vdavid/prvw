@@ -1102,11 +1102,18 @@ impl App {
     ///
     /// A change matching neither role is ignored (we only watch what's on screen).
     pub(crate) fn handle_folder_changed(&mut self, folder: &Path, modified: &[PathBuf]) {
-        let is_active = self.watched_folder.as_deref() == Some(folder);
+        let is_active = self
+            .watched_folder
+            .as_deref()
+            .is_some_and(|watched| crate::paths::same_path(watched, folder));
 
         // ── Tree-structure watch: an expanded tree node changed → reload its subdirectories. ──
         #[cfg(target_os = "macos")]
-        if self.watched_tree_folders.iter().any(|p| p == folder) {
+        if self
+            .watched_tree_folders
+            .iter()
+            .any(|p| crate::paths::same_path(p, folder))
+        {
             log::debug!(
                 "Watched tree folder changed: {} — re-scanning subdirs",
                 folder.display()
@@ -1165,7 +1172,11 @@ impl App {
     /// `dir_list` is updated as below. They coincide when synced, so both fire and stay coherent.
     pub(crate) fn apply_folder_rescan(&mut self, folder: &Path, images: Vec<PathBuf>) {
         // Ignore a stale re-scan for a folder we've since navigated away from.
-        if self.watched_folder.as_deref() != Some(folder) {
+        if !self
+            .watched_folder
+            .as_deref()
+            .is_some_and(|watched| crate::paths::same_path(watched, folder))
+        {
             self.pending_modified.clear();
             return;
         }

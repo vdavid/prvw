@@ -352,7 +352,7 @@ fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>,
         .spawn(move || {
             let result = (|| {
                 let mut file = std::fs::File::open(&path_for_thread)
-                    .map_err(|e| format!("{}: {e}", path_for_thread.display()))?;
+                    .map_err(|e| format!("{}: {e}", crate::paths::for_display(&path_for_thread)))?;
                 let size = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
                 let mut buf = Vec::with_capacity(size);
                 let mut chunk = [0u8; 65536];
@@ -360,9 +360,9 @@ fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>,
                     if thread_cancelled.load(Ordering::Relaxed) {
                         return Err::<Vec<u8>, String>("cancelled".into());
                     }
-                    let n = file
-                        .read(&mut chunk)
-                        .map_err(|e| format!("{}: {e}", path_for_thread.display()))?;
+                    let n = file.read(&mut chunk).map_err(|e| {
+                        format!("{}: {e}", crate::paths::for_display(&path_for_thread))
+                    })?;
                     if n == 0 {
                         break;
                     }

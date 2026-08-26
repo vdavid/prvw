@@ -17,6 +17,7 @@ src/
 ├── logging.rs               `env_logger` setup, and where a console-less Windows launch writes instead
 ├── menu/                    Menu bar + context menu (muda) on macOS and Windows; `absent.rs` covers platforms with no menu bar
 ├── parity/                  Registries of settings, menu items, and commands + each platform's coverage (M0.5 layer 1)
+├── paths.rs                 What "the same path" means, per platform (verbatim prefixes, case, display)
 ├── pixels.rs                Logical/Physical coordinate newtypes
 ├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers, the Windows console attach and message hook)
 ├── render.rs + render/      wgpu infrastructure (renderer, text, shaders)

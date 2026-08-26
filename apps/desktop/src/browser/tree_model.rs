@@ -162,7 +162,7 @@ pub fn reveal_path_chain(roots: &[Root], target: &Path) -> Option<Vec<PathBuf>> 
     // row, not under the `/` volume row, even though both are ancestors.
     let root = roots
         .iter()
-        .filter(|r| target.starts_with(&r.path))
+        .filter(|r| crate::paths::starts_with(target, &r.path))
         .max_by_key(|r| r.path.components().count())?;
 
     // Build [root, …ancestors…, target] by walking target's ancestors up to (and including) the
@@ -170,10 +170,14 @@ pub fn reveal_path_chain(roots: &[Root], target: &Path) -> Option<Vec<PathBuf>> 
     // root, so we stop once we pass the matched root's path.
     let mut chain: Vec<PathBuf> = Vec::new();
     for ancestor in target.ancestors() {
-        chain.push(ancestor.to_path_buf());
-        if ancestor == root.path {
+        // The root goes in with the row's own spelling, never the ancestor's: on Windows the
+        // target is canonical (`\\?\C:\...`) while the root came from a drive enumeration
+        // (`C:\`), and the caller looks rows up by path.
+        if crate::paths::same_path(ancestor, &root.path) {
+            chain.push(root.path.clone());
             break;
         }
+        chain.push(ancestor.to_path_buf());
     }
     chain.reverse();
     Some(chain)
