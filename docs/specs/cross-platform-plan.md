@@ -1,7 +1,18 @@
 # Prvw: cross-platform plan (Windows first, Linux second)
 
-Status: M0 landed 2026-08-23 (`7a5a40a..7bf425f`); everything from M0.5 onward is still a proposal. Written 2026-08-23
-against `v0.15.1-2-gaefca22`, so file:line citations outside M0 predate that milestone's refactors.
+Status: M0, M0.5, and M1 steps 1 to 12, 14, and 15 have landed (M0 on 2026-08-23, the rest by 2026-08-27). Windows sits
+at 61 of 117 parity entries, up from 0. What's left in M1 is **step 13** (run the shared E2E suite on Windows), which
+needs a Windows machine or a CI push and so is blocked on hardware rather than on work, and **step 16** (Azure Trusted
+Signing), which is David's to start. M2 onward is still a proposal.
+
+Everything Windows and Linux here is **compile-verified only**:
+`./scripts/check.sh --check windows-cross --check linux-cross` type-checks and lints all three targets from one Mac, and
+it has caught real defects, but no line of this has ever executed on either OS. Treat any "works on Windows" claim in
+the milestones below as "should work" until someone runs it.
+
+Written 2026-08-23 against `v0.15.1-2-gaefca22`, so file:line citations outside M0 and M1 predate those milestones'
+refactors. Three premises in M1 were proved wrong while executing it and are corrected in place: step 5's scroll
+direction, step 6's DPI framing, and step 15's `ModifyKind` prescription.
 
 This plan answers one question: what does it take to run Prvw on Windows (and, with less priority, Linux), and in what
 order should we do it. It's written so an implementing agent can pick up any milestone without re-deriving the research.
