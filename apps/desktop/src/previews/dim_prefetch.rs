@@ -8,7 +8,7 @@
 //! ## Why this exists
 //!
 //! Without prefetching, the first navigation to any not-yet-visited
-//! index pays the cost of a synchronous ImageIO file-header read on the
+//! index pays the cost of a synchronous file-header read on the
 //! main thread. On a slow network share that's 200 ms – 1.3 s per file
 //! — which the user perceives as laggy navigation. By reading dims
 //! eagerly in the background in parallel, every navigation finds the

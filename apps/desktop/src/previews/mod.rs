@@ -86,7 +86,7 @@ fn generation_radius_for_budget(budget: usize) -> usize {
 /// A ready preview stored in the cache. Just the pixels — source
 /// dimensions are read lazily via `State::source_dimensions(index)` at
 /// display time. Caching them here was a footgun: storing them eagerly
-/// in `mark_ready` issues an ImageIO read per preview, which blocks the
+/// in `mark_ready` issues a file-header read per preview, which blocks the
 /// main thread for hundreds of milliseconds per file on network shares
 /// and stalled the *initial* image render for 10+ seconds. Lazy reads
 /// happen only for the index we're actually displaying.
@@ -275,7 +275,7 @@ impl State {
     /// `source_dimensions(index)` from `display_preview_placeholder`,
     /// which only fires for the user's actual nav target. Pre-reading
     /// here for all 38 cached previews was a 7+ second main-thread block
-    /// on network shares (ImageIO file-header read per file).
+    /// on network shares (a file-header read per file).
     pub fn mark_ready(
         &mut self,
         index: usize,
