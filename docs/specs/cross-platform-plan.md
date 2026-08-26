@@ -791,8 +791,8 @@ two sit near the end only because they're smaller.
    - **Knock-on effect:** a Win32 menu bar eats client area, so `window::resize_to_fit_image` and the auto-fit path have
      to account for the menu-bar height or images come up subtly cropped. That looks like a rendering bug and is
      actually a layout one, so check it early.
-10. **Path handling on Windows: a three-way rule, not a blanket one.** The affected sites are `main.rs:106` and `:121`
-    (every CLI path), `navigation/directory.rs:17` and `:38` (index matching), `browser/tree_model.rs:165`
+10. ✅ **Path handling on Windows: a three-way rule, not a blanket one.** The affected sites are `main.rs:106` and
+    `:121` (every CLI path), `navigation/directory.rs:17` and `:38` (index matching), `browser/tree_model.rs:165`
     (`starts_with` against roots), and `folder_watch.rs` (the watched-folder comparison against `event.path.parent()`).
     Three separate Windows behaviors collide here:
     - **Verbatim prefixes.** `Path::canonicalize` returns `\\?\C:\Users\...`, which breaks prefix matching against a
@@ -815,6 +815,25 @@ two sit near the end only because they're smaller.
       the concrete thing most likely to blow the README's 600 ms promise, and over SMB it goes from expensive to
       unusable. Compare strings against the already-canonical target instead, and benchmark it here rather than
       discovering it in M7.
+    - **Where that landed.** `src/paths.rs` holds the rule as a `PathPolicy` (case sensitivity plus Windows syntax) with
+      a constructor per platform, all three compiled into every build, so a Mac asserts Windows behaviour: 16 tests, and
+      each says which platforms it speaks for. Comparison strips a verbatim prefix on a throwaway view of the string;
+      `PathPolicy::display` strips it for good at the display boundary; nothing strips it on a path heading for the
+      filesystem, and `longPathAware` was already in `resources/prvw.manifest`. `\\?\UNC\naspi\photos` compares equal to
+      `\\naspi\photos`. Applied in `navigation/directory.rs`, `browser/tree_model.rs`, every folder-identity comparison
+      in `app.rs`, and the decode error strings that reach the window title. `main.rs` was left canonicalizing exactly
+      as it did, because keeping the verbatim form IS the rule.
+    - **`dunce` was rejected**, and it's worth writing down why so nobody re-proposes it: `simplified` is a no-op off
+      Windows, so the Windows behaviour couldn't be tested from a Mac at all, and `is_safe_to_strip_unc` accepts only
+      `Prefix::VerbatimDisk` and returns false for `\\?\UNC` outright. It solves the shell-API boundary, which has no
+      call site yet, and neither of the two boundaries that do.
+    - **The performance half is measured**, not asserted: `benchmarks/directory-index-lookup/` plus
+      `docs/notes/directory-index-lookup.md`. Opening a photo from the middle of a 5,000-image folder went from 29 ms to
+      0.09 ms on local APFS; the per-entry scan is kept as the fallback for a symlink into another folder. The Windows
+      and SMB argument in that note is a syscall count, not a measurement, and says so.
+    - **Still open, for M5:** `reveal_path_chain`'s ancestor walk uses `Path::ancestors`, which splits with the HOST's
+      separators, so its Windows shapes still can only be tested from a Windows host. Its two comparisons are on the
+      policy; the walk isn't.
 11. **Give the QA screenshot tool a Windows path.** `qa/mcp.rs:803` gates `screenshot_window`, which shells out to
     `/usr/sbin/screencapture` at `:827`. Either add a `PrintWindow` / `BitBlt` implementation, or do a **wgpu surface
     readback**, which would be portable and arguably better than either native path. Without this, agents can't do
@@ -840,13 +859,20 @@ two sit near the end only because they're smaller.
     rather than leaving the flagship feature conditional on an unowned choice. Separately, `renderer.rs:256` asks for
     `PowerPreference::LowPower`; on a Windows laptop with hybrid graphics that picks the integrated GPU, which on many
     machines isn't the one driving the display the photographer calibrated. Decide deliberately.
-15. **Fix the rename semantics in `folder_watch`.** `folder_watch.rs:57-59` documents the invariant "Creates, removes,
-    and renames are false" for `is_modify`, and `:111` implements it as `matches!(event.kind, EventKind::Modify(_))`.
-    That holds on FSEvents and breaks on Windows: `notify-8.2.0/src/windows.rs:426` maps `FILE_ACTION_RENAMED_OLD_NAME`
-    to `EventKind::Modify(ModifyKind::Name(RenameMode::From))` and `:434` maps the new name to `RenameMode::To`, so
-    **both halves of every rename land in `FolderChange.modified`**. Since temp-write-then-rename is exactly the editor
-    save pattern the coalescer was built for, the consumer gets told to re-decode a path that no longer exists on every
-    save. Match on `ModifyKind::Data` and `ModifyKind::Metadata` instead of `Modify(_)`.
+15. ✅ **Fix the rename semantics in `folder_watch`.** `folder_watch.rs:57-59` documents the invariant "Creates,
+    removes, and renames are false" for `is_modify`, and `:111` implements it as
+    `matches!(event.kind, EventKind::Modify(_))`. That holds on FSEvents and breaks on Windows:
+    `notify-8.2.0/src/windows.rs:426` maps `FILE_ACTION_RENAMED_OLD_NAME` to
+    `EventKind::Modify(ModifyKind::Name(RenameMode::From))` and `:434` maps the new name to `RenameMode::To`, so **both
+    halves of every rename land in `FolderChange.modified`**. Since temp-write-then-rename is exactly the editor save
+    pattern the coalescer was built for, the consumer gets told to re-decode a path that no longer exists on every save.
+    Match on `ModifyKind::Data` and `ModifyKind::Metadata` instead of `Modify(_)`.
+    - **Where that landed, and the one place this plan was wrong.** `Data | Metadata` is too narrow:
+      `notify-8.2.0/src/windows.rs:449` maps `FILE_ACTION_MODIFIED` (an in-place content write) to the unspecific
+      `ModifyKind::Any`, so that match would have stopped re-saved images re-decoding on Windows altogether. The rule
+      shipped is "every `Modify` except `ModifyKind::Name(_)`", which is right on all three backends.
+      `an_unspecific_modify_is_still_a_modification` pins the Windows half and `a_rename_is_never_a_modification` the
+      other, across every `RenameMode` including the two-path `Both`.
 16. **Start the Azure Trusted Signing account now**, so Microsoft's identity validation of Rymdskottkärra AB runs in
     parallel with M2 through M6 rather than blocking M7.
 
