@@ -1009,10 +1009,11 @@ impl App {
         // both the listed folder and an expanded tree node / root). Only the role that owned it for
         // the image-list watch is ending; the tree watch must persist.
         #[cfg(target_os = "macos")]
-        let old_still_tree_watched = self
-            .watched_folder
-            .as_ref()
-            .is_some_and(|old| self.watched_tree_folders.iter().any(|p| p == old));
+        let old_still_tree_watched = self.watched_folder.as_ref().is_some_and(|old| {
+            self.watched_tree_folders
+                .iter()
+                .any(|p| crate::paths::same_path(p, old))
+        });
         #[cfg(not(target_os = "macos"))]
         let old_still_tree_watched = false;
 
@@ -1062,17 +1063,30 @@ impl App {
     /// / image sequence). Removes it from the tree-watch set. No-op off the watcher.
     #[cfg(target_os = "macos")]
     pub(crate) fn unwatch_tree_folder(&mut self, folder: &Path) {
-        let Some(pos) = self.watched_tree_folders.iter().position(|p| p == folder) else {
+        let Some(pos) = self
+            .watched_tree_folders
+            .iter()
+            .position(|p| crate::paths::same_path(p, folder))
+        else {
             return;
         };
         // Roots are never unwatched.
-        if self.browser.tree_root_paths().iter().any(|r| r == folder) {
+        if self
+            .browser
+            .tree_root_paths()
+            .iter()
+            .any(|r| crate::paths::same_path(r, folder))
+        {
             return;
         }
         self.watched_tree_folders.remove(pos);
         // Keep the watch alive if it's still the active image-list folder (a folder can be both a
         // collapsed tree node and the grid's/image's folder).
-        if self.watched_folder.as_deref() == Some(folder) {
+        if self
+            .watched_folder
+            .as_deref()
+            .is_some_and(|watched| crate::paths::same_path(watched, folder))
+        {
             log::debug!(
                 "Tree-watch removed but kept (still active folder): {}",
                 folder.display()
@@ -1187,7 +1201,10 @@ impl App {
         // changed selection re-warms the prospective current image.
         #[cfg(target_os = "macos")]
         {
-            let is_grid_folder = self.browser.selected_folder() == Some(folder);
+            let is_grid_folder = self
+                .browser
+                .selected_folder()
+                .is_some_and(|selected| crate::paths::same_path(selected, folder));
             if is_grid_folder && let Some(win) = self.window.clone() {
                 let modified = self.pending_modified.clone();
                 let selection_changed =
@@ -1223,7 +1240,7 @@ impl App {
         let is_image_folder = current
             .as_deref()
             .and_then(Path::parent)
-            .map(|p| p == folder)
+            .map(|p| crate::paths::same_path(p, folder))
             .unwrap_or(false)
             // In the image-mode empty state there's no current image, but the watched folder IS
             // the (emptied) image folder — let a re-appearing image recover it.
