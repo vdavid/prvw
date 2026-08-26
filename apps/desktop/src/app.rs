@@ -5,7 +5,6 @@
 //! `execute_command` (see `executor.rs`).
 
 mod executor;
-#[cfg(target_os = "macos")]
 mod previews_hook;
 mod shared_state;
 
@@ -149,7 +148,6 @@ pub(crate) struct App {
     /// Browse mode (folder tree + preview grid) vs image viewer. Owns the native
     /// split-view handles on macOS. Starts in `Image`.
     pub(crate) browser: crate::browser::State,
-    #[cfg(target_os = "macos")]
     pub(crate) previews: crate::previews::State,
 
     // ── Cross-cutting toggles (owned by App because they don't fit one feature) ──
@@ -237,15 +235,12 @@ pub(crate) struct App {
     /// True while the image texture holds a preview placeholder
     /// (uploaded on a cache-miss before the full decode arrives).
     /// Cleared when `display_from_cache` runs with the full image.
-    #[cfg(target_os = "macos")]
     pub(crate) placeholder_active: bool,
     /// Monotonic start time for event-timeline timestamps.
-    #[cfg(target_os = "macos")]
     pub(crate) app_start: Instant,
     /// Ring buffer of recent preview-lifecycle events. Mirrored to
     /// `SharedAppState` on every `update_shared_state` so MCP clients
     /// can query the timeline after the fact. Capped at 64.
-    #[cfg(target_os = "macos")]
     pub(crate) preview_events: std::collections::VecDeque<shared_state::PreviewEvent>,
     /// `Instant::now()` captured at navigation time, keyed by target
     /// index. Used to compute "displayed after Xms" metrics for both
@@ -287,7 +282,6 @@ impl App {
             exif_overlay: exif_overlay::State::from_settings(&initial_settings),
             slideshow: slideshow::State::from_settings(&initial_settings),
             browser: crate::browser::State::new(),
-            #[cfg(target_os = "macos")]
             previews: crate::previews::State::new(),
             title_bar: initial_settings.title_bar,
             raw_flags: initial_settings.raw,
@@ -315,11 +309,8 @@ impl App {
             pending_modified: Vec::new(),
             #[cfg(target_os = "macos")]
             watched_tree_folders: Vec::new(),
-            #[cfg(target_os = "macos")]
             placeholder_active: false,
-            #[cfg(target_os = "macos")]
             app_start: Instant::now(),
-            #[cfg(target_os = "macos")]
             preview_events: std::collections::VecDeque::with_capacity(64),
             request_times: std::collections::HashMap::new(),
         }
@@ -713,14 +704,15 @@ impl App {
             self.event_loop_proxy.clone(),
         ));
 
-        // Seed the preview scheduler with the full folder so every image
-        // will get a preview in priority order (indices outside the preload
-        // window first). Done BEFORE the initial display so the async RAW path
-        // can read source dimensions (via `source_dimensions`'s synchronous
-        // fallback over `self.previews.paths`) for the pre-paint auto-fit.
-        // The scheduler is paused below, after the display sets
+        // Hand the preview state the full folder. Two things follow: the
+        // dimension prefetcher warms `(width, height)` for the window around
+        // `current` on every platform, and on macOS the scheduler queues a
+        // QuickLook preview per index in priority order (indices outside the
+        // preload window first). Done BEFORE the initial display so the async
+        // RAW path can read source dimensions (via `source_dimensions`'s
+        // synchronous fallback over `self.previews.paths`) for the pre-paint
+        // auto-fit. The scheduler is paused below, after the display sets
         // `pending_current` on the async path.
-        #[cfg(target_os = "macos")]
         if let Some(dir) = &self.navigation.dir_list {
             let paths = dir.files();
             let current = dir.current_index();
@@ -763,7 +755,6 @@ impl App {
         // Pause the preview scheduler while the initial primary decode is
         // running (the async RAW path leaves `pending_current` set). The full
         // decode's arrival in `poll_preloader` resumes it.
-        #[cfg(target_os = "macos")]
         if self.navigation.pending_current.is_some() {
             self.previews.pause();
         }
@@ -950,15 +941,12 @@ impl App {
         self.navigation.pending_current = Some(index);
         self.request_times.insert(index, Instant::now());
 
-        // Size the window from ImageIO dims (metadata-only, no decode) so it's
-        // correct before any pixels paint. macOS-only — that's where
-        // `source_dimensions` is available. On other platforms the window
-        // simply keeps its initial size until the full develop lands.
-        #[cfg(target_os = "macos")]
-        {
-            self.on_primary_decode_started();
-            self.apply_preview_auto_fit(index);
-        }
+        // Size the window from the RAW's header geometry (no develop) so it's
+        // correct before any pixels paint. `previews::metadata` reads it with
+        // the same crate that develops the file, so the number matches what
+        // lands and the window never resizes twice.
+        self.on_primary_decode_started();
+        self.apply_preview_auto_fit(index);
 
         if let Some(win) = &self.window {
             window::set_title_keeping_buttons(win, &window::window_title_loading(index, total));
@@ -1144,12 +1132,11 @@ impl App {
             modified.len()
         );
 
-        // Evict modified paths from the image cache so a re-decode picks up fresh bytes. (The
-        // preview cache eviction is macOS-only; see below.) Cheap, no I/O — safe inline.
+        // Evict modified paths from the image cache so a re-decode picks up fresh bytes. Cheap,
+        // no I/O — safe inline.
         for path in modified {
             self.navigation.image_cache.remove(path);
         }
-        #[cfg(target_os = "macos")]
         for path in modified {
             self.previews.forget_path(path);
         }
@@ -1309,13 +1296,10 @@ impl App {
     /// Re-seed the preview scheduler with the post-rescan folder + refresh the preloader's active
     /// window. Shared by the add/remove and delete-current paths.
     fn reseed_after_rescan(&mut self, current_index: usize) {
-        #[cfg(target_os = "macos")]
         if let Some(dir) = &self.navigation.dir_list {
             let paths = dir.files();
             self.previews.set_folder(paths, current_index);
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = current_index;
         self.refresh_preload_window();
     }
 
@@ -1374,7 +1358,6 @@ impl App {
             if let Some(win) = &self.window {
                 window::set_title_keeping_buttons(win, &window::window_title_loading(index, total));
             }
-            #[cfg(target_os = "macos")]
             if !self.display_preview_placeholder(index) {
                 self.apply_preview_auto_fit(index);
                 if let Some(renderer) = &mut self.renderer {
@@ -2324,11 +2307,8 @@ impl App {
             let elapsed = request_start.elapsed().as_millis();
             log::info!("Image #{current_index} displayed after {elapsed}ms (cached)");
             self.request_times.remove(&current_index);
-            #[cfg(target_os = "macos")]
-            {
-                self.on_primary_decode_settled();
-                self.on_preview_current_changed(current_index);
-            }
+            self.on_primary_decode_settled();
+            self.on_preview_current_changed(current_index);
         } else {
             // Cache miss — show "Loading…" title and mark pending.
             // The render happens in `poll_preloader` when `Ready` arrives.
@@ -2343,25 +2323,24 @@ impl App {
                     &window::window_title_loading(current_index, total),
                 );
             }
-            #[cfg(target_os = "macos")]
-            {
-                let preview_cached = self.previews.get(current_index).is_some();
-                self.record_preview_event(
-                    "nav-cache-miss",
-                    format!("from={from_index} to={current_index} preview_cached={preview_cached}"),
-                );
-                self.on_primary_decode_started();
-                self.on_preview_current_changed(current_index);
-                // Try to upload the preview placeholder — that path now
-                // also resizes the window and applies the initial zoom
-                // via `prepare_display`. If no preview is cached yet, fall
-                // back to a metadata-only auto-fit so the window still
-                // reaches the right size before pixels arrive.
-                if !self.display_preview_placeholder(current_index) {
-                    self.apply_preview_auto_fit(current_index);
-                }
-                self.needs_redraw = true;
+            let preview_cached = self.previews.get(current_index).is_some();
+            self.record_preview_event(
+                "nav-cache-miss",
+                format!("from={from_index} to={current_index} preview_cached={preview_cached}"),
+            );
+            self.on_primary_decode_started();
+            self.on_preview_current_changed(current_index);
+            // Try to upload the preview placeholder — that path now
+            // also resizes the window and applies the initial zoom
+            // via `prepare_display`. If no preview is cached yet, fall
+            // back to a metadata-only auto-fit so the window still
+            // reaches the right size before pixels arrive. Off macOS
+            // there is no QuickLook preview to upload, so the fit is the
+            // whole of it.
+            if !self.display_preview_placeholder(current_index) {
+                self.apply_preview_auto_fit(current_index);
             }
+            self.needs_redraw = true;
         }
 
         // Record navigation timing
@@ -2888,16 +2867,13 @@ impl App {
                         } else {
                             log::info!("Image #{index} displayed");
                         }
-                        #[cfg(target_os = "macos")]
-                        {
-                            let had_placeholder = self.placeholder_active;
-                            self.placeholder_active = false;
-                            self.record_preview_event(
-                                "primary-arrived",
-                                format!("index={index} had_placeholder={had_placeholder}"),
-                            );
-                            self.on_primary_decode_settled();
-                        }
+                        let had_placeholder = self.placeholder_active;
+                        self.placeholder_active = false;
+                        self.record_preview_event(
+                            "primary-arrived",
+                            format!("index={index} had_placeholder={had_placeholder}"),
+                        );
+                        self.on_primary_decode_settled();
                         // Now that the user-visible target has arrived,
                         // queue the neighbors for background pre-decode.
                         // Deferring this until now keeps the FIFO channel
@@ -2944,7 +2920,6 @@ impl App {
                         if let Some(win) = &self.window {
                             window::set_title_keeping_buttons(win, &format!("Prvw - {reason}"));
                         }
-                        #[cfg(target_os = "macos")]
                         self.on_primary_decode_settled();
                     }
                 }

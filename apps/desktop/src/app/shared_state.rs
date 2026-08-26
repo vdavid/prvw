@@ -298,11 +298,9 @@ impl App {
             .as_ref()
             .map(|d| d.files_ref())
             .unwrap_or(&[]);
-        // Previews are QuickLook-backed (macOS-only); other platforms report 0.
-        #[cfg(target_os = "macos")]
+        // Preview pixels are QuickLook-backed, so the cache is empty (and this
+        // is 0) on the platforms without it.
         let preview_bytes = self.previews.memory_bytes();
-        #[cfg(not(target_os = "macos"))]
-        let preview_bytes = 0;
         state.diagnostics_text = crate::diagnostics::build_text(
             &self.navigation.image_cache.diagnostics(),
             state.current_index,
@@ -311,6 +309,9 @@ impl App {
             preview_bytes,
         );
 
+        // The scheduler's queue is seeded everywhere, but only macOS drains it,
+        // so reporting it off macOS would show a queue that never moves. The
+        // snapshot stays at its zeroed default there.
         #[cfg(target_os = "macos")]
         {
             let status = self.previews.status();

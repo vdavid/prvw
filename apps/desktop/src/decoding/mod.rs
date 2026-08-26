@@ -217,6 +217,12 @@ pub fn is_raw_extension(ext: &str) -> bool {
     dispatch::is_raw_extension(ext)
 }
 
+/// Whether a file extension takes the fast JPEG decode path. The metadata tier
+/// reads it so its per-format routing can't drift from the decoder's.
+pub fn is_jpeg_extension(ext: &str) -> bool {
+    dispatch::is_jpeg_extension(ext)
+}
+
 /// Extract the camera's embedded JPEG preview from a RAW file as a soft,
 /// downscaled, orientation-corrected placeholder — see [`raw_preview`]. Returns
 /// `None` for non-RAW files or RAWs without an embedded preview. Fast (no RAW

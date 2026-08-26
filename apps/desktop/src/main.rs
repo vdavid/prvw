@@ -42,7 +42,11 @@ mod navigation;
 #[cfg(target_os = "macos")]
 mod onboarding;
 mod open_dialog;
-#[cfg(target_os = "macos")]
+// Two halves with different reach. `metadata` and `dim_prefetch` size the window before the first
+// pixel paints and run on every platform; the scheduler and the preview cache exist to feed
+// QuickLook, which only macOS has, so they have no consumer elsewhere until M3 gives Windows a
+// preview generator. macOS is the build that still catches a member nothing reads any more.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod previews;
 mod qa;
 mod settings;

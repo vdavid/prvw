@@ -2,9 +2,17 @@
 //!
 //! Lives here (not in `crate::previews`) because it touches `App` fields —
 //! the previews module is platform code and shouldn't know about App.
+//!
+//! Most of this is portable: the scheduler, the dimension cache, and the
+//! window auto-fit that reads it all run everywhere. Only the submission of
+//! QuickLook requests is macOS's, and it's fenced below. On the platforms
+//! without it the preview cache simply stays empty, so
+//! `display_preview_placeholder` reports "nothing to show" and every caller
+//! falls through to `apply_preview_auto_fit`.
 
 use super::App;
 use super::shared_state::PreviewEvent;
+#[cfg(target_os = "macos")]
 use objc2_core_foundation::CGSize;
 
 /// Cap of the event ring buffer. 64 is plenty for humans eyeballing a
@@ -35,6 +43,7 @@ impl App {
 /// user has browsed in Finder's gallery view hit the cache instantly. Going
 /// above 1024 effective pixels falls off the cache entirely (quicklookd
 /// renders from source each time), so 512 × Retina is the sweet spot.
+#[cfg(target_os = "macos")]
 const PREVIEW_SIZE: CGSize = CGSize {
     width: 512.0,
     height: 512.0,
@@ -44,7 +53,9 @@ impl App {
     /// Drain the preview scheduler up to its parallelism cap, submitting
     /// QL requests for each index it hands back. Called after every event
     /// that could free a slot: completion arrival, pause/resume, folder
-    /// change, navigation.
+    /// change, navigation. macOS-only: `quicklookd` is the only preview
+    /// generator Prvw has.
+    #[cfg(target_os = "macos")]
     pub(crate) fn pump_preview_requests(&mut self) {
         let scale = self
             .window
@@ -82,6 +93,7 @@ impl App {
     /// Called when a primary decode completes (success or failure).
     pub(crate) fn on_primary_decode_settled(&mut self) {
         self.previews.resume();
+        #[cfg(target_os = "macos")]
         self.pump_preview_requests();
     }
 
@@ -90,6 +102,7 @@ impl App {
     /// first.
     pub(crate) fn on_preview_current_changed(&mut self, current: usize) {
         self.previews.set_current(current);
+        #[cfg(target_os = "macos")]
         self.pump_preview_requests();
     }
 
@@ -153,11 +166,13 @@ impl App {
     }
 
     /// Auto-fit the window based on the source image dimensions of `index`,
-    /// if available via ImageIO (metadata-only, no decode). Called on cache
-    /// miss so the window reaches its final size before the preview is
-    /// painted. The full decode will later call `resize_to_fit_image`
-    /// again with the authoritative dimensions — the numbers match, so
-    /// there's no visible second resize.
+    /// read from the file's header without decoding it
+    /// (`previews::metadata`). Called on cache miss so the window reaches its
+    /// final size before the preview is painted. The full decode will later
+    /// call `resize_to_fit_image` again with the authoritative dimensions —
+    /// the numbers match, so there's no visible second resize. No-op for a
+    /// format no tier can size, which leaves the window where it was until
+    /// the decode lands: the behaviour every platform had before the tier.
     pub(crate) fn apply_preview_auto_fit(&mut self, index: usize) {
         if !self.zoom.auto_fit {
             return;
