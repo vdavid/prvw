@@ -8,9 +8,10 @@
 //! bulk copy fires hundreds of creates. So a dedicated coalescer thread debounces them
 //! (`COALESCE_WINDOW`, ~150 ms of quiet) and emits ONE `AppCommand::FolderChanged` per affected
 //! folder. Adds/removes are left for the consumer's re-scan to discover (robust against
-//! rename-saves); only `Modify`-flagged paths ride along in `modified` so a re-saved image
-//! re-decodes. The post crosses to the main thread via the global `EventLoopProxy`, never blocking
-//! it. No tokio — `std::thread` + channels, the same pattern as `navigation::preloader`.
+//! rename-saves); only in-place modifications ride along in `modified` so a re-saved image
+//! re-decodes (`raw_events_from` says why a rename isn't one). The post crosses to the main thread
+//! via the global `EventLoopProxy`, never blocking it. No tokio — `std::thread` + channels, the
+//! same pattern as `navigation::preloader`.
 //!
 //! The debounce/coalesce logic is the pure, headless-tested `Coalescer`; the thread is a thin
 //! timing shell around it.
@@ -27,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use notify::event::ModifyKind;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use winit::event_loop::EventLoopProxy;
 
@@ -42,9 +44,9 @@ pub const COALESCE_WINDOW: Duration = Duration::from_millis(150);
 pub struct FolderChange {
     /// The watched folder that changed.
     pub folder: PathBuf,
-    /// Paths inside `folder` that were flagged `Modify` (content changed in place). The consumer
-    /// evicts these from its caches and re-decodes them. Sorted + deduped. Adds/removes are NOT
-    /// here — the consumer's re-scan discovers those.
+    /// Paths inside `folder` that changed in place (content or metadata). The consumer evicts
+    /// these from its caches and re-decodes them. Sorted + deduped. Adds, removes, and renames are
+    /// NOT here — the consumer's re-scan discovers those.
     pub modified: Vec<PathBuf>,
 }
 
@@ -54,9 +56,10 @@ pub struct FolderChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawEvent {
     pub path: PathBuf,
-    /// True for `EventKind::Modify(_)` (content/metadata change). Creates, removes, and renames are
-    /// false — they're discovered by the re-scan, so the coalescer only needs to know they touched
-    /// the folder.
+    /// True for an in-place change to the file at `path`: content, metadata, or a `Modify` whose
+    /// kind the backend didn't narrow. Creates, removes, and **renames** are false. Each of those
+    /// is discovered by the re-scan, so the coalescer only needs to know they touched the folder,
+    /// and a renamed-away path would be a re-decode of something that isn't there.
     pub is_modify: bool,
 }
 
@@ -65,7 +68,7 @@ pub struct RawEvent {
 /// thread decides when to flush, which keeps this unit-testable.
 #[derive(Debug, Default)]
 pub struct Coalescer {
-    /// Per-folder accumulator: the set of `Modify`-flagged paths seen since the last flush. A
+    /// Per-folder accumulator: the set of in-place-modified paths seen since the last flush. A
     /// folder present here (even with an empty set) has a pending change to emit. `BTreeMap` keeps
     /// the flush order deterministic, which the tests rely on.
     pending: BTreeMap<PathBuf, std::collections::BTreeSet<PathBuf>>,
@@ -77,7 +80,8 @@ impl Coalescer {
     }
 
     /// Fold one raw event into the pending set. The event's parent directory is the affected
-    /// folder; a `Modify` also records the path so the consumer can targeted-reload it. Events
+    /// folder; an in-place modification also records the path so the consumer can targeted-reload
+    /// it. Events
     /// whose path has no parent are ignored (can't attribute them to a watched folder).
     pub fn ingest(&mut self, event: RawEvent) {
         let Some(folder) = event.path.parent().map(Path::to_path_buf) else {
@@ -115,7 +119,18 @@ fn raw_events_from(event: &Event) -> Vec<RawEvent> {
     if matches!(event.kind, EventKind::Access(_)) {
         return Vec::new();
     }
-    let is_modify = matches!(event.kind, EventKind::Modify(_));
+    // A rename is filed under `Modify` on every backend, and it is the one `Modify` that must
+    // NOT ride along in `modified`: the old name is gone by the time the consumer would re-decode
+    // it, and the new one is what the re-scan is for. Windows makes this load-bearing rather than
+    // theoretical, because `ReadDirectoryChangesW` reports the two halves of a rename separately
+    // (`RenameMode::From` then `To`) and temp-write-then-rename is how editors save.
+    //
+    // Everything else under `Modify` counts, including the unspecific `ModifyKind::Any` that
+    // Windows reports an in-place content write as. Narrowing to `Data | Metadata` would be the
+    // tempting wrong fix: it reads well against FSEvents and stops re-saved images re-decoding on
+    // Windows entirely.
+    let is_modify =
+        matches!(event.kind, EventKind::Modify(kind) if !matches!(kind, ModifyKind::Name(_)));
     event
         .paths
         .iter()
@@ -586,5 +601,97 @@ mod tests {
         let raws = raw_events_from(&event);
         assert_eq!(raws.len(), 1);
         assert!(!raws[0].is_modify);
+    }
+
+    /// A rename is a name change, so `modified` must stay empty: the re-scan is what discovers
+    /// the old name leaving and the new one arriving. Every backend files renames under
+    /// `Modify`, which is why `Modify(_)` is the wrong test. `RenameMode::Both` carries both
+    /// paths in one event, so this also covers the multi-path shape.
+    #[test]
+    fn a_rename_is_never_a_modification() {
+        use notify::event::{EventKind, ModifyKind, RenameMode};
+        for mode in [
+            RenameMode::Any,
+            RenameMode::To,
+            RenameMode::From,
+            RenameMode::Both,
+            RenameMode::Other,
+        ] {
+            let event = Event {
+                kind: EventKind::Modify(ModifyKind::Name(mode)),
+                paths: vec![
+                    PathBuf::from("/photos/.tmp-a.jpg"),
+                    PathBuf::from("/photos/a.jpg"),
+                ],
+                attrs: Default::default(),
+            };
+            let raws = raw_events_from(&event);
+            assert_eq!(raws.len(), 2, "{mode:?}: both paths still flag the folder");
+            assert!(
+                raws.iter().all(|r| !r.is_modify),
+                "{mode:?}: a renamed-away path must not be re-decoded"
+            );
+        }
+    }
+
+    /// The save an editor actually performs: write a temp file, rename it over the original.
+    /// Windows reports that as two `Modify(Name(..))` halves and nothing else, so treating a
+    /// rename as a modification would hand the consumer a temp path that no longer exists.
+    #[test]
+    fn an_editor_save_by_rename_reports_the_folder_with_nothing_to_re_decode() {
+        use notify::event::{CreateKind, EventKind, ModifyKind, RenameMode};
+        let mut c = Coalescer::new();
+        for event in [
+            Event {
+                kind: EventKind::Create(CreateKind::File),
+                paths: vec![PathBuf::from("/photos/.tmp-a.jpg")],
+                attrs: Default::default(),
+            },
+            Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::From)),
+                paths: vec![PathBuf::from("/photos/.tmp-a.jpg")],
+                attrs: Default::default(),
+            },
+            Event {
+                kind: EventKind::Modify(ModifyKind::Name(RenameMode::To)),
+                paths: vec![PathBuf::from("/photos/a.jpg")],
+                attrs: Default::default(),
+            },
+        ] {
+            for raw in raw_events_from(&event) {
+                c.ingest(raw);
+            }
+        }
+        let changes = c.flush();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].folder, PathBuf::from("/photos"));
+        assert!(
+            changes[0].modified.is_empty(),
+            "the re-scan discovers the new name; nothing here is worth re-decoding"
+        );
+    }
+
+    /// The other half of the rule, and the reason `Modify(Data | Metadata)` is too narrow:
+    /// `ReadDirectoryChangesW` reports an in-place content write as `FILE_ACTION_MODIFIED`,
+    /// which `notify` maps to the unspecific `ModifyKind::Any`. Miss that and a re-saved image
+    /// never re-decodes on Windows.
+    #[test]
+    fn an_unspecific_modify_is_still_a_modification() {
+        use notify::event::{DataChange, EventKind, MetadataKind, ModifyKind};
+        for kind in [
+            ModifyKind::Any,
+            ModifyKind::Other,
+            ModifyKind::Data(DataChange::Content),
+            ModifyKind::Metadata(MetadataKind::WriteTime),
+        ] {
+            let event = Event {
+                kind: EventKind::Modify(kind),
+                paths: vec![PathBuf::from("/photos/a.jpg")],
+                attrs: Default::default(),
+            };
+            let raws = raw_events_from(&event);
+            assert_eq!(raws.len(), 1);
+            assert!(raws[0].is_modify, "{kind:?} changed the file in place");
+        }
     }
 }
