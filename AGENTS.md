@@ -9,10 +9,11 @@ personal use (BSL license). Website at [getprvw.com](https://getprvw.com).
 **Supported platforms.** macOS is the shipping target and the only one with the full feature set: the browse-mode AppKit
 UI, the settings and about windows, display-profile matching, QuickLook previews, and the updater are all macOS-only.
 Windows has a native menu bar with working accelerators and the cross-platform core (decode, RAW pipeline, color
-transform, settings, navigation); Linux has the core and no menu bar at all. Neither ships a release yet, and
-`docs/parity.md` is the honest per-item picture. Anything you write has to at least compile for all three: check Windows
-and Linux from this Mac with `./scripts/check.sh --check windows-cross --check linux-cross` (see below), and prefer a
-cross-platform implementation over a `#[cfg]` fence when the cost is comparable.
+transform, settings, navigation, and the header-only dimension read that sizes the window before the first pixel
+paints); Linux has the core and no menu bar at all. Neither ships a release yet, and `docs/parity.md` is the honest
+per-item picture. Anything you write has to at least compile for all three: check Windows and Linux from this Mac with
+`./scripts/check.sh --check windows-cross --check linux-cross` (see below), and prefer a cross-platform implementation
+over a `#[cfg]` fence when the cost is comparable.
 
 **Never compare paths with `==` or `Path::starts_with`.** Both are byte-wise, and on Windows the same folder arrives
 spelled three ways: `canonicalize` returns `\\?\C:\...`, argv returns whatever the user typed, and a drive enumeration

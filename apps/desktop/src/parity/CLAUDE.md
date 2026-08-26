@@ -65,6 +65,10 @@ Worth knowing before leaning on the table as if it were the whole picture:
   which is why Linux shows 34 `Missing` menu items instead of one missing menu bar. Same for the About window,
   onboarding, and browse mode. The launch empty state (`app::EmptyState`) is another one: it's a surface only the
   platforms without onboarding put up, so nothing here can gate a shared E2E test on it.
+- **Capabilities behind the chrome.** An entry names a command, a menu item, or a setting, so a platform capability that
+  isn't any of those has nowhere to live. The pre-paint window fit is the case in point: `CommandKey::AutoFitWindow`
+  reads `done` on all three platforms and always did, because it names the toggle, while sizing the window from the
+  file's header before the first pixel paints was macOS-only until M1 step 4 and the table couldn't say so.
 - **The inverse of a gate.** `SharedApp::start` can say "this test needs X", never "this test needs the platforms
   without X". A behaviour that is a fallback for the platforms missing a feature (image mode standing in for browse mode
   on a folder argument) therefore can't be expressed as a shared test, and lands as unit coverage instead.

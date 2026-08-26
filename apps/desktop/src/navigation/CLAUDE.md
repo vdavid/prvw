@@ -149,13 +149,15 @@ This was masked when neighbor preload was always-on (constant decode activity ke
 after the deferred-neighbor change reduced background work. If you add another async-result path, include the same
 `send_event` wakeup or the result will be silently delayed.
 
-## Preview placeholder (macOS)
+## Preview placeholder
 
-On a cache-miss navigation the title bar shows "Loading…" and a centered "Loading..." pill appears mid-screen. If the
-`previews` module has a cached preview for the target index, that preview is uploaded to the image texture as a blurry
-placeholder, and `apply_preview_auto_fit` resizes the window to the source dimensions (read via ImageIO, no decode)
-before any pixels paint. The full decode later replaces the placeholder when `PreloadResponse::Ready` arrives. The
-preview scheduler is paused while `pending_current.is_some()`. See `apps/desktop/src/previews/CLAUDE.md`.
+On a cache-miss navigation the title bar shows "Loading…" and a centered "Loading..." pill appears mid-screen.
+`apply_preview_auto_fit` resizes the window to the source dimensions (read from the file's header by
+`previews::metadata`, no decode) before any pixels paint, on **every** platform. On macOS, if the `previews` module also
+has a cached QuickLook preview for the target index, that preview is uploaded to the image texture as a blurry
+placeholder and carries the resize itself; elsewhere the cache is always empty, so the fit is all of it and the window
+shows black until the decode lands. The full decode later replaces the placeholder when `PreloadResponse::Ready`
+arrives. The preview scheduler is paused while `pending_current.is_some()`. See `apps/desktop/src/previews/CLAUDE.md`.
 
 ## RAW quick preview
 
@@ -167,13 +169,15 @@ the develop, and ships it as `PreloadResponse::Preview`. `poll_preloader` shows 
 deliberately downscaled (~1024 px long edge) so it reads as a soft placeholder, not a finished image: the camera's JPEG
 look differs from our develop, and the softness makes the sharp `Ready` swap read as snapping into focus rather than a
 confusing change. Not cached — purely transient. RAW-only (JPEG/generic decode fast enough not to need it). Neighbors
-never request a preview (they're never displayed yet). The `Preview` decode is cross-platform, but the _display_
-(`display_preview_placeholder`) is `#[cfg(target_os = "macos")]` — it reads the QuickLook-backed `previews` state, so
-non-macOS builds drop the `Preview` arm.
+never request a preview (they're never displayed yet). The `Preview` decode is cross-platform, but its _display_
+(`App::display_raw_preview_placeholder`) is `#[cfg(target_os = "macos")]`, so non-macOS builds drop the `Preview` arm.
+Off macOS a RAW cache-miss therefore fits the window from the header and then waits on the develop with a black frame.
+Not `display_preview_placeholder`, which is the QuickLook path and compiles everywhere; it just finds an empty cache and
+returns `false`.
 
 **Initial launch uses the same path for RAW.** `App::display_initial_image` (called from `initialize_viewer`) gates on
 `decoding::is_raw_extension`: a RAW launch mirrors the cache-miss nav flow (set `pending_current`, size the window from
-ImageIO dims via `apply_preview_auto_fit`, show "Loading…", call `prioritize_target`) so the embedded preview paints
+header dims via `apply_preview_auto_fit`, show "Loading…", call `prioritize_target`) so the embedded preview paints
 instantly instead of blocking the main thread on the ~450 ms develop. Non-RAW launches keep the synchronous
 `display_image` decode unchanged (tens of ms — an async path would only add a needless "Loading…" flash). This requires
 two ordering points in `initialize_viewer`: the preloader is stored into `navigation.preloader` and the preview folder

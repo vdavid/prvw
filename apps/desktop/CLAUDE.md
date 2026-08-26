@@ -38,7 +38,7 @@ src/
 ├── qa/                      Embedded HTTP + MCP server
 ├── settings/                JSON persistence + Settings window shell + widgets + General panel + RAW panel (Phase 3.7)
 ├── slideshow/               Timer-driven auto-advance + crossfade + Slideshow settings panel + slideshow::State
-├── previews/                macOS-only: QuickLook-backed preview preload + blurry-placeholder placeholder
+├── previews/                Header-only dimensions (all platforms) + QuickLook preview preload (macOS)
 ├── updater.rs               Auto-update
 ├── window.rs                Main viewer window: create, fullscreen, auto-fit, vibrancy
 └── zoom/                    ViewState + zoom/pan math + Zoom settings panel + zoom::State
@@ -71,9 +71,9 @@ resource id 1 is shared between the build script and the window code.
 ## Per-feature state
 
 `App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`, `browser: browser::State`, and
-(macOS) `previews: previews::State`. Each feature's runtime state lives in its own module. App only keeps truly
-cross-cutting state: handles (window, renderer, menu), launch flags (file_path, waiting_for_file, launch_directory),
-runtime input (modifiers, drag_start, etc.), and the single cross-feature toggle `title_bar`.
+`previews: previews::State`. Each feature's runtime state lives in its own module. App only keeps truly cross-cutting
+state: handles (window, renderer, menu), launch flags (file_path, waiting_for_file, launch_directory), runtime input
+(modifiers, drag_start, etc.), and the single cross-feature toggle `title_bar`.
 
 ## What a launch opens
 

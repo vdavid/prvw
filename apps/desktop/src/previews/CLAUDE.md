@@ -1,16 +1,26 @@
-# Previews (macOS-only)
+# Previews
 
-Background-generate previews for every file in the current folder so navigating to an image outside the full-decode
-preload window shows a blurry placeholder instantly instead of a blank screen. Relies on macOS's system-wide QuickLook
-preview cache (`quicklookd`), shared with Finder, Preview, and every other Mac app — no disk storage of our own.
+Two halves that share a folder list, with different reach:
 
-| File              | Purpose                                                                                                          |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `mod.rs`          | `State { scheduler, cache, dim_prefetcher, paths, current, requests }` + API + RAM-scaled byte budget + eviction |
-| `scheduler.rs`    | Pure state machine: priority-ordered queue, windowing, parallelism cap, pause/resume                             |
-| `metadata.rs`     | Three-tier dim+orientation reader (image crate / image+nom-exif / ImageIO)                                       |
-| `dim_prefetch.rs` | 16-thread parallel pool that pre-warms `(width, height)` for window indices                                      |
-| `quicklook.rs`    | QL submission worker thread + `Retained<...>` lifecycle + `CGImage → RGBA8` blit                                 |
+- **Dimensions, everywhere.** Read `(width, height)` from a file's header without decoding it, so the window can
+  auto-fit to the final image size before the first pixel paints. Runs on macOS, Windows, and Linux.
+- **Preview pixels, macOS only.** Background-generate previews for every file in the current folder so navigating to an
+  image outside the full-decode preload window shows a blurry placeholder instantly instead of a blank screen. Relies on
+  macOS's system-wide QuickLook preview cache (`quicklookd`), shared with Finder, Preview, and every other Mac app — no
+  disk storage of our own. Windows gets its own generator in M3 (`docs/specs/cross-platform-plan.md`).
+
+| File              | Purpose                                                                                                          | Platforms |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- | --------- |
+| `mod.rs`          | `State { scheduler, cache, dim_prefetcher, paths, current, requests }` + API + RAM-scaled byte budget + eviction | all       |
+| `metadata.rs`     | Four-tier dim+orientation reader (rawler / image / image+nom-exif)                                               | all       |
+| `dim_prefetch.rs` | 16-thread parallel pool that pre-warms `(width, height)` for window indices                                      | all       |
+| `scheduler.rs`    | Pure state machine: priority-ordered queue, windowing, parallelism cap, pause/resume                             | macOS     |
+| `quicklook.rs`    | QL submission worker thread + `Retained<...>` lifecycle + `CGImage → RGBA8` blit                                 | macOS     |
+
+Only `quicklook.rs` is `#[cfg]`ed out off macOS. The scheduler compiles everywhere and its queue is seeded everywhere,
+but nothing drains it without a preview generator, so `mod previews;` in `main.rs` carries a module-level dead-code
+allow off macOS — the same shape `mod parity;` uses, and for the same reason. macOS stays the build that catches a
+member nothing reads any more.
 
 ## Flow
 
@@ -36,9 +46,10 @@ preview cache (`quicklookd`), shared with Finder, Preview, and every other Mac a
 - **Raw FFI for CF / CG / ImageIO.** `objc2-*` 0.3 ships bindings for a lot but not `CGBitmapContextCreate` (only the
   new adaptive variant). The few calls we need are declared in `extern "C"` blocks locally, matching the pattern in
   `color::display_profile`.
-- **ImageIO dims before preview pixels.** `apply_preview_auto_fit` runs on cache-miss navigation to resize the window to
-  the final image size _before_ any pixels paint. The preview (and later the full decode) then fill the already-correct
-  window. No second resize when the full decode lands — the numbers match.
+- **Dimensions before pixels.** `apply_preview_auto_fit` runs on cache-miss navigation (and on a RAW launch) to resize
+  the window to the final image size _before_ any pixels paint. The preview, and later the full decode, then fill the
+  already-correct window. No second resize when the full decode lands — the numbers match, by construction: see the
+  decision below.
 - **Preview routes through the same display pipeline as full images.** `display_preview_placeholder` calls
   `App::prepare_display(source_w, source_h, false)` → `renderer.set_image(preview)` → `App::finalize_display()`, exactly
   like `display_from_cache` does for full images. The shared helpers handle window auto-fit, EDR surface state, and
@@ -115,9 +126,9 @@ worker side means we never need to share retained ObjC pointers across threads.
 dimensions for every index in the generation window (`current ± scheduler.window_radius()`) in parallel. Results land in
 an `Arc<Mutex<HashMap<usize, Dimensions>>>` that the main thread reads when a placeholder needs to display.
 
-**Why:** without this, each first-time placeholder display paid the cost of one synchronous ImageIO file-header read on
-the main thread — 200 ms – 1.3 s per file on slow SMB shares. With the prefetcher, every nav finds dims pre-cached and
-the placeholder shows in <5 ms.
+**Why:** without this, each first-time placeholder display paid the cost of one synchronous file-header read on the main
+thread — 200 ms – 1.3 s per file on slow SMB shares. With the prefetcher, every nav finds dims pre-cached and the
+placeholder shows in <5 ms.
 
 **Why 16 threads:** SMB allows ~64 outstanding requests per session (~20 concurrent file ops at ~3 ops/file). 16 keeps
 us safely under that ceiling and well above the previously-considered 8. Local SSD can go higher; iCloud Drive less. 16
@@ -131,20 +142,46 @@ cancellation.
 synchronous `metadata::read_dimensions_fast` call on the main thread — same three-tier dispatcher the workers use, just
 blocking. Result is cached back into the prefetcher's map for next time.
 
-## Three-tier dim+orientation reader
+## Four-tier dim+orientation reader
 
 `metadata::read_dimensions_fast(path)` dispatches by extension. Goal: _one_ file open per file regardless of which tier
-handles it.
+handles it, because on a slow network share each open costs ~150 ms and that dominates everything else.
 
-| Tier | Formats                        | Reader                                                                  | Why                                                                   |
-| ---- | ------------------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| 1    | PNG, GIF, BMP                  | `image::image_dimensions`                                               | No EXIF needed; tiny header; pure-Rust                                |
-| 2    | JPEG                           | open once → 64 KB buffer → `image` for dim + `nom-exif` for orientation | Both parsers run in-memory on the same buffer; single SMB RTT         |
-| 3    | RAW, HEIC, WebP, TIFF, unknown | `read_dimensions` (ImageIO)                                             | Format coverage is the priority; ImageIO handles them all in one pass |
+| Tier | Formats                    | Reader                                                                   | Why                                                                     |
+| ---- | -------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| 1    | Camera RAW                 | `rawler`, `raw_image(.., dummy = true)` + `raw_metadata`                 | Same crate that develops the file, so the crop rect matches             |
+| 2    | PNG, GIF, BMP              | `image::image_dimensions`                                                | Tiny header, and no orientation the decode honours                      |
+| 3    | JPEG (`jpg jpeg jpe jfif`) | open once → 64 KB buffer → `image` for dims + `nom-exif` for orientation | Both parsers run in-memory on the same buffer; single round trip        |
+| 4    | WebP, TIFF, anything else  | the same buffered reader, format guessed from the magic bytes            | Sizes whatever the `image` crate opens, and answers `None` for the rest |
 
-For tier 2, 64 KB is well above any JPEG's SOF + APP1/EXIF segments (typically both within the first 4 KB), so a single
-read covers both parsers. `nom_exif::parse_jpeg_exif` is deprecated in favor of the `MediaParser` API but still works
-for one-shot reads — kept with `#[allow(deprecated)]` until upstream removes it.
+Tiers 3 and 4 are one function; only the routing differs, and tier 3 exists because the extension list is worth reading
+off `decoding::dispatch` rather than matching by hand (`.jpe` and `.jfif` used to fall through to tier 4). 64 KB is well
+above any JPEG's SOF + APP1/EXIF segments, typically both within the first 4 KB. When the prefix isn't enough — a TIFF
+whose IFD sits at the end of the file, which plenty of writers produce — the reader pays a second open and lets both
+parsers seek instead.
+
+**Decision: every tier reads with the crate that decodes the format.**
+
+**Why:** the number this returns is the number the window resizes to, so it has to be the number that eventually paints.
+Sharing the decoder's parser makes that true by construction rather than by luck: the tier can only be wrong where the
+decode is also wrong, and it answers `None` exactly where the decode would fail. Two concrete cases this settles:
+
+- **RAW.** `decoding::raw` runs rawler's `CropActiveArea` and then its own `apply_default_crop`, so the develop ends on
+  `crop_area`, else `active_area`, else the full sensor. `developed_raw_dimensions` states that rule in one pure
+  function, and orientation comes from `raw_metadata(..).exif.orientation` — the same field `raw.rs` reads, because
+  rawler hard-codes `RawImage.orientation` to `Normal`.
+- **Orientation.** It comes from `nom-exif`, not from `image`'s own `ImageDecoder::orientation`, because `nom-exif` is
+  what `decoding::orientation` runs on the real decode. The two disagree on WebP, whose EXIF chunk `image` reads and
+  `nom-exif` doesn't. Following `image` there would have sized the window for a rotation the decode never applies.
+
+This is also what let the module go cross-platform. It used to route RAW, WebP, TIFF, and every unknown extension to an
+ImageIO (`CGImageSource`) tier, which is the entire reason `previews` was macOS-only. That FFI block is gone.
+
+**Cost.** The RAW tier's `dummy` parse fills in geometry without allocating a pixel buffer or running any decompression:
+179 µs warm per file on an M1 Max against roughly 1 ms for the ImageIO call it replaces (release build,
+`tests/fixtures/raw/synthetic-bayer-128.dng`). The first RAW in a session also pays ~20 ms once, for rawler's bundled
+camera database. That's a `lazy_static` shared with `decoding::raw_preview`, so a RAW open pays it either way; the tier
+just reaches it first.
 
 ## Scheduler priority order
 
@@ -185,6 +222,24 @@ cached indices, failed indices, paused flag, and parallelism cap.
 - **Cancellation semantics.** We don't cancel individual in-flight requests mid-flight. On folder change,
   `RequestTable::cancel_all` fires `cancelRequest` on every live request. Individual cancellation isn't wired because
   the scheduler's queue-based model covers the common case.
+- **`read_dimensions_fast` runs under `catch_unwind`, and it has to.** Header parsers assert on geometry that a corrupt
+  file is free to lie about: `rawler` carries an outright `panic!` on absurd dimensions and asserts that the default
+  crop nests inside the active area, and a `usize` underflow in border arithmetic panics in debug. This runs on the
+  launch path and on 16 prefetch threads, so an unguarded panic would either take the process down or leave the pool a
+  worker short for the rest of the session. `without_panicking` turns it into a `None` plus a debug log. Don't move the
+  guard down into one tier: the contract is on the dispatcher.
+- **A PNG `eXIf` chunk is the one orientation this tier can miss.** Tier 2 reads dimensions only, while
+  `decoding::generic` runs `parse_exif_orientation` over the **whole** file, and `nom-exif` does parse a PNG `eXIf`
+  chunk. So a PNG carrying a quarter turn auto-fits to the unrotated size and resizes once when the decode lands.
+  Routing PNG through the buffered reader wouldn't fix it: `eXIf` is legal after `IDAT`, which puts it past the 64 KB
+  prefix on any real photo, so a correct fix costs a second seeking pass over every PNG on the launch path. Not worth it
+  for how rare the tag is on PNG. No other tier has the gap: a JPEG's APP1 sits right behind SOI, a TIFF keeps
+  dimensions and orientation in the same IFD (so they succeed or fall back together), and neither this tier nor the
+  decode reads WebP EXIF at all.
+- **`little_exif` can't build a fixture for that.** `Metadata::write_to_file` picks the container from the extension and
+  writes PNG EXIF as a **`zTXt`** chunk, which `nom-exif` doesn't read (it takes `eXIf` and an uncompressed `tEXt` "Raw
+  profile type exif"). A round-trip through it looks like the gap is absent. Proving the case needs a hand-built `eXIf`
+  chunk, CRC and all.
 
 ## File watcher integration (live folder sync)
 

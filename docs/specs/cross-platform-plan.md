@@ -199,13 +199,10 @@ new copy for that rather than translating the macOS flow.
 `IShellItemImageFactory::GetImage` / `IThumbnailCache`: async, system-owned cache, zero disk cost to us. The scheduler,
 byte-budget cache, and dim-prefetcher are already pure, so only the submission worker changes.
 
-**Two things the module's name hides.** First, `previews` also feeds **launch-time window sizing**: `app.rs:843` gates
-`apply_preview_auto_fit` behind macOS because `source_dimensions` (`previews/mod.rs:257`, backed by
-`previews/metadata.rs`) is where the pre-decode dimensions come from. Off macOS the window keeps its initial size until
-the full RAW develop lands, which is a visible pop on the slowest open path. Second, `metadata.rs` has a three-tier
-dispatch (`metadata.rs:172-183`) and the tiers do **not** split the way you'd hope: PNG/GIF/BMP go to the `image` crate,
-JPEG to a combined read, and `_ => read_dimensions(path)` sends **RAW, HEIC, WebP, TIFF, and every unknown extension to
-ImageIO**. RAW, the format that motivates the whole thing, is on the Apple path. See M1 step 4.
+**One thing the module's name hides:** `previews` also feeds **launch-time window sizing**, through `source_dimensions`
+and `previews/metadata.rs`. Done in M1 step 4 — the tier is pure Rust on all three platforms now,
+`apply_preview_auto_fit` is un-gated, and only `quicklook.rs` is still macOS's. What's left for this section is the
+preview **pixels**.
 
 The Windows catch on the shell route: it only produces RAW thumbnails when Microsoft's Raw Image Extension is installed.
 Since Prvw already extracts embedded RAW previews itself (`decoding/raw_preview.rs`, portable), a self-hosted preview
@@ -515,7 +512,7 @@ Each milestone is independently landable and leaves `main` green on all platform
 together. It's a dependency order, and four dependencies are real:
 
 - **M0 gates everything.** Nothing else compiles or runs off macOS until it lands.
-- **M1 step 4 (the `previews::metadata` Windows tier) gates M3**, and M1 step 10 (path handling) gates M5.
+- **M1 step 4 (the `previews::metadata` Windows tier) gates M3** and is done, and M1 step 10 (path handling) gates M5.
 - **M1 step 14 (pinning DX12) gates M2's HDR path**, because `ExtendedSrgbLinear` is a DX12 capability.
 - **M4's widget layer gates M5 and M6** if the answer to the UI question is (b).
 
@@ -733,15 +730,20 @@ two sit near the end only because they're smaller.
    and off macOS `App::set_view_mode` (`app.rs:1917`) calls `browser.toggle_mode()` and then stops requesting redraws.
    So pressing Enter flips the app into `ViewMode::Browse` with no visible change, changed key routing, a changed menu
    label, and `SharedAppState` reporting Browse to the QA server. Hide the menu item and make Enter a no-op off macOS.
-4. **Give `previews::metadata` a Windows tier, and fix the catch-all arm.** `app.rs:843` gates `apply_preview_auto_fit`
-   behind macOS, so a RAW launch keeps the window at its initial size until the full develop lands: a visible pop on the
-   slowest open path. There are **four** gated call sites, not one: `app.rs:846` (launch), `:1237` (the navigation
-   cache-miss path), `:1865`, and `:2221`. All four come back once the metadata tier exists. But un-gating the portable
-   tiers is **not** enough, and doing only that won't compile: `metadata.rs:172-183` routes PNG/GIF/BMP to `image`, JPEG
-   to the combined reader, and `_ => read_dimensions(path)`, the ImageIO tier, which is where RAW, HEIC, WebP, TIFF, and
-   every unknown extension land. RAW is precisely the motivating case. So: keep tiers 1 and 2, add a portable tier for
-   RAW (rawler already parses the headers, and `decoding/raw_preview.rs` is portable), and give the `_` arm a non-Apple
-   fallback.
+4. **Give `previews::metadata` a Windows tier, and fix the catch-all arm.** **Done.** The tier is pure Rust on every
+   platform, and every format it sizes now goes through the same crate that decodes it, so the number it returns is the
+   number that paints:
+   - RAW reads its header with `rawler`'s `dummy` parse and returns what the develop ends on (`crop_area`, else
+     `active_area`, else the full sensor), orientation-swapped from the decoder's EXIF. 179 µs warm per file against ~1
+     ms for the ImageIO call it replaced.
+   - The catch-all arm reads a 64 KB prefix once and parses dimensions with `image` and orientation with `nom-exif`, the
+     pair `decoding::generic` uses. `.jpe` and `.jfif` moved to the JPEG tier, which now asks `decoding::dispatch`
+     instead of matching extensions by hand.
+   - The ImageIO block is gone, which is what let `mod previews;` come off its `#[cfg]`. Three of the four
+     `apply_preview_auto_fit` call sites are un-gated; the fourth lives in `display_open_target`, which is browse mode
+     and macOS-only until M5.
+   - The dispatcher runs under `catch_unwind`: header parsers assert on geometry a corrupt file can lie about, and this
+     runs on the launch path and on 16 prefetch threads.
 5. **Fix the four mouse and trackpad defects.** All in `app.rs:3443-3486`, none of which are compile errors:
    - `app.rs:3449` gates scroll-to-zoom on `self.modifiers.super_key()`. On Windows, Super is the Windows key.
      **Ctrl+wheel is the universal zoom gesture** there, and as written it falls through to image navigation instead.
