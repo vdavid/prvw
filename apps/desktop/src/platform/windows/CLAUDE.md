@@ -55,6 +55,18 @@ and is where the tests are: they're pure functions on purpose, so a Mac can chec
 - `PrintWindow` asks the window to draw itself, so an occluded, unfocused, or partly off-screen window still comes back
   whole, and it costs the renderer nothing on the hot path.
 
+## Decision: a path with no legal shell form loses the file, not the copy
+
+**Decision:** `CF_HDROP` carries the path only when `clipboard::shell_path` can produce a plain Win32 spelling of it.
+Otherwise the clipboard gets the pixels and no file list.
+
+**Why:** `src/paths.rs` keeps the `\\?\` prefix on every path the app carries, because that prefix is what lifts
+`MAX_PATH`, and it names the shell as the one boundary where the prefix has to come off. Taking it off puts the path
+back under every limit it was lifting, so a path past 260 characters, a component ending in a dot or a space, or a DOS
+device name (`NUL.jpg` is the null device) would be handed to Explorer and quietly resolve to something else. That
+module says the first shell call site owns this rule; `CF_HDROP` is it. Fold the helper into `paths.rs` when it next
+gets touched — it belongs there, and there was no shell caller when it was written.
+
 ## Gotcha: `GlobalUnlock` reports failure on success
 
 **Gotcha:** `GlobalUnlock` returns false with `GetLastError() == NO_ERROR` when the lock count reaches zero, which is

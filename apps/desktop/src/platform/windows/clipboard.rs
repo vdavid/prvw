@@ -143,7 +143,11 @@ fn write(path: &Path, bitmaps: Option<&WindowsBitmaps>) -> Result<(), String> {
     unsafe { EmptyClipboard() }.map_err(|err| format!("EmptyClipboard failed: {err}"))?;
 
     let mut offered = 0;
-    if let Some(block) = GlobalBlock::holding(&clipboard::hdrop(&[path])) {
+    // No file list when the path has no shell form (`clipboard::shell_path` says when). The
+    // pixels below still go up, so the copy is worth less rather than being lost.
+    if let Some(list) = clipboard::hdrop(&[path])
+        && let Some(block) = GlobalBlock::holding(&list)
+    {
         offered += u32::from(block.give_to_clipboard(CF_HDROP.0.into()));
         // Only meaningful next to CF_HDROP, and only to Explorer: it's the difference between a
         // paste that copies the file and one that moves it.
