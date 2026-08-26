@@ -5,10 +5,34 @@ the renderer's uniform buffer via `crate::zoom::view::TransformUniform`.
 
 | File           | Purpose                                                                                       |
 | -------------- | --------------------------------------------------------------------------------------------- |
+| `gpu.rs`       | Which backend and which adapter this platform asks wgpu for, as a pure policy                 |
 | `renderer.rs`  | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback |
 | `text.rs`      | `glyphon`-based text layout and rendering for the overlay pill                                |
 | `shader.wgsl`  | Image-quad vertex/fragment shader with a 2D affine transform                                  |
 | `overlay.wgsl` | Rounded-rect pill shader for the title overlay                                                |
+
+## Decision: the backend is pinned per platform, with a wider fallback
+
+`gpu.rs` names the backend each platform asks for (Metal, DX12, Vulkan), and `acquire_gpu` in `renderer.rs` tries it
+first and a `PRIMARY | SECONDARY` instance second.
+
+**Why:** left to `Backends::all()`, wgpu registers Vulkan before DX12 and breaks device-type ties by that order, so on
+Windows the same GPU comes back as a Vulkan adapter. HDR output is `SurfaceColorSpace::ExtendedSrgbLinear`, a DXGI
+swapchain colour space with no Vulkan equivalent, so the flagship feature would have depended on whether a machine
+happened to have a Vulkan driver. The fallback is there because a viewer that shows nothing is worse than one without
+HDR; taking it logs a `warn` naming what it cost. Each attempt builds its own `Instance` and `Surface`, because the
+backend set is fixed at instance creation. Evidence, with line numbers into the wgpu sources:
+[docs/notes/gpu-adapter-selection.md](../../../../docs/notes/gpu-adapter-selection.md).
+
+## Decision: `PowerPreference` is `LowPower` on macOS and Linux, `None` on Windows
+
+**Why:** Prvw transforms pixels on the CPU and draws one quad on demand, so the adapter costs almost nothing either way.
+What's left is which GPU gets woken and which one is wired to the monitor. `LowPower` keeps a dual-GPU Intel Mac off its
+discrete card. On Windows it would be wrong in both directions: `LowPower` takes the integrated GPU on a desktop whose
+monitor hangs off a discrete card (a photographer's normal setup, and M2 enumerates HDR outputs per adapter), and
+`HighPerformance` wakes a laptop's discrete GPU for a still image. `None` is the only value that skips wgpu's sort,
+leaving `IDXGIFactory1::EnumAdapters1` order standing, and that call documents its first entry as the adapter driving
+the primary display.
 
 ## Key patterns
 

@@ -1,3 +1,4 @@
+use super::gpu::GpuPolicy;
 use super::text::{GlyphonRenderer, StandalonePill, TextBlock};
 use crate::decoding::{DecodedImage, PixelBuffer};
 use crate::histogram::HistogramData;
@@ -229,6 +230,66 @@ fn build_overlay_pipeline(
     })
 }
 
+/// Get a surface and an adapter by following the host's [`GpuPolicy`].
+///
+/// Each attempt needs its own `Instance`, because the backend set is fixed when the instance is
+/// built, and its own `Surface`, because a surface belongs to the instance that made it. Both are
+/// cheap, and only a machine whose preferred backend is missing ever builds a second pair.
+async fn acquire_gpu(
+    window: Arc<Window>,
+    policy: &GpuPolicy,
+) -> (wgpu::Surface<'static>, wgpu::Adapter) {
+    let mut trouble: Vec<String> = Vec::new();
+
+    for (index, request) in policy.attempts().enumerate() {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: request.backends,
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+        });
+
+        let surface = match instance.create_surface(Arc::clone(&window)) {
+            Ok(surface) => surface,
+            Err(why) => {
+                trouble.push(format!(
+                    "{:?} has no drawable surface ({why})",
+                    request.backends
+                ));
+                continue;
+            }
+        };
+
+        match instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: request.power_preference,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+        {
+            Ok(adapter) => {
+                if index > 0 {
+                    log::warn!(
+                        "No {:?} adapter on this machine, so rendering falls back to {:?}. {}",
+                        policy.preferred.backends,
+                        request.backends,
+                        policy.fallback_cost
+                    );
+                }
+                return (surface, adapter);
+            }
+            Err(why) => trouble.push(format!("{:?} exposes no adapter ({why})", request.backends)),
+        }
+    }
+
+    panic!(
+        "Prvw couldn't reach a GPU on this machine: {}",
+        trouble.join("; ")
+    );
+}
+
 impl Renderer {
     /// Create the renderer. Must be called in `resumed()` after the window exists.
     /// Uses `pollster::block_on` for the async wgpu initialization.
@@ -239,28 +300,7 @@ impl Renderer {
     async fn init_async(window: Arc<Window>) -> Self {
         let size = window.inner_size();
         let scale_factor = window.scale_factor();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            flags: wgpu::InstanceFlags::default(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            backend_options: wgpu::BackendOptions::default(),
-            display: None,
-        });
-
-        let surface = instance
-            .create_surface(window)
-            .expect("Failed to create wgpu surface");
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            })
-            .await
-            .expect("No suitable GPU adapter found");
-
-        let adapter_name = adapter.get_info().name;
+        let (surface, adapter) = acquire_gpu(window, &GpuPolicy::for_host()).await;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -323,8 +363,22 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
+        // Which adapter and which backend a machine actually ended up on is the first thing a
+        // QA report from someone else's hardware has to answer, and wgpu keeps its own version
+        // of this at `debug`. Metal leaves the driver fields empty, so they're only named when
+        // there's something in them.
+        let info = adapter.get_info();
+        let driver = match (info.driver.as_str(), info.driver_info.as_str()) {
+            ("", "") => String::new(),
+            (name, "") => format!(", driver: {name}"),
+            ("", details) => format!(", driver: {details}"),
+            (name, details) => format!(", driver: {name} {details}"),
+        };
         log::info!(
-            "GPU: {adapter_name}, surface: {}x{}, format: {:?}",
+            "GPU: {} ({:?}) via {:?}{driver}, surface: {}x{}, format: {:?}",
+            info.name,
+            info.device_type,
+            info.backend,
             config.width,
             config.height,
             surface_format
