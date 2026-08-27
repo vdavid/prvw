@@ -50,8 +50,8 @@ pub enum OpenRequest {
     Nothing,
     /// Show these images, starting at the first. One is the ordinary case.
     Images(Vec<PathBuf>),
-    /// One folder, which each platform answers differently (browse mode on macOS, the folder's
-    /// images in image mode elsewhere), exactly as a folder on the command line does.
+    /// One folder, which each platform answers differently (browse mode on macOS and Windows,
+    /// the folder's images in image mode on Linux), exactly as a folder on the command line does.
     Folder(PathBuf),
 }
 

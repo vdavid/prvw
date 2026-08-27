@@ -1470,12 +1470,11 @@ fn dropping_several_images_opens_the_first_and_lists_them_all() {
 
 #[test]
 fn dropping_a_folder_shows_that_folder() {
-    // The platforms answer this differently by design, and both answers are right: macOS opens
-    // browse mode at the folder, everywhere else its images become the image-mode list until M5
-    // builds a browser there. Same fork a folder on the command line takes, so what's shared is
-    // that the drop is answered at all — one of the two screens ends up showing the folder.
-    // Which folder the macOS tree landed on is `dropping_a_folder_browses_it` in
-    // `e2e_macos.rs`, where the harness can scope the tree's roots to keep the walk short.
+    // The platforms answer this differently by design, and both answers are right: macOS and
+    // Windows open browse mode at the folder, Linux (no browser) turns its images into the
+    // image-mode list. Same fork a folder on the command line takes, so what's shared is that
+    // the drop is answered at all — one of the two screens ends up showing the folder. Which
+    // folder the tree landed on is `dropping_a_folder_browses_it`, which needs a scoped home.
     let (dir, _first) = create_multi_image_dir(3);
     let Some(app) = SharedApp::start(&["DropToOpen"]) else {
         return;

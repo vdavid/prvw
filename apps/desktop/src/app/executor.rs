@@ -848,7 +848,7 @@ impl App {
     ///
     /// `launch::classify_open_request` decides what the paths amount to, and it's the same rule
     /// the command line follows, so dropping a folder does what passing one does: browse it on
-    /// macOS, play its images in image mode elsewhere (M5 gives the other two a browser). What
+    /// macOS and Windows, play its images in image mode on Linux, which has no browser. What
     /// Prvw can't open is ignored rather than opened and failed, so a stray text file in a
     /// dragged selection can't take the picture on screen away.
     fn open_dropped(&mut self, paths: &[std::path::PathBuf], event_loop: &ActiveEventLoop) {
