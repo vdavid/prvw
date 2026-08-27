@@ -6,8 +6,10 @@
 //! - `overlay::build` produces the visual layers: a backdrop pill, an
 //!   "Exif info" title row, and one label+value pair per data row. Every
 //!   row uses the same line pitch — section grouping is implicit in the
-//!   label names, not in vertical spacing. Hidden entirely when the
-//!   current image has no EXIF, even if the user toggled the panel on.
+//!   label names, not in vertical spacing.
+//! - An image with no EXIF gets the panel too, carrying one line that says so. The panel stays
+//!   away only while the current image isn't decoded yet, which `App::current_exif_state` is
+//!   what tells apart.
 
 pub mod overlay;
 

@@ -244,7 +244,14 @@ impl App {
             }
             AppCommand::ToggleExifInfo => {
                 self.exif_overlay.visible = !self.exif_overlay.visible;
-                log::debug!("Exif info visible: {}", self.exif_overlay.visible);
+                // `has_exif` rides along at info level so a log from a machine we can't drive
+                // says which of the two "nothing showed up" stories happened: a file with no
+                // metadata, or a panel that failed to draw one it had.
+                log::info!(
+                    "Exif info visible: {} (current image has exif: {})",
+                    self.exif_overlay.visible,
+                    self.current_image_has_exif()
+                );
                 let mut s = settings::Settings::load();
                 s.exif_visible = self.exif_overlay.visible;
                 s.save();

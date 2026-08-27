@@ -2693,12 +2693,13 @@ impl App {
             None
         };
 
-        // EXIF info overlay. Hidden when the user toggled it off OR
-        // when the current image carries no EXIF — even toggled-on,
-        // a wall of "n/a" rows would just be noise.
+        // EXIF info overlay. Hidden when the user toggled it off, or while the current image
+        // isn't decoded yet (a placeholder is on screen, or nothing is) — claiming "no Exif
+        // data" before we've read the file would be a guess. A decoded image with no EXIF DOES
+        // get the panel, saying so: see `current_exif_state`.
         if self.exif_overlay.visible
             && let Some(width) = logical_width
-            && let Some(metadata) = self.current_exif()
+            && let Some(metadata) = self.current_exif_state()
         {
             let build = exif_overlay::overlay::build(
                 metadata,
@@ -2717,13 +2718,26 @@ impl App {
         })
     }
 
-    /// EXIF metadata of the currently displayed image, if any. The cache
-    /// is the source of truth: navigation always insert-then-display, so
-    /// the current image is always cache-resident by the time we render.
-    pub(crate) fn current_exif(&self) -> Option<&decoding::ExifMetadata> {
+    /// What we know about the current image's EXIF, in three states. The cache is the source of
+    /// truth: navigation always insert-then-display, so the current image is cache-resident by
+    /// the time we render its pixels.
+    ///
+    /// - `None` — nothing is displayed, or the decode hasn't landed yet (a preview placeholder
+    ///   is on screen). We don't know, so the panel stays away rather than reporting an absence
+    ///   it hasn't checked.
+    /// - `Some(None)` — the image is decoded and carries no EXIF (PNG, GIF, BMP, a plain WebP,
+    ///   a JPEG with no APP1 segment).
+    /// - `Some(Some(_))` — the metadata itself.
+    pub(crate) fn current_exif_state(&self) -> Option<Option<&decoding::ExifMetadata>> {
         let dir = self.navigation.dir_list.as_ref()?;
         let entry = self.navigation.image_cache.peek(dir.current())?;
-        entry.exif.as_deref()
+        Some(entry.exif.as_deref())
+    }
+
+    /// EXIF metadata of the currently displayed image, if any. Collapses the "not decoded yet"
+    /// and "decoded, no EXIF" cases of [`Self::current_exif_state`] into one `None`.
+    pub(crate) fn current_exif(&self) -> Option<&decoding::ExifMetadata> {
+        self.current_exif_state().flatten()
     }
 
     /// True iff the currently displayed image has any EXIF metadata. Used

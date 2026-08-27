@@ -45,6 +45,11 @@ the renderer.
       would-be waste into a speculative prefetch when the image is still wanted. Best-effort: a tiny race (decode
       finishes the same instant cancel fires, so `send` succeeds into the buffer before the caller drops `rx`) drops one
       salvageable image rather than salvaging it. Harmless.
+- **EXIF rides on the `DecodedImage`, and the attach is portable.** `decode_with` parses the outer file bytes with
+  `parse_exif_metadata` (RAW additionally falls back to rawler's `RawMetadata` via `parse_raw_exif`) and stores the
+  result in `DecodedImage::exif`; the overlay reads it back out of the image cache. Nothing between the file bytes and
+  that field may be `#[cfg]`-fenced to one platform, and `load_image_attaches_exif_to_the_decoded_jpeg` /
+  `load_image_leaves_exif_none_for_a_png` in `mod.rs` are the anchors that say so from every host.
 - **ICC profile first, pixels second.** See the gotcha below.
 
 ## Gotchas
@@ -260,8 +265,8 @@ The RAW pipeline has two kinds of tests:
 - **Unit tests in `raw.rs`**: malformed bytes, cancellation. Cheap, always on.
 - **Golden regression test in `mod.rs` (`synthetic_dng_matches_golden`).** Runs the full `load_image` path on
   `tests/fixtures/raw/synthetic-bayer-128.dng` (a tiny synthetic DNG, ~33 KB) and compares the RGBA8 output against a
-  checked-in golden PNG via CIE76 Delta-E. Tolerances: mean < 0.5, max < 3.0. macOS-gated because `load_image` reads the
-  system sRGB ICC profile.
+  checked-in golden PNG via CIE76 Delta-E. Tolerances: mean < 0.5, max < 3.0. Runs on every platform: the target profile
+  is `color::srgb_icc_bytes()`, which `moxcms` generates rather than reading from the OS.
 
 Regenerating the golden after an intentional pipeline change:
 

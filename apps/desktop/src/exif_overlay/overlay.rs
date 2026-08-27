@@ -11,9 +11,9 @@
 //! row whose value wraps to multiple lines (long Software strings are the
 //! common case).
 //!
-//! Hidden entirely when `metadata` is empty — `parse_exif_metadata` already
-//! returns `None` in that case, so reaching `build` means there's at least
-//! one row to render.
+//! An image with no EXIF still gets a panel, carrying one line that says so. Drawing nothing
+//! would leave the user unable to tell a file without metadata from a broken feature, and that
+//! is a question the app should answer rather than the person guessing.
 
 use crate::decoding::ExifMetadata;
 use crate::histogram::overlay::PANEL_HEIGHT as HISTOGRAM_PANEL_HEIGHT;
@@ -45,6 +45,9 @@ const TEXT_COLOR_LABEL: [u8; 4] = [255, 255, 255, 145];
 
 const TITLE_TEXT: &str = "Exif info";
 
+/// The whole panel when the current image carries no EXIF. Draft copy, for David to review.
+const NO_DATA_TEXT: &str = "This image has no Exif data.";
+
 /// Width available to a row's value column, in logical points. Used both
 /// for `TextBlock.max_render_width` (so glyphon wraps long strings) and for
 /// the wrap-line count that grows the panel height to match.
@@ -52,31 +55,38 @@ fn value_column_width() -> f32 {
     PANEL_WIDTH - 2.0 * PAD_X - LABEL_COLUMN_WIDTH
 }
 
-/// Build the EXIF panel for the given image's metadata. `histogram_visible`
-/// shifts the panel down by the histogram height + an inter-panel gap; when
-/// the histogram is hidden, the EXIF panel takes the histogram's anchor.
+/// The panel's full inner width, in logical points. The no-data line spans it, having no label
+/// column to sit beside.
+fn full_width() -> f32 {
+    PANEL_WIDTH - 2.0 * PAD_X
+}
+
+/// Build the EXIF panel for the given image's metadata. `None` means the image carries no EXIF,
+/// which draws the panel with [`NO_DATA_TEXT`] in place of the rows. `histogram_visible` shifts
+/// the panel down by the histogram height + an inter-panel gap; when the histogram is hidden,
+/// the EXIF panel takes the histogram's anchor.
 pub fn build(
-    metadata: &ExifMetadata,
+    metadata: Option<&ExifMetadata>,
     window_width: Logical<f32>,
     content_offset_y: Logical<f32>,
     histogram_visible: bool,
 ) -> ExifOverlayBuild {
-    let rows = build_rows(metadata);
-    if rows.is_empty() {
-        return ExifOverlayBuild {
-            text_blocks: Vec::new(),
-            pills: Vec::new(),
-        };
-    }
+    let rows = metadata.map(build_rows).unwrap_or_default();
 
     // Measure each row's wrapped line count once, up front. Reused for both
-    // the panel-height computation and the per-row vertical advance.
+    // the panel-height computation and the per-row vertical advance. The
+    // no-data line is measured against the full inner width, since it has no
+    // label column beside it.
     let value_width = value_column_width();
     let row_lines: Vec<usize> = rows
         .iter()
         .map(|row| count_wrapped_lines(&row.value, FONT_SIZE, LINE_PITCH, value_width).max(1))
         .collect();
-    let total_data_lines: usize = row_lines.iter().sum();
+    let total_data_lines: usize = if rows.is_empty() {
+        count_wrapped_lines(NO_DATA_TEXT, FONT_SIZE, LINE_PITCH, full_width()).max(1)
+    } else {
+        row_lines.iter().sum()
+    };
 
     let panel_x = window_width.0 - PANEL_WIDTH - PANEL_MARGIN_RIGHT;
     let panel_y = if histogram_visible {
@@ -110,6 +120,21 @@ pub fn build(
     text_blocks.push(title);
 
     let mut y = panel_y + PAD_TOP + LINE_PITCH;
+
+    if rows.is_empty() {
+        let mut no_data = TextBlock::new(
+            NO_DATA_TEXT.to_string(),
+            Logical(panel_x + PAD_X),
+            Logical(y),
+        );
+        no_data.font_size = FONT_SIZE;
+        no_data.line_height = LINE_PITCH;
+        no_data.color = TEXT_COLOR_LABEL;
+        no_data.max_render_width = Some(Logical(full_width()));
+        text_blocks.push(no_data);
+        return ExifOverlayBuild { text_blocks, pills };
+    }
+
     for (row, &lines) in rows.iter().zip(row_lines.iter()) {
         let mut label_block =
             TextBlock::new(row.label.clone(), Logical(panel_x + PAD_X), Logical(y));
@@ -334,16 +359,34 @@ mod tests {
         m
     }
 
+    /// A file with no EXIF still gets a panel, saying so. Toggling the panel on and having
+    /// nothing happen at all is indistinguishable from a broken feature, and telling those two
+    /// apart is what the panel exists to do.
     #[test]
-    fn empty_metadata_yields_empty_build() {
+    fn no_metadata_still_draws_a_panel_that_says_so() {
+        let build = build(None, Logical(1000.0), Logical(0.0), false);
+        assert_eq!(build.pills.len(), 1, "the backdrop pill is still drawn");
+        assert_eq!(
+            build.text_blocks.len(),
+            2,
+            "title plus the one message line"
+        );
+        assert_eq!(build.text_blocks[0].text, TITLE_TEXT);
+        assert_eq!(build.text_blocks[1].text, NO_DATA_TEXT);
+    }
+
+    /// `parse_exif_metadata` returns `None` rather than an all-empty struct, so this shape
+    /// shouldn't reach `build` in practice. It reads as "no data" all the same.
+    #[test]
+    fn all_default_metadata_reads_as_no_data() {
         let build = build(
-            &ExifMetadata::default(),
+            Some(&ExifMetadata::default()),
             Logical(1000.0),
             Logical(0.0),
             false,
         );
-        assert!(build.text_blocks.is_empty());
-        assert!(build.pills.is_empty());
+        assert_eq!(build.text_blocks.len(), 2);
+        assert_eq!(build.text_blocks[1].text, NO_DATA_TEXT);
     }
 
     #[test]
@@ -405,7 +448,7 @@ mod tests {
             m.focal_length_mm = Some(50.0);
             m.date_taken = Some("2024-08-15 12:34:56".into());
         });
-        let build = build(&m, Logical(1200.0), Logical(0.0), true);
+        let build = build(Some(&m), Logical(1200.0), Logical(0.0), true);
         // Title + label/value pair per row.
         assert!(build.text_blocks.len() > 6);
         assert_eq!(build.pills.len(), 1);
@@ -417,7 +460,7 @@ mod tests {
             m.camera_make = Some("Canon".into());
             m.camera_model = Some("EOS R5".into());
         });
-        let build = build(&m, Logical(1200.0), Logical(0.0), false);
+        let build = build(Some(&m), Logical(1200.0), Logical(0.0), false);
         assert_eq!(build.text_blocks[0].text, "Exif info");
     }
 
@@ -427,7 +470,7 @@ mod tests {
             m.camera_make = Some("FUJIFILM".into());
             m.camera_model = Some("FinePix S7000".into());
         });
-        let build = build(&m, Logical(1200.0), Logical(0.0), false);
+        let build = build(Some(&m), Logical(1200.0), Logical(0.0), false);
         // Index 0 = title, 1 = first label, 2 = first value.
         assert_eq!(build.text_blocks[1].text, "Camera");
         assert_eq!(build.text_blocks[2].text, "FUJIFILM FinePix S7000");
@@ -444,7 +487,7 @@ mod tests {
             m.exposure_time = Some("1/250 s".into());
             m.lens_model = Some("RF 50mm F1.2".into());
         });
-        let build = build(&m, Logical(1200.0), Logical(0.0), false);
+        let build = build(Some(&m), Logical(1200.0), Logical(0.0), false);
         let expected = PAD_TOP + LINE_PITCH + 3.0 * LINE_PITCH + PAD_BOTTOM;
         assert!(
             (build.pills[0].height.0 - expected).abs() < 0.01,
@@ -467,7 +510,7 @@ mod tests {
             m.camera_model = Some("EOS R5".into());
             m.software = Some(long_software.clone());
         });
-        let build = build(&m, Logical(1200.0), Logical(0.0), false);
+        let build = build(Some(&m), Logical(1200.0), Logical(0.0), false);
 
         let value_width = value_column_width();
         let software_lines =

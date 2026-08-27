@@ -525,6 +525,69 @@ mod tests {
     use crate::color;
     use std::time::Duration;
 
+    /// A JPEG's EXIF has to survive the whole `load_image` path, not only `parse_exif_metadata`:
+    /// the overlay reads `DecodedImage::exif`, and the attach happens in `decode_with`, one
+    /// layer above the parser its own tests cover.
+    ///
+    /// Runs on every platform, which is the point. Nothing between the file bytes and
+    /// `DecodedImage::exif` may be fenced to one of them, and a `#[cfg]` that crept in here
+    /// would be invisible from a Mac until someone opened a photo on Windows.
+    #[test]
+    fn load_image_attaches_exif_to_the_decoded_jpeg() {
+        use little_exif::exif_tag::ExifTag as LeTag;
+        use little_exif::metadata::Metadata;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("with-exif.jpg");
+        image::RgbImage::from_pixel(8, 8, image::Rgb([180, 90, 60]))
+            .save(&path)
+            .expect("write JPEG");
+        let mut md = Metadata::new();
+        md.set_tag(LeTag::Make("PrvwTest".into()));
+        md.set_tag(LeTag::Model("Camera 9000".into()));
+        md.write_to_file(&path).expect("inject EXIF");
+
+        let img = load_image(
+            &path,
+            &AtomicBool::new(false),
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+            1.0,
+            None,
+        )
+        .expect("decode should succeed");
+
+        let exif = img.exif.as_deref().expect("the decode must carry the EXIF");
+        assert_eq!(exif.camera_make.as_deref(), Some("PrvwTest"));
+        assert_eq!(exif.camera_model.as_deref(), Some("Camera 9000"));
+    }
+
+    /// The other half of the contract: a format with no EXIF segment comes back with `None`,
+    /// not an all-empty `ExifMetadata`. The overlay tells the two apart, so this is what keeps
+    /// "this image has no Exif data" honest.
+    #[test]
+    fn load_image_leaves_exif_none_for_a_png() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("no-exif.png");
+        image::RgbImage::from_pixel(8, 8, image::Rgb([10, 20, 30]))
+            .save(&path)
+            .expect("write PNG");
+
+        let img = load_image(
+            &path,
+            &AtomicBool::new(false),
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+            1.0,
+            None,
+        )
+        .expect("decode should succeed");
+
+        assert!(img.exif.is_none(), "a PNG has no EXIF to attach");
+    }
+
     /// `run_decode_cancellable` must free the caller within ~10 ms of the
     /// cancel flag flipping, even though the decode closure runs much longer.
     /// This is the JPEG/generic equivalent of the RAW path's inter-stage
