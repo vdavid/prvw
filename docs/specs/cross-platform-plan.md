@@ -1,12 +1,17 @@
 # Prvw: cross-platform plan (Windows first, Linux second)
 
-Status: M0, M0.5, M2, M3, M6, and M1 steps 1 to 12, 14, and 15 have landed (M0 on 2026-08-23, the rest by 2026-08-27).
-Windows sits at 70 of 117 parity entries, up from 0. M2 moved none of them on its own, because reading the display's
-profile is a capability behind a command rather than a command, and layer 1 has nowhere to put it (see
-`src/parity/CLAUDE.md`). What's left is **M4** (the settings window, which owns 35 of the remaining entries), **M5**
-(browse mode), **M7** (distribution), plus two things outside the code: **M1 step 13** (run the shared E2E suite on
-Windows), blocked on hardware rather than on work, and **M1 step 16** (Azure Trusted Signing), which is David's to
-start.
+Status: M0, M0.5, M2, M3, M4, M6, and M1 steps 1 to 12, 14, and 15 have landed (M0 on 2026-08-23, the rest by
+2026-08-27). Windows sits at **107 of 117** parity entries, up from 0. The 4 that remain are all browse mode:
+`BrowseToggle`, `BrowseMode`, `BrowseFocus`, and `BrowseOpenSelected`. Six more are `NotApplicable` on purpose, each
+with a written reason.
+
+M2 moved no entries on its own, because reading the display's profile is a capability behind a command rather than a
+command, and layer 1 has nowhere to put it (see `src/parity/CLAUDE.md`). That gap has now been hit three times, and a
+fourth registry for capabilities behind the chrome is the open question it raises.
+
+What's left: **M5** (browse mode, the whole remainder of the table), **M7** (distribution), plus two things outside the
+code: **M1 step 13** (run the shared E2E suite on Windows), blocked on hardware rather than on work, and **M1 step 16**
+(Azure Trusted Signing), which is David's to start.
 
 Everything Windows and Linux here is **compile-verified only**:
 `./scripts/check.sh --check windows-cross --check linux-cross` type-checks and lints all three targets from one Mac, and
