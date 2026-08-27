@@ -1,2 +1,6 @@
+# Pinned to an exact version rather than `stable`: an unpinned channel resolves to whatever the
+# newest release is, so a fresh CI runner and a developer machine that hasn't run `rustup update`
+# compile with different compilers and lint with different clippys. A Rust release could then
+# redden CI with no code change. Renovate bumps this pin, respecting the 3-day release age.
 [toolchain]
-channel = "stable"
+channel = "1.98.0"
