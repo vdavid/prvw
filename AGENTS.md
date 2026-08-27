@@ -24,7 +24,9 @@ all three: check Windows and Linux from this Mac with `./scripts/check.sh --chec
 spelled three ways: `canonicalize` returns `\\?\C:\...`, argv returns whatever the user typed, and a drive enumeration
 uppercases. `src/paths.rs` owns the rule, holds each platform's policy as data so any host can test all three, and says
 where a verbatim prefix may be stripped (display and shell APIs) and where it must not (filesystem I/O, or deep
-libraries stop opening).
+libraries stop opening). **A `HashMap<PathBuf, _>` is the same mistake**, because hashing is byte-wise too: key it on
+`PathPolicy::key` instead. The browse tree's child cache was byte-keyed once, and the reveal walk sat waiting for
+children that had already arrived.
 
 The main window has two top-level screens that swap: **image mode** (the wgpu viewer) and **browse mode** (a native
 folder tree + thumbnail grid; `src/browser/`). Enter (in image mode) enters browse; `f`/`F11` keep toggling fullscreen

@@ -33,6 +33,12 @@
 //! `IShellItemImageFactory` in M3 is the next. [`PathPolicy::display`] is deliberately not this,
 //! because display always strips (a person reading an error message is never helped by `\\?\`).
 //!
+//! ## Keying a map on a path
+//!
+//! Hashing is byte-wise as well, so a `HashMap<PathBuf, _>` misses for exactly the reasons above.
+//! [`PathPolicy::key`] is the key to use: two paths share it precisely when [`PathPolicy::same_path`]
+//! calls them one file.
+//!
 //! ## Non-UTF-8 names
 //!
 //! De-verbatiming and case folding both need text, so a path that isn't valid UTF-8 falls back to
@@ -227,6 +233,42 @@ impl PathPolicy {
         a.chars()
             .flat_map(char::to_lowercase)
             .eq(b.chars().flat_map(char::to_lowercase))
+    }
+
+    /// The map key that two paths share exactly when [`same_path`](Self::same_path) calls them the
+    /// same file.
+    ///
+    /// A `HashMap<PathBuf, _>` hashes the bytes, which is the byte comparison this module exists to
+    /// replace: one folder reaches the browse tree spelled `C:\Users` (a drive enumeration),
+    /// `\\?\C:\Users` (`canonicalize`), and `C:/USERS` (what someone typed), so an entry stored
+    /// under one spelling is missed under another. Key the map on this instead.
+    ///
+    /// An `OsString` rather than a `String` so a name that isn't valid UTF-8 keeps its own bytes
+    /// and stays exact, which is [`same_path`](Self::same_path)'s own fallback.
+    pub fn key(self, path: &Path) -> std::ffi::OsString {
+        if self.byte_wise() {
+            return path.as_os_str().to_os_string();
+        }
+        let Some(text) = path.to_str() else {
+            return path.as_os_str().to_os_string();
+        };
+        let mut key = String::with_capacity(text.len() + 1);
+        // Rooted and relative paths never key alike, the same way `same_path` refuses to compare
+        // them: `\photos` is not `photos`.
+        if self.rooted(text) {
+            key.push('/');
+        }
+        for component in self.components(text) {
+            if self.case_sensitive {
+                key.push_str(component);
+            } else {
+                key.extend(component.chars().flat_map(char::to_lowercase));
+            }
+            // Every component ends with a separator, so `a\bc` can't key the same as `a\b` plus a
+            // component of `c`.
+            key.push('/');
+        }
+        key.into()
     }
 
     /// How many components `path` has under this policy's syntax. `Path::components` splits on
@@ -491,6 +533,96 @@ mod tests {
             ("Windows", PathPolicy::windows()),
             ("Linux", PathPolicy::linux()),
         ]
+    }
+
+    // ── Map keys ─────────────────────────────────────────────────────────────────────────────
+
+    /// The bug this key exists for: the browse tree stores a folder's scanned children under the
+    /// spelling `read_dir` produced, and the reveal walk looks them up under the spelling
+    /// `canonicalize` produced. A `HashMap<PathBuf, _>` misses, the walk waits for a delivery that
+    /// already arrived, and the tree sits on the drive root forever.
+    #[test]
+    fn a_windows_map_key_survives_every_spelling_of_one_folder() {
+        let windows = PathPolicy::windows();
+        let scanned = windows.key(Path::new(r"C:\Users\dave"));
+        assert_eq!(windows.key(Path::new(r"\\?\C:\Users\dave")), scanned);
+        assert_eq!(windows.key(Path::new(r"C:\USERS\Dave")), scanned);
+        assert_eq!(windows.key(Path::new("C:/Users/dave")), scanned);
+        assert_eq!(windows.key(Path::new(r"C:\Users\dave\")), scanned);
+        // A share, in both spellings `canonicalize` and an enumeration can produce.
+        assert_eq!(
+            windows.key(Path::new(r"\\?\UNC\naspi\photos\2026")),
+            windows.key(Path::new(r"\\naspi\photos\2026")),
+        );
+    }
+
+    /// The key has to separate as sharply as `same_path` does, or a lookup finds the wrong folder,
+    /// which is worse than finding none.
+    #[test]
+    fn a_map_key_still_tells_different_folders_apart() {
+        let windows = PathPolicy::windows();
+        assert_ne!(
+            windows.key(Path::new(r"C:\pics\a")),
+            windows.key(Path::new(r"C:\pics\ab")),
+        );
+        // `a\bc` must not collide with `a\b` + `c`.
+        assert_ne!(
+            windows.key(Path::new(r"C:\a\bc")),
+            windows.key(Path::new(r"C:\a\b\c")),
+        );
+        // Rooted is not relative, and one drive is not another.
+        assert_ne!(
+            windows.key(Path::new(r"\photos")),
+            windows.key(Path::new("photos")),
+        );
+        assert_ne!(
+            windows.key(Path::new(r"C:\pics")),
+            windows.key(Path::new(r"D:\pics")),
+        );
+    }
+
+    /// macOS and Linux compare byte-wise on purpose, so their keys are the path itself: folding
+    /// case there would call two files on a case-sensitive volume one file.
+    #[test]
+    fn a_case_sensitive_platform_keys_paths_by_their_own_spelling() {
+        for (name, policy) in [
+            ("macOS", PathPolicy::macos()),
+            ("Linux", PathPolicy::linux()),
+        ] {
+            let path = Path::new("/Users/dave/Pics");
+            assert_eq!(policy.key(path), path.as_os_str(), "{name}");
+            assert_ne!(
+                policy.key(path),
+                policy.key(Path::new("/Users/dave/pics")),
+                "{name} keeps case"
+            );
+        }
+    }
+
+    /// Two paths key alike exactly when the policy calls them the same file — the invariant every
+    /// map keyed on [`PathPolicy::key`] leans on.
+    #[test]
+    fn keys_agree_with_same_path_on_every_platform() {
+        let pairs = [
+            (r"C:\Users\dave", r"\\?\C:\Users\dave"),
+            (r"C:\Users\dave", r"C:\USERS\DAVE"),
+            (r"C:\Users\dave", r"C:\Users\dave\pics"),
+            (r"\\naspi\photos", r"\\?\UNC\naspi\photos"),
+            ("/Users/dave", "/Users/dave"),
+            ("/Users/dave", "/Users/Dave"),
+        ];
+        for (name, policy) in every_platform() {
+            for (left, right) in pairs {
+                let (left, right) = (Path::new(left), Path::new(right));
+                assert_eq!(
+                    policy.key(left) == policy.key(right),
+                    policy.same_path(left, right),
+                    "{name}: {} vs {}",
+                    left.display(),
+                    right.display(),
+                );
+            }
+        }
     }
 
     // ── Verbatim prefixes ────────────────────────────────────────────────────────────────────

@@ -39,6 +39,12 @@ pub enum ChildState {
 /// times the loading-overlay timer reads. Lives in the data source (`outline.rs`); split out here
 /// so the state transitions are unit-testable without AppKit.
 ///
+/// **Keyed through [`crate::paths::PathPolicy`], never on the `PathBuf`.** A `HashMap<PathBuf, _>`
+/// hashes the bytes, and one folder reaches this cache spelled two ways: a scan is requested for
+/// the tree row's path (`C:\Users`, from a drive enumeration) while the reveal walk asks about the
+/// canonicalized one (`\\?\C:\Users`). A byte-keyed map misses, so the walk waits forever for
+/// children that already arrived and the tree never leaves the drive root.
+///
 /// State machine per path: absent (`NotLoaded`) → [`ChildState::InFlight`] (via [`begin_scan`])
 /// → [`ChildState::Loaded`] (via [`complete_scan`]). A path is scanned at most once: `begin_scan`
 /// returns `false` if the path is already in flight or loaded, so the data source won't enqueue
@@ -46,18 +52,36 @@ pub enum ChildState {
 ///
 /// [`begin_scan`]: ChildCache::begin_scan
 /// [`complete_scan`]: ChildCache::complete_scan
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ChildCache {
-    states: HashMap<PathBuf, ChildState>,
+    /// How this platform decides two paths name one folder. Every map below is keyed through it.
+    policy: crate::paths::PathPolicy,
+    states: HashMap<std::ffi::OsString, ChildState>,
     /// When each in-flight scan started, so the overlay timer knows if one is overdue. Cleared
     /// for a path when its scan completes.
-    started: HashMap<PathBuf, Instant>,
+    started: HashMap<std::ffi::OsString, Instant>,
+}
+
+impl Default for ChildCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChildCache {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self::under(crate::paths::PathPolicy::HOST)
+    }
+
+    /// A cache under a named path policy, so a Mac can assert what the Windows tree will do.
+    #[must_use]
+    pub fn under(policy: crate::paths::PathPolicy) -> Self {
+        Self {
+            policy,
+            states: HashMap::new(),
+            started: HashMap::new(),
+        }
     }
 
     /// The current load state of `path`, or `None` if it hasn't been scanned yet (`NotLoaded`).
@@ -66,13 +90,13 @@ impl ChildCache {
     #[cfg(test)]
     #[must_use]
     pub fn state(&self, path: &Path) -> Option<&ChildState> {
-        self.states.get(path)
+        self.states.get(&self.policy.key(path))
     }
 
     /// Loaded children for `path`, or `None` if not yet `Loaded` (absent or in flight).
     #[must_use]
     pub fn loaded(&self, path: &Path) -> Option<&[PathBuf]> {
-        match self.states.get(path) {
+        match self.states.get(&self.policy.key(path)) {
             Some(ChildState::Loaded(children)) => Some(children),
             _ => None,
         }
@@ -83,20 +107,22 @@ impl ChildCache {
     /// is already in flight or the path is already loaded — so the same path is scanned only once.
     /// `now` is the scan's start time, recorded for the overlay timer.
     pub fn begin_scan(&mut self, path: &Path, now: Instant) -> bool {
-        if self.states.contains_key(path) {
+        let key = self.policy.key(path);
+        if self.states.contains_key(&key) {
             return false;
         }
-        self.states.insert(path.to_path_buf(), ChildState::InFlight);
-        self.started.insert(path.to_path_buf(), now);
+        self.states.insert(key.clone(), ChildState::InFlight);
+        self.started.insert(key, now);
         true
     }
 
     /// Record a finished scan: store the children and flip the path to [`ChildState::Loaded`].
     /// Clears its in-flight start time so it no longer counts toward the overlay timer.
     pub fn complete_scan(&mut self, path: &Path, children: Vec<PathBuf>) {
+        let key = self.policy.key(path);
         self.states
-            .insert(path.to_path_buf(), ChildState::Loaded(children));
-        self.started.remove(path);
+            .insert(key.clone(), ChildState::Loaded(children));
+        self.started.remove(&key);
     }
 
     /// Forget `path`'s load state so the next query re-scans it from scratch. Used by live folder
@@ -104,8 +130,9 @@ impl ChildCache {
     /// is stale, so we invalidate it and re-request a scan. Clears any in-flight start time too.
     /// A no-op for a path that was never cached.
     pub fn invalidate(&mut self, path: &Path) {
-        self.states.remove(path);
-        self.started.remove(path);
+        let key = self.policy.key(path);
+        self.states.remove(&key);
+        self.started.remove(&key);
     }
 
     /// The earliest start time among all still-in-flight scans, or `None` if none are pending.
@@ -848,6 +875,45 @@ mod tests {
 
         // begin_scan on an already-loaded path is also a no-op.
         assert!(!cache.begin_scan(path, t0 + Duration::from_secs(1)));
+    }
+
+    /// The stall that left the Windows browse tree sitting on `C:\` forever: a reveal walk asks
+    /// the cache about `\\?\C:\Users` (the chain is built from the canonicalized target), while
+    /// the scan that filled it was requested for `C:\Users` (the row's spelling, from a drive
+    /// enumeration). A `HashMap<PathBuf, _>` misses, the walk waits for a delivery that already
+    /// arrived, and the tree never descends. The cache keys through the path policy instead.
+    #[test]
+    fn child_cache_answers_whatever_spelling_the_folder_arrives_in() {
+        let mut cache = ChildCache::under(crate::paths::PathPolicy::windows());
+        let scanned = Path::new(r"C:\Users");
+        let revealed = Path::new(r"\\?\C:\Users");
+        let t0 = Instant::now();
+
+        assert!(cache.begin_scan(scanned, t0));
+        // The walk's spelling must not start a second scan of the same folder.
+        assert!(!cache.begin_scan(revealed, t0));
+
+        let children = vec![PathBuf::from(r"C:\Users\dave")];
+        cache.complete_scan(scanned, children.clone());
+        assert_eq!(
+            cache.loaded(revealed),
+            Some(children.as_slice()),
+            "the reveal walk has to see the children the scan delivered"
+        );
+        // And a live re-scan asked for under either spelling clears the same entry.
+        cache.invalidate(revealed);
+        assert_eq!(cache.loaded(scanned), None);
+    }
+
+    /// Case-sensitive platforms must not fold: two files that differ only in case are two files on
+    /// a case-sensitive volume, and the tree would serve one folder's children for the other.
+    #[test]
+    fn child_cache_keeps_case_apart_off_windows() {
+        let mut cache = ChildCache::under(crate::paths::PathPolicy::macos());
+        let t0 = Instant::now();
+        cache.begin_scan(Path::new("/Users/dave/Pics"), t0);
+        cache.complete_scan(Path::new("/Users/dave/Pics"), Vec::new());
+        assert_eq!(cache.loaded(Path::new("/Users/dave/pics")), None);
     }
 
     #[test]
