@@ -88,6 +88,11 @@ macOS. `tests/e2e/mod.rs` carries the full caveat list.
   `App::content_offset_y`. It's non-zero only where the window draws behind its own title bar, so macOS today. Overlay
   geometry hangs off it, which is why it's in the contract: a test aiming at the histogram reads it rather than assuming
   a platform's value.
+- **A window-geometry assertion has to pick an image no screen can cap.** Auto-fit sizes the window to the image but
+  never past 90% of the screen, so once the cap binds the window height stops answering to anything else: toggling the
+  title bar then rescales the image and leaves the height alone. A test opening the default 1024x1024 fixture measures
+  the cap, not the feature, on any screen shorter than about 1,173 logical pixels, which is what a GitHub macOS runner
+  (1024x768) gives it. `window::auto_fit_size` holds the rule and the host-independent tests for both branches.
 - **`GET /parity`** serves the whole parity table (settings, menu items, commands, each platform's status and any
   `NotApplicable` reason) from `parity::report`. It answers the same on every host, because the registries carry no
   `#[cfg]`.

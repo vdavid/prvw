@@ -1715,6 +1715,34 @@ pub fn grow_to_browse_minimum(window: &Window) {
     }
 }
 
+/// The logical window size auto-fit wants for an image, given the screen cap and the strip
+/// reserved above the image (the macOS title bar, zero elsewhere).
+///
+/// Apply the minimum floor first, then scale down proportionally to fit within the screen cap.
+/// Scaling must happen on the un-clamped dimensions to preserve aspect ratio: clamping first
+/// would make both axes fit independently, losing the ratio. The offset is added after scaling,
+/// since it's a fixed overhead rather than part of the image.
+///
+/// **The strip is only visible in the window height while the cap doesn't bind.** Once the image
+/// is large enough that the screen cap decides the height, the window is already as tall as it
+/// may get, so toggling the title bar keeps the height and rescales the image instead. That's the
+/// promise auto-fit makes (fill what's available, never overflow the screen), and it's what makes
+/// a window-geometry assertion about the strip depend on the screen the test runs on.
+fn auto_fit_size(
+    image_width: u32,
+    image_height: u32,
+    max_w: f64,
+    max_h: f64,
+    offset: f64,
+) -> (f64, f64) {
+    let img_w = (image_width as f64).max(MIN_WINDOW_DIM);
+    let img_h = (image_height as f64).max(MIN_WINDOW_DIM);
+    let scale = (max_w / img_w).min((max_h - offset) / img_h).min(1.0);
+    let final_w = (img_w * scale).max(MIN_WINDOW_DIM);
+    let final_h = (img_h * scale + offset).max(MIN_WINDOW_DIM);
+    (final_w, final_h)
+}
+
 /// Resize the window to fit the given image dimensions, then center it on screen.
 ///
 /// Returns the physical size the window was set to, so the caller can update the renderer
@@ -1746,15 +1774,7 @@ pub fn resize_to_fit_image(
         })
         .unwrap_or((DEFAULT_WIDTH, DEFAULT_HEIGHT));
 
-    // Apply the minimum floor first, then scale down proportionally to fit within the
-    // screen cap. Scaling must happen on the un-clamped dimensions to preserve aspect ratio —
-    // clamping first would make both axes fit independently, losing the ratio.
-    // The offset is added after scaling — it's a fixed overhead, not part of the image.
-    let img_w = (image_width as f64).max(MIN_WINDOW_DIM);
-    let img_h = (image_height as f64).max(MIN_WINDOW_DIM);
-    let scale = (max_w / img_w).min((max_h - offset) / img_h).min(1.0);
-    let final_w = (img_w * scale).max(MIN_WINDOW_DIM);
-    let final_h = (img_h * scale + offset).max(MIN_WINDOW_DIM);
+    let (final_w, final_h) = auto_fit_size(image_width, image_height, max_w, max_h, offset);
 
     let new_size = to_logical_size(Logical(final_w), Logical(final_h));
     let (pw, ph) = from_physical_size(new_size.to_physical::<u32>(scale_factor));
@@ -1880,6 +1900,50 @@ mod tests {
         let (w, h) = bounds.max_window_size();
         assert_eq!(w.0, 1920.0 * MAX_SCREEN_FRACTION);
         assert_eq!(h.0, 1080.0 * MAX_SCREEN_FRACTION);
+    }
+
+    /// The strip the macOS title bar reserves, in logical pixels.
+    const STRIP: f64 = 32.0;
+
+    /// The case the title bar toggle is meant to feel like: the window grows and shrinks by the
+    /// strip while the image keeps its size.
+    #[test]
+    fn a_small_image_gets_the_strip_on_top_of_its_own_size() {
+        let (w_on, h_on) = auto_fit_size(320, 320, 1728.0, 1005.0, STRIP);
+        let (w_off, h_off) = auto_fit_size(320, 320, 1728.0, 1005.0, 0.0);
+        assert_eq!((w_on, h_on), (320.0, 352.0));
+        assert_eq!((w_off, h_off), (320.0, 320.0));
+        assert_eq!(h_on - h_off, STRIP);
+    }
+
+    /// The case that surprises: on a screen too short for the image, the height is the cap in
+    /// both states, so the strip comes out of the image rather than out of the desktop. A test
+    /// that measures the strip through window height has to stay clear of this.
+    #[test]
+    fn a_screen_capped_window_keeps_its_height_when_the_strip_toggles() {
+        let (cap_w, cap_h) = (921.0, 691.0); // A 1024x768 screen at 90%.
+        let (_, h_on) = auto_fit_size(1024, 1024, cap_w, cap_h, STRIP);
+        let (_, h_off) = auto_fit_size(1024, 1024, cap_w, cap_h, 0.0);
+        assert_eq!(h_on, cap_h);
+        assert_eq!(h_off, cap_h);
+    }
+
+    /// Landscape images are capped on width, and then the strip is visible in the height again.
+    #[test]
+    fn a_width_capped_window_still_grows_by_the_strip() {
+        let (cap_w, cap_h) = (1000.0, 691.0);
+        let (w_on, h_on) = auto_fit_size(4000, 1000, cap_w, cap_h, STRIP);
+        let (w_off, h_off) = auto_fit_size(4000, 1000, cap_w, cap_h, 0.0);
+        assert_eq!(w_on, cap_w);
+        assert_eq!(w_off, cap_w);
+        assert_eq!(h_on - h_off, STRIP);
+    }
+
+    /// A tiny image is floored, never shrunk to nothing.
+    #[test]
+    fn a_tiny_image_gets_the_minimum_window() {
+        let (w, h) = auto_fit_size(16, 16, 1728.0, 1005.0, 0.0);
+        assert_eq!((w, h), (MIN_WINDOW_DIM, MIN_WINDOW_DIM));
     }
 
     /// A scale factor of zero would turn every bound into an infinity and every clamp into a NaN.

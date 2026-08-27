@@ -387,10 +387,25 @@ fn title_bar_toggle() {
     assert_eq!(after, new_value);
 }
 
-/// With auto-fit ON, toggling the title bar should change window height by the title bar height.
+/// Both title-bar geometry tests below open this instead of the default fixture.
+///
+/// Auto-fit caps the window at 90% of the screen, and once that cap binds the window is already
+/// as tall as it may get, so toggling the title bar keeps the height and resizes the image
+/// instead. That's the auto-fit contract working, but it makes the strip invisible in window
+/// geometry. The default 1024x1024 fixture hits the cap on a screen shorter than about 1,173
+/// logical pixels, which is every GitHub macOS runner (1024x768) and plenty of real Macs, so
+/// these tests need an image no screen can cap. 320 leaves room above the 200px minimum window
+/// dimension and needs only a 392-pixel-tall screen to stay uncapped.
+const TITLE_BAR_FIXTURE_DIM: u32 = 320;
+
+/// With auto-fit ON, toggling the title bar changes window height by the title bar height.
 #[test]
 fn title_bar_toggle_resizes_window() {
-    let Some(app) = SharedApp::start(&["TitleBar", "AutoFitWindow"]) else {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("uncappable.png");
+    create_white_image(&img_path, TITLE_BAR_FIXTURE_DIM, TITLE_BAR_FIXTURE_DIM);
+
+    let Some(app) = SharedApp::start_with_image(&["TitleBar", "AutoFitWindow"], &img_path) else {
         return;
     };
     // Title bar is ON by default, auto-fit is ON by default
@@ -402,6 +417,15 @@ fn title_bar_toggle_resizes_window() {
     // have to keep in step with `main.rs`.
     let strip = app.get_state()["content_offset_y"].as_f64().unwrap();
     assert!(strip > 0.0, "a reserved strip is what this test measures");
+
+    // Auto-fit sizes the window to the image plus the strip. Asserting the absolute height (not
+    // only the delta) is what makes a screen-capped window fail loudly here rather than silently
+    // turn the delta below into a comparison of two capped numbers.
+    assert_eq!(
+        height_on as f64,
+        TITLE_BAR_FIXTURE_DIM as f64 + strip,
+        "auto-fit should size the window to the image plus the strip, uncapped by the screen"
+    );
 
     // Toggle title bar OFF
     app.post("/title-bar", "off");
@@ -419,7 +443,13 @@ fn title_bar_toggle_resizes_window() {
 /// Zoom should stay the same when toggling the title bar (image stays same size).
 #[test]
 fn title_bar_toggle_preserves_zoom() {
-    let Some(app) = SharedApp::start(&["TitleBar"]) else {
+    // Same reason as `title_bar_toggle_resizes_window`: on a capped window the image is what
+    // resizes, so zoom would legitimately change and this test would measure the cap instead.
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("uncappable.png");
+    create_white_image(&img_path, TITLE_BAR_FIXTURE_DIM, TITLE_BAR_FIXTURE_DIM);
+
+    let Some(app) = SharedApp::start_with_image(&["TitleBar", "AutoFitWindow"], &img_path) else {
         return;
     };
     assert!(app.get_state()["title_bar"].as_bool().unwrap());
