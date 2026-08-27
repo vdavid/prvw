@@ -81,6 +81,8 @@ VIAddVersionKey "LegalCopyright" "© 2026 ${PRVW_PUBLISHER}"
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Prvw installs into your user folder, which is why it needs no administrator rights. Pick somewhere else if you'd rather."
 !insertmacro MUI_PAGE_DIRECTORY
 
+!define MUI_PAGE_HEADER_TEXT "Installing"
+!define MUI_PAGE_HEADER_SUBTEXT "Copying Prvw into place."
 !insertmacro MUI_PAGE_INSTFILES
 
 !define MUI_FINISHPAGE_TITLE "Prvw is ready"
@@ -91,6 +93,8 @@ VIAddVersionKey "LegalCopyright" "© 2026 ${PRVW_PUBLISHER}"
 
 !define MUI_UNCONFIRMPAGE_TEXT_TOP "This removes Prvw and takes its file types back out of the registry. Your photos and your Prvw settings stay where they are."
 !insertmacro MUI_UNPAGE_CONFIRM
+!define MUI_PAGE_HEADER_TEXT "Uninstalling"
+!define MUI_PAGE_HEADER_SUBTEXT "Taking Prvw back out."
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
