@@ -101,6 +101,18 @@ sign_if_configured() {
 
 sign_if_configured "$EXE"
 
+# On a Windows host this script runs under Git Bash, which hands paths around as `/d/a/...`.
+# `makensis` is a native Windows program and reads none of that, so translate with `cygpath`,
+# which only exists on the shells that need it. Everywhere else the path is already the right one.
+# The bash-side variables stay POSIX, because `[[ -f ]]` and `du` want them that way.
+to_native_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 mkdir -p "$OUT_DIR"
 OUTFILE="$OUT_DIR/PrvwSetup-$VERSION-x64.exe"
 rm -f "$OUTFILE"
@@ -109,9 +121,9 @@ echo "Packaging $OUTFILE..."
 makensis \
   -INPUTCHARSET UTF8 \
   -DPRVW_VERSION="$VERSION" \
-  -DPRVW_EXE="$EXE" \
-  -DPRVW_OUTFILE="$OUTFILE" \
-  "$INSTALLER_DIR/prvw.nsi"
+  -DPRVW_EXE="$(to_native_path "$EXE")" \
+  -DPRVW_OUTFILE="$(to_native_path "$OUTFILE")" \
+  "$(to_native_path "$INSTALLER_DIR/prvw.nsi")"
 
 if [[ ! -f "$OUTFILE" ]]; then
   echo "Error: makensis reported success but wrote no installer."

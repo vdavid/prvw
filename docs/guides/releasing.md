@@ -2,9 +2,10 @@
 
 How to release a new version of Prvw. Use the `/release` command to start.
 
-**macOS is the only platform that ships automatically.** Everything from "Prerequisites" to the end of the
-troubleshooting section is the macOS story. The Windows installer builds on demand from a Mac and isn't wired into the
-release workflow yet: [Windows](#windows) says what exists and what's left.
+**A tag ships macOS and Windows.** Everything from "Prerequisites" to the end of the troubleshooting section is the
+macOS story: three signed, notarised DMGs. Windows gets one leg of its own that builds `PrvwSetup-<version>-x64.exe` and
+attaches it to the same GitHub Release, unsigned until a certificate exists. [Windows](#windows) has that story,
+including what's still open.
 
 ## Prerequisites
 
@@ -23,15 +24,20 @@ release workflow yet: [Windows](#windows) says what exists and what's left.
 2. Pushing the `v*` tag triggers `.github/workflows/release.yml`
 3. The workflow builds aarch64, x86_64, and universal binaries
 4. Each binary is signed with hardened runtime, packaged into a DMG, notarized, and stapled
-5. A GitHub Release is created with all three DMGs attached
-6. `apps/website/public/latest.json` is regenerated (with `version`, `pub_date`, per-arch DMG URLs, and `dmgSizes` in
-   bytes) and committed to `main`, then the website redeploy webhook is fired
+5. In parallel, `windows-latest` builds `prvw.exe` and packages `PrvwSetup-<version>-x64.exe` with NSIS
+6. A GitHub Release is created with all three DMGs and the Windows installer attached
+7. `apps/website/public/latest.json` is regenerated (with `version`, `pub_date`, per-arch DMG URLs, `dmgSizes` in bytes,
+   and a `windows-x86_64` platform entry carrying its own `size`) and committed to `main`, then the website redeploy
+   webhook is fired
+
+The Windows leg gates the release the same way the macOS ones do: if it fails, no GitHub Release appears.
 
 ## Expected timing
 
-The three `Build (...)` jobs run in parallel on separate hosted runners, so wall-clock is roughly one build, not three.
-Each is ephemeral and pays a cold compile, plus sign, notarise, and staple. Apple's notarisation dominates the tail and
-varies from minutes to hours, which is why `timeout-minutes` is 150.
+The three macOS `Build (...)` jobs and the Windows one run in parallel on separate hosted runners, so wall-clock is
+roughly one build, not four. Each is ephemeral and pays a cold compile. The macOS legs then sign, notarise, and staple,
+and Apple's notarisation dominates the tail, varying from minutes to hours, which is why their `timeout-minutes` is 150.
+Windows packages instead of notarising, so its 90 is all compile and compression.
 
 The numbers previously recorded here (~7m30s per job, ~22 minutes total) were measured on the self-hosted runner with a
 warm cargo cache and don't transfer. Re-measure on the next release rather than trusting an estimate here.
@@ -69,8 +75,28 @@ killing builds.
 
 ## Windows
 
-The Windows installer is `PrvwSetup-<version>-x64.exe`, built by NSIS. `makensis` runs natively on macOS, so the whole
-artifact comes off the same Mac that cross-compiles the exe, with no Windows machine involved.
+The Windows installer is `PrvwSetup-<version>-x64.exe`, built by NSIS. Releases build it on `windows-latest`, and
+`scripts/build-windows-installer.sh` builds the same thing from a Mac on demand: `makensis` runs natively on macOS, so a
+local artifact comes off the same Mac that cross-compiles the exe, with no Windows machine involved.
+
+### In the release workflow
+
+The `Build (Windows installer)` job in `.github/workflows/release.yml` runs on `windows-latest`, and it's the same
+script the Mac runs, handed a natively built exe:
+
+1. `cargo build --release --target x86_64-pc-windows-msvc`, so no `cargo-xwin` and no `llvm-lib` shim are involved.
+2. `choco install nsis --version 3.12.0`, then `C:\Program Files (x86)\NSIS` onto `GITHUB_PATH`. The chocolatey package
+   runs the real NSIS setup, which installs into Program Files and leaves PATH alone, so `makensis` needs that line to
+   be findable. Windows Server 2022 had NSIS preinstalled; the 2025 image behind `windows-latest` doesn't.
+3. `./scripts/build-windows-installer.sh --exe target/x86_64-pc-windows-msvc/release/prvw.exe`, under `shell: bash`. The
+   runner's bash is Git Bash, which speaks `/d/a/...` paths that `makensis` can't read, so the script translates them
+   with `cygpath` before the `makensis` call.
+4. A check that `PrvwSetup-<tag version>-x64.exe` exists, which catches a tag that disagrees with
+   `apps/desktop/Cargo.toml`.
+
+The installer then rides to the release job as the `windows-installer` artifact, gets attached to the GitHub Release
+alongside the DMGs, and lands in `latest.json` as `platforms["windows-x86_64"]` with a `url` and a `size` in bytes. The
+macOS updater ignores that key: it deserializes `platforms` into a map and asks for `darwin-<arch>`.
 
 ### Build one
 
@@ -82,7 +108,7 @@ brew install makensis                     # once; apt install nsis on Linux
 
 That cross-builds `prvw.exe` with `cargo-xwin`, regenerates the file-type registration, and writes
 `target/windows-installer/PrvwSetup-<version>-x64.exe`. About 17 MB from a 36 MB executable, and a couple of minutes
-cold. Pass `--exe <path>` to package a binary someone else built, which is what a Windows release runner would do.
+cold. Pass `--exe <path>` to package a binary someone else built, which is what the release workflow's Windows leg does.
 
 The version comes from `apps/desktop/Cargo.toml` and nowhere else: the script reads it, the exe's own version info comes
 from the same field through `build.rs`, and `./scripts/check.sh --check installer` fails if `prvw.nsi` ever spells a
@@ -100,20 +126,32 @@ version out.
 
 `apps/desktop/installer/windows/CLAUDE.md` has the decisions and the gotchas.
 
-### Signing, which isn't wired up yet
+### Signing, which releases don't do yet
 
-Azure Trusted Signing is the plan (M1 step 16 in `docs/specs/cross-platform-plan.md`), and the account is David's to set
-up. The hook is already there: `scripts/build-windows-installer.sh` runs `$PRVW_WINDOWS_SIGN_CMD <file>` if that
-variable is set, once for `prvw.exe` before packaging and once for the finished installer.
+Releases ship an unsigned installer. Azure Trusted Signing is the plan (M1 step 16 in
+`docs/specs/cross-platform-plan.md`), and the account is David's to set up.
+
+The seam is one variable. `scripts/build-windows-installer.sh` runs `$PRVW_WINDOWS_SIGN_CMD <file>` when that variable
+is set, once for `prvw.exe` before packaging and once for the finished installer, and does nothing when it's empty. The
+release job passes it through from the `PRVW_WINDOWS_SIGN_CMD` **repository variable**, which doesn't exist today, so
+the env var arrives empty and the build stays unsigned:
+
+```bash
+gh variable set PRVW_WINDOWS_SIGN_CMD --body 'D:\a\sign-one-file.cmd'
+```
+
+Locally it's the same variable:
 
 ```bash
 PRVW_WINDOWS_SIGN_CMD=/path/to/sign-one-file.sh ./scripts/build-windows-installer.sh
 ```
 
-The command has to sign in place and exit non-zero on failure. Two things to know when the account exists:
+The command has to sign in place and exit non-zero on failure. Trusted Signing also needs a step ahead of the build that
+installs its dispatcher and hands it credentials from repository secrets, the way the Apple certificate import already
+works. Two more things to know when the account exists:
 
-- **Signing needs a Windows host.** `signtool` and the Trusted Signing dispatcher are Windows binaries, so the signed
-  build belongs on a `windows-latest` runner even though the unsigned one doesn't.
+- **Signing needs a Windows host**, which the release leg already is. `signtool` and the Trusted Signing dispatcher are
+  Windows binaries, so a signing command can't come from the Mac build path, only from `windows-latest`.
 - **The uninstaller stays unsigned** with a single pass. NSIS generates `Uninstall Prvw.exe` by running the installer at
   build time, so signing it means building twice: build once, run the installer with `/S` into a scratch directory to
   extract the uninstaller, sign that, then build again with the signed copy included as a plain `File`. Worth doing
@@ -124,11 +162,14 @@ their reputation bypass in 2024.
 
 ### What's left before Windows can ship
 
-1. A `windows-latest` build leg in `.github/workflows/release.yml`, running the same script with `--exe`.
-2. Trusted Signing in that leg, the way the Apple certificate import already works.
-3. `latest.json` extended to carry per-platform artifacts, and the Windows updater that reads it (M7 step 4).
-4. One pass through the installer on a real Windows box. Nothing in it has ever run; the list of what to watch is at the
+1. Trusted Signing in the build leg, through the `PRVW_WINDOWS_SIGN_CMD` variable above. Until then every download meets
+   SmartScreen with no publisher behind it.
+2. The Windows updater that reads `latest.json` (M7 step 4). The manifest already carries `windows-x86_64`; nothing on
+   Windows reads it.
+3. One pass through the installer on a real Windows box. Nothing in it has ever run; the list of what to watch is at the
    bottom of `apps/desktop/installer/windows/CLAUDE.md`.
+4. A Windows download on getprvw.com. `src/lib/download.ts` names the three `darwin-*` keys and stops there.
+5. The first tagged release since the leg landed, which is what proves any of it works. The job has never run.
 
 ## Troubleshooting
 
@@ -156,9 +197,9 @@ Use "Re-run failed jobs" (not "Re-run all jobs") to avoid rebuilding architectur
 
 ### Release job failed but builds succeeded
 
-The Release job downloads the three DMGs from artifacts, creates the GitHub Release, commits the regenerated
-`latest.json` to `main` (via `git pull --rebase origin main`), and fires the website-deploy webhook. The build artifacts
-are retained by GitHub Actions, so re-running the job is safe:
+The Release job downloads the three DMGs and the Windows installer from artifacts, creates the GitHub Release, commits
+the regenerated `latest.json` to `main` (via `git pull --rebase origin main`), and fires the website-deploy webhook. The
+build artifacts are retained by GitHub Actions, so re-running the job is safe:
 
 - **Push race:** another commit landed on `main` between the job's checkout and its push. Re-running handles this — it
   rebases first. If the rebase itself conflicts (someone else edited `latest.json`), resolve it manually.

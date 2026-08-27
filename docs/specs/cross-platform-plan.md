@@ -1217,8 +1217,9 @@ Microsoft rather than on us.
 4. **Auto-updater.** Rewrite for Windows: the rename-running-exe swap plus restart, or hand off to the installer. Reuse
    the `latest.json` manifest and version-comparison logic (portable); replace everything below it. This is where a
    Windows TLS story becomes necessary again, and Schannel via `native-tls` is the C-free choice.
-5. **Release workflow.** Add the Windows matrix legs alongside the macOS ones, and extend `latest.json` to carry
-   per-platform artifacts.
+5. **Release workflow: done, unsigned.** A `windows-latest` leg in `.github/workflows/release.yml` builds
+   `PrvwSetup-<version>-x64.exe`, attaches it to the GitHub Release beside the DMGs, and adds a `windows-x86_64` entry
+   to `latest.json`. Signing slots into it through `PRVW_WINDOWS_SIGN_CMD` (step 2), and no release has run it yet.
 
 ### M8: Linux stays green, and gets its own spec later
 

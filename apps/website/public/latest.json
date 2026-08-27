@@ -15,6 +15,10 @@
     },
     "darwin-universal": {
       "url": "https://github.com/vdavid/prvw/releases/download/v0.15.1/Prvw_0.15.1_universal.dmg"
+    },
+    "windows-x86_64": {
+      "url": "https://github.com/vdavid/prvw/releases/download/v0.15.1/PrvwSetup-0.15.1-x64.exe",
+      "size": 0
     }
   }
 }

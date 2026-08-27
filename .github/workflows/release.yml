@@ -188,9 +188,86 @@ jobs:
           echo "Keychain search list restored:"
           security list-keychains -d user
 
+  build-windows:
+    name: Build (Windows installer)
+    runs-on: windows-latest
+    # A cold release compile dominates, and Windows is the slowest of the three runners at it.
+    # NSIS's solid-LZMA pass over a 36 MB executable adds a couple of minutes after that. No
+    # notarisation, so nothing here waits on a third party the way the macOS legs do.
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # No mise: this leg needs cargo (rustup ships with the image) and makensis, and neither
+      # comes from mise. Go, node, and pnpm would only be dead weight here.
+      - name: Cache Cargo
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/registry/cache
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # Windows Server 2022 shipped NSIS preinstalled; the 2025 image behind `windows-latest`
+      # doesn't, so chocolatey supplies it. Pinned rather than floating, for the same reason
+      # cargo-nextest is pinned in ci.yml: an NSIS release shouldn't change what a release build
+      # means overnight. Bump it deliberately.
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --version 3.12.0 --yes --no-progress
+          # The package runs the real NSIS setup, which lands in Program Files and neither shims
+          # `makensis` nor touches PATH, so the build step below wouldn't find it otherwise.
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build prvw.exe
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      # Bash, because the script is: `windows-latest` carries Git Bash, and the script handles the
+      # `/d/a/...` paths that shell speaks.
+      #
+      # SIGNING SEAM: `PRVW_WINDOWS_SIGN_CMD` is the whole of it. Unset, which is the case today,
+      # the script signs nothing and the release carries an unsigned installer. Point the
+      # `PRVW_WINDOWS_SIGN_CMD` repository variable at a sign-one-file command on the runner and
+      # both `prvw.exe` and the finished installer go through it, with no other change here.
+      # Azure Trusted Signing will also want a step above this one to install its dispatcher and
+      # hand it credentials. See docs/guides/releasing.md.
+      - name: Build the installer
+        shell: bash
+        env:
+          PRVW_WINDOWS_SIGN_CMD: ${{ vars.PRVW_WINDOWS_SIGN_CMD }}
+        run: ./scripts/build-windows-installer.sh --exe target/x86_64-pc-windows-msvc/release/prvw.exe
+
+      # The installer's version comes from `apps/desktop/Cargo.toml`, the tag from git. `release.sh`
+      # writes both, so a mismatch means someone tagged by hand, and the release job would go
+      # looking for a file that isn't there. Say so here instead.
+      - name: Verify the installer matches the tag
+        shell: bash
+        run: |
+          INSTALLER="target/windows-installer/PrvwSetup-${{ steps.version.outputs.version }}-x64.exe"
+          if [[ ! -f "$INSTALLER" ]]; then
+            echo "No $INSTALLER. The version in apps/desktop/Cargo.toml doesn't match tag $GITHUB_REF_NAME:"
+            ls -l target/windows-installer/
+            exit 1
+          fi
+          echo "Built $INSTALLER"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installer
+          path: 'target/windows-installer/PrvwSetup-${{ steps.version.outputs.version }}-x64.exe'
+
   release:
     name: Create release
-    needs: [build]
+    needs: [build, build-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -198,10 +275,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Download all DMG artifacts
+      # Every artifact this run produced: the three DMGs and the Windows installer, flattened into
+      # one directory.
+      - name: Download all build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: dmg-*
           merge-multiple: true
           path: ./artifacts
 
@@ -218,7 +296,8 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "Prvw $GITHUB_REF_NAME" \
             --notes-file /tmp/notes.txt \
-            ./artifacts/*.dmg
+            ./artifacts/*.dmg \
+            ./artifacts/*.exe
 
       - name: Generate latest.json
         run: |
@@ -230,12 +309,16 @@ jobs:
           SIZE_AARCH64=$(stat -c%s "./artifacts/Prvw_${VERSION}_aarch64.dmg")
           SIZE_X86_64=$(stat -c%s "./artifacts/Prvw_${VERSION}_x86_64.dmg")
           SIZE_UNIVERSAL=$(stat -c%s "./artifacts/Prvw_${VERSION}_universal.dmg")
+          # The Windows installer's size rides inside its own platform entry. `dmgSizes` is what
+          # the website reads today and it holds DMGs, so a Windows number has no place in it.
+          SIZE_WINDOWS=$(stat -c%s "./artifacts/PrvwSetup-${VERSION}-x64.exe")
 
           jq -n --indent 2 \
             --arg version "$VERSION" \
             --argjson size_aarch64 "$SIZE_AARCH64" \
             --argjson size_x86_64 "$SIZE_X86_64" \
             --argjson size_universal "$SIZE_UNIVERSAL" \
+            --argjson size_windows "$SIZE_WINDOWS" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg base_url "$BASE_URL" \
             '{
@@ -245,7 +328,11 @@ jobs:
               platforms: {
                 "darwin-aarch64": { url: "\($base_url)/Prvw_\($version)_aarch64.dmg" },
                 "darwin-x86_64": { url: "\($base_url)/Prvw_\($version)_x86_64.dmg" },
-                "darwin-universal": { url: "\($base_url)/Prvw_\($version)_universal.dmg" }
+                "darwin-universal": { url: "\($base_url)/Prvw_\($version)_universal.dmg" },
+                "windows-x86_64": {
+                  url: "\($base_url)/PrvwSetup-\($version)-x64.exe",
+                  size: $size_windows
+                }
               }
             }' > /tmp/latest.json
 

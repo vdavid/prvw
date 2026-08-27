@@ -1,7 +1,8 @@
 # The Windows installer
 
 `PrvwSetup-<version>-x64.exe`, built by `scripts/build-windows-installer.sh`. NSIS, compiled by `makensis`, which runs
-natively on macOS, so the installer comes off the same Mac as the exe it wraps.
+natively on macOS, so the installer comes off the same Mac as the exe it wraps. A release builds it on `windows-latest`
+instead, running the same script with `--exe` over a natively compiled binary.
 
 | File                    | Purpose                                                                 |
 | ----------------------- | ----------------------------------------------------------------------- |
@@ -74,9 +75,10 @@ rather than hanging.
 ## Where signing goes
 
 Nothing here signs anything. `scripts/build-windows-installer.sh` runs `$PRVW_WINDOWS_SIGN_CMD <file>` if that variable
-is set, once for `prvw.exe` before packaging and once for the finished installer, and the release workflow is where
-Azure Trusted Signing would supply the command. The uninstaller NSIS extracts at install time stays unsigned; signing it
-needs the two-pass build described in `docs/guides/releasing.md`.
+is set, once for `prvw.exe` before packaging and once for the finished installer. The release workflow passes it through
+from a repository variable of the same name, which nobody has set, so releases ship unsigned until Azure Trusted Signing
+supplies a command. The uninstaller NSIS extracts at install time stays unsigned; signing it needs the two-pass build
+described in `docs/guides/releasing.md`.
 
 ## What needs a real Windows box
 
