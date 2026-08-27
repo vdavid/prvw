@@ -12,12 +12,12 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 ## Summary
 
 - macOS: 117 of 117 done, 0 not applicable, 0 missing
-- Windows: 61 of 117 done, 6 not applicable, 50 missing
+- Windows: 65 of 117 done, 6 not applicable, 46 missing
 - Linux: 32 of 117 done, 5 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
-- Settings (40 entries): macOS 40 / 0 / 0, Windows 0 / 1 / 39, Linux 0 / 1 / 39
+- Settings (40 entries): macOS 40 / 0 / 0, Windows 4 / 1 / 35, Linux 0 / 1 / 39
 - Menu items (37 entries): macOS 37 / 0 / 0, Windows 28 / 4 / 5, Linux 0 / 3 / 34
 - Commands (40 entries): macOS 40 / 0 / 0, Windows 33 / 1 / 6, Linux 32 / 1 / 7
 
@@ -29,7 +29,7 @@ Nothing missing.
 
 ### Windows
 
-50 missing:
+46 missing:
 
 - Setting, General: `AutoUpdate`, `ScrollToZoom`, `PreloadNeighbors`
 - Setting, Zoom: `AutoFitWindow`, `EnlargeSmallImages`
@@ -37,7 +37,6 @@ Nothing missing.
 - Setting, RAW: `RawDngOpcodeList1`, `RawDngOpcodeList2`, `RawDngOpcodeList3`, `RawBaselineExposure`, `RawBaselineExposureOffset`, `RawDcpHueSatMap`, `RawDcpLookTable`, `RawSaturationBoost`, `RawSaturationAmount`, `RawHighlightRecovery`, `RawDefaultToneCurve`, `RawToneMidtoneAnchor`, `RawDcpToneCurve`, `RawClarity`, `RawClarityRadius`, `RawClarityAmount`, `RawCaptureSharpening`, `RawSharpenAmount`, `RawChromaDenoise`, `RawLensCorrection`, `RawHdrOutput`, `RawHdrGain`, `CustomDcpDir`
 - Setting, Slideshow: `SlideshowSeconds`, `SlideshowCrossfade`, `SlideshowLoop`
 - Setting, File associations: `FileAssociations`
-- Setting, Menu only: `HistogramVisible`, `ExifVisible`, `LoopNavigation`, `SortBy`
 - Menu item, Prvw: `About`, `Settings`
 - Menu item, File: `Print`
 - Menu item, Navigate: `BrowseToggle`
@@ -125,10 +124,10 @@ Nothing missing.
 - `SlideshowCrossfade` "Crossfade" (setting, Slideshow, toggle, field `slideshow_crossfade`): macOS done, Windows missing, Linux missing
 - `SlideshowLoop` "Loop" (setting, Slideshow, toggle, field `slideshow_loop`): macOS done, Windows missing, Linux missing
 - `FileAssociations` "File associations" (setting, File associations, custom, field `previous_handlers`): macOS done, Windows missing, Linux missing
-- `HistogramVisible` "Histogram" (setting, Menu only, toggle, field `histogram_visible`): macOS done, Windows missing, Linux missing
-- `ExifVisible` "Exif info" (setting, Menu only, toggle, field `exif_visible`): macOS done, Windows missing, Linux missing
-- `LoopNavigation` "Loop navigation" (setting, Menu only, toggle, field `loop_navigation`): macOS done, Windows missing, Linux missing
-- `SortBy` "Sort by" (setting, Menu only, choice, field `sort_by`): macOS done, Windows missing, Linux missing
+- `HistogramVisible` "Histogram" (setting, Menu only, toggle, field `histogram_visible`): macOS done, Windows done, Linux missing
+- `ExifVisible` "Exif info" (setting, Menu only, toggle, field `exif_visible`): macOS done, Windows done, Linux missing
+- `LoopNavigation` "Loop navigation" (setting, Menu only, toggle, field `loop_navigation`): macOS done, Windows done, Linux missing
+- `SortBy` "Sort by" (setting, Menu only, choice, field `sort_by`): macOS done, Windows done, Linux missing
 
 ### Menu items
 

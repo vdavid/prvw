@@ -248,8 +248,9 @@ impl SettingKey {
         }
     }
 
-    /// Windows has no chrome yet. The keys are listed rather than caught by a `_` arm so this
-    /// match keeps failing on every new setting: a panel that lands flips its keys to
+    /// Windows has the menu bar but not the settings window (M4), so a setting is reachable here
+    /// only if the menu is its surface. The keys are listed rather than caught by a `_` arm so
+    /// this match keeps failing on every new setting: a panel that lands flips its keys to
     /// `Present`, one arm at a time, and what's left is the honest to-do list.
     const fn windows_coverage(self) -> Coverage {
         match self {
@@ -292,11 +293,13 @@ impl SettingKey {
             | SettingKey::SlideshowSeconds
             | SettingKey::SlideshowCrossfade
             | SettingKey::SlideshowLoop
-            | SettingKey::FileAssociations
-            | SettingKey::HistogramVisible
+            | SettingKey::FileAssociations => Coverage::Missing,
+            // The menu and the keyboard are these four's only surfaces on every platform, and
+            // Windows has both since M1 step 9. There's no settings panel for them to wait on.
+            SettingKey::HistogramVisible
             | SettingKey::ExifVisible
             | SettingKey::LoopNavigation
-            | SettingKey::SortBy => Coverage::Missing,
+            | SettingKey::SortBy => Coverage::Present,
         }
     }
 
