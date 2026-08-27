@@ -15,7 +15,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
   demand, and the file types it registers are generated from the app's own `file_types` module, so the installer and the
   in-app repair button can't drift. It's unsigned until a certificate exists, so expect SmartScreen
   ([0c85da41](https://github.com/vdavid/prvw/commit/0c85da41),
-  [98cbd2d7](https://github.com/vdavid/prvw/commit/98cbd2d7))
+  [0fa56ca2](https://github.com/vdavid/prvw/commit/0fa56ca2))
 
 ## [0.15.1] - 2026-08-19
 
