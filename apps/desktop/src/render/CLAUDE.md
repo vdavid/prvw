@@ -34,6 +34,9 @@ monitor hangs off a discrete card (a photographer's normal setup, and M2 enumera
 leaving `IDXGIFactory1::EnumAdapters1` order standing, and that call documents its first entry as the adapter driving
 the primary display.
 
+Confirmed by David on 2026-08-27, on the reading of principle 2 in `AGENTS.md`: the app runs for a short time and should
+be fast for all of it, so waking the right GPU beats saving power on a viewer that's about to close.
+
 ## Key patterns
 
 - **Render-on-demand.** `App.needs_redraw` gates frames. Renderer is passive.

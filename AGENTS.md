@@ -45,7 +45,9 @@ These are general principles for the whole project. We live these:
 1. **Instant response.** The image must appear the moment the user opens it. No loading screens, no spinners. Preload
    adjacent images so navigation feels zero-latency.
 2. **Respect resources.** Minimize CPU, memory, and GPU use. Don't keep the GPU busy when idle. Use render-on-demand,
-   not a continuous render loop.
+   not a continuous render loop. The thing this rules out is **idle and background cost**: Prvw is short-lived, so
+   someone opens it, looks, and closes it. Within that short life, being fast wins over being frugal, and a resource
+   that makes the viewer faster while it's open is one worth spending.
 3. **Elegant simplicity.** This is a viewer, not an editor. Every feature must earn its place. Prefer doing fewer things
    exceptionally well over doing many things adequately.
 4. **Rock-solid feel.** The UI must always be responsive. Never block the main thread. Handle edge cases (corrupt
