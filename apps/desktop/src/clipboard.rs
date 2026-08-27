@@ -98,7 +98,7 @@ pub fn windows_bitmaps(width: u32, height: u32, rgba: &[u8]) -> WindowsBitmaps {
 /// Whether any pixel is less than fully opaque.
 #[must_use]
 pub fn has_transparency(rgba: &[u8]) -> bool {
-    rgba.chunks_exact(4).any(|pixel| pixel[3] != 255)
+    rgba.as_chunks::<4>().0.iter().any(|pixel| pixel[3] != 255)
 }
 
 /// A `CF_DIB` block: `BITMAPINFOHEADER` followed by 24-bit BGR rows, bottom-up, each row padded
@@ -123,7 +123,7 @@ pub fn dib_bgr24(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
 
     for row in rows_bottom_up(width, height, rgba) {
         let start = out.len();
-        for pixel in row.chunks_exact(4) {
+        for pixel in row.as_chunks::<4>().0 {
             let alpha = u32::from(pixel[3]);
             out.push(over_white(pixel[2], alpha)); // B
             out.push(over_white(pixel[1], alpha)); // G
@@ -171,7 +171,7 @@ pub fn dib_v5_bgra32(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
 
     for row in rows_bottom_up(width, height, rgba) {
         let start = out.len();
-        for pixel in row.chunks_exact(4) {
+        for pixel in row.as_chunks::<4>().0 {
             out.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
         }
         out.resize(start + stride, 0); // Only reached when the buffer ran short.
@@ -384,7 +384,9 @@ mod tests {
     fn hdrop_paths_are_utf16_and_double_terminated() {
         let block = hdrop(&[Path::new(r"C:\a.jpg"), Path::new(r"C:\b.png")]).unwrap();
         let units: Vec<u16> = block[20..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         let expected: Vec<u16> = r"C:\a.jpg"
@@ -402,7 +404,9 @@ mod tests {
     fn hdrop_carries_paths_the_ansi_list_could_not() {
         let block = hdrop(&[Path::new(r"C:\Bilder\Lujza på ön 🎈.jpg")]).unwrap();
         let units: Vec<u16> = block[20..block.len() - 4]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
             .collect();
         assert_eq!(

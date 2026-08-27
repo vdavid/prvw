@@ -114,7 +114,7 @@ pub fn apply_hue_sat_map(rgb: &mut [f32], map: &HueSatMap, value_encoding: u32) 
 fn apply_pixels_chunk(chunk: &mut [f32], map: &HueSatMap, encode_srgb: bool) {
     let hue_divs_f = map.hue_divs as f32;
     let sat_divs_m1 = map.sat_divs.saturating_sub(1) as f32;
-    for pixel in chunk.chunks_exact_mut(3) {
+    for pixel in chunk.as_chunks_mut::<3>().0 {
         let r = pixel[0];
         let g = pixel[1];
         let b = pixel[2];
@@ -373,7 +373,7 @@ mod tests {
             return;
         }
         let encode = value_encoding == 1;
-        for pixel in rgb.chunks_exact_mut(3) {
+        for pixel in rgb.as_chunks_mut::<3>().0 {
             let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
             if !r.is_finite() || !g.is_finite() || !b.is_finite() {
                 continue;

@@ -227,7 +227,9 @@ fn unicode_description(tag: &[u8]) -> Option<String> {
     let end = offset.checked_add(length)?.min(tag.len());
     let utf16: Vec<u16> = tag
         .get(offset..end)?
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
         .collect();
     Some(trimmed(String::from_utf16_lossy(&utf16)))

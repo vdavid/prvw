@@ -68,7 +68,9 @@ pub fn dialog(style: u32, extended_style: u32, title: &str) -> Template {
         bytes.push(0);
     }
     let words = bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect();
     Template { words }
@@ -102,7 +104,9 @@ mod tests {
     fn the_title_is_wide_and_terminated() {
         let bytes = dialog(0, 0, "Settings").bytes();
         let title: Vec<u16> = bytes[22..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .take_while(|unit| *unit != 0)
             .collect();

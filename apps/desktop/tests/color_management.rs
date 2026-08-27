@@ -35,7 +35,7 @@ fn decode_jpeg_with_icc(path: &Path) -> (Vec<u8>, u32, u32, Option<Vec<u8>>) {
     let height = info.height as u32;
 
     let mut rgba = Vec::with_capacity(rgb.len() / 3 * 4);
-    for chunk in rgb.chunks_exact(3) {
+    for chunk in rgb.as_chunks::<3>().0 {
         rgba.push(chunk[0]);
         rgba.push(chunk[1]);
         rgba.push(chunk[2]);

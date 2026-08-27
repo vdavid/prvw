@@ -1190,7 +1190,7 @@ fn save_rgba_png(
     // Strip alpha to RGB for the PNG — the viewer produces fully-opaque
     // pixels so the alpha adds no signal.
     let mut rgb: Vec<u8> = Vec::with_capacity((width * height * 3) as usize);
-    for chunk in rgba.chunks_exact(4) {
+    for chunk in rgba.as_chunks::<4>().0 {
         rgb.extend_from_slice(&chunk[..3]);
     }
     let buf: ImageBuffer<Rgb<u8>, Vec<u8>> =

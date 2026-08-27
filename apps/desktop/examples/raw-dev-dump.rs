@@ -490,7 +490,7 @@ const TONE_DARK_EPSILON: f32 = 1.0e-5;
 const SATURATION_BOOST: f32 = 0.08;
 
 fn apply_default_tone_curve(rgb: &mut [f32]) {
-    for pixel in rgb.chunks_exact_mut(3) {
+    for pixel in rgb.as_chunks_mut::<3>().0 {
         let r = pixel[0];
         let g = pixel[1];
         let b = pixel[2];
@@ -519,7 +519,7 @@ const HIGHLIGHT_RECOVERY_CEILING: f32 = 1.20;
 fn apply_default_highlight_recovery(rgb: &mut [f32]) {
     let (threshold, ceiling) = (HIGHLIGHT_RECOVERY_THRESHOLD, HIGHLIGHT_RECOVERY_CEILING);
     let denom = ceiling - threshold;
-    for pixel in rgb.chunks_exact_mut(3) {
+    for pixel in rgb.as_chunks_mut::<3>().0 {
         let r = pixel[0];
         let g = pixel[1];
         let b = pixel[2];
@@ -547,7 +547,7 @@ fn apply_saturation_boost(rgb: &mut [f32], boost: f32) {
         return;
     }
     let scale = 1.0 + boost;
-    for pixel in rgb.chunks_exact_mut(3) {
+    for pixel in rgb.as_chunks_mut::<3>().0 {
         let r = pixel[0];
         let g = pixel[1];
         let b = pixel[2];
@@ -623,7 +623,7 @@ fn sharpen_rgb8_inplace(rgb: &mut [u8], width: u32, height: u32) {
     let radius = kernel.len() / 2;
 
     let mut luma = Vec::with_capacity(pixels);
-    for px in rgb.chunks_exact(3) {
+    for px in rgb.as_chunks::<3>().0 {
         let r = px[0] as f32;
         let g = px[1] as f32;
         let b = px[2] as f32;
@@ -635,7 +635,7 @@ fn sharpen_rgb8_inplace(rgb: &mut [u8], width: u32, height: u32) {
     sharpen_blur_h(&luma, &mut tmp, width, height, &kernel, radius);
     sharpen_blur_v(&tmp, &mut blurred, width, height, &kernel, radius);
 
-    for (i, px) in rgb.chunks_exact_mut(3).enumerate() {
+    for (i, px) in rgb.as_chunks_mut::<3>().0.iter_mut().enumerate() {
         let y_in = luma[i];
         if y_in < SHARPEN_DARK_EPSILON {
             continue;
@@ -822,7 +822,9 @@ fn white_balance(raw: &RawImage) -> [f32; 4] {
 }
 
 fn apply_wb_only(rgb: &[f32], wb: &[f32; 4]) -> Vec<f32> {
-    rgb.chunks_exact(3)
+    rgb.as_chunks::<3>()
+        .0
+        .iter()
         .flat_map(|p| [p[0] * wb[0], p[1] * wb[1], p[2] * wb[2]])
         .collect()
 }
@@ -846,7 +848,9 @@ fn camera_to_linear_rec2020(raw: &RawImage, rgb: &[f32], wb: &[f32; 4]) -> Vec<f
         let rgb2cam = multiply_3x3(&xyz_to_cam, &REC2020_TO_XYZ_D65);
         let rgb2cam = normalize_rows_3(rgb2cam);
         let cam2rgb = invert_3x3(rgb2cam).unwrap_or(IDENTITY_3);
-        rgb.chunks_exact(3)
+        rgb.as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| {
                 let r = p[0] * wb[0];
                 let g = p[1] * wb[1];

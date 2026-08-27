@@ -164,7 +164,7 @@ pub(super) fn create(
             hwnd,
             LVM_SETIMAGELIST,
             Some(WPARAM(LVSIL_NORMAL as usize)),
-            Some(LPARAM(images.0 as isize)),
+            Some(LPARAM(images.0)),
         )
     };
     apply_icon_spacing(hwnd, dpi);

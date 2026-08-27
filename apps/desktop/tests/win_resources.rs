@@ -234,7 +234,9 @@ fn version_children(node: &[u8]) -> Vec<&[u8]> {
 
 fn version_key(node: &[u8]) -> String {
     let units: Vec<u16> = node[6..]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .take_while(|unit| *unit != 0)
         .collect();
@@ -246,7 +248,9 @@ fn version_text_value(node: &[u8]) -> String {
     let key_end = 6 + (version_key(node).encode_utf16().count() + 1) * 2;
     let start = key_end.next_multiple_of(4);
     let units: Vec<u16> = node[start..start + value_len * 2]
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .take_while(|unit| *unit != 0)
         .collect();

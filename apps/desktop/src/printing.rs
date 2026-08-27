@@ -66,7 +66,7 @@ pub fn aspect_fit(page: Rect, image_width: f64, image_height: f64) -> Option<Rec
 /// only way it gets checked before meeting a Windows box.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn flatten_onto_white_bgra(buffer: &mut [u8]) {
-    for pixel in buffer.chunks_exact_mut(4) {
+    for pixel in buffer.as_chunks_mut::<4>().0 {
         let alpha = u32::from(pixel[3]);
         let (r, g, b) = (
             u32::from(pixel[0]),

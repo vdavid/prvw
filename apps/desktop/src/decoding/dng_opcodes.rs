@@ -554,7 +554,7 @@ pub fn apply_gain_map_rgb(data: &mut [f32], width: u32, height: u32, map: &GainM
             return;
         }
         let v_norm = (y_u - map.top) as f64 / rect_v;
-        for (x, chunk) in row.chunks_exact_mut(3).enumerate() {
+        for (x, chunk) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let x_u = x as u32;
             if x_u < map.left || x_u >= map.right {
                 continue;
@@ -660,7 +660,7 @@ pub fn apply_warp_rectilinear_rgb(
     let source = data.to_vec();
 
     data.par_chunks_mut(w * 3).enumerate().for_each(|(y, row)| {
-        for (x, chunk) in row.chunks_exact_mut(3).enumerate() {
+        for (x, chunk) in row.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             for (plane_idx, slot) in chunk.iter_mut().enumerate().take(3) {
                 // If the warp ships one plane, reuse it for all channels;
                 // otherwise pick the plane matching the channel index.
@@ -1218,7 +1218,7 @@ mod tests {
         let map = parse_gain_map(&params).unwrap();
         let mut data = vec![1.0_f32; 4 * 4 * 3];
         apply_gain_map_rgb(&mut data, 4, 4, &map);
-        for chunk in data.chunks_exact(3) {
+        for chunk in data.as_chunks::<3>().0 {
             assert!((chunk[0] - 1.0).abs() < 1e-6);
             assert!((chunk[1] - 3.0).abs() < 1e-6);
             assert!((chunk[2] - 1.0).abs() < 1e-6);
@@ -1251,7 +1251,7 @@ mod tests {
         let map = parse_gain_map(&params).unwrap();
         let mut data = vec![1.0_f32; 4 * 4 * 3];
         apply_gain_map_rgb(&mut data, 4, 4, &map);
-        for chunk in data.chunks_exact(3) {
+        for chunk in data.as_chunks::<3>().0 {
             assert!((chunk[0] - 2.0).abs() < 1e-6, "R should have scaled");
             assert!(
                 (chunk[1] - 2.0).abs() < 1e-6,
@@ -1328,7 +1328,7 @@ mod tests {
         assert_eq!(map.map_planes, 1);
         let mut data = vec![1.0_f32; 4 * 4 * 3];
         apply_gain_map_rgb(&mut data, 4, 4, &map);
-        for chunk in data.chunks_exact(3) {
+        for chunk in data.as_chunks::<3>().0 {
             assert!(
                 (chunk[0] - 2.0).abs() < 1e-6,
                 "R: want 2.0, got {}",
@@ -1372,7 +1372,7 @@ mod tests {
         // Use a 2×2 image so the single grid point clamps to every pixel.
         let mut data = vec![1.0_f32; 2 * 2 * 3];
         apply_gain_map_rgb(&mut data, 2, 2, &map);
-        for chunk in data.chunks_exact(3) {
+        for chunk in data.as_chunks::<3>().0 {
             assert!(
                 (chunk[0] - 2.0).abs() < 1e-5,
                 "R: want 2.0, got {}",
@@ -1505,7 +1505,7 @@ mod tests {
         let map = parse_gain_map(&params).unwrap();
         let mut data = vec![1.0_f32; 4 * 4 * 3];
         apply_gain_map_rgb(&mut data, 4, 4, &map);
-        for chunk in data.chunks_exact(3) {
+        for chunk in data.as_chunks::<3>().0 {
             assert!((chunk[0] - 1.0).abs() < 1e-6, "R should be untouched");
             assert!((chunk[1] - 3.0).abs() < 1e-6, "G should be 3.0");
             assert!((chunk[2] - 1.0).abs() < 1e-6, "B should be untouched");

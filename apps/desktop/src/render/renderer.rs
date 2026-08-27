@@ -1393,7 +1393,7 @@ impl Renderer {
         staging_buffer.unmap();
 
         // BGRA -> RGBA: swap R and B channels
-        for pixel in rgba_pixels.chunks_exact_mut(4) {
+        for pixel in rgba_pixels.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
 

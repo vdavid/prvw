@@ -856,7 +856,7 @@ mod tests {
         if std::env::var("PRVW_UPDATE_GOLDENS").ok().as_deref() == Some("1") {
             // RGBA8 -> RGB8 for PNG.
             let mut rgb: Vec<u8> = Vec::with_capacity((img.width * img.height * 3) as usize);
-            for chunk in rgba_bytes.chunks_exact(4) {
+            for chunk in rgba_bytes.as_chunks::<4>().0 {
                 rgb.extend_from_slice(&chunk[..3]);
             }
             let buf = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(img.width, img.height, rgb)
@@ -885,7 +885,7 @@ mod tests {
         let actual_rgba = rgba_bytes.to_vec();
         let mut golden_rgba: Vec<u8> =
             Vec::with_capacity((golden.width() * golden.height() * 4) as usize);
-        for chunk in golden.as_raw().chunks_exact(3) {
+        for chunk in golden.as_raw().as_chunks::<3>().0 {
             golden_rgba.extend_from_slice(chunk);
             golden_rgba.push(255);
         }

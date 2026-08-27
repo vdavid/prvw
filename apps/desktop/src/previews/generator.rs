@@ -365,12 +365,12 @@ fn fit_within(width: u32, height: u32, pixels: u32) -> (u32, u32) {
 /// below run on any host, which is the only way it gets checked before meeting a Windows box.
 pub(super) fn dib_to_rgba8(buffer: &mut [u8]) {
     let mut any_alpha = false;
-    for pixel in buffer.chunks_exact_mut(4) {
+    for pixel in buffer.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
         any_alpha |= pixel[3] != 0;
     }
     if !any_alpha {
-        for pixel in buffer.chunks_exact_mut(4) {
+        for pixel in buffer.as_chunks_mut::<4>().0 {
             pixel[3] = 0xff;
         }
     }

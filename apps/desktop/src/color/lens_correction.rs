@@ -507,7 +507,7 @@ mod tests {
         let w = 4;
         let h = 4;
         let mut src = vec![0.0_f32; w * h * 3];
-        for px in src.chunks_exact_mut(3) {
+        for px in src.as_chunks_mut::<3>().0 {
             px[0] = 0.25;
             px[1] = 0.5;
             px[2] = 0.75;

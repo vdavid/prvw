@@ -35,7 +35,7 @@ pub fn compose_slot(
     let side = side as usize;
     let (red, green, blue) = background;
     let mut canvas = vec![0u8; side * side * 4];
-    for pixel in canvas.chunks_exact_mut(4) {
+    for pixel in canvas.as_chunks_mut::<4>().0 {
         pixel[0] = blue;
         pixel[1] = green;
         pixel[2] = red;
@@ -173,11 +173,11 @@ mod tests {
     fn every_pixel_is_opaque() {
         let mut source = solid(4, 4, (10, 20, 30));
         // A source claiming full transparency still composes opaque.
-        for pixel in source.chunks_exact_mut(4) {
+        for pixel in source.as_chunks_mut::<4>().0 {
             pixel[3] = 0;
         }
         let canvas = compose_slot(&source, 4, 4, 8, (1, 2, 3));
-        for pixel in canvas.chunks_exact(4) {
+        for pixel in canvas.as_chunks::<4>().0 {
             assert_eq!(pixel[3], 0xff);
         }
     }

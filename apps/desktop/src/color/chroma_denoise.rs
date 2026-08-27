@@ -398,7 +398,7 @@ mod tests {
             }
         }
         apply_default_chroma_denoise(&mut buf, width, height);
-        for (i, chunk) in buf.chunks_exact(3).enumerate() {
+        for (i, chunk) in buf.as_chunks::<3>().0.iter().enumerate() {
             let y_after = luma(chunk[0], chunk[1], chunk[2]);
             assert!(
                 (y_after - luma_before[i]).abs() < 1e-4,

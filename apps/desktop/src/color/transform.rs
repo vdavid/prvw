@@ -457,7 +457,9 @@ mod tests {
         assert_eq!(lattice.len(), (PROBE_STEPS as usize).pow(3) * 4);
         let has = |rgb: [u8; 3]| {
             lattice
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|p| p[0] == rgb[0] && p[1] == rgb[1] && p[2] == rgb[2])
         };
         for corner in [

@@ -82,7 +82,7 @@ fn compute_rgba8(bytes: &[u8]) -> HistogramData {
 
 fn rgba8_chunk(bytes: &[u8]) -> HistogramData {
     let mut hist = HistogramData::empty();
-    for px in bytes.chunks_exact(4) {
+    for px in bytes.as_chunks::<4>().0 {
         hist.r[px[0] as usize] += 1;
         hist.g[px[1] as usize] += 1;
         hist.b[px[2] as usize] += 1;
@@ -109,7 +109,7 @@ fn compute_rgba16f(halfs: &[u16]) -> HistogramData {
 
 fn rgba16f_chunk(halfs: &[u16]) -> HistogramData {
     let mut hist = HistogramData::empty();
-    for px in halfs.chunks_exact(4) {
+    for px in halfs.as_chunks::<4>().0 {
         hist.r[quantize_half(px[0])] += 1;
         hist.g[quantize_half(px[1])] += 1;
         hist.b[quantize_half(px[2])] += 1;

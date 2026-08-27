@@ -43,8 +43,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     for size in TARGET_SIZES {
         let source = sources
             .iter()
-            .filter(|image| image.width() >= size)
-            .next_back()
+            .rfind(|image| image.width() >= size)
             .unwrap_or(&sources[0]);
         let scaled = if source.width() == size {
             source.to_rgba8()
