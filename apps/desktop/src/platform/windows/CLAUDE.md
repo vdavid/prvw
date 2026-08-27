@@ -54,7 +54,8 @@ thread: naming the main window as `hwndOwner` still disables it and keeps the di
 the person while winit keeps pumping. `open_dialog.rs` already does the same for the file picker.
 
 `PrintDlgW` and not `PrintDlgExW`: the newer property-sheet version requires the calling thread to be an apartment-
-threaded COM apartment and buys a page-range UI that a one-page image print has no use for.
+threaded COM apartment and buys a page-range UI that a one-page image print has no use for. On Windows 11 the choice
+makes no difference to what the person sees, because the unified dialog replaces both (see below).
 
 ## Decision: the page is `HORZRES` × `VERTRES`
 
@@ -62,6 +63,47 @@ threaded COM apartment and buys a page-range UI that a one-page image print has 
 including the hardware margins, so laying the photo out against those puts its edges where the printer can't put ink.
 The fit inside it is `crate::printing::aspect_fit`, shared with macOS and tested from any host; the enlargement it does
 for a small image is deliberate, since "print this photo" means fill the paper.
+
+## Gotcha: Windows 11 says we don't support print preview, and it says that to every GDI app
+
+**Gotcha:** on Windows 11 22H2 and later, the dialog that opens is the unified print dialog rather than the common
+dialog we asked for. It replaces `PrintDlg` and `PrintDlgEx` for every classic app, it carries a preview pane, and for
+us that pane reads "This app doesn't support print preview". Nothing is wrong with our call and the print goes through:
+Notepad and WordPad show the same message.
+
+**Why the pane is empty:** the preview is app-supplied, and only the WinRT pipeline can supply it. `PrintManager` hands
+the dialog an `IPrintDocumentSource`, and the dialog calls back into `IPrintPreviewPageCollection::Paginate` and
+`MakePage` for each page as it needs one. A GDI caller has no part in that protocol: `PD_RETURNDC` asks for a device
+context, and the drawing happens after the dialog closes, so at preview time no page exists to show. There is no
+documented way to fill that pane from a `PrintDlgW` caller, and Microsoft's own answer to people who ask is a registry
+key that brings the old dialog back.
+
+**What supplying a real preview would cost:** the whole print path moves to WinRT. `PrintManagerInterop::GetForWindow`
+binds to the main window and therefore to winit's thread, which would need a `DispatcherQueue` of its own to receive the
+callbacks; the content would have to be produced twice, as DXGI surfaces for `IPrintPreviewDxgiPackageTarget` and as an
+XPS package for the job itself, so a Direct2D and XPS pipeline would grow beside the wgpu one. That is one of the
+largest subsystems in the Windows port, none of it checkable from a Mac, and it buys a thumbnail of the photo already
+filling the screen. ❌ Don't.
+
+**Confirming it's Windows and not us:**
+`reg add "HKCU\Software\Microsoft\Print\UnifiedPrintDialog" /v PreferLegacyPrintDialog /t REG_DWORD /d 1 /f` brings the
+old common dialog back for the current user, and it has no preview pane and so no message; `reg delete` on the same
+value restores the modern one. An app can force the same per call by passing `PD_ENABLEPRINTHOOK` with a hook procedure
+that does nothing, and ❌ we deliberately don't: the unified dialog is what Windows 11 puts in front of people
+everywhere else, and trading it for a Windows 2000-era dialog to hide a sentence Microsoft wrote costs more than the
+sentence does.
+
+**The consequence that does bite:** the unified dialog drops settings the app pre-loads into `hDevMode`, orientation
+being the reported one. So "print this landscape photo on landscape paper" can't be done by seeding the DEVMODE before
+the dialog. It has to rotate the image onto whatever page the DC comes back describing.
+
+## Decision: the page is drawn with the `HALFTONE` stretch mode
+
+**Why:** GDI's default is `BLACKONWHITE`, which ANDs the colour values of the scan lines it eliminates. Every photo
+print here shrinks the image (a 24 MP photo is about 6,000 px wide, where an A4 sheet at 300 dpi holds about 2,500), so
+the default would darken and alias the paper. `HALFTONE` averages those pixels instead, and it wants `SetBrushOrgEx`
+called right after it or its brush misaligns. Both calls are best-effort, since a driver that scales the DIB its own way
+ignores them.
 
 ## Gotcha: a printer has no alpha, and a dropped alpha byte prints black
 
@@ -171,9 +213,9 @@ arrives as a `MenuEvent` on the next `about_to_wait`, the same route a menu-bar 
 
 ## What hasn't met a Windows machine yet
 
-Everything in this directory type-checks and lints through `./scripts/check.sh --check windows-cross`, and **nothing
-here has ever run**. The clipboard's paste targets, the right-click menu, the drop path, and every part of printing
-(does the owner window disable properly from another thread? does the page come out the right way up?) all need a person
-at a Windows box, and so does every line of `dark_mode.rs`: the ordinals are undocumented, so "it compiles" says nothing
-about whether the box comes up dark. The capture in particular has no E2E coverage: `tests/e2e_macos.rs` exercises the
-macOS path, and the equivalent Windows test needs a Windows box to be worth writing.
+Most of this directory type-checks and lints through `./scripts/check.sh --check windows-cross` and has never run.
+Printing is the exception: the dialog opens from the worker thread on a real Windows 11 box, the app keeps responding
+while it is up, and the flow completes. What the paper looks like is still unverified. So are the clipboard's paste
+targets, the right-click menu, the drop path, and every line of `dark_mode.rs`: the ordinals are undocumented, so "it
+compiles" says nothing about whether the box comes up dark. The capture in particular has no E2E coverage:
+`tests/e2e_macos.rs` exercises the macOS path, and the equivalent Windows test needs a Windows box to be worth writing.

@@ -20,6 +20,16 @@
 //! which is the behaviour a person expects. The decode and the spooling then happen on the same
 //! worker, which they'd have to anyway: a 50 MP RAW is seconds of work.
 //!
+//! ## Windows says we don't support print preview, and that is Windows talking
+//!
+//! On Windows 11 22H2 and later the dialog that comes up is the unified print dialog, which
+//! replaces the common dialog for every `PrintDlgW` and `PrintDlgExW` caller. It carries a
+//! preview pane, it fills that pane only from the WinRT print pipeline, and a GDI caller has no
+//! part in that protocol: `PD_RETURNDC` asks for a device context and the drawing happens after
+//! the dialog closes, so at preview time there are no pages to show. The pane says so, in the
+//! same words Notepad gets. `platform/windows/CLAUDE.md` holds the mechanism and what a real
+//! preview would cost.
+//!
 //! ## One page, filled
 //!
 //! `GetDeviceCaps(HORZRES/VERTRES)` is the printable area in device pixels, and the image is
@@ -32,7 +42,8 @@ use std::time::Instant;
 use windows::Win32::Foundation::{GlobalFree, HWND};
 use windows::Win32::Graphics::Gdi::{
     BI_RGB, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteDC, GET_DEVICE_CAPS_INDEX,
-    GetDeviceCaps, HDC, HORZRES, SRCCOPY, StretchDIBits, VERTRES,
+    GetDeviceCaps, HALFTONE, HDC, HORZRES, SRCCOPY, SetBrushOrgEx, SetStretchBltMode,
+    StretchDIBits, VERTRES,
 };
 use windows::Win32::Storage::Xps::{DOCINFOW, EndDoc, EndPage, StartDocW, StartPage};
 use windows::Win32::UI::Controls::Dialogs::{
@@ -189,6 +200,17 @@ fn draw_one_page(
         let _ = unsafe { EndDoc(dc) };
         return Err("the printer wouldn't start the page".to_string());
     }
+    // Ask GDI to average the pixels it drops rather than combine them. Its default is
+    // `BLACKONWHITE`, which ANDs the colour values of every scan line it eliminates, and every
+    // photo printed here is shrunk: a 6,000 px wide image lands on the ~2,500 px an A4 sheet holds
+    // at 300 dpi. `HALFTONE` wants a brush origin set right after it, or its halftone brush
+    // misaligns. Both are best-effort, since a driver is free to scale the DIB its own way.
+    // SAFETY: `dc` is a live printer DC with a page open on it.
+    unsafe {
+        SetStretchBltMode(dc, HALFTONE);
+        let _ = SetBrushOrgEx(dc, 0, 0, None);
+    }
+
     // SAFETY: `info` describes exactly the buffer `pixels` holds, and the rect is on the page.
     let drawn = unsafe {
         StretchDIBits(
@@ -207,9 +229,13 @@ fn draw_one_page(
             SRCCOPY,
         )
     };
+    // Both calls run, whatever the one before it answered: an `EndDoc` skipped because `EndPage`
+    // said no leaves the spool job open for the life of the process.
     // SAFETY: the page and the document are both open on this DC.
-    let ended = unsafe { EndPage(dc) } > 0 && unsafe { EndDoc(dc) } > 0;
-    if drawn == 0 || !ended {
+    let page_ended = unsafe { EndPage(dc) } > 0;
+    // SAFETY: the document is open on this DC, and `EndDoc` is how it closes either way.
+    let doc_ended = unsafe { EndDoc(dc) } > 0;
+    if drawn == 0 || !page_ended || !doc_ended {
         return Err("the printer rejected the page".to_string());
     }
     log::debug!(
