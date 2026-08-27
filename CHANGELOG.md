@@ -9,11 +9,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ### Added
 
-- **Windows has an installer.** `PrvwSetup-<version>-x64.exe` installs Prvw per user, so there's no UAC prompt: a Start
-  menu shortcut, an Apps & features entry, and Prvw offered in Explorer's "Open with" list and on a page of its own
-  under Settings. It's built by NSIS from the same Mac that cross-compiles the exe, and the file types it registers are
-  generated from the app's own `file_types` module, so the installer and the in-app repair button can't drift
-  ([0c85da41](https://github.com/vdavid/prvw/commit/0c85da41))
+- **Windows has an installer**, and every release publishes it. `PrvwSetup-<version>-x64.exe` installs Prvw per user, so
+  there's no UAC prompt: a Start menu shortcut, an Apps & features entry, and Prvw offered in Explorer's "Open with"
+  list and on a page of its own under Settings. NSIS builds it, on a Windows runner at release time and from a Mac on
+  demand, and the file types it registers are generated from the app's own `file_types` module, so the installer and the
+  in-app repair button can't drift. It's unsigned until a certificate exists, so expect SmartScreen
+  ([0c85da41](https://github.com/vdavid/prvw/commit/0c85da41),
+  [98cbd2d7](https://github.com/vdavid/prvw/commit/98cbd2d7))
 
 ## [0.15.1] - 2026-08-19
 
