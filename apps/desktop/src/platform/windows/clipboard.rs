@@ -9,9 +9,10 @@
 //!
 //! `App` already holds a decoded buffer, and it is the wrong one to copy: it's been transformed
 //! to the display's profile and may be half-float HDR, so pasting it would shift colours in
-//! whatever opens it next. So this decodes the original file again, targeting sRGB, exactly as
-//! macOS re-reads the file through ImageIO. A RAW file gets Prvw's own pipeline here rather
-//! than the OS's, so unlike macOS a copied RAW matches what the viewer showed.
+//! whatever opens it next. So this decodes the original file again, targeting sRGB
+//! (`ui_common::decode_srgb`, shared with Print), exactly as macOS re-reads the file through
+//! ImageIO. A RAW file gets Prvw's own pipeline here rather than the OS's, so unlike macOS a
+//! copied RAW matches what the viewer showed.
 //!
 //! ## Off the event-loop thread
 //!
@@ -33,7 +34,6 @@
 //! it.
 
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
@@ -44,9 +44,9 @@ use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, Glo
 use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP};
 use windows::core::w;
 
+use super::ui_common::decode_srgb;
 use crate::clipboard::{self, WindowsBitmaps};
-use crate::color;
-use crate::decoding::{self, PixelBuffer, RawPipelineFlags};
+use crate::decoding::RawPipelineFlags;
 
 /// How many times to ask for the clipboard before giving up. Another process holds it while it
 /// writes, which is brief but real, and `OpenClipboard` fails outright rather than waiting.
@@ -100,36 +100,6 @@ fn copy_on_worker(path: &Path, raw_flags: RawPipelineFlags, relative_colorimetri
             path.display()
         ),
         Err(err) => log::warn!("Copy image: {err} ({})", path.display()),
-    }
-}
-
-/// Decode the original file to 8-bit sRGB, the space a DIB has no way to say anything else in.
-///
-/// `edr_headroom` is pinned to 1.0 (SDR), which is what keeps the RAW path on its 8-bit output:
-/// the clipboard has no half-float representation to put HDR into.
-fn decode_srgb(
-    path: &Path,
-    raw_flags: RawPipelineFlags,
-    relative_colorimetric: bool,
-) -> Option<(u32, u32, Vec<u8>)> {
-    let decoded = decoding::load_image(
-        path,
-        &AtomicBool::new(false),
-        color::srgb_icc_bytes(),
-        relative_colorimetric,
-        raw_flags,
-        1.0,
-        None,
-    )
-    .ok()?;
-    match decoded.pixels {
-        PixelBuffer::Rgba8(rgba) => Some((decoded.width, decoded.height, rgba)),
-        // Unreachable with an SDR headroom, and worth a line rather than a silent skip if the
-        // decoder's contract ever changes.
-        PixelBuffer::Rgba16F(_) => {
-            log::warn!("Copy image: got a half-float buffer, which the clipboard can't carry");
-            None
-        }
     }
 }
 

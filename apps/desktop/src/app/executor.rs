@@ -534,7 +534,7 @@ impl App {
                 }
             }
             AppCommand::Print => {
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 self.print_current_image();
             }
             AppCommand::ShowAbout => self.show_about_dialog(),

@@ -12,13 +12,21 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 ## Summary
 
 - macOS: 117 of 117 done, 0 not applicable, 0 missing
+<<<<<<< HEAD
 - Windows: 67 of 117 done, 6 not applicable, 44 missing
+=======
+- Windows: 68 of 117 done, 6 not applicable, 43 missing
+>>>>>>> 9881e99 (File > Print works on Windows)
 - Linux: 32 of 117 done, 5 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
 - Settings (40 entries): macOS 40 / 0 / 0, Windows 4 / 1 / 35, Linux 0 / 1 / 39
+<<<<<<< HEAD
 - Menu items (37 entries): macOS 37 / 0 / 0, Windows 29 / 4 / 4, Linux 0 / 3 / 34
+=======
+- Menu items (37 entries): macOS 37 / 0 / 0, Windows 30 / 4 / 3, Linux 0 / 3 / 34
+>>>>>>> 9881e99 (File > Print works on Windows)
 - Commands (40 entries): macOS 40 / 0 / 0, Windows 34 / 1 / 5, Linux 32 / 1 / 7
 
 ## What each platform still owes
@@ -29,7 +37,11 @@ Nothing missing.
 
 ### Windows
 
+<<<<<<< HEAD
 44 missing:
+=======
+43 missing:
+>>>>>>> 9881e99 (File > Print works on Windows)
 
 - Setting, General: `AutoUpdate`, `ScrollToZoom`, `PreloadNeighbors`
 - Setting, Zoom: `AutoFitWindow`, `EnlargeSmallImages`
@@ -37,12 +49,19 @@ Nothing missing.
 - Setting, RAW: `RawDngOpcodeList1`, `RawDngOpcodeList2`, `RawDngOpcodeList3`, `RawBaselineExposure`, `RawBaselineExposureOffset`, `RawDcpHueSatMap`, `RawDcpLookTable`, `RawSaturationBoost`, `RawSaturationAmount`, `RawHighlightRecovery`, `RawDefaultToneCurve`, `RawToneMidtoneAnchor`, `RawDcpToneCurve`, `RawClarity`, `RawClarityRadius`, `RawClarityAmount`, `RawCaptureSharpening`, `RawSharpenAmount`, `RawChromaDenoise`, `RawLensCorrection`, `RawHdrOutput`, `RawHdrGain`, `CustomDcpDir`
 - Setting, Slideshow: `SlideshowSeconds`, `SlideshowCrossfade`, `SlideshowLoop`
 - Setting, File associations: `FileAssociations`
+<<<<<<< HEAD
 - Menu item, Prvw: `Settings`
 - Menu item, File: `Print`
+=======
+- Menu item, Prvw: `About`, `Settings`
+>>>>>>> 9881e99 (File > Print works on Windows)
 - Menu item, Navigate: `BrowseToggle`
-- Menu item, Context menu: `ContextPrint`
 - Command, Browse mode: `BrowseMode`, `BrowseFocus`, `BrowseOpenSelected`
+<<<<<<< HEAD
 - Command, App: `Print`, `Settings`
+=======
+- Command, App: `About`, `Settings`
+>>>>>>> 9881e99 (File > Print works on Windows)
 
 ### Linux
 
@@ -138,7 +157,7 @@ Nothing missing.
 - `ShowAll` "Show all" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
 - `Quit` "Quit Prvw" (menu item, Prvw menu): macOS done, Windows done, Linux missing
 - `Open` "Open…" (menu item, File menu): macOS done, Windows done, Linux missing
-- `Print` "Print…" (menu item, File menu): macOS done, Windows missing, Linux missing
+- `Print` "Print…" (menu item, File menu): macOS done, Windows done, Linux missing
 - `CloseWindow` "Close window" (menu item, File menu): macOS done, Windows not applicable, Linux missing
 - `Copy` "Copy image" (menu item, Edit menu): macOS done, Windows done, Linux missing
 - `ZoomIn` "Zoom in" (menu item, View menu): macOS done, Windows done, Linux missing
@@ -167,7 +186,7 @@ Nothing missing.
 - `SlideshowIncreaseSpeed` "Increase speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
 - `SlideshowDecreaseSpeed` "Decrease speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
 - `ContextCopy` "Copy image" (menu item, Context menu): macOS done, Windows done, Linux missing
-- `ContextPrint` "Print…" (menu item, Context menu): macOS done, Windows missing, Linux missing
+- `ContextPrint` "Print…" (menu item, Context menu): macOS done, Windows done, Linux missing
 
 ### Commands
 
@@ -207,7 +226,12 @@ Nothing missing.
 - `RawPipelineFlags` "RAW pipeline stages" (command, RAW): macOS done, Windows done, Linux done
 - `CustomDcpDir` "Custom DCP directory" (command, RAW): macOS done, Windows done, Linux done
 - `CopyImage` "Copy image" (command, App): macOS done, Windows done, Linux missing
+<<<<<<< HEAD
 - `Print` "Print" (command, App): macOS done, Windows missing, Linux missing
 - `About` "About Prvw" (command, App): macOS done, Windows done, Linux missing
+=======
+- `Print` "Print" (command, App): macOS done, Windows done, Linux missing
+- `About` "About Prvw" (command, App): macOS done, Windows missing, Linux missing
+>>>>>>> 9881e99 (File > Print works on Windows)
 - `Settings` "Settings window" (command, App): macOS done, Windows missing, Linux missing
 - `Exit` "Exit" (command, App): macOS done, Windows done, Linux done

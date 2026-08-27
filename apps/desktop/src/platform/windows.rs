@@ -5,6 +5,8 @@ pub mod clipboard;
 /// Dark chrome for the Win32 windows, which Windows still has no public API for.
 pub mod dark_mode;
 pub mod msg_hook;
+pub mod print;
+pub mod ui_common;
 /// Debug-only window photograph, served by the QA server's `screenshot_window` tool.
 #[cfg(debug_assertions)]
 pub mod window_capture;

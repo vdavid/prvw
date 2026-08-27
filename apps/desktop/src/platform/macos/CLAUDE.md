@@ -30,7 +30,9 @@ viewer window), not the app-modal `runOperation`.
 winit's event loop (Print is dispatched from a menu event, i.e. a winit callback). The sheet is driven by the existing
 run loop instead. The sheet returns immediately, so `App._active_print` holds the `NSPrintOperation` alive (replaced on
 the next print) for the sheet's duration. The print view is sized to one page's printable area and draws the image
-aspect-fit; `aspect_fit_rect` is the pure, unit-tested core.
+aspect-fit. The fit itself is `crate::printing::aspect_fit`, shared with the Windows print path and tested from any
+host; `aspect_fit_rect` here is only the `NSRect` adapter over it. That sharing is safe because the fit is **centred**,
+so AppKit's bottom-left page origin and GDI's top-left one produce the same numbers.
 
 ## Gotchas (cross-cutting)
 

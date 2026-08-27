@@ -3232,10 +3232,11 @@ impl App {
         }
     }
 
-    /// The `HWND` of the main viewer window, as a `u64`. The Windows half of
-    /// [`Self::native_window_id`]; `None` while the window doesn't exist yet.
-    #[cfg(all(debug_assertions, target_os = "windows"))]
-    pub(crate) fn native_window_id(&self) -> Option<u64> {
+    /// The `HWND` of the main viewer window, as a `u64`. A number rather than an `HWND` because
+    /// it crosses to worker threads, and `HWND` is a raw pointer and so not `Send`. `None` while
+    /// the window doesn't exist yet.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn main_window_hwnd(&self) -> Option<u64> {
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
         let win = self.window.as_ref()?;
@@ -3243,6 +3244,13 @@ impl App {
             return None;
         };
         Some(handle.hwnd.get() as u64)
+    }
+
+    /// The Windows half of [`Self::native_window_id`], for the debug-only `screenshot_window`
+    /// MCP tool. The handle itself is [`Self::main_window_hwnd`], which printing also needs.
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    pub(crate) fn native_window_id(&self) -> Option<u64> {
+        self.main_window_hwnd()
     }
 
     /// Pop up the right-click context menu at the cursor. No-op when no image is open. The
@@ -3336,14 +3344,11 @@ impl App {
         }
     }
 
-    /// Print the current image via the system print sheet. Mirrors the NSWindow-pointer
-    /// extraction used by the About/Settings dialogs, then hands off to the print module.
-    #[cfg(target_os = "macos")]
+    /// Print the current image via the system print dialog. Both platforms name the viewer
+    /// window as the dialog's parent and hand the file off to their own print module; neither
+    /// blocks the event loop (macOS runs an async sheet, Windows a worker thread).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn print_current_image(&mut self) {
-        use objc2::msg_send;
-        use objc2_app_kit::NSWindow;
-        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-
         let Some(path) = self
             .navigation
             .dir_list
@@ -3353,6 +3358,30 @@ impl App {
             log::debug!("Print: no image open");
             return;
         };
+        #[cfg(target_os = "macos")]
+        self.print_on_macos(&path);
+        #[cfg(target_os = "windows")]
+        {
+            let Some(owner) = self.main_window_hwnd() else {
+                log::warn!("Print: no viewer window to own the print dialog");
+                return;
+            };
+            crate::platform::windows::print::print_image_file(
+                &path,
+                owner,
+                self.raw_flags,
+                self.color.relative_col,
+            );
+        }
+    }
+
+    /// Present the print sheet on the viewer window. Mirrors the NSWindow-pointer extraction
+    /// used by the About/Settings dialogs, then hands off to the print module.
+    #[cfg(target_os = "macos")]
+    fn print_on_macos(&mut self, path: &std::path::Path) {
+        use objc2::msg_send;
+        use objc2_app_kit::NSWindow;
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
         let mut parent_ptr: *const NSWindow = std::ptr::null();
         if let Some(win) = &self.window
@@ -3372,7 +3401,7 @@ impl App {
 
         // SAFETY: parent_ptr is a valid, live NSWindow* for the duration of this call.
         let parent_window = unsafe { &*parent_ptr };
-        self._active_print = crate::platform::macos::print::print_image_file(&path, parent_window);
+        self._active_print = crate::platform::macos::print::print_image_file(path, parent_window);
         if self._active_print.is_some() {
             log::info!("Printing image: {}", path.display());
         }

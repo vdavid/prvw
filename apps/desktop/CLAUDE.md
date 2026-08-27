@@ -20,7 +20,8 @@ src/
 ├── parity/                  Registries of settings, menu items, and commands + each platform's coverage (M0.5 layer 1)
 ├── paths.rs                 What "the same path" means, per platform (verbatim prefixes, case, display)
 ├── pixels.rs                Logical/Physical coordinate newtypes
-├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers, the two clipboards, the Windows console attach and message hook)
+├── printing.rs              Page layout for File → Print, and the pixel form a GDI printer wants — portable, so any host tests both
+├── platform.rs + platform/  Cross-cutting platform glue (Apple Events, AppKit helpers, the two clipboards, the two print paths, the Windows console attach and message hook)
 ├── render.rs + render/      wgpu infrastructure (renderer, text, shaders)
 ├── scroll.rs                What a wheel notch or a trackpad swipe means, per platform (zoom modifier, steps, images)
 │

@@ -29,6 +29,11 @@ mod parity;
 mod paths;
 mod pixels;
 mod platform;
+// Page layout and the pixel form a GDI printer DC wants, both portable so any host can test
+// them. macOS and Windows print; Linux has no print path, so there the module is only its own
+// tests' subject.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
+mod printing;
 mod render;
 mod scroll;
 

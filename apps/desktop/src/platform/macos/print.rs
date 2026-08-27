@@ -20,6 +20,8 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize};
 
+use crate::printing;
+
 use super::ui_common::load_image_from_path;
 
 /// Ivars for [`PrintView`]: the image to draw. Retained here so it outlives the print
@@ -72,19 +74,21 @@ define_class!(
     }
 );
 
-/// Aspect-fit `image_size` inside `bounds`, centered. `min` of the two axis ratios keeps the
-/// whole image visible (letterboxed), never cropped or enlarged past the page. Returns `None`
-/// for a degenerate (empty) image so the caller skips drawing.
+/// The `NSRect` adapter over [`crate::printing::aspect_fit`], which Windows shares. AppKit's
+/// page origin is bottom-left and GDI's is top-left; the fit is centred, so the same numbers
+/// answer for both (see that module's docs).
 fn aspect_fit_rect(bounds: NSRect, image_size: NSSize) -> Option<NSRect> {
-    if image_size.width <= 0.0 || image_size.height <= 0.0 {
-        return None;
-    }
-    let scale = (bounds.size.width / image_size.width).min(bounds.size.height / image_size.height);
-    let w = image_size.width * scale;
-    let h = image_size.height * scale;
-    let x = bounds.origin.x + (bounds.size.width - w) / 2.0;
-    let y = bounds.origin.y + (bounds.size.height - h) / 2.0;
-    Some(NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)))
+    let page = printing::Rect::new(
+        bounds.origin.x,
+        bounds.origin.y,
+        bounds.size.width,
+        bounds.size.height,
+    );
+    let fitted = printing::aspect_fit(page, image_size.width, image_size.height)?;
+    Some(NSRect::new(
+        NSPoint::new(fitted.x, fitted.y),
+        NSSize::new(fitted.width, fitted.height),
+    ))
 }
 
 impl PrintView {
@@ -149,35 +153,16 @@ mod tests {
             .join(name)
     }
 
-    /// A wide image into a square page is width-limited and vertically centered.
+    /// The adapter carries origin and size across in the right order. The fit itself is
+    /// `printing::aspect_fit`, tested there for every platform at once.
     #[test]
-    fn fits_wide_image_letterboxed_vertically() {
-        let dest = aspect_fit_rect(rect(0.0, 0.0, 200.0, 200.0), NSSize::new(100.0, 50.0)).unwrap();
-        // scale = min(200/100, 200/50) = 2.0 → 200×100, centered: y = (200-100)/2 = 50.
-        assert_eq!(dest.size.width, 200.0);
-        assert_eq!(dest.size.height, 100.0);
-        assert_eq!(dest.origin.x, 0.0);
-        assert_eq!(dest.origin.y, 50.0);
-    }
-
-    /// A tall image into a square page is height-limited and horizontally centered.
-    #[test]
-    fn fits_tall_image_letterboxed_horizontally() {
-        let dest = aspect_fit_rect(rect(0.0, 0.0, 200.0, 200.0), NSSize::new(50.0, 100.0)).unwrap();
-        assert_eq!(dest.size.width, 100.0);
-        assert_eq!(dest.size.height, 200.0);
-        assert_eq!(dest.origin.x, 50.0);
-        assert_eq!(dest.origin.y, 0.0);
-    }
-
-    /// The page origin offsets the fitted rect (printable area rarely starts at 0,0).
-    #[test]
-    fn respects_page_origin() {
+    fn the_nsrect_adapter_carries_the_fit_across() {
         let dest =
-            aspect_fit_rect(rect(10.0, 20.0, 100.0, 100.0), NSSize::new(100.0, 100.0)).unwrap();
+            aspect_fit_rect(rect(10.0, 20.0, 200.0, 200.0), NSSize::new(100.0, 50.0)).unwrap();
+        // scale = min(200/100, 200/50) = 2.0 → 200×100, centred: y = 20 + (200−100)/2 = 70.
         assert_eq!(dest.origin.x, 10.0);
-        assert_eq!(dest.origin.y, 20.0);
-        assert_eq!(dest.size.width, 100.0);
+        assert_eq!(dest.origin.y, 70.0);
+        assert_eq!(dest.size.width, 200.0);
         assert_eq!(dest.size.height, 100.0);
     }
 

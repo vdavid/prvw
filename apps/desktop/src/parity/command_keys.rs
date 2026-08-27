@@ -195,9 +195,9 @@ impl CommandKey {
     }
 
     /// Windows runs the whole platform-neutral half of `execute_command` already. What's
-    /// missing is what the arms gate behind `#[cfg(target_os = "macos")]`: the print sheet, the
-    /// settings window, and browse mode. The clipboard is Windows' own now
-    /// (`platform::windows::clipboard`), and so is the About box (`about::windows`, M6).
+    /// missing is what the arms gate behind `#[cfg(target_os = "macos")]`: the settings window
+    /// and browse mode. The clipboard, the print dialog, and the About box are Windows' own now
+    /// (`platform::windows::clipboard`, `platform::windows::print`, `about::windows`).
     const fn windows_coverage(self) -> Coverage {
         match self {
             CommandKey::TitleBar => Coverage::NotApplicable {
@@ -237,11 +237,11 @@ impl CommandKey {
             | CommandKey::CustomDcpDir
             | CommandKey::CopyImage
             | CommandKey::About
+            | CommandKey::Print
             | CommandKey::Exit => Coverage::Present,
             CommandKey::BrowseMode
             | CommandKey::BrowseFocus
             | CommandKey::BrowseOpenSelected
-            | CommandKey::Print
             | CommandKey::Settings => Coverage::Missing,
         }
     }
@@ -318,7 +318,7 @@ mod tests {
     /// The print sheet, the settings window, and browse mode are the whole Windows gap in
     /// `execute_command` today. If that list shrinks, this test is where it gets noticed.
     #[test]
-    fn windows_gap_is_the_appkit_arms() {
+    fn windows_gap_is_the_appkit_windows_and_browse_mode() {
         let missing: Vec<&str> = CommandKey::ALL
             .iter()
             .filter(|key| key.coverage(Platform::Windows) == Coverage::Missing)
@@ -330,7 +330,6 @@ mod tests {
                 "BrowseMode",
                 "BrowseFocus",
                 "BrowseOpenSelected",
-                "Print",
                 "Settings",
             ]
         );

@@ -9,6 +9,8 @@ monitor work area), and anything with real substance gets its own module here.
 | `clipboard.rs`      | Copy the current image to the clipboard as the original file plus sRGB pixels (Edit → Copy, Ctrl+C, right-click) |
 | `dark_mode.rs`      | Dark chrome for our Win32 windows: the `uxtheme` ordinals, and the pure decision about when to use them          |
 | `msg_hook.rs`       | The one hook in winit's message pump: menu accelerators, and the seam a modeless dialog registers through        |
+| `print.rs`          | File → Print: `PrintDlgW` on a worker thread, then the image drawn onto one page with GDI                        |
+| `ui_common.rs`      | The sRGB re-decode Copy and Print share                                                                          |
 | `window_capture.rs` | Debug-only window photograph for the QA server's `screenshot_window` tool                                        |
 
 Everything here is behind `#[cfg(target_os = "windows")]` at the `platform` import site, so a Mac never compiles it.
@@ -31,6 +33,39 @@ matches the viewer. macOS goes through ImageIO and doesn't.
 **Why:** the decode is a full decode, seconds for a large RAW, and the winit thread can't afford it (principle 4: never
 block the main thread). Win32 allows it — `OpenClipboard` binds to the calling thread, and none of it needs a window.
 The cost is that failures are a log line rather than a return value, which is why every failure path in there logs.
+
+## Decision: the print dialog runs on a worker thread too
+
+**Decision:** `print_image_file` spawns `prvw-print`, and `PrintDlgW`, the decode, and the spooling all happen there.
+
+**Why:** `PrintDlgW` is modal — it opens a message loop and doesn't return until the person picks a printer. On winit's
+thread that's the starved pump this project keeps warning about: `about_to_wait` stops, the slideshow timer freezes,
+`EventLoopProxy` events stall. Win32 makes the worker an easy answer, because a common dialog is modal to its **own**
+thread: naming the main window as `hwndOwner` still disables it and keeps the dialog in front, so it looks app-modal to
+the person while winit keeps pumping. `open_dialog.rs` already does the same for the file picker.
+
+`PrintDlgW` and not `PrintDlgExW`: the newer property-sheet version requires the calling thread to be an apartment-
+threaded COM apartment and buys a page-range UI that a one-page image print has no use for.
+
+## Decision: the page is `HORZRES` × `VERTRES`
+
+**Why:** that's the **printable** area in device pixels. `PHYSICALWIDTH` / `PHYSICALHEIGHT` are the whole sheet
+including the hardware margins, so laying the photo out against those puts its edges where the printer can't put ink.
+The fit inside it is `crate::printing::aspect_fit`, shared with macOS and tested from any host; the enlargement it does
+for a small image is deliberate, since "print this photo" means fill the paper.
+
+## Gotcha: a printer has no alpha, and a dropped alpha byte prints black
+
+**Gotcha:** the decoder hands back straight-alpha RGBA8, and GDI's 32-bit `BI_RGB` layout is B, G, R, and a byte it
+ignores. Reordering alone would print a transparent PNG's background as black, so `printing::flatten_onto_white_bgra`
+composites each channel onto white first — which is what macOS gets for free from `drawInRect:` compositing `SourceOver`
+onto the page.
+
+## Gotcha: the dialog's handles are ours even when the person cancels
+
+**Gotcha:** `PrintDlgW` allocates `hDevMode` and `hDevNames` whether or not it returns true, and both are the caller's
+to `GlobalFree`. And a false return is not necessarily a failure: `CommDlgExtendedError()` answering zero means the
+person cancelled, which deserves a debug line rather than a warning.
 
 ## Decision: three formats, and `CF_DIB` is written by hand
 
@@ -128,7 +163,8 @@ arrives as a `MenuEvent` on the next `about_to_wait`, the same route a menu-bar 
 ## What hasn't met a Windows machine yet
 
 Everything in this directory type-checks and lints through `./scripts/check.sh --check windows-cross`, and **nothing
-here has ever run**. The clipboard's paste targets, the right-click menu, and the drop path all need a person at a
-Windows box, and so does every line of `dark_mode.rs`: the ordinals are undocumented, so "it compiles" says nothing
+here has ever run**. The clipboard's paste targets, the right-click menu, the drop path, and every part of printing
+(does the owner window disable properly from another thread? does the page come out the right way up?) all need a person
+at a Windows box, and so does every line of `dark_mode.rs`: the ordinals are undocumented, so "it compiles" says nothing
 about whether the box comes up dark. The capture in particular has no E2E coverage: `tests/e2e_macos.rs` exercises the
 macOS path, and the equivalent Windows test needs a Windows box to be worth writing.

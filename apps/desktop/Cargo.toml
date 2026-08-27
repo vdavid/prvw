@@ -57,7 +57,9 @@ muda = { version = "0.19.3", default-features = false }
 # take ownership of, and the `CF_DIB` / `CF_DIBV5` / `CF_HDROP` format ids, which live in
 # the OLE namespace), the shell thumbnail cache behind preview generation
 # (`previews::shell`: `SHCreateItemFromParsingName` and `IShellItemImageFactory` from the Shell
-# namespace, plus the `CoInitializeEx` that puts each worker in an apartment), and the About box
+# namespace, plus the `CoInitializeEx` that puts each worker in an apartment), printing
+# (`platform::windows::print`: `PrintDlgW` from the common-dialogs namespace, and the GDI
+# document calls, which live under `Win32_Storage_Xps` beside `PrintWindow`), and the About box
 # (`about::windows`): `Controls` for the `SysLink` and `SetWindowTheme`, `HiDpi` for the
 # per-monitor font and layout, `Shell` for handing a URL to the browser, `Dwm` for the dark
 # caption bar, and `Registry` plus `LibraryLoader` and `Accessibility` for the dark-mode decision
@@ -81,6 +83,7 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Threading",
   "Win32_UI_Accessibility",
   "Win32_UI_Controls",
+  "Win32_UI_Controls_Dialogs",
   "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",

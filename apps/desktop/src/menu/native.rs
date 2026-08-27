@@ -824,11 +824,10 @@ mod tests {
         }
     }
 
-    /// What each platform drops, and why. Windows' list is what's still to build: the print
-    /// sheet, the settings window, and browse mode, each suppressed because
-    /// `parity::command_keys` says `Missing`, so building the feature is what brings the item
-    /// back rather than an edit to this file. About left this list when M6 built the box, which
-    /// is the mechanism working.
+    /// What each platform drops, and why. Windows' list is the settings window and browse mode,
+    /// each suppressed because `parity::command_keys` says `Missing`, so building the feature is
+    /// what brings the item back rather than an edit to this file. Print left the list in M3
+    /// along with its context-menu twin, and About left it in M6: the mechanism working twice.
     #[test]
     fn platforms_without_the_feature_dont_offer_the_item() {
         assert_eq!(
@@ -838,10 +837,8 @@ mod tests {
                 "Hide",
                 "HideOthers",
                 "ShowAll",
-                "Print",
                 "CloseWindow",
                 "BrowseToggle",
-                "ContextPrint",
             ]
         );
         // Linux has no bar at all, so nothing here reaches anyone there. Close window is the
