@@ -24,8 +24,8 @@ tested from macOS, and `dialog.rs` creates windows at the rects it's handed with
 from `model::button`. `dialog.rs` writes no copy of its own.
 
 **Why:** it makes `model::user_visible_strings` exhaustive, which is what `the_copy_follows_the_style_guide` and
-`titles_are_sentence_case` sweep. `about::content` does the same for the About box; this dialog has thirty times as
-many strings, so the sweep matters more here. It also means a Mac can read every word a Windows user will see.
+`titles_are_sentence_case` sweep. `about::content` does the same for the About box; this dialog has thirty times as many
+strings, so the sweep matters more here. It also means a Mac can read every word a Windows user will see.
 
 ## Decision: the dialog is data, and only the last mile is FFI
 

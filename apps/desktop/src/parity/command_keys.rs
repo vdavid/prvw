@@ -241,9 +241,9 @@ impl CommandKey {
             | CommandKey::Print
             | CommandKey::Settings
             | CommandKey::Exit => Coverage::Present,
-            CommandKey::BrowseMode
-            | CommandKey::BrowseFocus
-            | CommandKey::BrowseOpenSelected => Coverage::Missing,
+            CommandKey::BrowseMode | CommandKey::BrowseFocus | CommandKey::BrowseOpenSelected => {
+                Coverage::Missing
+            }
         }
     }
 
@@ -327,11 +327,7 @@ mod tests {
             .collect();
         assert_eq!(
             missing,
-            vec![
-                "BrowseMode",
-                "BrowseFocus",
-                "BrowseOpenSelected",
-            ]
+            vec!["BrowseMode", "BrowseFocus", "BrowseOpenSelected"]
         );
     }
 }
