@@ -51,9 +51,29 @@ reach the models — `LVN_GETDISPINFO` asks for a cell's text while `WM_NOTIFY` 
 borrow through whatever `browser::State` is holding. `settings::windows::dialog` does the same, for the same reason.
 `BrowseUi` is therefore an empty handle; everything real is in `UI`.
 
-**Gotcha: never hold the borrow across a call into Win32.** **Why:** `SendMessageW` dispatches to a window procedure
-synchronously, and that procedure reaches back in here. A `RefCell` already borrowed panics. `with_ui` / `with_ui_mut`
-take the borrow, do the work, and drop it; anything that needs both a read and a Win32 call reads first, then calls.
+**Gotcha: never hold the borrow across a call into Win32.** **Why:** a Win32 call that dispatches synchronously reaches
+a window procedure, and that procedure reaches back in here. A `RefCell` already borrowed panics, and a panic inside a
+window procedure unwinds across an `extern "system"` boundary, which Rust turns into a **process abort**. So the failure
+isn't a wrong pixel: the app is gone, with nothing to report.
+
+This is not hypothetical. `BrowseUi::apply_focus` held the borrow across `SetFocus`, which sends `WM_KILLFOCUS` and
+`WM_SETFOCUS` synchronously; the focus change repainted, `container_proc` borrowed again, and the process aborted. That
+fired on **every** entry into browse mode, because `sync_native` applies the focus each time. The clue in a log is
+`RefCell already mutably borrowed` followed by `panic in a function that cannot unwind`.
+
+`SendMessageW` is the obvious offender, and it is not the only one. `SetFocus`, `SetWindowPos`, `ShowWindow`,
+`MoveWindow`, `DestroyWindow`, `EnableWindow`, `SetParent`, and `UpdateWindow` all dispatch. So does anything that wraps
+one: `set_font` is a `WM_SETFONT`, and a helper on `Ui` looks like state but may be a message. **The call being indirect
+is what hid both instances**, so check what a closure calls, not only what it spells.
+
+The shape that works: `with_ui` / `with_ui_mut` take the borrow, read out the handles, and drop it; the Win32 call comes
+after. Where the work needs two rounds, split it (`Ui::begin_rescale` decides and hands back the handles,
+`Ui::finish_rescale` records what the controls answered).
+
+**The net:** both helpers use `try_borrow` rather than `borrow`. A re-entrant access declines, logs an error naming the
+call site, and the app carries on with one skipped repaint. That turns this class of mistake from a silent process abort
+into a line in the log the E2E harness quotes back. It is a net, not a licence — an error line from there means a call
+site is breaking the rule above.
 
 ## The tree
 

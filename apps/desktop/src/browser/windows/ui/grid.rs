@@ -24,11 +24,12 @@
 //!
 //! **Why:** `LVM_SETITEMCOUNT` can send `LVN_ODCACHEHINT` and `LVM_SETITEMSTATE` sends
 //! `LVN_ITEMCHANGED`, both **synchronously** to the parent — which lands back in [`notify`] and
-//! borrows the same `RefCell` this call was holding. That's a panic, on the path a folder listing
-//! takes every time. So the model work happens under the borrow, the borrow is dropped, and the
-//! messages go out afterwards. `super::tree` keeps the same rule for the same reason. The image
-//! list calls are the exception and are safe under a borrow: `CreateDIBSection`,
-//! `ImageList_Replace`, and `DeleteObject` reach no window procedure.
+//! borrows the same `RefCell` this call was holding, and breaking that rule aborts the process
+//! rather than misbehaving (`super`, and `browser/windows/CLAUDE.md`). So the model work happens
+//! under the borrow, the borrow is dropped, and the messages go out afterwards. `super::tree`
+//! keeps the same rule for the same reason. The image list calls are the exception and are safe
+//! under a borrow: `CreateDIBSection`, `ImageList_Replace`, and `DeleteObject` operate on the
+//! image list object and reach no window procedure.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -122,15 +122,75 @@ thread_local! {
     static UI: RefCell<Option<Ui>> = const { RefCell::new(None) };
 }
 
-/// Read something out of the browser, if it's been built. The borrow never spans a call into
-/// Win32: a window procedure can reach back in here, and a `RefCell` already borrowed panics.
+/// Read something out of the browser, if it's been built.
+///
+/// **The borrow must never span a call into Win32**, and these two are the net for when it does.
+/// A window procedure reaches back in here, so a message sent under the borrow lands in
+/// [`container_proc`], which borrows again. A plain `RefCell` borrow panics there, and a panic
+/// inside a window procedure unwinds across an `extern "system"` boundary, which Rust turns into
+/// a process abort — the app is simply gone, with no failed operation to report. `try_borrow`
+/// makes that survivable instead: the re-entrant access declines, says where it came from, and
+/// the app carries on with one skipped repaint.
+///
+/// The net is not a licence. The rule stays: read what you need, drop the borrow, then call
+/// Win32. An error line from here means a call site is breaking it.
+#[track_caller]
 fn with_ui<T>(read: impl FnOnce(&Ui) -> T) -> Option<T> {
-    UI.with_borrow(|ui| ui.as_ref().map(read))
+    let caller = std::panic::Location::caller();
+    UI.with(|cell| match cell.try_borrow() {
+        Ok(ui) => ui.as_ref().map(read),
+        Err(_) => {
+            reentered(caller);
+            None
+        }
+    })
 }
 
-/// Mutate the browser, if it's been built. Same borrow rule as [`with_ui`].
+/// Mutate the browser, if it's been built. Same borrow rule and same net as [`with_ui`].
+#[track_caller]
 fn with_ui_mut<T>(write: impl FnOnce(&mut Ui) -> T) -> Option<T> {
-    UI.with_borrow_mut(|ui| ui.as_mut().map(write))
+    let caller = std::panic::Location::caller();
+    UI.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut ui) => ui.as_mut().map(write),
+        Err(_) => {
+            reentered(caller);
+            None
+        }
+    })
+}
+
+/// Store the freshly built browser. Not reachable from a window procedure (`BrowseUi::create`
+/// runs from `browser::State`), but it goes through the same door so the module has no borrow
+/// that can panic.
+fn store_ui(ui: Ui) -> bool {
+    UI.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut slot) => {
+            *slot = Some(ui);
+            true
+        }
+        Err(_) => {
+            reentered(std::panic::Location::caller());
+            false
+        }
+    })
+}
+
+/// Drop the browser's state, on `WM_DESTROY`.
+fn clear_ui() {
+    UI.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut slot) => *slot = None,
+        Err(_) => reentered(std::panic::Location::caller()),
+    });
+}
+
+/// Say that a borrow was re-entered, and where from. The message names the fix, because the
+/// call site is always the same mistake: a Win32 call made while the state was still borrowed.
+fn reentered(caller: &'static std::panic::Location<'static>) {
+    log::error!(
+        "Browse mode's state was already borrowed at {caller}, so this access did nothing. \
+         Something called into Win32 while holding the borrow and the message came back. Read \
+         what you need, drop the borrow, then call Win32."
+    );
 }
 
 /// The handle `browser::State` holds. It owns nothing: the windows and the models live in the
@@ -167,7 +227,9 @@ impl BrowseUi {
         // Windows, and on a CI runner these lines are the only account of how far it got.
         log::info!("Browse mode: common controls registered, building");
         let ui = build(owner, sort_by)?;
-        UI.replace(Some(ui));
+        if !store_ui(ui) {
+            return None;
+        }
         // The rows go on now rather than in `build`: putting one on takes and drops the state
         // borrow several times, so the state has to be in the thread-local first.
         tree::populate_roots();
@@ -247,16 +309,35 @@ impl BrowseUi {
     /// thumbnails, and lay out again. A `WM_DPICHANGED` reaches winit's window rather than ours,
     /// so `App` passes it on.
     pub fn rescale(&self) {
-        let Some(Some(dpi)) = with_ui_mut(Ui::rescale) else {
+        let Some(Some(step)) = with_ui_mut(Ui::begin_rescale) else {
             return;
         };
-        grid::rescale(dpi);
+        // No borrow from here on: `WM_SETFONT` is sent synchronously to each control, and the
+        // status bar re-measures itself from the font it has just been given.
+        for control in step.controls {
+            set_font(control, step.font);
+        }
+        delete_font(step.old_font);
+        let status_height = natural_height(step.status);
+        with_ui_mut(|ui| ui.finish_rescale(status_height));
+        log::debug!("Browse mode rescaled to {} DPI", step.dpi);
+        grid::rescale(step.dpi);
         self.relayout();
     }
 
     /// Give the keyboard to a pane, and repaint the selection emphasis that follows from it.
     pub fn apply_focus(&self, pane: PaneSide) {
-        with_ui_mut(|ui| ui.apply_focus(pane));
+        let Some(target) = with_ui(|ui| ui.pane(pane)) else {
+            return;
+        };
+        // SAFETY: a live control of ours. A failure here means another window took focus first,
+        // which is not ours to fight over.
+        //
+        // The handle comes out from under the borrow first, and this is the call that proves why:
+        // `SetFocus` sends `WM_KILLFOCUS` and `WM_SETFOCUS` synchronously, the focus change
+        // repaints, and that lands back in `container_proc` — which borrows the same state. Held
+        // across this call, it aborted the process on every entry into browse mode.
+        let _ = unsafe { SetFocus(Some(target)) };
     }
 
     /// The path the grid is sitting on, if any.
@@ -640,22 +721,20 @@ impl Ui {
         })
     }
 
-    /// Hand the keyboard to a pane and repaint what follows from it. `SetFocus` is all the
-    /// emphasis a treeview needs; the grid draws its selection greyed while unfocused, which is
-    /// also automatic once focus moves.
-    fn apply_focus(&mut self, pane: PaneSide) {
-        let target = match pane {
+    /// The control a pane side names. `SetFocus` on it is all the emphasis a treeview needs;
+    /// the grid draws its selection greyed while unfocused, which is also automatic once focus
+    /// moves. The call itself is [`BrowseUi::apply_focus`], outside the borrow.
+    fn pane(&self, pane: PaneSide) -> HWND {
+        match pane {
             PaneSide::Tree => self.tree,
             PaneSide::Grid => self.grid,
-        };
-        // SAFETY: a live control of ours. A failure here means another window took focus first,
-        // which is not ours to fight over.
-        let _ = unsafe { SetFocus(Some(target)) };
+        }
     }
 
-    /// Rebuild everything the monitor's DPI decides. The image list is rebuilt by `grid`, which
-    /// takes its own borrow, so this returns the new DPI rather than doing it here.
-    fn rescale(&mut self) -> Option<u32> {
+    /// Take everything a DPI change decides in state, and hand back the part that has to happen
+    /// with no borrow held. The controls are re-fonted by [`BrowseUi::rescale`], because
+    /// `WM_SETFONT` reaches each one's own procedure.
+    fn begin_rescale(&mut self) -> Option<Rescale> {
         // SAFETY: a live window of ours.
         let dpi = unsafe { GetDpiForWindow(self.container) }.max(96);
         if dpi == self.dpi {
@@ -665,15 +744,30 @@ impl Ui {
         self.dpi = dpi;
         let old_font = self.font;
         self.font = message_font(dpi);
-        for control in [self.tree, self.grid, self.status] {
-            set_font(control, self.font);
-        }
-        delete_font(old_font);
-        self.metrics = Metrics::for_dpi(dpi, natural_height(self.status));
         self.tree_width = layout::scale(logical_tree_width, dpi);
-        log::debug!("Browse mode rescaled to {dpi} DPI");
-        Some(dpi)
+        Some(Rescale {
+            dpi,
+            font: self.font,
+            old_font,
+            controls: [self.tree, self.grid, self.status],
+            status: self.status,
+        })
     }
+
+    /// Record what the re-fonted status bar measured. Its height decides every other metric, and
+    /// it can only be read once the control has the new font.
+    fn finish_rescale(&mut self, status_height: i32) {
+        self.metrics = Metrics::for_dpi(self.dpi, status_height);
+    }
+}
+
+/// What a DPI change leaves for [`BrowseUi::rescale`] to do outside the state borrow.
+struct Rescale {
+    dpi: u32,
+    font: HFONT,
+    old_font: HFONT,
+    controls: [HWND; 3],
+    status: HWND,
 }
 
 fn delete_font(font: HFONT) {
@@ -787,7 +881,7 @@ unsafe extern "system" fn container_proc(
             if let Some(font) = with_ui(|ui| ui.font) {
                 delete_font(font);
             }
-            UI.replace(None);
+            clear_ui();
             log::debug!("Browse mode's Windows UI destroyed");
             LRESULT(0)
         }

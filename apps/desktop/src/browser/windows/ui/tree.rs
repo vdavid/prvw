@@ -27,10 +27,13 @@
 //!
 //! **Why:** `TVM_DELETEITEM` on the selected row sends `TVN_SELCHANGED`, and `TVM_EXPAND` sends
 //! `TVN_ITEMEXPANDING`, both **synchronously** to the parent — which lands back in [`notify`] and
-//! borrows the same `RefCell` this call was holding. That's a panic, on a path as ordinary as a
-//! folder finishing its scan. So every function here reads what it needs, drops the borrow, sends
-//! the message, and takes the borrow again to record the result. It reads as more steps than it
-//! needs to be; it is the reason the browser doesn't fall over.
+//! borrows the same `RefCell` this call was holding. So every function here reads what it needs,
+//! drops the borrow, sends the message, and takes the borrow again to record the result. It reads
+//! as more steps than it needs to be; it is the reason the browser doesn't fall over.
+//!
+//! The rule is the module-wide one in `super`, and breaking it aborts the process rather than
+//! misbehaving. Watch for the indirect form especially: a closure that calls a helper which sends
+//! a message looks harmless and isn't.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
