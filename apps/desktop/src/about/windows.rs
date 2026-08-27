@@ -440,39 +440,30 @@ fn apply_fonts(hwnd: HWND, heading: Option<HWND>) {
         return;
     };
 
-    let mut child = HWND::default();
-    loop {
-        // SAFETY: `GetWindow` walks this window's children and answers null at the end.
-        let next = unsafe {
-            GetWindow(
-                if child.is_invalid() { hwnd } else { child },
-                if child.is_invalid() {
-                    GW_CHILD
-                } else {
-                    GW_HWNDNEXT
-                },
-            )
-        };
-        let Ok(next) = next else { break };
-        if next.is_invalid() {
+    // SAFETY: `hwnd` is the live parent. `GetWindow` answers an error at the end of the list.
+    let mut child = unsafe { GetWindow(hwnd, GW_CHILD) };
+    while let Ok(control) = child {
+        if control.is_invalid() {
             break;
         }
-        child = next;
-        let font = if Some(child) == heading {
+        let font = if Some(control) == heading {
             heading_font
         } else {
             body_font
         };
         // SAFETY: a live control and a live font. `WM_SETFONT` copies nothing and takes no
-        // ownership; the font outlives the window (see `WM_DESTROY`).
+        // ownership; the font outlives every control (see `WM_DESTROY`). `lParam` of 1 asks for
+        // a redraw, which costs nothing before the window is shown.
         unsafe {
             SendMessageW(
-                child,
+                control,
                 WM_SETFONT,
                 Some(WPARAM(font.0 as usize)),
                 Some(LPARAM(1)),
             )
         };
+        // SAFETY: as above, walking to the next sibling.
+        child = unsafe { GetWindow(control, GW_HWNDNEXT) };
     }
 }
 
