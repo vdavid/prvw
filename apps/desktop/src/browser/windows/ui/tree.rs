@@ -149,9 +149,12 @@ pub(super) fn create(
     };
 
     let icon = attach_system_image_list(hwnd);
+    log::debug!("Browse tree: control up, enumerating roots");
 
+    let roots = super::super::shell_roots::enumerate();
+    log::debug!("Browse tree: {} root(s) enumerated", roots.len());
     let state = TreeState {
-        roots: super::super::shell_roots::enumerate(),
+        roots,
         children: ChildCache::new(),
         scanner: TreeScanner::start(),
         paths: Vec::new(),
@@ -334,8 +337,24 @@ fn request_children(item: HTREEITEM) {
     if wanted != Some(true) {
         return;
     }
-    with_ui(|ui| ui.tree_state.scanner.scan(path));
+    // A reveal walk waiting on this folder names the child it needs, so a hidden ancestor
+    // doesn't strand it. Every Windows temp folder is under `AppData`, which is hidden, so
+    // without this a dropped folder from there would never get a row.
+    let reveal_child = with_ui(|ui| reveal_child_of(ui, &path)).flatten();
+    with_ui(|ui| match reveal_child {
+        Some(child) => ui.tree_state.scanner.scan_revealing(path, child),
+        None => ui.tree_state.scanner.scan(path),
+    });
     super::refresh_status_bar();
+}
+
+/// The step after `folder` on the reveal walk in flight, if that walk is sitting on `folder`.
+fn reveal_child_of(ui: &Ui, folder: &Path) -> Option<PathBuf> {
+    let reveal = ui.tree_state.reveal.as_ref()?;
+    let here = reveal.chain.get(reveal.position)?;
+    crate::paths::same_path(here, folder)
+        .then(|| reveal.chain.get(reveal.position + 1).cloned())
+        .flatten()
 }
 
 /// A row was selected: tell the app, so the grid lists that folder.

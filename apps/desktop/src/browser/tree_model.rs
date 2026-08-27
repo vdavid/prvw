@@ -140,7 +140,15 @@ pub fn scan_overdue(earliest: Option<Instant>, now: Instant) -> bool {
 /// browser have no such command to post.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub struct TreeScanner {
-    request_tx: std::sync::mpsc::Sender<PathBuf>,
+    request_tx: std::sync::mpsc::Sender<ScanRequest>,
+}
+
+/// One directory for the scanner to read, and the one child it must list whatever its
+/// attributes say. See [`child_directories_revealing`].
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+struct ScanRequest {
+    path: PathBuf,
+    reveal_child: Option<PathBuf>,
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -149,12 +157,12 @@ impl TreeScanner {
     /// window's life) drops, closing the channel and ending the loop.
     #[must_use]
     pub fn start() -> Self {
-        let (request_tx, request_rx) = std::sync::mpsc::channel::<PathBuf>();
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<ScanRequest>();
         std::thread::Builder::new()
             .name("prvw-tree-scan".into())
             .spawn(move || {
-                while let Ok(path) = request_rx.recv() {
-                    let children = child_directories(&path);
+                while let Ok(ScanRequest { path, reveal_child }) = request_rx.recv() {
+                    let children = child_directories(&path, reveal_child.as_deref());
                     log::debug!(
                         "Tree scan done: {} ({} subdir(s))",
                         path.display(),
@@ -175,7 +183,30 @@ impl TreeScanner {
 
     /// Enqueue a directory scan. Fire-and-forget; the result comes back as an `AppCommand`.
     pub fn scan(&self, path: PathBuf) {
-        if self.request_tx.send(path).is_err() {
+        self.enqueue(path, None);
+    }
+
+    /// Enqueue a scan that a reveal walk is waiting on, naming the child it has to find.
+    ///
+    /// Windows-only in practice: it exists because `AppData` carries the hidden attribute, and
+    /// on macOS the same filter only skips dot-folders, which no reveal chain runs through.
+    ///
+    /// The tree hides what Explorer hides, and a reveal target can sit under a folder on that
+    /// list: every Windows temp directory is under `AppData`, which carries the hidden
+    /// attribute. Refusing to list the one folder the walk needs would leave the reveal stuck
+    /// forever with no row to expand, so a folder the user is being taken to is listed however
+    /// hidden it is. Everything else in the same directory still obeys the filter.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn scan_revealing(&self, path: PathBuf, reveal_child: PathBuf) {
+        self.enqueue(path, Some(reveal_child));
+    }
+
+    fn enqueue(&self, path: PathBuf, reveal_child: Option<PathBuf>) {
+        if self
+            .request_tx
+            .send(ScanRequest { path, reveal_child })
+            .is_err()
+        {
             log::warn!("Tree scanner worker is gone — dropping scan request");
         }
     }
@@ -259,8 +290,14 @@ pub fn reveal_path_chain_under(
 ///
 /// Returns an empty `Vec` when `dir` can't be read (permission denied, not a directory, gone).
 /// That's deliberate: the tree shows the node with no children rather than erroring.
+/// `reveal_child` is the next step of a reveal walk, and it is listed however hidden it is.
+/// Without that exception the walk stalls on any hidden ancestor — on Windows that is every temp
+/// folder, since they all live under `AppData` — and the tree sits on a folder the user was just
+/// taken to with no row for it. Naming the one folder the user is going to is far narrower than
+/// showing hidden folders generally, which would put `AppData` and `System Volume Information`
+/// in a photo browser.
 #[must_use]
-pub fn child_directories(dir: &Path) -> Vec<PathBuf> {
+pub fn child_directories(dir: &Path, reveal_child: Option<&Path>) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -269,7 +306,9 @@ pub fn child_directories(dir: &Path) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let path = entry.path();
-            if is_hidden_entry(&entry, &path) {
+            let revealing =
+                reveal_child.is_some_and(|wanted| crate::paths::same_path(&path, wanted));
+            if !revealing && is_hidden_entry(&entry, &path) {
                 return None;
             }
             // Directories only. `is_dir` resolves symlinks, so dir aliases still count.
@@ -458,6 +497,32 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// A reveal walk into a hidden folder has to get a row for it, or it stalls with nothing to
+    /// expand. The dot-folder stands in for Windows's hidden attribute here, because the two go
+    /// through the same filter and only one of them exists on a Mac.
+    #[test]
+    fn a_reveal_target_is_listed_however_hidden_it_is() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir(root.join(".appdata")).unwrap();
+        fs::create_dir(root.join(".other")).unwrap();
+        fs::create_dir(root.join("Photos")).unwrap();
+
+        // Without a reveal, hidden means hidden.
+        let plain: Vec<_> = child_directories(root, None)
+            .iter()
+            .map(|p| file_name_str(p).unwrap().to_string())
+            .collect();
+        assert_eq!(plain, vec!["Photos"]);
+
+        // With one, the named folder joins it — and only that one.
+        let revealing: Vec<_> = child_directories(root, Some(&root.join(".appdata")))
+            .iter()
+            .map(|p| file_name_str(p).unwrap().to_string())
+            .collect();
+        assert_eq!(revealing, vec![".appdata", "Photos"]);
+    }
+
     #[test]
     fn child_directories_keeps_only_dirs_skips_dotfolders_and_sorts() {
         let tmp = tempfile::tempdir().unwrap();
@@ -468,7 +533,7 @@ mod tests {
         fs::write(root.join("a_file.txt"), b"x").unwrap();
         fs::write(root.join("image.jpg"), b"x").unwrap();
 
-        let dirs = child_directories(root);
+        let dirs = child_directories(root, None);
         let names: Vec<_> = dirs
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -482,7 +547,7 @@ mod tests {
     fn child_directories_unreadable_is_empty_not_error() {
         // A path that doesn't exist can't be read; we want an empty list, not a panic.
         let missing = Path::new("/this/path/does/not/exist/prvw-test");
-        assert!(child_directories(missing).is_empty());
+        assert!(child_directories(missing, None).is_empty());
     }
 
     #[test]
@@ -492,7 +557,7 @@ mod tests {
         for name in ["trip_10", "trip_2", "trip_1"] {
             fs::create_dir(root.join(name)).unwrap();
         }
-        let names: Vec<_> = child_directories(root)
+        let names: Vec<_> = child_directories(root, None)
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();

@@ -163,6 +163,9 @@ impl BrowseUi {
         let _ = unsafe { InitCommonControlsEx(&controls) };
         dark_mode::allow_dark_mode_for_app();
 
+        // Each step of the build says so before it runs. Nothing here has ever executed on
+        // Windows, and on a CI runner these lines are the only account of how far it got.
+        log::info!("Browse mode: common controls registered, building");
         let ui = build(owner, sort_by)?;
         UI.replace(Some(ui));
         // The rows go on now rather than in `build`: putting one on takes and drops the state
@@ -349,6 +352,7 @@ fn build(owner: HWND, sort_by: crate::navigation::SortBy) -> Option<Ui> {
     // No `WS_VISIBLE`: the controls go on before anything is shown, so the browser never appears
     // half-built. `WS_CLIPCHILDREN` keeps the container's own background paint out of the panes.
     // SAFETY: `CLASS_NAME` is registered above and `owner` is winit's live window.
+    log::debug!("Browse mode: creating the container window");
     let container = unsafe {
         CreateWindowExW(
             Default::default(),
@@ -374,11 +378,14 @@ fn build(owner: HWND, sort_by: crate::navigation::SortBy) -> Option<Ui> {
     let font = message_font(dpi);
     dark_mode::apply_to_window(container, theme);
 
+    log::debug!("Browse mode: container up at {dpi} DPI, creating the status bar");
     let status = create_status_bar(container, instance, font, theme)?;
     let status_height = natural_height(status);
     let metrics = Metrics::for_dpi(dpi, status_height);
 
+    log::debug!("Browse mode: creating the tree");
     let (tree, tree_state) = tree::create(container, instance, font, theme)?;
+    log::debug!("Browse mode: creating the grid");
     let (grid, grid_state) = grid::create(container, instance, font, theme, dpi, sort_by)?;
     // Tab, Enter, and Esc have to be taken off the controls before they handle them, and a
     // subclass is where Win32 does that. Everything else falls through to the control, which is

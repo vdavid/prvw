@@ -529,17 +529,20 @@ pub(super) fn thumbnails_available() {
         && let (Some(first), Some(last)) =
             (ready.iter().min().copied(), ready.iter().max().copied())
     {
-        with_ui(|ui| {
+        // The handle comes out from under the borrow first, the way every other message in
+        // this module does: `LVM_REDRAWITEMS` only invalidates today, but a message sent while
+        // the state is borrowed is one comctl32 change away from a panic.
+        if let Some(grid) = with_ui(|ui| ui.grid) {
             // SAFETY: a live listview of ours; the two indices bound the rows to repaint.
             unsafe {
                 SendMessageW(
-                    ui.grid,
+                    grid,
                     LVM_REDRAWITEMS,
                     Some(WPARAM(first)),
                     Some(LPARAM(last as isize)),
                 )
             };
-        });
+        }
     }
 }
 

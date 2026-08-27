@@ -72,6 +72,12 @@ take the borrow, do the work, and drop it; anything that needs both a read and a
 - **The reveal walk is asynchronous for the same reason**: expanding an unscanned node would find no children. It
   expands one level, waits for the delivery, and steps on.
 
+**Gotcha: a reveal walk stalls on a hidden ancestor unless it asks for one.** **Why:** the tree hides what Explorer
+hides, and every Windows temp folder lives under `AppData`, which carries the hidden attribute. A folder dropped from
+there would get no row to expand and the walk would wait forever. `request_children` therefore names the walk's next
+step (`TreeScanner::scan_revealing`), and that one child is listed however hidden it is. Nothing else in the same
+directory is.
+
 **Decision: one generic folder icon for every row.** **Why:** per-row shell icons mean `SHGetFileInfoW` without
 `SHGFI_USEFILEATTRIBUTES`, which Microsoft's own docs say should not be called from a UI thread, and which blocks for
 tens of seconds on a disconnected mapped drive. We ask once, with the attributes flag, and every row wears that answer.
