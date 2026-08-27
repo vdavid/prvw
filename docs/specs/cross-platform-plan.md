@@ -1051,26 +1051,37 @@ The Windows-specific pieces that must be native regardless:
 grid stays the right Windows shape (it's Explorer's and ACDSee's), but the roots, the theming, the splitter, the status
 bar, and the swapchain composition all differ from the macOS build. Read that section before starting.
 
-### M6: onboarding and about on Windows (one to two weeks)
+### M6: onboarding and about on Windows — done
 
-Native Win32, per option (a), and **blocked on M0.5**. That's 2,349 lines of AppKit to mirror (`onboarding/` is three
-files totalling 2,097, plus `about.rs` at 252). One thing gets easier: the macOS versions run before `EventLoop::new()`
-to dodge the nested-run-loop segfault, and Windows has no autorelease pools, so these can be ordinary windows. One thing
-gets harder: they're modal-shaped, and M1 step 1's warning applies, because a Win32 modal loop blocks winit's pump the
-same way.
+Landed as [windows-ui-design.md](windows-ui-design.md) argued it, at roughly a tenth of the AppKit line count it was
+budgeted against. Windows parity moved from 65 to 67 of 117.
 
-Content changes regardless: the macOS onboarding's three steps are "open an image", "set as default viewer", and "move
-to /Applications". On Windows, step three is meaningless (the installer handles placement) and step two can only
-deep-link to `ms-settings:defaultapps`. Write new copy rather than translating the old.
+**The About box is real** (`apps/desktop/src/about/`). Help → About Prvw opens a modeless `WS_POPUP` carrying the app
+icon, the version, the tagline, the author, the licence, and three `SysLink` controls. It registers with
+`platform::windows::msg_hook`, so `IsDialogMessageW` gives it Tab, Esc, and Enter, and it opens **no nested message
+loop** — the thing that would otherwise starve winit's pump and freeze the slideshow behind it. It is not a
+`TaskDialogIndirect`, because those block and don't follow dark mode.
 
-Note that M1 step 1 already gave the no-argument launch a defensible empty state, so this milestone is a polish pass by
-the time it arrives.
+Two pieces came out of it that the rest of the Windows work wants:
 
-**[windows-ui-design.md](windows-ui-design.md) argues this milestone down to three or four days**: Windows gets no
-onboarding window at all (all three macOS steps are meaningless or impossible there, and the empty state M1 step 1 owes
-anyway covers what's left), and the about box is a small dialog of our own reusing M4's dark-mode and layout plumbing.
-That last point makes M6 depend on M4. Read "Onboarding and about" before budgeting a week for AppKit-shaped work that
-shouldn't exist here.
+- **`about::content`** holds every user-visible string as data, takes the platform as an argument rather than reading
+  `cfg!`, and compiles everywhere. So a Mac's test run asserts Windows' copy, including a guard that holds all three
+  platforms' strings to `docs/style-guide.md`. `about.rs` became `about/macos.rs` and reads the same strings; what macOS
+  shows is unchanged.
+- **`platform::windows::dark_mode`** is the `SetPreferredAppMode` / `SetWindowTheme` plumbing the design describes, with
+  the theme decision as a pure, asserted function. **M4's settings dialog should use it rather than growing its own.**
+
+**No onboarding window was built on Windows, on purpose.** All four macOS steps are meaningless or impossible there, and
+the launch empty state M1 step 1 built covers what's left. `apps/desktop/src/onboarding/CLAUDE.md` records the reasoning
+step by step. One piece the design asked for is deliberately deferred rather than dropped: the empty-state line saying
+Prvw isn't the default viewer yet, with a "Set as default" affordance. Its whole canvas is already one click target for
+the file picker, and the capability behind it is `SettingKey::FileAssociations`, so it belongs with **M4's**
+file-associations panel.
+
+**What still needs a Windows box:** every line of the dialog. It type-checks and lints through `--check windows-cross`
+and has never run. `about_opens_without_holding_up_the_app` in `tests/e2e_shared.rs` gates on `CommandKey::About` and
+runs there the first time the suite does; it's the test that would catch a nested message loop. The layout constants,
+the dark-mode ordinals, and the `SysLink` colours all want eyes on real hardware.
 
 ### M7: distribution (one to two weeks of work, plus signing lead time)
 

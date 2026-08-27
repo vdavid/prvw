@@ -1,7 +1,36 @@
 # Onboarding
 
-First-launch welcome window. Shows a four-step checklist and closes either when a file arrives via Apple Event
-(transition into the viewer) or when the user dismisses it (quit).
+First-launch welcome window, **macOS only**. Shows a four-step checklist and closes either when a file arrives via Apple
+Event (transition into the viewer) or when the user dismisses it (quit).
+
+## Decision: Windows and Linux get no onboarding window at all
+
+**Decision:** M6 built the About box and deliberately built no onboarding anywhere else. The launch empty state
+(`app::EmptyState::NothingOpen`) is the whole of it off macOS.
+
+**Why:** take the four steps one at a time and there's nothing left.
+
+1. **"Install Prvw.app"** is always checked here, because running the binary means it's installed. Elsewhere the
+   installer ran. Nothing to say.
+2. **"Set Prvw as your default image viewer"** can't be done on Windows. Programmatic default-handler setting was
+   removed in Windows 10 20H2: an app can register its ProgIDs (the installer's job) and deep-link to
+   `ms-settings:defaultapps`, and that's all. Meanwhile Windows already asks "How do you want to open this file?" the
+   first time someone double-clicks a JPEG after installing something new, so a step here duplicates the system's own
+   flow and does it worse.
+3. **"Move Prvw.app to /Applications"** is meaningless where an installer places the binary.
+4. **"How to open images"** is one sentence, and the empty state is already carrying it.
+
+So macOS keeps 2,097 lines of AppKit that exist mostly to prompt for file associations under an API only macOS has, and
+the honest Windows answer is a sentence in a window that already had to exist. `docs/specs/windows-ui-design.md`,
+"Onboarding and about", is the full argument.
+
+**What this leaves for later**, so nobody reads the absence as an oversight: that spec also wanted a line on the Windows
+empty state saying Prvw isn't the default viewer yet, with a "Set as default" affordance. M6 didn't build it, for two
+reasons. The empty state's whole canvas is already one click target that opens the file picker (`App::window_event`), so
+a second affordance inside a glyphon text pill would either steal that click or need a hit-region the overlay has no
+concept of. And the capability it would reach for is `SettingKey::FileAssociations`, which the registry already tracks
+and M4 owns, so building a second door to a room that isn't built yet would be a nag with nowhere to go. It belongs with
+that panel.
 
 | File                   | Purpose                                                                      |
 | ---------------------- | ---------------------------------------------------------------------------- |

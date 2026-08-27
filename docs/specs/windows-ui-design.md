@@ -551,6 +551,11 @@ specifics that belong in this design rather than in M3's notes:
 
 ## Onboarding and about
 
+**Built (M6), as recommended: no onboarding window on Windows at all, and a small About dialog of our own.** The code is
+`apps/desktop/src/about/` and `apps/desktop/src/platform/windows/dark_mode.rs`; `about/CLAUDE.md` records what the
+implementation decided on top of this section. Nothing of it has run on a Windows machine yet. The rest of this section
+is the argument, which stands.
+
 **Recommendation: build no onboarding window on Windows at all, and build a small About dialog of our own.** This is the
 place to argue for less, and the argument is strong.
 
@@ -585,7 +590,10 @@ Its content, in order:
 - When Prvw is not the default handler for common image types, one more line: "Prvw isn't your default image viewer
   yet." with a "Set as default" affordance that launches `ms-settings:defaultapps`. When it is the default, this line is
   absent. Checking is a registry read of the `UserChoice` ProgID for a few extensions, and it is cheap enough to do on
-  each empty-state paint.
+  each empty-state paint. **M6 deferred this last line to M4** rather than building it. The empty state's whole canvas
+  is already one click target that opens the file picker, so a second affordance inside a glyphon text pill would either
+  steal that click or need a hit-region the overlay has no concept of; and the capability behind it is
+  `SettingKey::FileAssociations`, which the registry tracks and the settings panel owns. Build the two together there.
 
 No new toolkit surface, no new window, and it is reachable from the one place a Windows user will actually hit it.
 

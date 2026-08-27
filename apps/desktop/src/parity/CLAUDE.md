@@ -65,6 +65,13 @@ Worth knowing before leaning on the table as if it were the whole picture:
   which is why Linux shows 34 `Missing` menu items instead of one missing menu bar. Same for the About window,
   onboarding, and browse mode. The launch empty state (`app::EmptyState`) is another one: it's a surface only the
   platforms without onboarding put up, so nothing here can gate a shared E2E test on it.
+
+  This has a consequence worth naming, because M6 hit it: **a surface a platform deliberately doesn't build has nowhere
+  to record that.** Windows gets no onboarding window on purpose, and there's no key to hang a `NotApplicable` reason
+  from, so the decision lives in `onboarding/CLAUDE.md` and in `docs/specs/windows-ui-design.md` instead. Note that
+  About went the other way: the box itself isn't an entry, but `MenuItemKey::About` and `CommandKey::About` are, so
+  building it moved the table. A surface reachable from a menu is visible here; one that only appears on its own isn't.
+
 - **Capabilities behind the chrome.** An entry names a command, a menu item, or a setting, so a platform capability that
   isn't any of those has nowhere to live. The pre-paint window fit is the case in point: `CommandKey::AutoFitWindow`
   reads `done` on all three platforms and always did, because it names the toggle, while sizing the window from the

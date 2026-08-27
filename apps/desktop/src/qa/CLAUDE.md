@@ -121,6 +121,11 @@ native outline/collection-view click (and `SendKey` in browse maps only Tab/Ente
   the open path reads the right image (`AppCommand::BrowseQaSelectGrid`).
 - `POST /browse/open` (no body): open the grid's selected image into image mode (`AppCommand::BrowseOpenSelected`).
 
+`POST /show-about` is a fifth, and it runs wherever `CommandKey::About` is `Present`. It waits for the event loop to
+acknowledge the command, which is the whole point: a box that opened a message loop of its own would hold the reply, so
+the endpoint answering at all is the assertion. `about_opens_without_holding_up_the_app` in `tests/e2e_shared.rs` is the
+caller.
+
 All three are macOS-only (browse mode is); off macOS they return 400. Each returns the post-command `/state` snapshot.
 
 `POST /drop` (body = one absolute path per line) is the fourth of the same kind, and it runs everywhere: a real drop is

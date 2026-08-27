@@ -7,6 +7,7 @@ monitor work area), and anything with real substance gets its own module here.
 | File                | Purpose                                                                                                          |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `clipboard.rs`      | Copy the current image to the clipboard as the original file plus sRGB pixels (Edit → Copy, Ctrl+C, right-click) |
+| `dark_mode.rs`      | Dark chrome for our Win32 windows: the `uxtheme` ordinals, and the pure decision about when to use them          |
 | `msg_hook.rs`       | The one hook in winit's message pump: menu accelerators, and the seam a modeless dialog registers through        |
 | `window_capture.rs` | Debug-only window photograph for the QA server's `screenshot_window` tool                                        |
 
@@ -66,6 +67,31 @@ back under every limit it was lifting, so a path past 260 characters, a componen
 device name (`NUL.jpg` is the null device) would be handed to Explorer and quietly resolve to something else.
 `shell_path` lives in `paths.rs` with the rest of the rule and is tested there; `CF_HDROP` is its first caller.
 
+## Decision: dark mode is three undocumented ordinals, gated on a build number
+
+**Decision:** `dark_mode.rs` dynamic-loads `uxtheme.dll` and calls ordinals 135 (`SetPreferredAppMode`) and 133
+(`AllowDarkModeForWindow`), then `SetWindowTheme(hwnd, "DarkMode_Explorer", null)` per control. Every call is
+best-effort: a missing export leaves the window light rather than half-painted.
+
+**Why:** there is still no supported public dark-mode API for Win32 common controls, and this is what every app that
+does it reaches for. `docs/specs/windows-ui-design.md` collects the sources. The build gate is at 18362, where ordinal
+135 took its current signature. ❌ Don't copy `win32-darkmode`'s `CheckBuildNumber`, an exact-match allowlist that
+refuses 19045 — Prvw's actual support floor.
+
+`theme_for` is the whole decision and it's pure, so it's asserted rather than eyeballed: high contrast wins outright
+(it's an accessibility setting), then the build gate, then `AppsUseLightTheme` from the registry. That last one is what
+PowerToys, WPF, and WinForms read; `ShouldAppsUseDarkMode` (ordinal 132) has reports of answering `true` unconditionally
+on Windows 11 23H2.
+
+`about::windows` is the first caller. M4's settings dialog is the next one, and it should use this module rather than
+growing its own.
+
+## The first dialog through the hook is the About box
+
+`msg_hook::register_dialog` was built in M1 for a caller that didn't exist yet. `about::windows` is it: a modeless popup
+that registers on open and unregisters on `WM_DESTROY`, so `IsDialogMessageW` runs for its messages before accelerator
+translation. That ordering is why typing inside a dialog can't fire a menu accelerator.
+
 ## Gotcha: `GlobalUnlock` reports failure on success
 
 **Gotcha:** `GlobalUnlock` returns false with `GetLastError() == NO_ERROR` when the lock count reaches zero, which is
@@ -103,5 +129,6 @@ arrives as a `MenuEvent` on the next `about_to_wait`, the same route a menu-bar 
 
 Everything in this directory type-checks and lints through `./scripts/check.sh --check windows-cross`, and **nothing
 here has ever run**. The clipboard's paste targets, the right-click menu, and the drop path all need a person at a
-Windows box. The capture in particular has no E2E coverage: `tests/e2e_macos.rs` exercises the macOS path, and the
-equivalent Windows test needs a Windows box to be worth writing.
+Windows box, and so does every line of `dark_mode.rs`: the ordinals are undocumented, so "it compiles" says nothing
+about whether the box comes up dark. The capture in particular has no E2E coverage: `tests/e2e_macos.rs` exercises the
+macOS path, and the equivalent Windows test needs a Windows box to be worth writing.
