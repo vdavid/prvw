@@ -184,6 +184,7 @@ fn handle_request(
             http::handle_post_browse_select_grid(stream, proxy, &body, state)
         }
         ("POST", "/browse/open") => http::handle_post_browse_open(stream, proxy, state),
+        ("POST", "/show-about") => http::handle_post_show_about(stream, proxy, state),
         ("POST", "/show-settings") => http::handle_post_show_settings(stream, proxy, &body, state),
         ("POST", "/close-settings") => http::handle_post_close_settings(stream, proxy, state),
         ("GET", "/settings") => http::handle_get_settings(stream),

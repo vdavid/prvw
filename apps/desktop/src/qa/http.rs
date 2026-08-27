@@ -492,6 +492,20 @@ pub(super) fn handle_post_refresh(
     send_and_wait_http(stream, proxy, AppCommand::Refresh, state)
 }
 
+/// Open the About box, and wait for the event loop to say it did.
+///
+/// The waiting is the point. Every platform's About box has to be non-blocking (a modal one
+/// starves winit's pump on Windows and segfaults on macOS), so a box that opened a loop of its
+/// own would never let the `Sync` behind this command through and the caller would time out.
+/// `about_opens_without_holding_up_the_app` in the shared E2E suite is what asks.
+pub(super) fn handle_post_show_about(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    send_and_wait_http(stream, proxy, AppCommand::ShowAbout, state)
+}
+
 pub(super) fn handle_post_show_settings(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,

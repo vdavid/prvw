@@ -1400,3 +1400,28 @@ fn dropping_something_prvw_cant_open_leaves_the_image_alone() {
         after["image_width"].as_u64()
     );
 }
+
+// ── About ────────────────────────────────────────────────────────────────────────────────────
+
+/// The About box opens and the app carries on running behind it.
+///
+/// The interesting assertion is the one `/show-about` makes on its own: the endpoint waits for
+/// the event loop to acknowledge the command, so a box that opened a loop of its own would hold
+/// the reply and fail here on the timeout. That's the exact shape of the Windows failure the
+/// design warns about (a Win32 modal loop starves winit's pump, so `about_to_wait` stops running
+/// and the slideshow freezes) and of the macOS one (an AppKit modal inside a winit callback
+/// segfaults). Then a second command proves the pump is still turning afterwards.
+#[test]
+fn about_opens_without_holding_up_the_app() {
+    let Some(app) = SharedApp::start(&["About"]) else {
+        return;
+    };
+
+    app.post("/show-about", "");
+
+    let state = app.post("/refresh", "");
+    assert!(
+        state["file"].as_str().is_some(),
+        "the app should still answer with the open image while About is up"
+    );
+}
