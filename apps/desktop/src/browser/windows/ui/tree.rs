@@ -22,6 +22,15 @@
 //! `SHGFI_USEFILEATTRIBUTES` and `FILE_ATTRIBUTE_DIRECTORY`, which answers from the registry
 //! without touching a disk, and every row wears that icon. The visible cost is that a drive row
 //! shows a folder rather than a disk.
+//!
+//! ## Gotcha: never hold the state borrow across a treeview message
+//!
+//! **Why:** `TVM_DELETEITEM` on the selected row sends `TVN_SELCHANGED`, and `TVM_EXPAND` sends
+//! `TVN_ITEMEXPANDING`, both **synchronously** to the parent — which lands back in [`notify`] and
+//! borrows the same `RefCell` this call was holding. That's a panic, on a path as ordinary as a
+//! folder finishing its scan. So every function here reads what it needs, drops the borrow, sends
+//! the message, and takes the borrow again to record the result. It reads as more steps than it
+//! needs to be; it is the reason the browser doesn't fall over.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -40,7 +49,7 @@ use windows::Win32::UI::Shell::{
     SHFILEINFOW, SHGFI_SMALLICON, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, HMENU, SendMessageW, WS_BORDER, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
+    CreateWindowExW, HMENU, SendMessageW, WINDOW_STYLE, WS_BORDER, WS_CHILD, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::PCWSTR;
 
@@ -51,9 +60,11 @@ use super::{ID_TREE, Ui, set_font, wide, with_ui, with_ui_mut};
 
 /// `TVSIL_NORMAL`, from `commctrl.h`. The image list a treeview draws beside every row.
 const TVSIL_NORMAL: u32 = 0;
-/// `TVS_EX_DOUBLEBUFFER`, and the message that sets the extended styles.
+/// `TVM_SETEXTENDEDSTYLE` and `TVS_EX_DOUBLEBUFFER`, from `commctrl.h`.
 const TVM_SETEXTENDEDSTYLE: u32 = 0x1100 + 44;
 const TVS_EX_DOUBLEBUFFER: u32 = 0x0004;
+/// `TVGN_CHILD`, for `TVM_GETNEXTITEM`.
+const TVGN_CHILD: u32 = 0x0004;
 /// `FILE_ATTRIBUTE_DIRECTORY`, from `winnt.h`.
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
 
@@ -85,14 +96,13 @@ struct Reveal {
     position: usize,
 }
 
-/// Build the treeview and its state. The rows go on immediately; their children don't, because
-/// reading them is the scanner's job.
+/// Build the treeview and its state. The rows go on in [`populate_roots`], which runs once the
+/// state is in the thread-local — putting a row on takes and drops that borrow several times.
 pub(super) fn create(
     parent: HWND,
     instance: HINSTANCE,
     font: HFONT,
     theme: crate::platform::windows::dark_mode::Theme,
-    _dpi: u32,
 ) -> Option<(HWND, TreeState)> {
     // `TVS_TRACKSELECT` is Explorer's hot-tracking; `TVS_SHOWSELALWAYS` keeps the selected
     // folder visible while the grid has focus, which is what makes Tab legible.
@@ -100,7 +110,7 @@ pub(super) fn create(
         | WS_VISIBLE
         | WS_TABSTOP
         | WS_BORDER
-        | windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(
+        | WINDOW_STYLE(
             TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | TVS_TRACKSELECT,
         );
     // SAFETY: `WC_TREEVIEWW` is registered by `InitCommonControlsEx` with `ICC_TREEVIEW_CLASSES`,
@@ -140,7 +150,7 @@ pub(super) fn create(
 
     let icon = attach_system_image_list(hwnd);
 
-    let mut state = TreeState {
+    let state = TreeState {
         roots: super::super::shell_roots::enumerate(),
         children: ChildCache::new(),
         scanner: TreeScanner::start(),
@@ -149,7 +159,6 @@ pub(super) fn create(
         reveal: None,
         icon,
     };
-    populate_roots(hwnd, &mut state);
     Some((hwnd, state))
 }
 
@@ -190,25 +199,27 @@ fn attach_system_image_list(tree: HWND) -> i32 {
 
 /// Put the top-level rows on. Each claims one child so a chevron shows before anything has been
 /// scanned; the first expand replaces the claim with the truth.
-fn populate_roots(tree: HWND, state: &mut TreeState) {
-    let roots = std::mem::take(&mut state.roots);
+pub(super) fn populate_roots() {
+    let Some((tree, roots)) = with_ui(|ui| (ui.tree, ui.tree_state.roots.clone())) else {
+        return;
+    };
     for root in &roots {
-        insert_row(tree, state, TVI_ROOT, &root.name, &root.path);
+        insert_row(tree, TVI_ROOT, &root.name, &root.path);
     }
     log::info!("Browse tree: {} root(s)", roots.len());
-    state.roots = roots;
 }
 
 /// Add one row under `parent`, remembering its path.
-fn insert_row(
-    tree: HWND,
-    state: &mut TreeState,
-    parent: HTREEITEM,
-    label: &str,
-    path: &Path,
-) -> Option<HTREEITEM> {
-    let index = state.paths.len();
-    state.paths.push(path.to_path_buf());
+///
+/// Three steps because the message in the middle must not run under the state borrow (see the
+/// module's re-entrancy gotcha): claim an arena slot, insert the row, record the handle.
+fn insert_row(tree: HWND, parent: HTREEITEM, label: &str, path: &Path) -> Option<HTREEITEM> {
+    let (index, icon) = with_ui_mut(|ui| {
+        let index = ui.tree_state.paths.len();
+        ui.tree_state.paths.push(path.to_path_buf());
+        (index, ui.tree_state.icon)
+    })?;
+
     let text = wide(label);
     let insert = TVINSERTSTRUCTW {
         hParent: parent,
@@ -221,8 +232,8 @@ fn insert_row(
                 // Assume expandable until a scan proves otherwise: finding out costs a directory
                 // read, and this is the main thread.
                 cChildren: TVITEMEXW_CHILDREN(1),
-                iImage: state.icon,
-                iSelectedImage: state.icon,
+                iImage: icon,
+                iSelectedImage: icon,
                 ..Default::default()
             },
         },
@@ -237,11 +248,11 @@ fn insert_row(
         )
     };
     if item.0 == 0 {
-        state.paths.pop();
+        with_ui_mut(|ui| ui.tree_state.paths.pop());
         return None;
     }
     let item = HTREEITEM(item.0);
-    state.rows.insert(row_key(path), item);
+    with_ui_mut(|ui| ui.tree_state.rows.insert(row_key(path), item));
     Some(item)
 }
 
@@ -249,13 +260,12 @@ fn insert_row(
 /// the tree spelled three ways: what the user typed, what `canonicalize` returned, and what a
 /// drive enumeration produced.
 fn row_key(path: &Path) -> String {
-    crate::paths::PathPolicy::windows()
-        .display(path)
-        .to_lowercase()
+    PathPolicy::windows().display(path).to_lowercase()
 }
 
-/// The path a row stands for.
-fn row_path(tree: HWND, state: &TreeState, item: HTREEITEM) -> Option<PathBuf> {
+/// The arena index a row carries in its `lParam`. A pure treeview read, which sends no
+/// notification, so it is safe wherever it's called.
+fn row_index(tree: HWND, item: HTREEITEM) -> Option<usize> {
     let mut query = TVITEMW {
         mask: TVIF_PARAM,
         hItem: item,
@@ -270,10 +280,13 @@ fn row_path(tree: HWND, state: &TreeState, item: HTREEITEM) -> Option<PathBuf> {
             Some(LPARAM(std::ptr::from_mut(&mut query) as isize)),
         )
     };
-    if read.0 == 0 {
-        return None;
-    }
-    state.paths.get(query.lParam.0 as usize).cloned()
+    (read.0 != 0).then_some(query.lParam.0 as usize)
+}
+
+/// The path a row stands for.
+fn row_path(tree: HWND, item: HTREEITEM) -> Option<PathBuf> {
+    let index = row_index(tree, item)?;
+    with_ui(|ui| ui.tree_state.paths.get(index).cloned()).flatten()
 }
 
 // ── Notifications ────────────────────────────────────────────────────────────
@@ -307,23 +320,30 @@ pub(super) fn notify(header: *mut NMHDR) -> LRESULT {
 /// nothing until [`children_loaded`] arrives, which is the point: the alternative is a directory
 /// read on the main thread.
 fn request_children(item: HTREEITEM) {
-    let Some(Some(path)) = with_ui_mut(|ui| {
-        let path = row_path(ui.tree, &ui.tree_state, item)?;
-        let now = std::time::Instant::now();
-        ui.tree_state
-            .children
-            .begin_scan(&path, now)
-            .then_some(path)
-    }) else {
+    let Some(tree) = with_ui(|ui| ui.tree) else {
         return;
     };
+    let Some(path) = row_path(tree, item) else {
+        return;
+    };
+    let wanted = with_ui_mut(|ui| {
+        ui.tree_state
+            .children
+            .begin_scan(&path, std::time::Instant::now())
+    });
+    if wanted != Some(true) {
+        return;
+    }
     with_ui(|ui| ui.tree_state.scanner.scan(path));
     super::refresh_status_bar();
 }
 
 /// A row was selected: tell the app, so the grid lists that folder.
 fn selection_changed(item: HTREEITEM) {
-    let Some(Some(path)) = with_ui(|ui| row_path(ui.tree, &ui.tree_state, item)) else {
+    let Some(tree) = with_ui(|ui| ui.tree) else {
+        return;
+    };
+    let Some(path) = row_path(tree, item) else {
         return;
     };
     crate::commands::send_command(crate::commands::AppCommand::BrowseSelectFolder(path));
@@ -332,33 +352,34 @@ fn selection_changed(item: HTREEITEM) {
 /// Store a finished scan and put its children on the row. Also advances a reveal walk that was
 /// waiting on this level.
 pub(super) fn children_loaded(path: &Path, children: Vec<PathBuf>) {
-    with_ui_mut(|ui| {
+    let Some(Some((tree, parent))) = with_ui_mut(|ui| {
         ui.tree_state.children.complete_scan(path, children.clone());
-        let Some(&parent) = ui.tree_state.rows.get(&row_key(path)) else {
-            return;
-        };
-        let tree = ui.tree;
-        // A second delivery for the same folder (a live re-scan) replaces the rows rather than
-        // doubling them.
-        remove_children(tree, parent);
-        for child in &children {
-            let label = PathPolicy::windows()
-                .file_name(child)
-                .unwrap_or("")
-                .to_string();
-            insert_row(tree, &mut ui.tree_state, parent, &label, child);
-        }
-        // Now that the truth is known, a leaf folder loses its chevron.
-        set_child_count(tree, parent, i32::from(!children.is_empty()));
-    });
+        let parent = *ui.tree_state.rows.get(&row_key(path))?;
+        Some((ui.tree, parent))
+    }) else {
+        return;
+    };
+
+    // No borrow from here on: a delete can notify a selection change, and each insert takes the
+    // borrow itself (see the module's re-entrancy gotcha).
+    // A second delivery for the same folder (a live re-scan) replaces the rows rather than
+    // doubling them.
+    remove_children(tree, parent);
+    for child in &children {
+        let label = PathPolicy::windows()
+            .file_name(child)
+            .unwrap_or_default()
+            .to_string();
+        insert_row(tree, parent, &label, child);
+    }
+    // Now that the truth is known, a leaf folder loses its chevron.
+    set_child_count(tree, parent, i32::from(!children.is_empty()));
     advance_reveal();
     super::refresh_status_bar();
 }
 
 /// Take every row under `parent` off, so a re-scan replaces rather than duplicates.
 fn remove_children(tree: HWND, parent: HTREEITEM) {
-    // `TVGN_CHILD` is 4, from `commctrl.h`.
-    const TVGN_CHILD: u32 = 0x0004;
     loop {
         // SAFETY: a live treeview of ours.
         let child = unsafe {
@@ -372,7 +393,13 @@ fn remove_children(tree: HWND, parent: HTREEITEM) {
         if child.0 == 0 {
             return;
         }
-        // SAFETY: a row of ours, which the treeview owns until this call.
+        // The row's path stays in the arena. Nothing indexes it any more and a folder's rows are
+        // rebuilt at most once per change on disk, so compacting it would cost more than it saves.
+        if let Some(path) = row_path(tree, HTREEITEM(child.0)) {
+            with_ui_mut(|ui| ui.tree_state.rows.remove(&row_key(&path)));
+        }
+        // SAFETY: a row of ours, which the treeview owns until this call. It can notify a
+        // selection change, which is why no borrow is held here.
         unsafe { SendMessageW(tree, TVM_DELETEITEM, None, Some(LPARAM(child.0))) };
     }
 }
@@ -404,7 +431,7 @@ fn set_child_count(tree: HWND, item: HTREEITEM, count: i32) {
 /// no children. So it expands one level, waits for [`children_loaded`], and steps on.
 pub(super) fn reveal(folder: &Path) {
     // The host wrapper, which on this platform *is* the Windows policy. A Mac asserts the same
-    // walk through `reveal_path_chain_under`.
+    // walk through `tree_model::reveal_path_chain_under`.
     let Some(Some(chain)) =
         with_ui(|ui| tree_model::reveal_path_chain(&ui.tree_state.roots, folder))
     else {
@@ -414,7 +441,9 @@ pub(super) fn reveal(folder: &Path) {
         );
         return;
     };
-    with_ui_mut(|ui| ui.tree_state.reveal = Some(Reveal { chain, position: 0 }));
+    with_ui_mut(|ui| {
+        ui.tree_state.reveal = Some(Reveal { chain, position: 0 });
+    });
     advance_reveal();
 }
 
@@ -429,24 +458,24 @@ pub(super) fn reveal_pending(ui: &Ui) -> bool {
 /// folder for the grid.
 fn advance_reveal() {
     loop {
-        let step = with_ui_mut(|ui| {
+        let step = with_ui(|ui| {
             let reveal = ui.tree_state.reveal.as_ref()?;
             let path = reveal.chain.get(reveal.position)?.clone();
             let last = reveal.position + 1 == reveal.chain.len();
             let item = *ui.tree_state.rows.get(&row_key(&path))?;
-            Some((path, item, last))
+            let loaded = ui.tree_state.children.loaded(&path).is_some();
+            Some((path, item, last, loaded))
         });
-        let Some(Some((path, item, last))) = step else {
+        let Some(Some((path, item, last, loaded))) = step else {
             // The row isn't there yet (its parent's scan hasn't landed) or there is no walk.
             return;
         };
         if last {
-            select(item);
             with_ui_mut(|ui| ui.tree_state.reveal = None);
+            select(item);
             log::debug!("Browse tree revealed {}", path.display());
             return;
         }
-        let loaded = with_ui(|ui| ui.tree_state.children.loaded(&path).is_some()) == Some(true);
         expand(item);
         if !loaded {
             // `expand` asked for the scan through `TVN_ITEMEXPANDING`; the delivery resumes us.
@@ -464,7 +493,8 @@ fn expand(item: HTREEITEM) {
     let Some(tree) = with_ui(|ui| ui.tree) else {
         return;
     };
-    // SAFETY: a live treeview of ours and a row of its own.
+    // SAFETY: a live treeview of ours and a row of its own. This sends `TVN_ITEMEXPANDING`
+    // synchronously, so no borrow is held.
     unsafe {
         SendMessageW(
             tree,
@@ -479,8 +509,8 @@ fn select(item: HTREEITEM) {
     let Some(tree) = with_ui(|ui| ui.tree) else {
         return;
     };
-    // SAFETY: a live treeview of ours and a row of its own. This fires `TVN_SELCHANGED`, which
-    // is what lists the folder.
+    // SAFETY: a live treeview of ours and a row of its own. This sends `TVN_SELCHANGED`
+    // synchronously, which is what lists the folder — so no borrow is held.
     unsafe {
         SendMessageW(
             tree,
@@ -538,8 +568,8 @@ pub(super) fn root_paths(ui: &Ui) -> Vec<PathBuf> {
     ui.tree_state.roots.iter().map(|r| r.path.clone()).collect()
 }
 
-/// Forget a folder's cached children so the next expand re-scans it. Live folder sync calls this
-/// when a watched folder changes on disk.
+/// Forget a folder's cached children and re-scan it. Live folder sync calls this when a watched
+/// folder changes on disk; the delivery lands in [`children_loaded`], which replaces its rows.
 pub(super) fn invalidate(path: &Path) {
     with_ui_mut(|ui| ui.tree_state.children.invalidate(path));
     with_ui(|ui| ui.tree_state.scanner.scan(path.to_path_buf()));

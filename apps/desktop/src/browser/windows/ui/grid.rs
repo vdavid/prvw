@@ -19,6 +19,16 @@
 //! it is evicted, and `ImageList_Replace` writes into a slot that keeps its number for the
 //! folder's life. The byte budget is set from the same count, so eviction never has to fail for
 //! want of a slot.
+//!
+//! ## Gotcha: never hold the state borrow across a listview message
+//!
+//! **Why:** `LVM_SETITEMCOUNT` can send `LVN_ODCACHEHINT` and `LVM_SETITEMSTATE` sends
+//! `LVN_ITEMCHANGED`, both **synchronously** to the parent — which lands back in [`notify`] and
+//! borrows the same `RefCell` this call was holding. That's a panic, on the path a folder listing
+//! takes every time. So the model work happens under the borrow, the borrow is dropped, and the
+//! messages go out afterwards. `super::tree` keeps the same rule for the same reason. The image
+//! list calls are the exception and are safe under a borrow: `CreateDIBSection`,
+//! `ImageList_Replace`, and `DeleteObject` reach no window procedure.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -43,7 +53,7 @@ use windows::core::PCWSTR;
 use crate::browser::grid_listing::FolderLister;
 use crate::browser::grid_model::{self, GridModel};
 use crate::browser::grid_scheduler::Scheduler;
-use crate::browser::thumbnail_cache::{self, ThumbnailCache};
+use crate::browser::thumbnail_cache::ThumbnailCache;
 use crate::navigation::SortBy;
 use crate::paths::PathPolicy;
 use crate::previews::generator::RequestTable;
@@ -178,7 +188,6 @@ pub(super) fn create(
         listing: false,
         label: Vec::new(),
     };
-    let _ = thumbnail_cache::THUMBNAIL_BUDGET_BYTES;
     Some((hwnd, state))
 }
 
@@ -263,7 +272,7 @@ pub(super) fn list_folder(folder: PathBuf) {
 /// thumbnail of the folder we came from, and preselect either the image we came from or the
 /// first one.
 pub(super) fn folder_listed(images: Vec<PathBuf>, preselect: Option<&Path>) {
-    with_ui_mut(|ui| {
+    let Some((grid, count, preselect_index)) = with_ui_mut(|ui| {
         ui.grid_state.listing = false;
         // Abandon the previous folder's queued generation, and free every slot it held.
         ui.grid_state.requests.cancel_all();
@@ -281,24 +290,25 @@ pub(super) fn folder_listed(images: Vec<PathBuf>, preselect: Option<&Path>) {
             .set_folder(count, grid_model::clamp_visible_range(0..0, count));
         ui.grid_state.cache =
             ThumbnailCache::with_budget(SLOTS * thumbnail::slot_bytes(ui.grid_state.slot_side));
-        set_item_count(ui.grid, count);
-        if count > 0 {
-            select_index(ui, preselect_index, true);
-        }
-    });
-    with_ui_mut(pump_visible_range);
+        (ui.grid, count, preselect_index)
+    }) else {
+        return;
+    };
+
+    // No borrow from here on: both messages notify the parent (see the module's gotcha).
+    set_item_count(grid, count);
+    if count > 0 {
+        select_index(preselect_index, true);
+    }
+    pump_visible_range();
     super::refresh_status_bar();
 }
 
 /// Apply a live folder re-scan: replace the listed images keeping the grid on the same **file**
-/// rather than the same index, refresh the thumbnails of what changed, and tell the caller
-/// whether the selected image is now a different one (so it can re-warm).
-///
-/// Unlike [`folder_listed`], every thumbnail that is still valid keeps its slot: a re-scan
-/// usually adds or removes one file out of hundreds, and regenerating the folder for it would
-/// undo the whole point of the cache.
+/// rather than the same index, and tell the caller whether the selected image is now a different
+/// one (so it can re-warm).
 pub(super) fn apply_rescan(images: Vec<PathBuf>, modified: &[PathBuf]) -> bool {
-    let changed = with_ui_mut(|ui| {
+    let Some((grid, count, selected, changed)) = with_ui_mut(|ui| {
         let before = ui.grid_state.model.selected_path().map(Path::to_path_buf);
         // Every slot is keyed by folder index, and a re-scan renumbers them. Rather than track
         // which file moved where, drop them all and let the visible range regenerate: that is
@@ -314,18 +324,26 @@ pub(super) fn apply_rescan(images: Vec<PathBuf>, modified: &[PathBuf]) -> bool {
         if !modified.is_empty() {
             ui.grid_state.requests.cancel_all();
         }
-        set_item_count(ui.grid, count);
         let after = ui.grid_state.model.selected_path().map(Path::to_path_buf);
-        // Re-assert the native selection: the item the model now points at may sit at a
-        // different index than the listview's own cursor.
-        if let Some(index) = ui.grid_state.model.selected() {
-            select_index(ui, index, false);
-        }
-        before != after
-    });
-    with_ui_mut(pump_visible_range);
+        (
+            ui.grid,
+            count,
+            ui.grid_state.model.selected(),
+            before != after,
+        )
+    }) else {
+        return false;
+    };
+
+    set_item_count(grid, count);
+    // Re-assert the native selection: the file the model now points at may sit at a different
+    // index than the listview's own cursor.
+    if let Some(index) = selected {
+        select_index(index, false);
+    }
+    pump_visible_range();
     super::refresh_status_bar();
-    changed.unwrap_or(false)
+    changed
 }
 
 fn set_item_count(hwnd: HWND, count: usize) {
@@ -334,10 +352,21 @@ fn set_item_count(hwnd: HWND, count: usize) {
 }
 
 /// Select `index`, optionally scrolling it into view, and keep the model in step.
-pub(super) fn select_index(ui: &mut Ui, index: usize, scroll: bool) {
-    let Some(index) = ui.grid_state.model.set_selected(index) else {
+///
+/// `LVM_SETITEMSTATE` notifies the parent synchronously, so the model update and the message are
+/// deliberately separate steps (see the module's re-entrancy gotcha).
+pub(super) fn select_index(index: usize, scroll: bool) {
+    let Some(Some((grid, resolved, path))) = with_ui_mut(|ui| {
+        let resolved = ui.grid_state.model.set_selected(index)?;
+        // Clear the old measurement now, so the size pane goes empty rather than showing the
+        // previous file's size beside the new file's name.
+        ui.selected_dimensions = None;
+        let path = ui.grid_state.model.selected_path().map(Path::to_path_buf);
+        Some((ui.grid, resolved, path))
+    }) else {
         return;
     };
+
     let mut state = LVITEMW {
         state: LVIS_SELECTED,
         stateMask: LVIS_SELECTED,
@@ -347,12 +376,13 @@ pub(super) fn select_index(ui: &mut Ui, index: usize, scroll: bool) {
     // keys have no anchor to move from.
     state.state.0 |= 1;
     state.stateMask.0 |= 1;
-    // SAFETY: a live listview of ours; the struct outlives the call.
+    // SAFETY: a live listview of ours; the struct outlives the call. It notifies the parent, so
+    // no borrow is held.
     unsafe {
         SendMessageW(
-            ui.grid,
+            grid,
             LVM_SETITEMSTATE,
-            Some(WPARAM(index)),
+            Some(WPARAM(resolved)),
             Some(LPARAM(std::ptr::from_mut(&mut state) as isize)),
         )
     };
@@ -360,44 +390,43 @@ pub(super) fn select_index(ui: &mut Ui, index: usize, scroll: bool) {
         // SAFETY: same listview; `lparam` of 0 means "scroll it fully into view".
         unsafe {
             SendMessageW(
-                ui.grid,
+                grid,
                 LVM_ENSUREVISIBLE,
-                Some(WPARAM(index)),
+                Some(WPARAM(resolved)),
                 Some(LPARAM(0)),
             )
         };
     }
-    measure_selection(ui);
-}
-
-/// Ask the background worker for the selected image's pixel size, for the status bar. Clears the
-/// old answer first, so the pane goes empty rather than showing the previous file's size beside
-/// the new file's name.
-fn measure_selection(ui: &mut Ui) {
-    ui.selected_dimensions = None;
-    if let Some(path) = ui.grid_state.model.selected_path() {
-        ui.grid_state.measurer.measure(path.to_path_buf());
+    if let Some(path) = path {
+        with_ui(|ui| ui.grid_state.measurer.measure(path));
     }
 }
 
 /// Recompute the visible range from the listview's scroll position and pump generation.
-pub(super) fn pump_visible_range(ui: &mut Ui) {
-    let range = current_visible_range(ui);
-    ui.grid_state.scheduler.set_visible_range(range.clone());
-    ui.grid_state.cache.set_visible_range(range);
-    let evicted = ui.grid_state.cache.evict_to_budget();
-    release_slots(&mut ui.grid_state, &evicted);
-    pump(ui);
+///
+/// The geometry is read before the borrow is taken, so nothing here can re-enter.
+pub(super) fn pump_visible_range() {
+    let Some((grid, dpi, len)) = with_ui(|ui| (ui.grid, ui.dpi, ui.grid_state.model.len())) else {
+        return;
+    };
+    let range = current_visible_range(grid, dpi, len);
+    with_ui_mut(|ui| {
+        ui.grid_state.scheduler.set_visible_range(range.clone());
+        ui.grid_state.cache.set_visible_range(range);
+        let evicted = ui.grid_state.cache.evict_to_budget();
+        release_slots(&mut ui.grid_state, &evicted);
+        pump(ui);
+    });
 }
 
 /// Where the listview has scrolled to, turned into folder indices by [`layout::visible_range`].
-fn current_visible_range(ui: &Ui) -> std::ops::Range<usize> {
+fn current_visible_range(grid: HWND, dpi: u32, len: usize) -> std::ops::Range<usize> {
     let mut origin = POINT::default();
     // SAFETY: a live listview of ours, and the point is ours to fill. `LVM_GETORIGIN` answers 0
     // in a view that has no scroll origin, which is the same as "not scrolled".
     let read = unsafe {
         SendMessageW(
-            ui.grid,
+            grid,
             LVM_GETORIGIN,
             None,
             Some(LPARAM(std::ptr::from_mut(&mut origin) as isize)),
@@ -406,8 +435,7 @@ fn current_visible_range(ui: &Ui) -> std::ops::Range<usize> {
     let scroll_y = if read.0 == 0 { 0 } else { origin.y };
     let mut client = windows::Win32::Foundation::RECT::default();
     // SAFETY: a live control of ours.
-    if unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(ui.grid, &mut client) }
-        .is_err()
+    if unsafe { windows::Win32::UI::WindowsAndMessaging::GetClientRect(grid, &mut client) }.is_err()
     {
         return 0..0;
     }
@@ -415,8 +443,8 @@ fn current_visible_range(ui: &Ui) -> std::ops::Range<usize> {
         scroll_y,
         client.right - client.left,
         client.bottom - client.top,
-        layout::cell_size(ui.dpi),
-        ui.grid_state.model.len(),
+        layout::cell_size(dpi),
+        len,
     )
 }
 
@@ -602,24 +630,32 @@ fn write_slot(images: HIMAGELIST, slot: i32, side: u32, canvas: &[u8]) -> bool {
 
 /// Rebuild the image list at a new DPI. Every thumbnail is regenerated, because an image list's
 /// slot size is fixed when it's created.
-pub(super) fn rescale(ui: &mut Ui, dpi: u32) {
-    let side = layout::scale(layout::CELL_THUMBNAIL, dpi).max(1) as u32;
-    if side == ui.grid_state.slot_side {
-        return;
-    }
-    let Some(images) = create_image_list(side) else {
+pub(super) fn rescale(dpi: u32) {
+    let Some(Some((grid, images, old, count))) = with_ui_mut(|ui| {
+        let side = layout::scale(layout::CELL_THUMBNAIL, dpi).max(1) as u32;
+        if side == ui.grid_state.slot_side {
+            return None;
+        }
+        let images = create_image_list(side)?;
+        let old = ui.grid_state.images;
+        ui.grid_state.images = images;
+        ui.grid_state.slot_side = side;
+        ui.grid_state.slots.clear();
+        ui.grid_state.free_slots = (0..SLOTS as i32).rev().collect();
+        ui.grid_state.cache = ThumbnailCache::with_budget(SLOTS * thumbnail::slot_bytes(side));
+        let count = ui.grid_state.model.len();
+        ui.grid_state
+            .scheduler
+            .set_folder(count, grid_model::clamp_visible_range(0..0, count));
+        Some((ui.grid, images, old, count))
+    }) else {
         return;
     };
-    let old = ui.grid_state.images;
-    ui.grid_state.images = images;
-    ui.grid_state.slot_side = side;
-    ui.grid_state.slots.clear();
-    ui.grid_state.free_slots = (0..SLOTS as i32).rev().collect();
-    ui.grid_state.cache = ThumbnailCache::with_budget(SLOTS * thumbnail::slot_bytes(side));
+
     // SAFETY: a live listview of ours and an image list this module owns.
     unsafe {
         SendMessageW(
-            ui.grid,
+            grid,
             LVM_SETIMAGELIST,
             Some(WPARAM(LVSIL_NORMAL as usize)),
             Some(LPARAM(images.0)),
@@ -627,12 +663,9 @@ pub(super) fn rescale(ui: &mut Ui, dpi: u32) {
     };
     // SAFETY: the list the control has just stopped using.
     let _ = unsafe { ImageList_Destroy(Some(old)) };
-    apply_icon_spacing(ui.grid, dpi);
-    let count = ui.grid_state.model.len();
-    ui.grid_state
-        .scheduler
-        .set_folder(count, grid_model::clamp_visible_range(0..0, count));
-    pump_visible_range(ui);
+    apply_icon_spacing(grid, dpi);
+    set_item_count(grid, count);
+    pump_visible_range();
 }
 
 // ── Notifications ────────────────────────────────────────────────────────────

@@ -165,6 +165,9 @@ impl BrowseUi {
 
         let ui = build(owner, sort_by)?;
         UI.replace(Some(ui));
+        // The rows go on now rather than in `build`: putting one on takes and drops the state
+        // borrow several times, so the state has to be in the thread-local first.
+        tree::populate_roots();
         log::info!("Browse mode's Windows UI built");
         Some(Self { owner })
     }
@@ -210,14 +213,17 @@ impl BrowseUi {
                 SWP_NOACTIVATE | SWP_NOZORDER,
             );
         }
-        with_ui_mut(|ui| ui.apply_layout(width, height));
+        apply_layout(width, height);
     }
 
     /// Follow the monitor's DPI to a new value: rebuild the font and the metrics, resize the
     /// thumbnails, and lay out again. A `WM_DPICHANGED` reaches winit's window rather than ours,
     /// so `App` passes it on.
     pub fn rescale(&self) {
-        with_ui_mut(Ui::rescale);
+        let Some(Some(dpi)) = with_ui_mut(Ui::rescale) else {
+            return;
+        };
+        grid::rescale(dpi);
         self.relayout();
     }
 
@@ -229,7 +235,7 @@ impl BrowseUi {
     /// The path the grid is sitting on, if any.
     #[must_use]
     pub fn selected_path(&self) -> Option<PathBuf> {
-        with_ui(Ui::selected_path).flatten()
+        with_ui(grid::selected_path).flatten()
     }
 
     /// The grid's selected index, if any.
@@ -258,7 +264,7 @@ impl BrowseUi {
 
     /// Select a grid item programmatically, the way a click would.
     pub fn select_index(&self, index: usize, scroll: bool) {
-        with_ui_mut(|ui| grid::select_index(ui, index, scroll));
+        grid::select_index(index, scroll);
     }
 
     /// Apply a completed folder listing.
@@ -340,7 +346,7 @@ fn build(owner: HWND, sort_by: crate::navigation::SortBy) -> Option<Ui> {
     let status_height = natural_height(status);
     let metrics = Metrics::for_dpi(dpi, status_height);
 
-    let (tree, tree_state) = tree::create(container, instance, font, theme, dpi)?;
+    let (tree, tree_state) = tree::create(container, instance, font, theme)?;
     let (grid, grid_state) = grid::create(container, instance, font, theme, dpi, sort_by)?;
     // Tab, Enter, and Esc have to be taken off the controls before they handle them, and a
     // subclass is where Win32 does that. Everything else falls through to the control, which is
@@ -543,68 +549,56 @@ unsafe extern "system" fn pane_proc(
 
 // ── Layout, focus, and the status bar ────────────────────────────────────────
 
+/// Put the three panes and the status bar where [`super::layout`] says they go.
+///
+/// The status bar re-measures itself first: Windows sizes one from the system font, so its height
+/// is read rather than computed. `SetWindowPos` on a pane sends it a `WM_SIZE`, so no state borrow
+/// is held while the children are placed.
+fn apply_layout(client_width: i32, client_height: i32) {
+    let Some((tree, grid, status, placed, dpi)) = with_ui_mut(|ui| {
+        ui.metrics.status_bar = natural_height(ui.status);
+        ui.tree_width = layout::clamp_tree_width(ui.tree_width, client_width, ui.metrics);
+        let placed = layout::layout(client_width, client_height, ui.tree_width, ui.metrics);
+        (ui.tree, ui.grid, ui.status, placed, ui.dpi)
+    }) else {
+        return;
+    };
+    place(tree, placed.tree);
+    place(grid, placed.grid);
+    place(status, placed.status_bar);
+    apply_status_parts(status, placed.status_bar.width, dpi);
+    // The grid's visible range moved, so more or fewer thumbnails are worth generating.
+    grid::pump_visible_range();
+}
+
+/// Split the status bar into its three panes. The count and size panes are fixed; the name pane
+/// takes what's left, because a file name has no bound on its length.
+fn apply_status_parts(status: HWND, width: i32, dpi: u32) {
+    let size_width = layout::scale(STATUS_SIZE_WIDTH, dpi);
+    let count_width = layout::scale(STATUS_COUNT_WIDTH, dpi);
+    let edges: [i32; STATUS_PARTS] = [count_width, (width - size_width).max(count_width), -1];
+    // SAFETY: a live status bar of ours; `wparam` declares how many edges the pointer holds.
+    unsafe {
+        SendMessageW(
+            status,
+            SB_SETPARTS,
+            Some(WPARAM(STATUS_PARTS)),
+            Some(LPARAM(edges.as_ptr() as isize)),
+        )
+    };
+}
+
 impl Ui {
-    /// Put the three panes and the status bar where [`super::layout`] says they go.
-    fn apply_layout(&mut self, client_width: i32, client_height: i32) {
-        self.tree_width = layout::clamp_tree_width(self.tree_width, client_width, self.metrics);
-        let placed = layout::layout(client_width, client_height, self.tree_width, self.metrics);
-        place(self.tree, placed.tree);
-        place(self.grid, placed.grid);
-        place(self.status, placed.status_bar);
-        self.apply_status_parts(placed.status_bar.width);
-        // The grid's visible range moved, so more or fewer thumbnails are worth generating.
-        grid::pump_visible_range(self);
-    }
-
-    /// Split the status bar into its three panes. The count and size panes are fixed; the name
-    /// pane takes what's left, because a file name has no bound on its length.
-    fn apply_status_parts(&self, width: i32) {
-        let size_width = layout::scale(STATUS_SIZE_WIDTH, self.dpi);
-        let count_width = layout::scale(STATUS_COUNT_WIDTH, self.dpi);
-        let edges: [i32; STATUS_PARTS] = [count_width, (width - size_width).max(count_width), -1];
-        // SAFETY: a live status bar of ours; `wparam` declares how many edges the pointer holds.
-        unsafe {
-            SendMessageW(
-                self.status,
-                SB_SETPARTS,
-                Some(WPARAM(STATUS_PARTS)),
-                Some(LPARAM(edges.as_ptr() as isize)),
-            )
-        };
-    }
-
-    /// Rewrite the status bar from the model. Idempotent, and the one place its text is set.
-    fn refresh_status(&self) {
-        let selected = self.selected_path();
-        let fields = status::fields(status::Status {
+    /// What the status bar should say, read from the model. The `SB_SETTEXT` calls happen in
+    /// [`refresh_status_bar`], with no borrow held.
+    fn status_fields(&self) -> status::Fields {
+        let selected = grid::selected_path(self);
+        status::fields(status::Status {
             image_count: grid::image_count(self),
             selected: selected.as_deref(),
             dimensions: self.selected_dimensions,
             loading: tree::scan_pending(self) || grid::listing_pending(self),
-        });
-        for (part, text) in [
-            (0usize, &fields.count),
-            (1, &fields.name),
-            (2, &fields.size),
-        ] {
-            let text = wide(text);
-            // SAFETY: a live status bar of ours, and the string outlives the call. The part index
-            // carries no drawing flags, so the pane gets the sunken border a status bar draws by
-            // default.
-            unsafe {
-                SendMessageW(
-                    self.status,
-                    SB_SETTEXTW,
-                    Some(WPARAM(part)),
-                    Some(LPARAM(text.as_ptr() as isize)),
-                )
-            };
-        }
-    }
-
-    /// The path the grid is sitting on, if any.
-    fn selected_path(&self) -> Option<PathBuf> {
-        grid::selected_path(self)
+        })
     }
 
     /// Hand the keyboard to a pane and repaint what follows from it. `SetFocus` is all the
@@ -620,12 +614,13 @@ impl Ui {
         let _ = unsafe { SetFocus(Some(target)) };
     }
 
-    /// Rebuild everything the monitor's DPI decides.
-    fn rescale(&mut self) {
+    /// Rebuild everything the monitor's DPI decides. The image list is rebuilt by `grid`, which
+    /// takes its own borrow, so this returns the new DPI rather than doing it here.
+    fn rescale(&mut self) -> Option<u32> {
         // SAFETY: a live window of ours.
         let dpi = unsafe { GetDpiForWindow(self.container) }.max(96);
         if dpi == self.dpi {
-            return;
+            return None;
         }
         let logical_tree_width = self.tree_width * 96 / self.dpi.max(1) as i32;
         self.dpi = dpi;
@@ -637,8 +632,8 @@ impl Ui {
         delete_font(old_font);
         self.metrics = Metrics::for_dpi(dpi, natural_height(self.status));
         self.tree_width = layout::scale(logical_tree_width, dpi);
-        grid::rescale(self, dpi);
         log::debug!("Browse mode rescaled to {dpi} DPI");
+        Some(dpi)
     }
 }
 
@@ -684,7 +679,7 @@ unsafe extern "system" fn container_proc(
             }
             let width = (lparam.0 & 0xffff) as i16 as i32;
             let height = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
-            with_ui_mut(|ui| ui.apply_layout(width, height));
+            apply_layout(width, height);
             LRESULT(0)
         }
 
@@ -807,8 +802,8 @@ fn splitter(hwnd: HWND, message: u32, lparam: LPARAM) -> Option<LRESULT> {
             with_ui_mut(|ui| {
                 let grab = ui.drag.unwrap_or(0);
                 ui.tree_width = layout::tree_width_for_drag(x, grab, width, ui.metrics);
-                ui.apply_layout(width, height);
             });
+            apply_layout(width, height);
             // SAFETY: a live window of ours; the gap has to repaint where the splitter left.
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, true);
@@ -853,9 +848,30 @@ pub fn thumbnails_available() {
     grid::thumbnails_available();
 }
 
-/// Rewrite the status bar. Called whenever anything it reports changes.
+/// Rewrite the status bar. Called whenever anything it reports changes, and the one place its
+/// text is set.
 pub fn refresh_status_bar() {
-    with_ui(Ui::refresh_status);
+    let Some((status, fields)) = with_ui(|ui| (ui.status, ui.status_fields())) else {
+        return;
+    };
+    for (part, text) in [
+        (0usize, &fields.count),
+        (1, &fields.name),
+        (2, &fields.size),
+    ] {
+        let text = wide(text);
+        // SAFETY: a live status bar of ours, and the string outlives the call. The part index
+        // carries no drawing flags, so the pane gets the sunken border a status bar draws by
+        // default.
+        unsafe {
+            SendMessageW(
+                status,
+                SB_SETTEXTW,
+                Some(WPARAM(part)),
+                Some(LPARAM(text.as_ptr() as isize)),
+            )
+        };
+    }
 }
 
 /// Record a finished header read for the selected image, for the status bar's size pane. A
