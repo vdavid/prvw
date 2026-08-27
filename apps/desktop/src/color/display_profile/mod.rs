@@ -41,8 +41,8 @@ pub mod macos;
 pub mod windows;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    current_edr_headroom, register_screen_change_observer, set_layer_colorspace,
-    set_layer_edr_state, set_metal_layer_transparent,
+    current_edr_headroom, register_screen_change_observer, restore_layer_colorspace,
+    set_layer_colorspace, set_layer_edr_state, set_metal_layer_transparent,
 };
 
 /// The ICC bytes for the display `window` is on, or `None` when this platform can't say.

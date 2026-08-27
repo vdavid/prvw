@@ -619,6 +619,9 @@ impl App {
 
         // Configure ICC color management based on settings
         self.color.display_icc = self.effective_display_icc(&win);
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_display_icc(self.color.display_icc.clone());
+        }
 
         // Query the display's EDR headroom. 1.0 on SDR displays (so the
         // RAW decoder stays on the Phase 4 RGBA8 path, bit-identical).
@@ -3060,6 +3063,9 @@ impl App {
         }
 
         self.color.display_icc = new_icc;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_display_icc(self.color.display_icc.clone());
+        }
 
         #[cfg(target_os = "macos")]
         if let Some(win) = &self.window

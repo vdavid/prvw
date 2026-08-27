@@ -280,9 +280,9 @@ pub fn count_wrapped_lines(text: &str, font_size: f32, line_height: f32, max_wid
         .expect("font system poisoned");
     let metrics = Metrics::new(font_size, line_height);
     let mut buffer = Buffer::new(&mut fs, metrics);
-    buffer.set_size(&mut fs, Some(max_width), None);
+    buffer.set_size(Some(max_width), None);
     let attrs = Attrs::new().family(ui_family());
-    buffer.set_text(&mut fs, text, &attrs, Shaping::Advanced, None);
+    buffer.set_text(text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(&mut fs, false);
     buffer.layout_runs().count().max(1)
 }
@@ -332,10 +332,10 @@ impl GlyphonRenderer {
         // line still fits the cap, so truncation never triggers — a band of window widths
         // showed the title wrapped instead of ellipsized.
         if max_render_width.is_some() {
-            buffer.set_size(font_system, None, None);
+            buffer.set_size(None, None);
         }
 
-        buffer.set_text(font_system, text, attrs, Shaping::Advanced, None);
+        buffer.set_text(text, attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(font_system, false);
 
         let max_w = match max_render_width {
@@ -370,7 +370,7 @@ impl GlyphonRenderer {
                 .chain(chars[total - suffix_len..].iter())
                 .collect();
 
-            buffer.set_text(font_system, &candidate, attrs, Shaping::Advanced, None);
+            buffer.set_text(&candidate, attrs, Shaping::Advanced, None);
             buffer.shape_until_scroll(font_system, false);
             let w = measure_text_width(buffer);
 
@@ -386,7 +386,7 @@ impl GlyphonRenderer {
         }
 
         // Re-shape with the final truncated text so the buffer is ready for rendering.
-        buffer.set_text(font_system, &best_text, attrs, Shaping::Advanced, None);
+        buffer.set_text(&best_text, attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(font_system, false);
         best_text
     }
@@ -441,11 +441,7 @@ impl GlyphonRenderer {
             // Shadow buffer (identical text, rendered first at an offset)
             if block.shadow {
                 let mut shadow_buf = Buffer::new(&mut self.font_system, metrics);
-                shadow_buf.set_size(
-                    &mut self.font_system,
-                    Some(max_w.0),
-                    Some(screen_height as f32 / sf),
-                );
+                shadow_buf.set_size(Some(max_w.0), Some(screen_height as f32 / sf));
                 Self::shape_and_truncate(
                     &mut self.font_system,
                     &mut shadow_buf,
@@ -457,11 +453,7 @@ impl GlyphonRenderer {
             }
 
             let mut buffer = Buffer::new(&mut self.font_system, metrics);
-            buffer.set_size(
-                &mut self.font_system,
-                Some(max_w.0),
-                Some(screen_height as f32 / sf),
-            );
+            buffer.set_size(Some(max_w.0), Some(screen_height as f32 / sf));
             Self::shape_and_truncate(
                 &mut self.font_system,
                 &mut buffer,
@@ -631,7 +623,7 @@ mod tests {
         // font-independent way to land in that band: every wrapped line is <= the cap, so the
         // only way to stay single-line is for the fix to disable wrapping.
         let wrap_width = 150.0;
-        buffer.set_size(&mut fs, Some(wrap_width), Some(40.0));
+        buffer.set_size(Some(wrap_width), Some(40.0));
         let attrs = Attrs::new().family(ui_family()).weight(Weight::BOLD);
 
         let text = "6 / 39 \u{2013} 2026-04-17_at_12.58.27_125827@2x.png";
@@ -662,7 +654,7 @@ mod tests {
         let mut fs = FontSystem::new();
         let metrics = Metrics::new(13.5, 18.5);
         let mut buffer = Buffer::new(&mut fs, metrics);
-        buffer.set_size(&mut fs, Some(120.0), Some(200.0));
+        buffer.set_size(Some(120.0), Some(200.0));
         let attrs = Attrs::new().family(ui_family());
 
         let text = "The quick brown fox jumps over the lazy dog repeatedly all day long";

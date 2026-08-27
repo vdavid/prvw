@@ -51,6 +51,12 @@ struct CrossfadeState {
 
 /// Owns all wgpu state: device, queue, surface, pipeline, texture, and uniform buffer.
 pub struct Renderer {
+    /// The window the surface draws into. Kept past creation because macOS has to re-assert its
+    /// `CAMetalLayer` colourspace after every `Surface::configure`; see [`Self::configure_surface`].
+    /// The other platforms let wgpu own their surface's colour space outright, so nothing reads it
+    /// there; one `Arc` clone is a smaller cost than a struct that differs per platform.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -102,6 +108,11 @@ pub struct Renderer {
     histogram_storage: wgpu::Buffer,
     histogram_bind_group: wgpu::BindGroup,
     scale_factor: f64,
+    /// The ICC profile the pixels being drawn have already been transformed into, so the
+    /// compositor can be told not to transform them again. A copy of `App.color.display_icc`,
+    /// pushed in by [`Self::set_display_icc`]; like `scale_factor`, a copy that goes stale if
+    /// nobody updates it. Empty when ICC colour management is off.
+    display_icc: Vec<u8>,
 }
 
 /// Build the image-quad render pipeline against a specific surface format.
@@ -266,6 +277,10 @@ async fn acquire_gpu(
                 power_preference: request.power_preference,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                // Report what the adapter can really do. Bucketing rounds its limits and
+                // features down to a preset tier, which is for engines that want the same
+                // ceiling everywhere; a viewer that draws one quad wants the truth.
+                apply_limit_buckets: false,
             })
             .await
         {
@@ -300,7 +315,7 @@ impl Renderer {
     async fn init_async(window: Arc<Window>) -> Self {
         let size = window.inner_size();
         let scale_factor = window.scale_factor();
-        let (surface, adapter) = acquire_gpu(window, &GpuPolicy::for_host()).await;
+        let (surface, adapter) = acquire_gpu(Arc::clone(&window), &GpuPolicy::for_host()).await;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -357,10 +372,16 @@ impl Renderer {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
+            // Reproduces what wgpu did before it let anyone choose: `ExtendedSrgbLinear` for an
+            // `Rgba16Float` surface where the platform supports it, plain `Srgb` otherwise.
+            color_space: wgpu::SurfaceColorSpace::Auto,
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
+        // The only `Surface::configure` outside `configure_surface`, because `self` doesn't exist
+        // yet. `App::resumed` sets the layer colourspace right after building the renderer, so
+        // there's nothing for the colourspace to be restored from at this point anyway.
         surface.configure(&device, &config);
 
         // Which adapter and which backend a machine actually ended up on is the first thing a
@@ -640,7 +661,36 @@ impl Renderer {
             histogram_storage,
             histogram_bind_group,
             scale_factor,
+            // `resumed()` hands over the real profile right after this, through
+            // `set_display_icc`. Until then there's nothing to re-assert.
+            display_icc: Vec::new(),
+            window,
         }
+    }
+
+    /// Every `Surface::configure` in this module goes through here.
+    ///
+    /// **Why it isn't a bare `surface.configure`.** Since wgpu 30 that call also writes the
+    /// platform's own colourspace onto the surface, from `SurfaceConfiguration::color_space`, and
+    /// on macOS that field can't say what Prvw needs it to. Both of the app's answers (the
+    /// display's ICC profile in SDR, linear Display P3 in EDR) live outside wgpu's vocabulary of
+    /// named colour spaces, so they get written back afterwards. Without this a window resize
+    /// would quietly turn display-profile matching off.
+    fn configure_surface(&mut self) {
+        self.surface.configure(&self.device, &self.config);
+        #[cfg(target_os = "macos")]
+        crate::color::display_profile::restore_layer_colorspace(
+            &self.window,
+            self.config.format == wgpu::TextureFormat::Rgba16Float,
+            &self.display_icc,
+        );
+    }
+
+    /// Tell the renderer which profile the pixels it's handed have been transformed into, so the
+    /// colourspace it re-asserts after a reconfigure is the current one. `App::apply_icc_settings`
+    /// and `resumed()` are the callers.
+    pub fn set_display_icc(&mut self, icc: Vec<u8>) {
+        self.display_icc = icc;
     }
 
     /// Flip the wgpu surface between the platform's SDR format (from init)
@@ -682,7 +732,7 @@ impl Renderer {
         );
 
         self.config.format = target;
-        self.surface.configure(&self.device, &self.config);
+        self.configure_surface();
 
         self.render_pipeline = build_image_pipeline(
             &self.device,
@@ -905,7 +955,7 @@ impl Renderer {
         if width.0 != self.config.width || height.0 != self.config.height {
             self.config.width = width.0;
             self.config.height = height.0;
-            self.surface.configure(&self.device, &self.config);
+            self.configure_surface();
         }
     }
 
@@ -929,7 +979,7 @@ impl Renderer {
             wgpu::CurrentSurfaceTexture::Success(tex)
             | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => tex,
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.config);
+                self.configure_surface();
                 return false;
             }
             other => {
@@ -1146,7 +1196,7 @@ impl Renderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        self.queue.present(output);
 
         if !text_blocks.is_empty() {
             self.text_renderer.trim();
@@ -1284,7 +1334,14 @@ impl Renderer {
             return Vec::new();
         }
 
-        let data = buffer_slice.get_mapped_range();
+        let data = match buffer_slice.get_mapped_range() {
+            Ok(view) => view,
+            Err(why) => {
+                log::error!("Failed to read the mapped screenshot buffer: {why}");
+                staging_buffer.unmap();
+                return Vec::new();
+            }
+        };
 
         // Strip row padding and collect pixels. The surface format is BGRA, so swap R and B
         // to produce RGBA for the PNG encoder.

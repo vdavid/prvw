@@ -289,20 +289,13 @@ pub fn set_layer_edr_state(window: &Window, edr_active: bool, icc_for_sdr: &[u8]
             // `color::profiles::rec2020_to_linear_display_p3_inplace`).
             // The "Extended" variant is what keeps above-1.0 values
             // alive — plain `kCGColorSpaceDisplayP3` clamps at 1.0.
-            let name = kCGColorSpaceExtendedLinearDisplayP3;
-            let color_space = CGColorSpaceCreateWithName(name);
+            let color_space = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3);
             if color_space.is_null() {
                 log::warn!(
                     "CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3) returned null"
                 );
             } else {
-                let sel = objc2::sel!(setColorspace:);
-                let send: unsafe extern "C" fn(
-                    *const AnyObject,
-                    objc2::runtime::Sel,
-                    CGColorSpaceRef,
-                ) = std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
-                send(metal_layer, sel, color_space);
+                assign_colorspace(metal_layer, color_space);
                 CFRelease(color_space);
                 log::info!(
                     "render: CAMetalLayer EDR on (wantsExtendedDynamicRangeContent=YES, pixelFormat=RGBA16Float, colorspace=extendedLinearDisplayP3)"
@@ -376,10 +369,22 @@ unsafe fn find_metal_layer(layer: *const AnyObject) -> *const AnyObject {
     }
 }
 
-/// Set the colorspace on a CAMetalLayer pointer.
+/// Set the colorspace on a CAMetalLayer pointer, and say so at `info`.
 unsafe fn set_colorspace_on_layer(layer: *const AnyObject, icc_bytes: &[u8]) {
+    if unsafe { assign_icc_colorspace(layer, icc_bytes) } {
+        log::info!(
+            "Set CAMetalLayer colorspace{}",
+            super::describe_icc(icc_bytes)
+                .map(|d| format!(" to {d}"))
+                .unwrap_or_default()
+        );
+    }
+}
+
+/// Build a `CGColorSpace` from ICC bytes and hand it to the layer. Answers whether it took.
+/// Silent, so the callers that run per frame or per resize can stay quiet.
+unsafe fn assign_icc_colorspace(layer: *const AnyObject, icc_bytes: &[u8]) -> bool {
     unsafe {
-        // Create CGColorSpace from ICC data
         let cf_data = CFDataCreate(
             std::ptr::null(),
             icc_bytes.as_ptr(),
@@ -387,7 +392,7 @@ unsafe fn set_colorspace_on_layer(layer: *const AnyObject, icc_bytes: &[u8]) {
         );
         if cf_data.is_null() {
             log::warn!("CFDataCreate failed for ICC profile");
-            return;
+            return false;
         }
 
         let color_space = CGColorSpaceCreateWithICCData(cf_data);
@@ -395,24 +400,76 @@ unsafe fn set_colorspace_on_layer(layer: *const AnyObject, icc_bytes: &[u8]) {
 
         if color_space.is_null() {
             log::warn!("CGColorSpaceCreateWithICCData failed");
-            return;
+            return false;
         }
+        assign_colorspace(layer, color_space);
+        CFRelease(color_space);
+        true
+    }
+}
 
-        // [layer setColorspace:color_space]
-        // Use raw objc_msgSend to bypass type encoding check — our CGColorSpaceRef is
-        // *const c_void (encodes as ^v) but ObjC expects ^{CGColorSpace=}.
+/// `[layer setColorspace:space]`, through raw `objc_msgSend`.
+///
+/// **Gotcha:** the typed `msg_send!` can't express this one. Our `CGColorSpaceRef` is
+/// `*const c_void`, which encodes as `^v`, and ObjC expects `^{CGColorSpace=}`.
+unsafe fn assign_colorspace(layer: *const AnyObject, color_space: CGColorSpaceRef) {
+    unsafe {
         let sel = objc2::sel!(setColorspace:);
         let send: unsafe extern "C" fn(*const AnyObject, objc2::runtime::Sel, CGColorSpaceRef) =
             std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn());
         send(layer, sel, color_space);
-        CFRelease(color_space);
+    }
+}
 
-        log::info!(
-            "Set CAMetalLayer colorspace{}",
-            super::describe_icc(icc_bytes)
-                .map(|d| format!(" to {d}"))
-                .unwrap_or_default()
-        );
+/// Put the layer's colourspace back to the one this app decided on, after wgpu set its own.
+///
+/// **Why this exists.** Since wgpu 30, `Surface::configure` writes the `CAMetalLayer`
+/// colourspace itself, from `SurfaceConfiguration::color_space`, and that field can only name
+/// standard colour spaces. Neither of Prvw's two answers is in that vocabulary:
+///
+/// - **SDR** wants the *display's own ICC profile*. The pixels arriving have already been
+///   transformed into it, so any other colourspace makes the compositor transform them a second
+///   time, which is exactly the double-transform display matching exists to avoid.
+/// - **EDR** wants **linear** Display P3, to match the direct Rec.2020 → linear P3 matrix the HDR
+///   path applies. wgpu offers `ExtendedSrgbLinear` (linear, but BT.709 primaries) and
+///   `ExtendedDisplayP3` (P3, but gamma-encoded), and neither is that pair.
+///
+/// So the renderer says it again after every `Surface::configure`. Quiet, because that includes
+/// every window resize; the loud version is [`set_layer_colorspace`].
+pub fn restore_layer_colorspace(window: &Window, edr_active: bool, icc_for_sdr: &[u8]) {
+    if !edr_active && icc_for_sdr.is_empty() {
+        return;
+    }
+    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle else {
+        return;
+    };
+
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let root_layer: *const AnyObject = msg_send![ns_view, layer];
+        if root_layer.is_null() {
+            return;
+        }
+        let metal_layer = find_metal_layer(root_layer);
+        if metal_layer.is_null() {
+            return;
+        }
+
+        if edr_active {
+            let color_space = CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearDisplayP3);
+            if color_space.is_null() {
+                return;
+            }
+            assign_colorspace(metal_layer, color_space);
+            CFRelease(color_space);
+            log::trace!("Restored the CAMetalLayer's extendedLinearDisplayP3 colorspace");
+        } else {
+            assign_icc_colorspace(metal_layer, icc_for_sdr);
+            log::trace!("Restored the CAMetalLayer's display-ICC colorspace");
+        }
     }
 }
 
