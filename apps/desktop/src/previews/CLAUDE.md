@@ -61,6 +61,15 @@ gets checked before meeting a Windows box. Off Windows it carries a module-level
   looking like a crop). Linear sampling on upscale provides a soft, blurred appearance that signals "not final." A
   dedicated blur shader is not currently implemented — the linear-sampler softness is sufficient.
 
+## Gotcha: a folder change has to free the in-flight slots
+
+`Scheduler::set_folder` clears `in_flight` along with the cache and the queue, and it has to. Whatever those requests
+eventually deliver arrives stamped with the old `folder_generation` and `execute_command` drops it before it can reach
+`mark_ready` or `mark_failed`, so leaving the entries behind leaks up to `max_parallel` slots per folder change. Once
+the map is full, `poll_next` answers `None` forever and previews go quiet for the rest of the session. The indices are
+the old folder's anyway, and mean nothing in the new one.
+`scheduler::tests::a_folder_change_frees_the_in_flight_slots` holds the line.
+
 ## Pause semantics
 
 While a primary decode is pending (`navigation.pending_current.is_some()`), the scheduler is paused so it doesn't

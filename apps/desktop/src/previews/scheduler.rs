@@ -104,13 +104,22 @@ impl Scheduler {
         self.window_radius
     }
 
-    /// Reset for a new folder. Clears cache/queue; caller cancels in-flight
-    /// requests separately by calling `drain_in_flight`.
+    /// Reset for a new folder. Clears the cache, the queue, and the in-flight map; the caller
+    /// tells its generator to abandon the requests behind that map (`State::set_folder` does,
+    /// through `RequestTable::cancel_all`).
+    ///
+    /// Clearing `in_flight` is what keeps the cap honest across a folder change. Whatever those
+    /// requests eventually deliver arrives stamped with the old folder generation and is dropped
+    /// before it can reach `mark_ready` or `mark_failed`, so leaving the entries in place would
+    /// leak up to `max_parallel` slots per folder change — and once the map is full, `poll_next`
+    /// answers `None` forever and previews go quiet for the rest of the session. They're the old
+    /// folder's indices anyway, which mean nothing in the new one.
     pub fn set_folder(&mut self, folder_len: usize, current: usize) {
         self.folder_len = folder_len;
         self.current = current.min(folder_len.saturating_sub(1));
         self.cached.clear();
         self.failed.clear();
+        self.in_flight.clear();
         self.rebuild_queue();
     }
 
@@ -305,6 +314,26 @@ mod tests {
         assert!(s.poll_next().is_none());
         s.resume();
         assert!(s.poll_next().is_some());
+    }
+
+    /// A folder change frees the slots the old folder's requests were holding. Their
+    /// completions arrive stamped with the old folder generation and are dropped before they
+    /// reach `mark_ready` or `mark_failed`, so without this every folder change would leak
+    /// `max_parallel` slots and previews would go quiet for the rest of the session.
+    #[test]
+    fn a_folder_change_frees_the_in_flight_slots() {
+        let mut s = Scheduler::new(2);
+        s.set_folder(10, 5);
+        assert!(s.poll_next().is_some());
+        assert!(s.poll_next().is_some());
+        assert!(s.poll_next().is_none(), "the parallelism cap is reached");
+
+        s.set_folder(10, 0);
+        assert!(s.status().in_flight.is_empty(), "the old folder let go");
+        assert!(
+            s.poll_next().is_some(),
+            "the new folder can issue requests again"
+        );
     }
 
     #[test]
