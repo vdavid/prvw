@@ -84,8 +84,8 @@ path" can't expand synchronously — there'd be no children yet. Instead it's a 
   spelling, never the target's, because the caller looks rows up by path.
 
   **Every step of it goes through a `PathPolicy`**, the walk included: `reveal_path_chain_under(policy, …)` is the real
-  function and `reveal_path_chain` is the host wrapper. So a canonical `\\?\C:\Users\dave\pics` reveals under the
-  `C:\` row a drive enumeration produced, `\\?\UNC\naspi\photos\...` reveals under a `\\naspi\photos` root, and
+  function and `reveal_path_chain` is the host wrapper. So a canonical `\\?\C:\Users\dave\pics` reveals under the `C:\`
+  row a drive enumeration produced, `\\?\UNC\naspi\photos\...` reveals under a `\\naspi\photos` root, and
   `c:\users\dave` finds a `C:\Users\Dave` row — all of it asserted **from a Mac**, because the policy is an argument
   rather than a `cfg`. `Path::ancestors` and `Path::components` both split on the host's separators, which is why
   `PathPolicy::ancestors` and `PathPolicy::component_count` exist.

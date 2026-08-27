@@ -44,6 +44,11 @@ mod outline;
 mod split_view;
 pub(crate) mod tree_model;
 
+// Browse mode's Windows shell. Only the `ui` submodule inside it is Windows-gated; everything
+// else compiles here so a Mac's test run asserts what the Windows browser will show.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub mod windows;
+
 // The grid's headless plumbing (Phase 2): the visible-range scheduler and the byte-budget
 // eviction state. Both pure and unit-tested; the `NSCollectionView` grid (`grid`) drives them.
 // `#[allow(dead_code)]` covers the slice of their API the grid doesn't call yet — `Scheduler`'s

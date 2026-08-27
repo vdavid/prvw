@@ -159,7 +159,7 @@ impl PathPolicy {
         let (Some(left), Some(right)) = (a.to_str(), b.to_str()) else {
             return a.file_name() == b.file_name();
         };
-        match (self.file_name(left), self.file_name(right)) {
+        match (self.last_component(left), self.last_component(right)) {
             (Some(x), Some(y)) => self.same_component(x, y),
             (None, None) => true,
             _ => false,
@@ -285,8 +285,20 @@ impl PathPolicy {
         out
     }
 
-    /// The last component, or `None` when the path names no file of its own.
-    fn file_name(self, path: &str) -> Option<&str> {
+    /// The path's last component, under this policy's syntax. `Path::file_name` splits on the
+    /// HOST's separators, so a Windows path asked from a Mac comes back whole: the browse-mode
+    /// status bar would show `C:\pics\a.jpg` where it means to show `a.jpg`.
+    ///
+    /// `None` when the path names no file of its own (a root, or one ending in `..`).
+    pub fn file_name(self, path: &Path) -> Option<&str> {
+        if self.byte_wise() {
+            return path.file_name().and_then(std::ffi::OsStr::to_str);
+        }
+        self.last_component(path.to_str()?)
+    }
+
+    /// The last component of a path already known to be text.
+    fn last_component(self, path: &str) -> Option<&str> {
         self.components(path)
             .next_back()
             .filter(|last| *last != "..")
