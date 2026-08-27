@@ -67,8 +67,8 @@ gets checked before meeting a Windows box. Off Windows it carries a module-level
 eventually deliver arrives stamped with the old `folder_generation` and `execute_command` drops it before it can reach
 `mark_ready` or `mark_failed`, so leaving the entries behind leaks up to `max_parallel` slots per folder change. Once
 the map is full, `poll_next` answers `None` forever and previews go quiet for the rest of the session. The indices are
-the old folder's anyway, and mean nothing in the new one.
-`scheduler::tests::a_folder_change_frees_the_in_flight_slots` holds the line.
+the old folder's anyway, and mean nothing in the new one. `scheduler::tests::a_folder_change_frees_the_in_flight_slots`
+holds the line.
 
 ## Pause semantics
 
@@ -297,12 +297,14 @@ cached indices, failed indices, paused flag, and parallelism cap.
 - **Cancellation semantics.** We don't cancel individual in-flight requests mid-flight. On folder change,
   `RequestTable::cancel_all` fires `cancelRequest` on every live request. Individual cancellation isn't wired because
   the scheduler's queue-based model covers the common case.
-- **`read_dimensions_fast` runs under `catch_unwind`, and it has to.** Header parsers assert on geometry that a corrupt
-  file is free to lie about: `rawler` carries an outright `panic!` on absurd dimensions and asserts that the default
-  crop nests inside the active area, and a `usize` underflow in border arithmetic panics in debug. This runs on the
-  launch path and on 16 prefetch threads, so an unguarded panic would either take the process down or leave the pool a
-  worker short for the rest of the session. `without_panicking` turns it into a `None` plus a debug log. Don't move the
-  guard down into one tier: the contract is on the dispatcher.
+- **Both halves run under `catch_unwind`, and they have to.** Parsers assert on geometry that a corrupt file is free to
+  lie about: `rawler` carries an outright `panic!` on absurd dimensions and asserts that the default crop nests inside
+  the active area, and a `usize` underflow in border arithmetic panics in debug. This runs on the launch path, on 16
+  prefetch threads, and on the generator's pool, so an unguarded panic would either take the process down or leave a
+  pool a worker short for the rest of the session — and on the generator, a dead worker also means a preview slot
+  nothing ever frees. `previews::without_panicking` turns it into a `None` plus a debug log, and both
+  `read_dimensions_fast` and `generator`'s worker go through it. Don't move the guard down into one tier or one route:
+  the contract is on the dispatcher.
 - **A PNG `eXIf` chunk is the one orientation this tier can miss.** Tier 2 reads dimensions only, while
   `decoding::generic` runs `parse_exif_orientation` over the **whole** file, and `nom-exif` does parse a PNG `eXIf`
   chunk. So a PNG carrying a quarter turn auto-fits to the unrotated size and resizes once when the decode lands.

@@ -83,6 +83,32 @@ pub fn preview_budget_bytes() -> usize {
     *BUDGET.get_or_init(|| budget_for_ram(crate::platform::total_physical_ram_bytes() as usize))
 }
 
+/// Run something a corrupt file could crash, and turn a crash into "nothing for this file".
+///
+/// Both halves of this module need it, and for one reason: the file decides how much of the
+/// arithmetic is sane. Parsers assert on geometry that has to nest and index into arrays sized
+/// by numbers the file itself supplies, and a corrupt file supplies whatever it likes — rawler
+/// alone carries an outright `panic!` on absurd dimensions and asserts that the default crop
+/// sits inside the active area. Every caller here is either the launch path or one of two worker
+/// pools, so a malformed neighbour has to cost a `None`: not the process, and not a silently
+/// dead worker that leaves its pool a thread short for the rest of the session.
+///
+/// `what` names the work for the log line, since a header parse and a preview decode fail
+/// differently and it's worth knowing which one a file killed.
+pub(crate) fn without_panicking<T>(
+    what: &str,
+    path: &Path,
+    work: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)) {
+        Ok(result) => result,
+        Err(_) => {
+            log::debug!("{what} panicked for {}", path.display());
+            None
+        }
+    }
+}
+
 /// Pure budget math, split out for testing without depending on host RAM.
 fn budget_for_ram(ram_bytes: usize) -> usize {
     (ram_bytes / 128).clamp(MIN_PREVIEW_BUDGET, MAX_PREVIEW_BUDGET)
@@ -375,6 +401,25 @@ mod tests {
 
     const MB: usize = 1024 * 1024;
     const GB: usize = 1024 * MB;
+
+    /// A file that crashes a parser costs its own answer and nothing else. Without this, one
+    /// malformed neighbour takes a pool worker down for the rest of the session — or, on the
+    /// launch path, the process.
+    #[test]
+    fn work_that_panics_yields_nothing_for_that_file() {
+        let path = Path::new("corrupt.dng");
+        // The default hook would print the backtrace of a panic we're catching on purpose.
+        // Silenced only for the duration of the call.
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let caught = without_panicking::<u32>("Header parse", path, || {
+            panic!("a header parser walked off the end of the file")
+        });
+        std::panic::set_hook(previous);
+        assert_eq!(caught, None);
+        // And work that doesn't panic still comes through.
+        assert_eq!(without_panicking("Header parse", path, || Some(7)), Some(7));
+    }
 
     #[test]
     fn budget_scales_with_ram_and_clamps() {

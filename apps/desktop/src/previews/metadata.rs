@@ -47,27 +47,7 @@ pub struct Dimensions {
 /// Used by both the dim prefetcher pool (in parallel) and as the lazy fallback
 /// on the main thread when the prefetcher hasn't reached the requested index.
 pub fn read_dimensions_fast(path: &Path) -> Option<Dimensions> {
-    without_panicking(path, || read_dimensions_by_extension(path))
-}
-
-/// Run a header parse that a corrupt file could crash, and turn a crash into
-/// "no dimensions".
-///
-/// Header parsers assert on geometry that has to nest and index into arrays
-/// sized by numbers the file itself supplies, and a corrupt file supplies
-/// whatever it likes: rawler alone carries an outright `panic!` on absurd
-/// dimensions and asserts that the default crop sits inside the active area.
-/// This runs on the launch path and on 16 prefetch threads, so a malformed
-/// neighbour has to cost a `None` — not the process, and not a silently dead
-/// worker that leaves the pool a thread short for the rest of the session.
-fn without_panicking<T>(path: &Path, parse: impl FnOnce() -> Option<T>) -> Option<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(parse)) {
-        Ok(dimensions) => dimensions,
-        Err(_) => {
-            log::debug!("Header parse panicked for {}", path.display());
-            None
-        }
-    }
+    super::without_panicking("Header parse", path, || read_dimensions_by_extension(path))
 }
 
 fn read_dimensions_by_extension(path: &Path) -> Option<Dimensions> {
@@ -374,19 +354,6 @@ mod tests {
             );
             let _ = std::fs::remove_file(&path);
         }
-    }
-
-    #[test]
-    fn a_header_parser_that_panics_yields_no_dimensions() {
-        // The default hook would print the backtrace of a panic we're catching
-        // on purpose. Silenced only for the duration of the call.
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let caught = without_panicking::<Dimensions>(Path::new("corrupt.dng"), || {
-            panic!("a header parser walked off the end of the file")
-        });
-        std::panic::set_hook(previous);
-        assert_eq!(caught, None);
     }
 
     #[test]

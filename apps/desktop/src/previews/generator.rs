@@ -226,7 +226,13 @@ fn worker_loop(
         }
 
         let route = route_for(&job.path, HAS_SYSTEM_THUMBNAILS);
-        let result = produce(&route, &job.path, job.pixels).ok_or(());
+        // Guarded, because two of the three routes run a parser on numbers the file supplies and
+        // a corrupt neighbour would otherwise take this worker down for the session
+        // (`super::without_panicking` has the full reasoning).
+        let result = super::without_panicking("Preview generation", &job.path, || {
+            produce(&route, &job.path, job.pixels)
+        })
+        .ok_or(());
         if result.is_err() {
             log::debug!(
                 "No preview for {} (index {}) via {route:?}",
