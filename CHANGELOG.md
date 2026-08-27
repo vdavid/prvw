@@ -13,7 +13,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
   menu shortcut, an Apps & features entry, and Prvw offered in Explorer's "Open with" list and on a page of its own
   under Settings. It's built by NSIS from the same Mac that cross-compiles the exe, and the file types it registers are
   generated from the app's own `file_types` module, so the installer and the in-app repair button can't drift
-  ([436e3d5a](https://github.com/vdavid/prvw/commit/436e3d5a))
+  ([0c85da41](https://github.com/vdavid/prvw/commit/0c85da41))
 
 ## [0.15.1] - 2026-08-19
 
