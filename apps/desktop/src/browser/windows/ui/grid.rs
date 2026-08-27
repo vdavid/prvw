@@ -543,11 +543,24 @@ pub(super) fn thumbnails_available() {
     }
 }
 
-/// The colour a thumbnail is letterboxed against: the pane's own background, so a portrait photo
-/// doesn't sit in a grey box on a white grid.
+/// The colour a thumbnail is letterboxed against: the **listview's** own background, so a
+/// portrait photo doesn't sit in a visible box on the grid.
+///
+/// Deliberately not `Theme::colors`, which is the dialog background a settings window paints on. A
+/// listview paints `COLOR_WINDOW` in light mode — asked for rather than named, so a high-contrast
+/// scheme's own colour comes back — and comctl32's `DarkMode_Explorer` list background in dark,
+/// which is Windows 11's near-black rather than the dialog grey.
 fn pane_background(ui: &Ui) -> (u8, u8, u8) {
-    let (background, _) = super::theme_colors(ui.theme);
-    let value = background.0;
+    /// comctl32's dark list background, `0x00BBGGRR`.
+    const DARK_LIST_BACKGROUND: u32 = 0x0019_1919;
+
+    let value = match ui.theme {
+        crate::platform::windows::dark_mode::Theme::Dark => DARK_LIST_BACKGROUND,
+        // SAFETY: a constant index, and the call has no failure mode.
+        crate::platform::windows::dark_mode::Theme::Light => unsafe {
+            windows::Win32::Graphics::Gdi::GetSysColor(windows::Win32::Graphics::Gdi::COLOR_WINDOW)
+        },
+    };
     (
         (value & 0xff) as u8,
         ((value >> 8) & 0xff) as u8,

@@ -36,7 +36,7 @@ mod tree;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     FillRect, HBRUSH, HDC, HFONT, InvalidateRect, ScreenToClient, SetBkColor, SetTextColor,
 };
@@ -49,12 +49,13 @@ use windows::Win32::UI::HiDpi::{GetDpiForWindow, SystemParametersInfoForDpi};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture, SetFocus};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, GetClientRect, GetCursorPos, GetWindowRect,
-    HCURSOR, HICON, HMENU, IDC_SIZEWE, LoadCursorW, NONCLIENTMETRICSW, RegisterClassW,
-    SPI_GETNONCLIENTMETRICS, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, SendMessageW,
-    SetCursor, SetWindowPos, ShowWindow, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_NOTIFY, WM_SETCURSOR, WM_SETFONT,
-    WM_SIZE, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
+    CS_DBLCLKS, CreateWindowExW, DefWindowProcW, GWL_STYLE, GetClientRect, GetCursorPos,
+    GetWindowLongPtrW, GetWindowRect, HCURSOR, HICON, HMENU, HWND_TOP, IDC_SIZEWE, LoadCursorW,
+    NONCLIENTMETRICSW, RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCursor, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCDESTROY, WM_NOTIFY, WM_SETCURSOR, WM_SETFONT, WM_SIZE,
+    WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 
@@ -174,6 +175,10 @@ impl BrowseUi {
 
     /// Show or hide the whole browser. Image mode hides it; browse mode shows it, sized to the
     /// owner's client area first so a resize while hidden can't leave it stale.
+    ///
+    /// **Hiding hands the keyboard back to winit's window.** A hidden window keeps the focus it
+    /// had, so without this the tree would still be swallowing every key after Esc and image mode
+    /// would be dead to the keyboard.
     pub fn set_hidden(&self, hidden: bool) {
         let Some(container) = with_ui(|ui| ui.container) else {
             return;
@@ -184,6 +189,26 @@ impl BrowseUi {
         // SAFETY: a live window of ours.
         unsafe {
             let _ = ShowWindow(container, if hidden { SW_HIDE } else { SW_SHOW });
+        }
+        if hidden {
+            // SAFETY: winit's own window, which owns the container.
+            let _ = unsafe { SetFocus(Some(self.owner)) };
+        } else {
+            // In front of everything else in the client area. The swapchain composes as its own
+            // DWM visual rather than as a sibling, so this is belt to the braces of "nothing is
+            // presented while the browser is up".
+            // SAFETY: two live windows of ours.
+            unsafe {
+                let _ = SetWindowPos(
+                    container,
+                    Some(HWND_TOP),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+                );
+            }
         }
     }
 
@@ -313,6 +338,14 @@ fn build(owner: HWND, sort_by: crate::navigation::SortBy) -> Option<Ui> {
     // SAFETY: `None` asks for this executable's own module, which always exists.
     let instance = unsafe { GetModuleHandleW(None) }.ok()?;
     let instance = windows::Win32::Foundation::HINSTANCE(instance.0);
+
+    // `WS_CLIPCHILDREN` on winit's window, so its own painting stops at the container's edge
+    // rather than drawing through it. winit doesn't set it and has no API to ask for it.
+    // SAFETY: winit's live window, and the style word is read back before it's written.
+    unsafe {
+        let style = GetWindowLongPtrW(owner, GWL_STYLE);
+        SetWindowLongPtrW(owner, GWL_STYLE, style | WS_CLIPCHILDREN.0 as isize);
+    }
 
     // No `WS_VISIBLE`: the controls go on before anything is shown, so the browser never appears
     // half-built. `WS_CLIPCHILDREN` keeps the container's own background paint out of the panes.
@@ -783,6 +816,9 @@ fn splitter(hwnd: HWND, message: u32, lparam: LPARAM) -> Option<LRESULT> {
             Some(LRESULT(1))
         }
         WM_LBUTTONDOWN => {
+            if !cursor_over_splitter(hwnd)? {
+                return None;
+            }
             let x = (lparam.0 & 0xffff) as i16 as i32;
             let grab = with_ui_mut(|ui| x - ui.tree_width)?;
             with_ui_mut(|ui| ui.drag = Some(grab));
@@ -832,11 +868,6 @@ fn cursor_over_splitter(hwnd: HWND) -> Option<bool> {
 }
 
 // ── What the rest of browse mode calls ───────────────────────────────────────
-
-/// Colour a `COLORREF` the way `dark_mode` means it, for the modules next door.
-pub(super) fn theme_colors(theme: Theme) -> (COLORREF, COLORREF) {
-    theme.colors()
-}
 
 /// Start listing a folder's images for the grid, on the background worker.
 pub fn list_folder(folder: PathBuf) {
