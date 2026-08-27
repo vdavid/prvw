@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use crate::decoding::RawPipelineFlags;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default = "default_true")]
     pub auto_update: bool,

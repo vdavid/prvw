@@ -12,14 +12,14 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 ## Summary
 
 - macOS: 117 of 117 done, 0 not applicable, 0 missing
-- Windows: 70 of 117 done, 6 not applicable, 41 missing
+- Windows: 102 of 117 done, 6 not applicable, 9 missing
 - Linux: 32 of 117 done, 5 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
-- Settings (40 entries): macOS 40 / 0 / 0, Windows 4 / 1 / 35, Linux 0 / 1 / 39
-- Menu items (37 entries): macOS 37 / 0 / 0, Windows 31 / 4 / 2, Linux 0 / 3 / 34
-- Commands (40 entries): macOS 40 / 0 / 0, Windows 35 / 1 / 4, Linux 32 / 1 / 7
+- Settings (40 entries): macOS 40 / 0 / 0, Windows 39 / 1 / 0, Linux 0 / 1 / 39
+- Menu items (37 entries): macOS 37 / 0 / 0, Windows 29 / 4 / 4, Linux 0 / 3 / 34
+- Commands (40 entries): macOS 40 / 0 / 0, Windows 34 / 1 / 5, Linux 32 / 1 / 7
 
 ## What each platform still owes
 
@@ -29,18 +29,14 @@ Nothing missing.
 
 ### Windows
 
-41 missing:
+9 missing:
 
-- Setting, General: `AutoUpdate`, `ScrollToZoom`, `PreloadNeighbors`
-- Setting, Zoom: `AutoFitWindow`, `EnlargeSmallImages`
-- Setting, Color: `IccColorManagement`, `ColorMatchDisplay`, `RelativeColorimetric`
-- Setting, RAW: `RawDngOpcodeList1`, `RawDngOpcodeList2`, `RawDngOpcodeList3`, `RawBaselineExposure`, `RawBaselineExposureOffset`, `RawDcpHueSatMap`, `RawDcpLookTable`, `RawSaturationBoost`, `RawSaturationAmount`, `RawHighlightRecovery`, `RawDefaultToneCurve`, `RawToneMidtoneAnchor`, `RawDcpToneCurve`, `RawClarity`, `RawClarityRadius`, `RawClarityAmount`, `RawCaptureSharpening`, `RawSharpenAmount`, `RawChromaDenoise`, `RawLensCorrection`, `RawHdrOutput`, `RawHdrGain`, `CustomDcpDir`
-- Setting, Slideshow: `SlideshowSeconds`, `SlideshowCrossfade`, `SlideshowLoop`
-- Setting, File associations: `FileAssociations`
-- Menu item, Prvw: `Settings`
+- Menu item, Prvw: `About`
+- Menu item, File: `Print`
 - Menu item, Navigate: `BrowseToggle`
+- Menu item, Context menu: `ContextPrint`
 - Command, Browse mode: `BrowseMode`, `BrowseFocus`, `BrowseOpenSelected`
-- Command, App: `Settings`
+- Command, App: `Print`, `About`
 
 ### Linux
 
@@ -86,42 +82,42 @@ Nothing missing.
 
 ### Settings
 
-- `AutoUpdate` "Auto-update" (setting, General, toggle, field `auto_update`): macOS done, Windows missing, Linux missing
-- `ScrollToZoom` "Scroll to zoom" (setting, General, toggle, field `scroll_to_zoom`): macOS done, Windows missing, Linux missing
-- `PreloadNeighbors` "Preload next/prev images" (setting, General, toggle, field `preload_neighbors`): macOS done, Windows missing, Linux missing
+- `AutoUpdate` "Auto-update" (setting, General, toggle, field `auto_update`): macOS done, Windows done, Linux missing
+- `ScrollToZoom` "Scroll to zoom" (setting, General, toggle, field `scroll_to_zoom`): macOS done, Windows done, Linux missing
+- `PreloadNeighbors` "Preload next/prev images" (setting, General, toggle, field `preload_neighbors`): macOS done, Windows done, Linux missing
 - `TitleBar` "Title bar" (setting, General, toggle, field `title_bar`): macOS done, Windows not applicable, Linux not applicable
-- `AutoFitWindow` "Auto-fit window" (setting, Zoom, toggle, field `auto_fit_window`): macOS done, Windows missing, Linux missing
-- `EnlargeSmallImages` "Enlarge small images" (setting, Zoom, toggle, field `enlarge_small_images`): macOS done, Windows missing, Linux missing
-- `IccColorManagement` "ICC color management" (setting, Color, toggle, field `icc_color_management`): macOS done, Windows missing, Linux missing
-- `ColorMatchDisplay` "Color match display" (setting, Color, toggle, field `color_match_display`): macOS done, Windows missing, Linux missing
-- `RelativeColorimetric` "Relative colorimetric" (setting, Color, toggle, field `use_relative_colorimetric`): macOS done, Windows missing, Linux missing
-- `RawDngOpcodeList1` "DNG OpcodeList 1" (setting, RAW, toggle, field `raw.dng_opcode_list_1`): macOS done, Windows missing, Linux missing
-- `RawDngOpcodeList2` "DNG OpcodeList 2" (setting, RAW, toggle, field `raw.dng_opcode_list_2`): macOS done, Windows missing, Linux missing
-- `RawDngOpcodeList3` "DNG OpcodeList 3" (setting, RAW, toggle, field `raw.dng_opcode_list_3`): macOS done, Windows missing, Linux missing
-- `RawBaselineExposure` "Baseline exposure" (setting, RAW, toggle, field `raw.baseline_exposure`): macOS done, Windows missing, Linux missing
-- `RawBaselineExposureOffset` "Baseline exposure offset" (setting, RAW, slider, field `raw.baseline_exposure_offset`): macOS done, Windows missing, Linux missing
-- `RawDcpHueSatMap` "DCP HueSatMap" (setting, RAW, toggle, field `raw.dcp_hue_sat_map`): macOS done, Windows missing, Linux missing
-- `RawDcpLookTable` "DCP LookTable" (setting, RAW, toggle, field `raw.dcp_look_table`): macOS done, Windows missing, Linux missing
-- `RawSaturationBoost` "Saturation boost" (setting, RAW, toggle, field `raw.saturation_boost`): macOS done, Windows missing, Linux missing
-- `RawSaturationAmount` "Saturation amount" (setting, RAW, slider, field `raw.saturation_boost_amount`): macOS done, Windows missing, Linux missing
-- `RawHighlightRecovery` "Highlight recovery" (setting, RAW, toggle, field `raw.highlight_recovery`): macOS done, Windows missing, Linux missing
-- `RawDefaultToneCurve` "Default tone curve" (setting, RAW, toggle, field `raw.default_tone_curve`): macOS done, Windows missing, Linux missing
-- `RawToneMidtoneAnchor` "Tone midtone anchor" (setting, RAW, slider, field `raw.midtone_anchor`): macOS done, Windows missing, Linux missing
-- `RawDcpToneCurve` "DCP tone curve" (setting, RAW, toggle, field `raw.dcp_tone_curve`): macOS done, Windows missing, Linux missing
-- `RawClarity` "Clarity (local contrast)" (setting, RAW, toggle, field `raw.clarity`): macOS done, Windows missing, Linux missing
-- `RawClarityRadius` "Clarity radius" (setting, RAW, slider, field `raw.clarity_radius`): macOS done, Windows missing, Linux missing
-- `RawClarityAmount` "Clarity amount" (setting, RAW, slider, field `raw.clarity_amount`): macOS done, Windows missing, Linux missing
-- `RawCaptureSharpening` "Capture sharpening" (setting, RAW, toggle, field `raw.capture_sharpening`): macOS done, Windows missing, Linux missing
-- `RawSharpenAmount` "Sharpening amount" (setting, RAW, slider, field `raw.sharpen_amount`): macOS done, Windows missing, Linux missing
-- `RawChromaDenoise` "Chroma noise reduction" (setting, RAW, toggle, field `raw.chroma_denoise`): macOS done, Windows missing, Linux missing
-- `RawLensCorrection` "Lens correction" (setting, RAW, toggle, field `raw.lens_correction`): macOS done, Windows missing, Linux missing
-- `RawHdrOutput` "HDR / EDR output" (setting, RAW, toggle, field `raw.hdr_output`): macOS done, Windows missing, Linux missing
-- `RawHdrGain` "HDR brightness gain" (setting, RAW, slider, field `raw.hdr_gain`): macOS done, Windows missing, Linux missing
-- `CustomDcpDir` "Custom DCP directory" (setting, RAW, path, field `custom_dcp_dir`): macOS done, Windows missing, Linux missing
-- `SlideshowSeconds` "Time per image" (setting, Slideshow, slider, field `slideshow_seconds`): macOS done, Windows missing, Linux missing
-- `SlideshowCrossfade` "Crossfade" (setting, Slideshow, toggle, field `slideshow_crossfade`): macOS done, Windows missing, Linux missing
-- `SlideshowLoop` "Loop" (setting, Slideshow, toggle, field `slideshow_loop`): macOS done, Windows missing, Linux missing
-- `FileAssociations` "File associations" (setting, File associations, custom, field `previous_handlers`): macOS done, Windows missing, Linux missing
+- `AutoFitWindow` "Auto-fit window" (setting, Zoom, toggle, field `auto_fit_window`): macOS done, Windows done, Linux missing
+- `EnlargeSmallImages` "Enlarge small images" (setting, Zoom, toggle, field `enlarge_small_images`): macOS done, Windows done, Linux missing
+- `IccColorManagement` "ICC color management" (setting, Color, toggle, field `icc_color_management`): macOS done, Windows done, Linux missing
+- `ColorMatchDisplay` "Color match display" (setting, Color, toggle, field `color_match_display`): macOS done, Windows done, Linux missing
+- `RelativeColorimetric` "Relative colorimetric" (setting, Color, toggle, field `use_relative_colorimetric`): macOS done, Windows done, Linux missing
+- `RawDngOpcodeList1` "DNG OpcodeList 1" (setting, RAW, toggle, field `raw.dng_opcode_list_1`): macOS done, Windows done, Linux missing
+- `RawDngOpcodeList2` "DNG OpcodeList 2" (setting, RAW, toggle, field `raw.dng_opcode_list_2`): macOS done, Windows done, Linux missing
+- `RawDngOpcodeList3` "DNG OpcodeList 3" (setting, RAW, toggle, field `raw.dng_opcode_list_3`): macOS done, Windows done, Linux missing
+- `RawBaselineExposure` "Baseline exposure" (setting, RAW, toggle, field `raw.baseline_exposure`): macOS done, Windows done, Linux missing
+- `RawBaselineExposureOffset` "Baseline exposure offset" (setting, RAW, slider, field `raw.baseline_exposure_offset`): macOS done, Windows done, Linux missing
+- `RawDcpHueSatMap` "DCP HueSatMap" (setting, RAW, toggle, field `raw.dcp_hue_sat_map`): macOS done, Windows done, Linux missing
+- `RawDcpLookTable` "DCP LookTable" (setting, RAW, toggle, field `raw.dcp_look_table`): macOS done, Windows done, Linux missing
+- `RawSaturationBoost` "Saturation boost" (setting, RAW, toggle, field `raw.saturation_boost`): macOS done, Windows done, Linux missing
+- `RawSaturationAmount` "Saturation amount" (setting, RAW, slider, field `raw.saturation_boost_amount`): macOS done, Windows done, Linux missing
+- `RawHighlightRecovery` "Highlight recovery" (setting, RAW, toggle, field `raw.highlight_recovery`): macOS done, Windows done, Linux missing
+- `RawDefaultToneCurve` "Default tone curve" (setting, RAW, toggle, field `raw.default_tone_curve`): macOS done, Windows done, Linux missing
+- `RawToneMidtoneAnchor` "Tone midtone anchor" (setting, RAW, slider, field `raw.midtone_anchor`): macOS done, Windows done, Linux missing
+- `RawDcpToneCurve` "DCP tone curve" (setting, RAW, toggle, field `raw.dcp_tone_curve`): macOS done, Windows done, Linux missing
+- `RawClarity` "Clarity (local contrast)" (setting, RAW, toggle, field `raw.clarity`): macOS done, Windows done, Linux missing
+- `RawClarityRadius` "Clarity radius" (setting, RAW, slider, field `raw.clarity_radius`): macOS done, Windows done, Linux missing
+- `RawClarityAmount` "Clarity amount" (setting, RAW, slider, field `raw.clarity_amount`): macOS done, Windows done, Linux missing
+- `RawCaptureSharpening` "Capture sharpening" (setting, RAW, toggle, field `raw.capture_sharpening`): macOS done, Windows done, Linux missing
+- `RawSharpenAmount` "Sharpening amount" (setting, RAW, slider, field `raw.sharpen_amount`): macOS done, Windows done, Linux missing
+- `RawChromaDenoise` "Chroma noise reduction" (setting, RAW, toggle, field `raw.chroma_denoise`): macOS done, Windows done, Linux missing
+- `RawLensCorrection` "Lens correction" (setting, RAW, toggle, field `raw.lens_correction`): macOS done, Windows done, Linux missing
+- `RawHdrOutput` "HDR / EDR output" (setting, RAW, toggle, field `raw.hdr_output`): macOS done, Windows done, Linux missing
+- `RawHdrGain` "HDR brightness gain" (setting, RAW, slider, field `raw.hdr_gain`): macOS done, Windows done, Linux missing
+- `CustomDcpDir` "Custom DCP directory" (setting, RAW, path, field `custom_dcp_dir`): macOS done, Windows done, Linux missing
+- `SlideshowSeconds` "Time per image" (setting, Slideshow, slider, field `slideshow_seconds`): macOS done, Windows done, Linux missing
+- `SlideshowCrossfade` "Crossfade" (setting, Slideshow, toggle, field `slideshow_crossfade`): macOS done, Windows done, Linux missing
+- `SlideshowLoop` "Loop" (setting, Slideshow, toggle, field `slideshow_loop`): macOS done, Windows done, Linux missing
+- `FileAssociations` "File associations" (setting, File associations, custom, field `previous_handlers`): macOS done, Windows done, Linux missing
 - `HistogramVisible` "Histogram" (setting, Menu only, toggle, field `histogram_visible`): macOS done, Windows done, Linux missing
 - `ExifVisible` "Exif info" (setting, Menu only, toggle, field `exif_visible`): macOS done, Windows done, Linux missing
 - `LoopNavigation` "Loop navigation" (setting, Menu only, toggle, field `loop_navigation`): macOS done, Windows done, Linux missing
@@ -129,14 +125,14 @@ Nothing missing.
 
 ### Menu items
 
-- `About` "About Prvw" (menu item, Prvw menu): macOS done, Windows done, Linux missing
-- `Settings` "Settings…" (menu item, Prvw menu): macOS done, Windows missing, Linux missing
+- `About` "About Prvw" (menu item, Prvw menu): macOS done, Windows missing, Linux missing
+- `Settings` "Settings…" (menu item, Prvw menu): macOS done, Windows done, Linux missing
 - `Hide` "Hide Prvw" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
 - `HideOthers` "Hide others" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
 - `ShowAll` "Show all" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
 - `Quit` "Quit Prvw" (menu item, Prvw menu): macOS done, Windows done, Linux missing
 - `Open` "Open…" (menu item, File menu): macOS done, Windows done, Linux missing
-- `Print` "Print…" (menu item, File menu): macOS done, Windows done, Linux missing
+- `Print` "Print…" (menu item, File menu): macOS done, Windows missing, Linux missing
 - `CloseWindow` "Close window" (menu item, File menu): macOS done, Windows not applicable, Linux missing
 - `Copy` "Copy image" (menu item, Edit menu): macOS done, Windows done, Linux missing
 - `ZoomIn` "Zoom in" (menu item, View menu): macOS done, Windows done, Linux missing
@@ -165,7 +161,7 @@ Nothing missing.
 - `SlideshowIncreaseSpeed` "Increase speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
 - `SlideshowDecreaseSpeed` "Decrease speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
 - `ContextCopy` "Copy image" (menu item, Context menu): macOS done, Windows done, Linux missing
-- `ContextPrint` "Print…" (menu item, Context menu): macOS done, Windows done, Linux missing
+- `ContextPrint` "Print…" (menu item, Context menu): macOS done, Windows missing, Linux missing
 
 ### Commands
 
@@ -205,7 +201,7 @@ Nothing missing.
 - `RawPipelineFlags` "RAW pipeline stages" (command, RAW): macOS done, Windows done, Linux done
 - `CustomDcpDir` "Custom DCP directory" (command, RAW): macOS done, Windows done, Linux done
 - `CopyImage` "Copy image" (command, App): macOS done, Windows done, Linux missing
-- `Print` "Print" (command, App): macOS done, Windows done, Linux missing
-- `About` "About Prvw" (command, App): macOS done, Windows done, Linux missing
-- `Settings` "Settings window" (command, App): macOS done, Windows missing, Linux missing
+- `Print` "Print" (command, App): macOS done, Windows missing, Linux missing
+- `About` "About Prvw" (command, App): macOS done, Windows missing, Linux missing
+- `Settings` "Settings window" (command, App): macOS done, Windows done, Linux missing
 - `Exit` "Exit" (command, App): macOS done, Windows done, Linux done

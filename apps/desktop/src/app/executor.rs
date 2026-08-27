@@ -487,6 +487,11 @@ impl App {
                 let mut s = settings::Settings::load();
                 s.custom_dcp_dir = dir.clone();
                 s.save();
+                // The Windows folder picker runs on a worker thread, which can't touch a
+                // window. This is the event loop's thread, and so the dialog's own, so the
+                // field it fills in is written here.
+                #[cfg(target_os = "windows")]
+                crate::settings::sync_custom_dcp_dir(dir.as_deref());
                 self.apply_custom_dcp_dir_change(dir.as_deref());
             }
             AppCommand::FolderChanged { folder, modified } => {
@@ -539,11 +544,11 @@ impl App {
             AppCommand::ShowAbout => self.show_about_dialog(),
             AppCommand::ShowSettings => self.show_settings_dialog(),
             AppCommand::ShowSettingsSection(ref _section) => {
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 crate::settings::switch_settings_section(_section);
             }
             AppCommand::CloseSettings => {
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 crate::settings::close_settings_window();
             }
             AppCommand::Exit => {

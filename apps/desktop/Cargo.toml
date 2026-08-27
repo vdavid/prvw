@@ -52,6 +52,7 @@ muda = { version = "0.19.3", default-features = false }
 # (`render::text`), the monitor work area (`window`), the wheel and double-click
 # preferences (`scroll`, `platform`), the debug-only window photograph behind the QA server's
 # `screenshot_window` tool (`platform::windows::window_capture`, which is where
+<<<<<<< HEAD
 # `Win32_Storage_Xps` comes in: `PrintWindow` lives in that namespace), the clipboard
 # (`platform::windows::clipboard`: the clipboard calls themselves, the memory blocks they take
 # ownership of, and the `CF_DIB` / `CF_DIBV5` / `CF_HDROP` format ids, which live in the OLE
@@ -65,6 +66,24 @@ muda = { version = "0.19.3", default-features = false }
 # caption bar, and `Registry` plus `LibraryLoader` and `Accessibility` for the dark-mode decision
 # (`platform::windows::dark_mode`). MIT OR Apache-2.0. The crate is feature-gated per namespace,
 # so each entry is one Win32 area we actually call into.
+=======
+# `Win32_Storage_Xps` comes in: `PrintWindow` lives in that namespace), and the clipboard
+# (`platform::windows::clipboard`: the clipboard calls themselves, the memory blocks they
+# take ownership of, and the `CF_DIB` / `CF_DIBV5` / `CF_HDROP` format ids, which live in
+# the OLE namespace), the shell thumbnail cache behind preview generation
+# (`previews::shell`: `SHCreateItemFromParsingName` and `IShellItemImageFactory` from the Shell
+# namespace, plus the `CoInitializeEx` that puts each worker in an apartment), printing
+# (`platform::windows::print`: `PrintDlgW` from the common-dialogs namespace, and the GDI
+# document calls, which live under `Win32_Storage_Xps` beside `PrintWindow`), the About box
+# (`about::windows`), and the settings dialog (`settings::windows`): `Controls` for the
+# `SysLink`, the tab control, the trackbars, and `SetWindowTheme`, `HiDpi` for the per-monitor
+# font and layout, `Shell` for handing a URL to the browser and for the `ms-settings:` deep link
+# on the File associations page, `Dwm` for the dark caption bar, and `Registry` plus
+# `LibraryLoader` and `Accessibility` for the dark-mode decision
+# (`platform::windows::dark_mode`) and the `HKCU` writes behind "Register Prvw's file types".
+# MIT OR Apache-2.0. The crate is feature-gated per namespace, so each entry is one Win32 area
+# we actually call into.
+>>>>>>> bde93e3 (Windows gets its settings, all 39 of them)
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",

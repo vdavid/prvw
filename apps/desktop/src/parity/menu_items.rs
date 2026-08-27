@@ -263,14 +263,14 @@ impl MenuItemKey {
             | MenuItemKey::SlideshowDecreaseSpeed
             | MenuItemKey::Copy
             | MenuItemKey::About
+            | MenuItemKey::Settings
             | MenuItemKey::ContextCopy
             | MenuItemKey::Print
             | MenuItemKey::ContextPrint => Coverage::Present,
-            // Both of these wait on their own action: the settings window (M4) and browse mode
-            // (M5). Copy's, Print's, and About's items are no longer among them: all are built
-            // (M1 step 12, M3, and M6), and a right-click over the image pops the same context
-            // menu macOS shows.
-            MenuItemKey::Settings | MenuItemKey::BrowseToggle => Coverage::Missing,
+            // Browse mode (M5) is the only one left waiting on its own action. Copy's, Print's,
+            // About's, and Settings' items are all built (M1 step 12, M3, M6, and M4), and a
+            // right-click over the image pops the same context menu macOS shows.
+            MenuItemKey::BrowseToggle => Coverage::Missing,
         }
     }
 

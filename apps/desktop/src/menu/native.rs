@@ -824,16 +824,16 @@ mod tests {
         }
     }
 
-    /// What each platform drops, and why. Windows' list is the settings window and browse mode,
-    /// each suppressed because `parity::command_keys` says `Missing`, so building the feature is
+    /// What each platform drops, and why. Windows' list is browse mode and nothing else, each
+    /// item suppressed because `parity::command_keys` says `Missing`, so building the feature is
     /// what brings the item back rather than an edit to this file. Print left the list in M3
-    /// along with its context-menu twin, and About left it in M6: the mechanism working twice.
+    /// along with its context-menu twin, About left it in M6, and Settings in M4: the mechanism
+    /// working four times.
     #[test]
     fn platforms_without_the_feature_dont_offer_the_item() {
         assert_eq!(
             dropped_by(Platform::Windows),
             vec![
-                "Settings",
                 "Hide",
                 "HideOthers",
                 "ShowAll",

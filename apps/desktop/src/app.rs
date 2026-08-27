@@ -3371,6 +3371,27 @@ impl App {
 
             crate::settings::show_settings_window(parent_ptr);
         }
+
+        #[cfg(target_os = "windows")]
+        {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+            // The dialog is modeless and owned by the main window, so it stays in front of it
+            // without disabling it: the image keeps rendering and the slideshow keeps running
+            // while the settings are open.
+            let Some(window) = &self.window else {
+                log::debug!("Settings: there's no window to own the dialog yet");
+                return;
+            };
+            let Ok(RawWindowHandle::Win32(handle)) = window.window_handle().map(|h| h.as_raw())
+            else {
+                log::error!("Settings: no Win32 handle for the main window");
+                return;
+            };
+            let owner =
+                windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+            crate::settings::show_settings_window(owner);
+        }
     }
 
     /// Open the About box. Each platform builds its own (`about/CLAUDE.md`); all this does is

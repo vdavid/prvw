@@ -29,7 +29,8 @@ pub fn set_event_loop_proxy(proxy: EventLoopProxy<AppCommand>) {
 /// hasn't been set or the event loop is closed.
 ///
 /// For the code that runs outside `App`'s reach: macOS's native Settings delegate and its
-/// screen-change observer, and the Windows message hook.
+/// screen-change observer, the Windows message hook, and the Win32 settings dialog. Linux has
+/// none of them, and nothing else reaches for it.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn send_command(command: AppCommand) -> bool {
     EVENT_LOOP_PROXY

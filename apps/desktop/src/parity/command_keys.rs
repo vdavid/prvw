@@ -195,9 +195,10 @@ impl CommandKey {
     }
 
     /// Windows runs the whole platform-neutral half of `execute_command` already. What's
-    /// missing is what the arms gate behind `#[cfg(target_os = "macos")]`: the settings window
-    /// and browse mode. The clipboard, the print dialog, and the About box are Windows' own now
-    /// (`platform::windows::clipboard`, `platform::windows::print`, `about::windows`).
+    /// missing is what the arms gate behind `#[cfg(target_os = "macos")]`: browse mode, and
+    /// nothing else. The clipboard, the print dialog, the About box, and the settings dialog are
+    /// all Windows' own now (`platform::windows::clipboard`, `platform::windows::print`,
+    /// `about::windows`, `settings::windows`).
     const fn windows_coverage(self) -> Coverage {
         match self {
             CommandKey::TitleBar => Coverage::NotApplicable {
@@ -238,11 +239,11 @@ impl CommandKey {
             | CommandKey::CopyImage
             | CommandKey::About
             | CommandKey::Print
+            | CommandKey::Settings
             | CommandKey::Exit => Coverage::Present,
             CommandKey::BrowseMode
             | CommandKey::BrowseFocus
-            | CommandKey::BrowseOpenSelected
-            | CommandKey::Settings => Coverage::Missing,
+            | CommandKey::BrowseOpenSelected => Coverage::Missing,
         }
     }
 
@@ -315,10 +316,10 @@ mod tests {
         }
     }
 
-    /// The print sheet, the settings window, and browse mode are the whole Windows gap in
-    /// `execute_command` today. If that list shrinks, this test is where it gets noticed.
+    /// Browse mode is the whole Windows gap in `execute_command` now. If that list shrinks,
+    /// this test is where it gets noticed.
     #[test]
-    fn windows_gap_is_the_appkit_windows_and_browse_mode() {
+    fn windows_gap_is_browse_mode() {
         let missing: Vec<&str> = CommandKey::ALL
             .iter()
             .filter(|key| key.coverage(Platform::Windows) == Coverage::Missing)
@@ -330,7 +331,6 @@ mod tests {
                 "BrowseMode",
                 "BrowseFocus",
                 "BrowseOpenSelected",
-                "Settings",
             ]
         );
     }
