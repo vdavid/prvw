@@ -1,6 +1,12 @@
 # Pinned to an exact version rather than `stable`: an unpinned channel resolves to whatever the
 # newest release is, so a fresh CI runner and a developer machine that hasn't run `rustup update`
 # compile with different compilers and lint with different clippys. A Rust release could then
-# redden CI with no code change. Renovate bumps this pin, respecting the 3-day release age.
+# redden CI with no code change.
+#
+# Renovate's built-in `rust-toolchain` manager keeps the pin fresh, and needs no entry in
+# `renovate.json`: it matches this filename by default and reads `channel`. The repo-wide
+# `minimumReleaseAge` applies, because its `rust-version` datasource carries release timestamps.
+# The manager only extracts an exact version, though. Put `stable` back and it skips the file as
+# `invalid-version`, leaving nothing to update, so the pin is what turns the updates on.
 [toolchain]
 channel = "1.98.0"
