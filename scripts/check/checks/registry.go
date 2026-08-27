@@ -64,6 +64,15 @@ var AllChecks = []CheckDefinition{
 		Run:         RunCargoTest,
 	},
 	{
+		ID:          "conflict-markers",
+		Nickname:    "conflicts",
+		DisplayName: "conflict markers",
+		App:         AppOther,
+		Tech:        "🔀 Merge",
+		DependsOn:   nil,
+		Run:         RunConflictMarkers,
+	},
+	{
 		ID:          "desktop-rust-parity-table",
 		Nickname:    "parity",
 		DisplayName: "parity table",

@@ -50,6 +50,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | `checks/oxfmt.go`            | Monorepo-wide formatter (oxfmt, prettier-compatible)                          |
 | `checks/website-*.go`        | Website checks (eslint, typecheck, build)                                     |
 | `checks/scripts-go-*.go`     | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests)    |
+| `checks/conflict-markers.go` | Unresolved merge conflict markers in source and docs                          |
 | `stats.go`                   | CSV stats logging (`~/prvw-check-log.csv`)                                    |
 | `colors.go`                  | ANSI color constants                                                          |
 | `utils.go`                   | `findRootDir()` (walks up until `AGENTS.md` is found)                         |
@@ -76,7 +77,22 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | Desktop | Rust      | rustfmt, clippy, cargo-test, parity, windows-cross + linux-cross (both slow, opt-in) |
 | Website | Astro     | eslint, typecheck, build                                                             |
 | Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests                       |
-| Other   | -         | changelog-commit-links                                                               |
+| Other   | -         | changelog-commit-links, conflict-markers                                             |
+
+## The conflict-marker check
+
+`conflict-markers` (nickname `conflicts`) fails when `<<<<<<< `, `||||||| `, or `>>>>>>> ` starts a line in any source
+or docs file, including the repo root's own markdown.
+
+It exists because one got through. A rebase resolution was staged with `git add -A` while `AGENTS.md` still carried its
+markers; oxfmt then reflowed `>>>>>>>` into a nested blockquote, which is what a Markdown formatter thinks that is, and
+the result read as prose in every later diff. Nothing else in this runner reads English, so nothing else would have
+caught it.
+
+- **`=======` is deliberately not matched.** It's a legal Markdown setext heading underline, and matching it would fail
+  on ordinary documents. The other three markers have no legitimate use at column zero.
+- **Column zero is the rule**, so a doc can discuss a marker by indenting it or putting it inline. This section relies
+  on that.
 
 ## Cross-platform notes
 
