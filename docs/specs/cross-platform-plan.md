@@ -3,7 +3,8 @@
 Status: M0, M0.5, and M1 steps 1 to 12, 14, and 15 have landed (M0 on 2026-08-23, the rest by 2026-08-27). Windows sits
 at 61 of 117 parity entries, up from 0. What's left in M1 is **step 13** (run the shared E2E suite on Windows), which
 needs a Windows machine or a CI push and so is blocked on hardware rather than on work, and **step 16** (Azure Trusted
-Signing), which is David's to start. M2 onward is still a proposal.
+Signing), which is David's to start. **M3 has landed too** (previews, thumbnails, and printing on Windows), taking the
+count to 68; read its own section for what the plan got wrong there. M2 and M4 onward are still proposals.
 
 Everything Windows and Linux here is **compile-verified only**:
 `./scripts/check.sh --check windows-cross --check linux-cross` type-checks and lints all three targets from one Mac, and
@@ -971,6 +972,14 @@ output pixel.
 placeholder, and browse mode (M5) has nothing to draw. (The launch-time sizing half of this module already moved into M1
 step 4.)
 
+**Status: landed, along with printing.** Windows sits at 68 of 117 parity entries. Two things to know before building on
+it:
+
+- **Neither option won outright; the answer is both, split by file type.** See the corrected recommendation below.
+- **Printing came with it**, because `Print`, `ContextPrint`, and the `Print` command were the only non-M4/M5/M6 gaps
+  left on Windows. `platform::windows::print` runs `PrintDlgW` on a worker thread, and `src/printing.rs` holds the page
+  layout both platforms share.
+
 The scheduler, byte-budget cache, and dim-prefetcher are pure, so the submission worker is the main fork. Two things
 that fork with it:
 
@@ -991,10 +1000,25 @@ Two options; pick deliberately:
   downscaled decode for everything else, with our own cache. More work now, no shell dependency, no RAW gap, identical
   on macOS and Linux, and it decouples us from `quicklookd`'s behavior. M1 step 4 already builds part of this.
 
-**Recommendation: (a) for M3, with (b) as the likely end state.** Get parity fast; revisit if the Raw Image Extension
-gap annoys real users.
+**The plan's recommendation was (a); what shipped is both, split by file type, and the split is cheaper than either
+option alone.** `previews::generator::route_for` sends every camera RAW to `decoding::decode_raw_preview` and everything
+else to the shell. Three things the two-option framing missed:
 
-**Docs:** `src/previews/CLAUDE.md` opens "Previews (macOS-only)". Restructure it per platform.
+- **The RAW gap isn't a "revisit later" annoyance, it's a wrong picture.** With the Raw Image Extension missing, every
+  RAW is a blank screen; with it installed, Microsoft's develop isn't Prvw's, so the placeholder shifts colour when the
+  real one lands. And (b)'s RAW half costs nothing to take: `decode_raw_preview` is already portable, already
+  downscales, and is the same call `navigation::preloader` makes on a RAW cache-miss, so the two placeholders agree by
+  construction.
+- **(b) for everything would burn real CPU.** A full decode per file across a ±50 window is a hundred decodes per folder
+  open, where the shell route is usually a cache read. Principle 2 says don't.
+- **There's a third case neither option named.** `paths::shell_path` answers `None` for a path with no legal Win32
+  spelling, and those are the deep NAS libraries Prvw is built for. Those files decode rather than going without.
+
+`generator.rs` compiles on all three platforms, so its routing, sizing, and DIB fixup are unit-tested from a Mac.
+Turning it on for Linux is one `cfg`, deliberately not taken here: every file there would take the decode route with no
+system cache behind it, which is M8's call.
+
+**Docs:** `src/previews/CLAUDE.md` is restructured per platform, with the three routes and the Windows gotchas.
 
 ### M4: the Windows settings window (four weeks)
 
