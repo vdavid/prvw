@@ -3,6 +3,19 @@
 # compile with different compilers and lint with different clippys. A Rust release could then
 # redden CI with no code change.
 #
+# `components` is not decoration. rustup installs a pinned toolchain on demand, and which pieces
+# come with it depend on the machine's `rustup set profile`, which the GitHub runner images set to
+# something leaner than a laptop's. Naming clippy and rustfmt here makes the file self-sufficient:
+# rustup's docs say the list is additive with whatever profile is in force, so both arrive whether
+# the host asked for a minimal toolchain or a full one. Without them CI fails at "'cargo-clippy' is
+# not installed", which no amount of local testing on a developer Mac reproduces.
+#
+# The cross-check targets (`x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`) and `llvm-tools`
+# stay OUT on purpose. No CI job runs the cross-checks: the Windows and Linux legs compile natively,
+# so listing those would make all five jobs fetch 76 MB they never open, to spare one developer Mac
+# a `rustup target add`. clippy and rustfmt are 4 MB and every job runs both. `AGENTS.md` carries
+# the setup line to run after a bump.
+#
 # Renovate's built-in `rust-toolchain` manager keeps the pin fresh, and needs no entry in
 # `renovate.json`: it matches this filename by default and reads `channel`. The repo-wide
 # `minimumReleaseAge` applies, because its `rust-version` datasource carries release timestamps.
@@ -10,3 +23,4 @@
 # `invalid-version`, leaving nothing to update, so the pin is what turns the updates on.
 [toolchain]
 channel = "1.98.0"
+components = ["clippy", "rustfmt"]

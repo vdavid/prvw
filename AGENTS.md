@@ -123,10 +123,15 @@ Setup:
 - `rustup target add x86_64-pc-windows-msvc`
 - `rustup component add llvm-tools`
 
-The `rustup` lines are per-toolchain: `rust-toolchain.toml` pins an exact version, so a Renovate bump lands a toolchain
-that carries neither the target nor the component and the check says so by name. Run them again after a bump. They stay
-out of `[toolchain]` on purpose, since listing them would make all five CI jobs download two extra standard libraries
-for a check that only runs on a developer's Mac.
+The `rustup` lines are per-toolchain, and the `cargo install` is genuinely once. `rust-toolchain.toml` pins an exact
+version, so a Renovate bump lands a fresh toolchain carrying neither the target nor `llvm-tools`, and the check names
+what's missing when you run it.
+
+That file lists `components = ["clippy", "rustfmt"]` but deliberately no `targets`, which is the split to keep in mind
+when editing it. clippy and rustfmt are 4 MB and every CI job runs both, so they belong in the file and CI breaks
+without them. The cross-check targets are 76 MB with `llvm-tools`, and no CI job opens them: the Windows and Linux legs
+compile natively, and the cross-checks only ever run on a developer's Mac. Putting them in `[toolchain]` would tax all
+five jobs on every run to spare one machine the two commands above.
 
 The first run downloads the MSVC CRT and Windows SDK headers into `~/Library/Caches/cargo-xwin/`, which takes about a
 minute; later runs are incremental and finish in seconds. The check links rustup's `llvm-ar` into
