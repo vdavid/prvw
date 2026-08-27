@@ -41,12 +41,12 @@ use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::HFONT;
 use windows::Win32::UI::Controls::{
-    HTREEITEM, NMHDR, NMTREEVIEWW, TVE_EXPAND, TVGN_CARET, TVGN_PARENT, TVI_LAST, TVI_ROOT,
-    TVIF_CHILDREN, TVIF_IMAGE, TVIF_PARAM, TVIF_SELECTEDIMAGE, TVIF_TEXT, TVINSERTSTRUCTW,
-    TVINSERTSTRUCTW_0, TVITEMEXW, TVITEMEXW_CHILDREN, TVITEMW, TVM_DELETEITEM, TVM_EXPAND,
-    TVM_GETITEMW, TVM_GETNEXTITEM, TVM_INSERTITEMW, TVM_SELECTITEM, TVM_SETIMAGELIST, TVM_SETITEMW,
-    TVN_ITEMEXPANDINGW, TVN_SELCHANGEDW, TVS_HASBUTTONS, TVS_HASLINES, TVS_LINESATROOT,
-    TVS_SHOWSELALWAYS, TVS_TRACKSELECT, WC_TREEVIEWW,
+    HTREEITEM, NM_TREEVIEW_ACTION, NMHDR, NMTREEVIEWW, TVC_UNKNOWN, TVE_EXPAND, TVGN_CARET,
+    TVGN_PARENT, TVI_LAST, TVI_ROOT, TVIF_CHILDREN, TVIF_IMAGE, TVIF_PARAM, TVIF_SELECTEDIMAGE,
+    TVIF_TEXT, TVINSERTSTRUCTW, TVINSERTSTRUCTW_0, TVITEMEXW, TVITEMEXW_CHILDREN, TVITEMW,
+    TVM_DELETEITEM, TVM_EXPAND, TVM_GETITEMW, TVM_GETNEXTITEM, TVM_INSERTITEMW, TVM_SELECTITEM,
+    TVM_SETIMAGELIST, TVM_SETITEMW, TVN_ITEMEXPANDINGW, TVN_SELCHANGEDW, TVS_HASBUTTONS,
+    TVS_HASLINES, TVS_LINESATROOT, TVS_SHOWSELALWAYS, TVS_TRACKSELECT, WC_TREEVIEWW,
 };
 use windows::Win32::UI::Shell::{
     SHFILEINFOW, SHGFI_SMALLICON, SHGFI_SYSICONINDEX, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW,
@@ -83,11 +83,14 @@ pub(super) struct TreeState {
     /// Every path the tree has a row for. A row carries its index here in its `lParam`, because
     /// `HTREEITEM` is an opaque handle with nowhere to hang a `PathBuf`.
     paths: Vec<PathBuf>,
-    /// The row for a path, keyed case-insensitively because NTFS is and the same folder can
-    /// arrive spelled two ways (argv, `canonicalize`, a drive enumeration).
-    rows: HashMap<String, HTREEITEM>,
+    /// The row for a path, keyed through [`PathPolicy`] because NTFS is case-insensitive and the
+    /// same folder can arrive spelled three ways (argv, `canonicalize`, a drive enumeration).
+    rows: HashMap<std::ffi::OsString, HTREEITEM>,
     /// The reveal walk in flight, if any: the root-to-target chain and how far along it we are.
     reveal: Option<Reveal>,
+    /// True only while [`select`] is inside its own `TVM_SELECTITEM`. See [`selection_changed`]:
+    /// it is how a selection Prvw asked for is told from one the control made up.
+    selecting: bool,
     /// The row image every node wears. See the module's icon decision.
     icon: i32,
 }
@@ -97,6 +100,9 @@ pub(super) struct TreeState {
 struct Reveal {
     chain: Vec<PathBuf>,
     position: usize,
+    /// The position whose missing row we've already re-scanned for, so a folder that genuinely
+    /// isn't there ends the walk instead of re-scanning its parent forever.
+    retried_at: Option<usize>,
 }
 
 /// Build the treeview and its state. The rows go on in [`populate_roots`], which runs once the
@@ -163,6 +169,7 @@ pub(super) fn create(
         paths: Vec::new(),
         rows: HashMap::new(),
         reveal: None,
+        selecting: false,
         icon,
     };
     Some((hwnd, state))
@@ -262,11 +269,12 @@ fn insert_row(tree: HWND, parent: HTREEITEM, label: &str, path: &Path) -> Option
     Some(item)
 }
 
-/// The map key for a path. Case-folded, because NTFS is case-insensitive and one folder reaches
-/// the tree spelled three ways: what the user typed, what `canonicalize` returned, and what a
-/// drive enumeration produced.
-fn row_key(path: &Path) -> String {
-    PathPolicy::windows().display(path).to_lowercase()
+/// The map key for a path. Through the path policy, because NTFS is case-insensitive and one
+/// folder reaches the tree spelled three ways: what the user typed, what `canonicalize` returned,
+/// and what a drive enumeration produced. A reveal walk looks a row up under the first spelling
+/// and the scan that made it used the third.
+fn row_key(path: &Path) -> std::ffi::OsString {
+    PathPolicy::windows().key(path)
 }
 
 /// The arena index a row carries in its `lParam`. A pure treeview read, which sends no
@@ -315,7 +323,7 @@ pub(super) fn notify(header: *mut NMHDR) -> LRESULT {
         TVN_SELCHANGEDW => {
             // SAFETY: same shape as above.
             let notification = unsafe { &*header.cast::<NMTREEVIEWW>() };
-            selection_changed(notification.itemNew.hItem);
+            selection_changed(notification.itemNew.hItem, notification.action);
             LRESULT(0)
         }
         _ => LRESULT(0),
@@ -361,10 +369,22 @@ fn reveal_child_of(ui: &Ui, folder: &Path) -> Option<PathBuf> {
 }
 
 /// A row was selected: tell the app, so the grid lists that folder.
-fn selection_changed(item: HTREEITEM) {
-    let Some(tree) = with_ui(|ui| ui.tree) else {
+///
+/// **A selection nobody asked for is ignored.** A treeview with no selection picks its first row
+/// the moment it takes the focus, and deleting the selected row makes it pick a neighbour; both
+/// arrive here as `TVC_UNKNOWN`, and neither is a folder anyone chose to look at. Acting on them
+/// listed the drive root at every browse entry and, worse, spent the browse-open state (the grid
+/// preselect and the focus move) on that listing before the reveal walk had landed. A click is
+/// `TVC_BYMOUSE` and an arrow key is `TVC_BYKEYBOARD`, so the only `TVC_UNKNOWN` selection worth
+/// honouring is one [`select`] itself asked for, which is what `selecting` marks.
+fn selection_changed(item: HTREEITEM, action: NM_TREEVIEW_ACTION) {
+    let Some((tree, selecting)) = with_ui(|ui| (ui.tree, ui.tree_state.selecting)) else {
         return;
     };
+    if action == TVC_UNKNOWN && !selecting {
+        log::debug!("Browse tree: ignoring a selection the control made on its own");
+        return;
+    }
     let Some(path) = row_path(tree, item) else {
         return;
     };
@@ -464,7 +484,11 @@ pub(super) fn reveal(folder: &Path) {
         return;
     };
     with_ui_mut(|ui| {
-        ui.tree_state.reveal = Some(Reveal { chain, position: 0 });
+        ui.tree_state.reveal = Some(Reveal {
+            chain,
+            position: 0,
+            retried_at: None,
+        });
     });
     advance_reveal();
 }
@@ -484,12 +508,31 @@ fn advance_reveal() {
             let reveal = ui.tree_state.reveal.as_ref()?;
             let path = reveal.chain.get(reveal.position)?.clone();
             let last = reveal.position + 1 == reveal.chain.len();
-            let item = *ui.tree_state.rows.get(&row_key(&path))?;
+            let row = ui.tree_state.rows.get(&row_key(&path)).copied();
             let loaded = ui.tree_state.children.loaded(&path).is_some();
-            Some((path, item, last, loaded))
+            // The step before this one, and whether its children have already landed.
+            let parent = reveal
+                .position
+                .checked_sub(1)
+                .and_then(|above| reveal.chain.get(above).cloned())
+                .filter(|above| ui.tree_state.children.loaded(above).is_some());
+            Some((path, row, last, loaded, parent))
         });
-        let Some(Some((path, item, last, loaded))) = step else {
-            // The row isn't there yet (its parent's scan hasn't landed) or there is no walk.
+        let Some(Some((path, row, last, loaded, settled_parent))) = step else {
+            // There is no walk in flight.
+            return;
+        };
+        let Some(item) = row else {
+            // No row for this step. Normally its parent's scan is simply still running, and the
+            // delivery brings us back here — so waiting is the answer whenever the parent hasn't
+            // landed. A parent that HAS landed means nothing more is coming: that folder was
+            // scanned before this walk existed, and `scan_revealing` names the step to keep only
+            // on a folder's first scan, so a hidden one got filtered out. Ask once more, naming
+            // it; if even that doesn't produce a row, end the walk rather than leave it pending
+            // for the life of the window.
+            if let Some(parent) = settled_parent {
+                retry_missing_row(&parent, &path);
+            }
             return;
         };
         if last {
@@ -511,6 +554,39 @@ fn advance_reveal() {
     }
 }
 
+/// Re-scan `parent` for the reveal step that has no row, or give up if we already tried.
+fn retry_missing_row(parent: &Path, wanted: &Path) {
+    let first_try = with_ui_mut(|ui| {
+        let Some(reveal) = ui.tree_state.reveal.as_mut() else {
+            return false;
+        };
+        let first = reveal.retried_at != Some(reveal.position);
+        reveal.retried_at = Some(reveal.position);
+        first
+    }) == Some(true);
+    if !first_try {
+        log::warn!(
+            "Browse tree: gave up revealing {} — {} lists no such folder",
+            wanted.display(),
+            parent.display()
+        );
+        with_ui_mut(|ui| ui.tree_state.reveal = None);
+        super::refresh_status_bar();
+        return;
+    }
+    log::debug!(
+        "Browse tree: no row for {} — re-scanning {} for it",
+        wanted.display(),
+        parent.display()
+    );
+    with_ui_mut(|ui| ui.tree_state.children.invalidate(parent));
+    with_ui(|ui| {
+        ui.tree_state
+            .scanner
+            .scan_revealing(parent.to_path_buf(), wanted.to_path_buf())
+    });
+}
+
 fn expand(item: HTREEITEM) {
     let Some(tree) = with_ui(|ui| ui.tree) else {
         return;
@@ -527,8 +603,14 @@ fn expand(item: HTREEITEM) {
     };
 }
 
+/// Select a row, and let [`selection_changed`] know the selection was ours. A programmatic
+/// selection reports `TVC_UNKNOWN` exactly as the control's own does, so without the marker the
+/// two are indistinguishable and one of them has to be wrong.
 fn select(item: HTREEITEM) {
-    let Some(tree) = with_ui(|ui| ui.tree) else {
+    let Some(tree) = with_ui_mut(|ui| {
+        ui.tree_state.selecting = true;
+        ui.tree
+    }) else {
         return;
     };
     // SAFETY: a live treeview of ours and a row of its own. This sends `TVN_SELCHANGED`
@@ -541,6 +623,7 @@ fn select(item: HTREEITEM) {
             Some(LPARAM(item.0)),
         )
     };
+    with_ui_mut(|ui| ui.tree_state.selecting = false);
 }
 
 /// Explorer's convention: Backspace goes to the parent folder. It costs nothing here because in

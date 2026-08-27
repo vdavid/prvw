@@ -83,9 +83,9 @@ site is breaking the rule above.
   dark are one call site.
 - **A row's path lives in an arena, and its index in the row's `lParam`.** `HTREEITEM` is an opaque handle with nowhere
   to hang a `PathBuf`, and boxing one per row would leak on `TVM_DELETEITEM`.
-- **Rows are looked up case-insensitively**, through `PathPolicy::windows().display().to_lowercase()`. NTFS is
-  case-insensitive and one folder reaches the tree spelled three ways: what the user typed, what `canonicalize`
-  returned, and what a drive enumeration produced.
+- **Rows are looked up through `PathPolicy::windows().key()`**, never on the `PathBuf`. NTFS is case-insensitive and one
+  folder reaches the tree spelled three ways: what the user typed, what `canonicalize` returned, and what a drive
+  enumeration produced.
 - **Children never load on the main thread.** A node claims one child so a chevron shows, the first expand starts a
   `TreeScanner` scan, and `BrowseTreeChildrenLoaded` fills the rows and corrects the claim. Same `ChildCache` state
   machine macOS uses.
@@ -97,6 +97,26 @@ hides, and every Windows temp folder lives under `AppData`, which carries the hi
 there would get no row to expand and the walk would wait forever. `request_children` therefore names the walk's next
 step (`TreeScanner::scan_revealing`), and that one child is listed however hidden it is. Nothing else in the same
 directory is.
+
+**Gotcha: a `HashMap<PathBuf, _>` is the same mistake `==` is, and it stalls the walk.** **Why:** the reveal chain is
+built from the canonicalized target, so it names `\\?\C:\Users`, while the scan that fills that node was asked for under
+the row's own spelling, `C:\Users`. A byte-keyed cache misses, `advance_reveal` decides the children haven't landed, and
+it waits for a delivery that already happened — forever, with the tree sitting on the drive root and
+`browse_reveal_pending` stuck true. `ChildCache` keys through `PathPolicy::key` for exactly this. The clue in a log is
+`Browse: selected folder C:\` and nothing after it.
+
+**Gotcha: the walk gives up rather than waiting forever.** **Why:** a missing row usually means the parent's scan is
+still running and the delivery resumes us, but if the parent has already landed, nothing more is coming (a folder
+scanned before the walk existed never got the hidden step named). `advance_reveal` re-scans that parent once, naming the
+step, and then ends the walk. A reveal that never ends is worse than one that stops: `reveal_pending` is what QA and the
+E2E barrier wait on.
+
+**Gotcha: a treeview picks its own first row the moment it takes focus.** **Why:** `SetFocus` on a treeview with no
+selection selects the first visible row, and deleting the selected row makes it pick a neighbour. Both arrive as
+`TVN_SELCHANGED` with `action == TVC_UNKNOWN`, and neither is a folder anyone chose to look at. Acting on them listed
+the drive root at every browse entry and spent the one-shot browse-open state (the grid preselect, the focus move) on
+that listing before the reveal had landed. A click is `TVC_BYMOUSE` and an arrow key is `TVC_BYKEYBOARD`, so the only
+`TVC_UNKNOWN` worth honouring is one `select` asked for itself, which is what its `selecting` marker says.
 
 **Decision: one generic folder icon for every row.** **Why:** per-row shell icons mean `SHGetFileInfoW` without
 `SHGFI_USEFILEATTRIBUTES`, which Microsoft's own docs say should not be called from a UI thread, and which blocks for
