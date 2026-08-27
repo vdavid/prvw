@@ -59,6 +59,25 @@ cursor for free. It takes a tiny HTML subset, which is why `LicenseLine::markup`
 a label carrying either would otherwise be read as markup. The manifest already asks for comctl32 v6, without which the
 class doesn't exist at all.
 
+## Decision: the layout is computed once, and the window's height falls out of it
+
+**Decision:** `Layout::compute` walks the rows with a running `y` and reports `client_height` as the last control's
+bottom plus the padding. Nothing states the height separately.
+
+**Why:** the first version had a parallel formula for the height, and it disagreed with where the controls actually
+landed. Deriving one from the other makes that class of bug impossible, and it's what lets the two tests be real: every
+row has to sit inside the client area, and the body rows can't overlap. Both are pure integer maths, so a constant
+nobody meant to change can't quietly push the Close button off the bottom.
+
+**What they don't check:** whether the _text_ fits the rows. The metrics are a table, not a measurement of the strings,
+so the licence line is the one most likely to want a third row at some DPI or in some locale.
+
+## Gotcha: moving the box to another monitor keeps the old DPI
+
+`WM_DPICHANGED` takes the rect Windows suggests, so the frame follows the monitor, and the controls keep the metrics
+they were built with. Closing and reopening the box gives it the new monitor's DPI. Rebuilding it in place would be
+correct and isn't much code; it's not worth the reentrancy risk in a file nothing has ever run.
+
 ## Gotcha: the app icon comes from group icon 1
 
 `build.rs` writes the icon into the executable as `RT_GROUP_ICON` ordinal 1 (`build-support/win_resources.rs`), so
@@ -77,8 +96,8 @@ deletes its fonts on `WM_DESTROY` and clears the thread-local, so reopening is f
 `windows.rs` type-checks and lints through `./scripts/check.sh --check windows-cross`, and **has never run**. Everything
 below needs a person at a Windows box:
 
-- Whether the layout constants leave the text room at 100%, 125%, 150%, and 200% DPI. They're a fixed table scaled by
-  the window's DPI, not measured from the text, so the licence line is the one most likely to want a third row.
+- Whether the layout leaves the _text_ room at 100%, 125%, 150%, and 200% DPI. The rows are checked against each other
+  and against the window, but their heights are a table rather than a measurement of the strings.
 - Whether the dark-mode ordinals do what they're documented to do here, and what the `SysLink` link colour looks like
   against the dark background. `platform/windows/dark_mode.rs` says what's uncertain.
 - Whether `IsDialogMessageW` really gives the box Tab, Esc, and Enter through the shared hook. Nothing has exercised

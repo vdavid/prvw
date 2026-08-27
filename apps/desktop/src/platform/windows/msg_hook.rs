@@ -6,7 +6,8 @@
 //! and neither winit nor muda does them:
 //!
 //! 1. **`IsDialogMessageW`**, for a modeless dialog. Without it Tab, the arrow keys, Enter, Esc,
-//!    and mnemonics all stop working inside the dialog. M4's settings window is the caller.
+//!    and mnemonics all stop working inside the dialog. `about::windows` is the first caller and
+//!    M4's settings window is the next.
 //! 2. **`TranslateAcceleratorW`**, for the menu bar's accelerators. muda's own docs say so:
 //!    "On Windows, accelerators don't work unless the win32 message loop calls
 //!    `TranslateAcceleratorW`". Without it Ctrl+O, Ctrl+= and Ctrl+-, F11, and F5 silently do
@@ -132,10 +133,9 @@ pub fn set_accelerator_source(source: fn() -> Option<AcceleratorTarget>) {
 
 /// Add a modeless dialog to stage 1, so its keyboard navigation works.
 ///
-/// M4's settings window (`docs/specs/cross-platform-plan.md`) is the caller. The stage exists
-/// now because its order against accelerator translation is the part that is easy to get wrong
-/// once there are two callers and only one hook.
-#[cfg_attr(not(test), allow(dead_code))] // M4's settings dialog is the caller
+/// `about::windows` is the first caller, and M4's settings window is the next. Its order against
+/// accelerator translation is the part that's easy to get wrong once there are two callers and
+/// only one hook, which is why the stage was built before either of them existed.
 pub fn register_dialog(hwnd: HWND) {
     STAGES.with_borrow_mut(|stages| {
         if !stages.dialogs.contains(&hwnd) {
@@ -144,8 +144,7 @@ pub fn register_dialog(hwnd: HWND) {
     });
 }
 
-/// Take a dialog back out of stage 1, when it closes.
-#[cfg_attr(not(test), allow(dead_code))] // M4's settings dialog is the caller
+/// Take a dialog back out of stage 1, when it closes. Every caller does this from `WM_DESTROY`.
 pub fn unregister_dialog(hwnd: HWND) {
     STAGES.with_borrow_mut(|stages| stages.dialogs.retain(|open| *open != hwnd));
 }

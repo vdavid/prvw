@@ -53,6 +53,10 @@ use crate::platform::windows::msg_hook;
 /// which it only does for the default push button.
 const ID_CLOSE: i32 = IDOK.0;
 
+/// `IDC_STATIC`, the conventional id for a control nothing ever addresses. The statics here are
+/// text on a background; only the links and the button answer for anything.
+const ID_STATIC: i32 = -1;
+
 /// One id per `SysLink`, so `WM_NOTIFY` can be handled without caring which one arrived: the
 /// URL comes from the notification itself.
 const ID_FIRST_LINK: i32 = 100;
@@ -64,22 +68,118 @@ const SS_ICON: u32 = 0x0003;
 /// Draw the icon at the size the control was given rather than the size the icon happens to be.
 const SS_REALSIZECONTROL: u32 = 0x0040;
 
-/// Layout, in the logical pixels of a 96-DPI screen. Everything is scaled by the window's own
-/// DPI at build time, so the proportions hold at 125%, 150%, and 200%.
-mod layout {
-    pub const WIDTH: i32 = 400;
-    pub const PADDING: i32 = 16;
-    pub const ICON: i32 = 48;
+/// Where every control sits, in the logical pixels of a 96-DPI screen.
+///
+/// Computed in one pass with a running `y`, so the window's height and the controls' positions
+/// can't disagree: the height **is** the bottom of the last control plus the padding. Everything
+/// is scaled by the window's own DPI when the controls are made, so the proportions hold at
+/// 125%, 150%, and 200%.
+///
+/// Each field is `[x, y, width, height]`.
+struct Layout {
+    icon: [i32; 4],
+    heading: [i32; 4],
+    version: [i32; 4],
+    tagline: [i32; 4],
+    author: [i32; 4],
+    license: [i32; 4],
+    author_site: [i32; 4],
+    website: [i32; 4],
+    close: [i32; 4],
+    client_width: i32,
+    client_height: i32,
+}
+
+impl Layout {
+    const WIDTH: i32 = 400;
+    const PADDING: i32 = 16;
+    const ICON: i32 = 48;
     /// Between the icon and the heading beside it.
-    pub const GAP: i32 = 12;
-    pub const HEADING_HEIGHT: i32 = 28;
-    pub const LINE: i32 = 18;
+    const GAP: i32 = 12;
+    const HEADING_HEIGHT: i32 = 28;
+    const LINE: i32 = 18;
     /// Between one body line's top and the next one's.
-    pub const LINE_STEP: i32 = 22;
-    pub const BUTTON_WIDTH: i32 = 88;
-    pub const BUTTON_HEIGHT: i32 = 26;
+    const LINE_STEP: i32 = 22;
+    /// Between a group of lines and the next group.
+    const GROUP_GAP: i32 = 8;
+    const BUTTON_WIDTH: i32 = 88;
+    const BUTTON_HEIGHT: i32 = 26;
     /// The heading, next to the app icon.
-    pub const HEADING_SCALE: f32 = 1.5;
+    const HEADING_SCALE: f32 = 1.5;
+
+    const fn compute() -> Self {
+        let pad = Self::PADDING;
+        let body_left = pad;
+        let body_width = Self::WIDTH - pad * 2;
+        let heading_left = pad + Self::ICON + Self::GAP;
+        let heading_width = Self::WIDTH - heading_left - pad;
+
+        // The icon, with the name and version beside it.
+        let icon = [pad, pad, Self::ICON, Self::ICON];
+        let heading = [heading_left, pad, heading_width, Self::HEADING_HEIGHT];
+        let version = [
+            heading_left,
+            pad + Self::HEADING_HEIGHT + 2,
+            heading_width,
+            Self::LINE,
+        ];
+
+        // Then the body, full width, clear of the icon (which is the taller of the two things
+        // above it) by a group gap at the top and the bottom.
+        let mut y = pad + Self::ICON + Self::GROUP_GAP * 2;
+        let tagline = [body_left, y, body_width, Self::LINE];
+        y += Self::LINE_STEP;
+        let author = [body_left, y, body_width, Self::LINE];
+
+        // Two lines of room for the licence: at 400 logical pixels the sentence wraps once, and
+        // a `SysLink` wraps at word boundaries the way a static does.
+        y += Self::LINE_STEP;
+        let license_height = Self::LINE * 2 + 4;
+        let license = [body_left, y, body_width, license_height];
+
+        y += license_height + Self::GROUP_GAP;
+        let author_site = [body_left, y, body_width, Self::LINE];
+        y += Self::LINE_STEP;
+        let website = [body_left, y, body_width, Self::LINE];
+
+        y += Self::LINE + Self::GROUP_GAP;
+        let close = [
+            Self::WIDTH - pad - Self::BUTTON_WIDTH,
+            y,
+            Self::BUTTON_WIDTH,
+            Self::BUTTON_HEIGHT,
+        ];
+
+        Self {
+            icon,
+            heading,
+            version,
+            tagline,
+            author,
+            license,
+            author_site,
+            website,
+            close,
+            client_width: Self::WIDTH,
+            client_height: y + Self::BUTTON_HEIGHT + pad,
+        }
+    }
+
+    /// Every control's rectangle, for the checks that have to hold for all of them.
+    #[cfg(test)]
+    fn rows(&self) -> [[i32; 4]; 9] {
+        [
+            self.icon,
+            self.heading,
+            self.version,
+            self.tagline,
+            self.author,
+            self.license,
+            self.author_site,
+            self.website,
+            self.close,
+        ]
+    }
 }
 
 /// The one About window, if it's open, and what it needs to repaint.
@@ -106,7 +206,7 @@ pub fn show_window(parent: Option<&winit::window::Window>) {
     let already_open = OPEN.with_borrow(|open| open.as_ref().map(|window| window.hwnd));
     if let Some(hwnd) = already_open {
         // SAFETY: a live window this thread owns. A refused activation is fine; the window is
-        // already on screen either way.
+        // on screen either way.
         unsafe {
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetForegroundWindow(hwnd);
@@ -149,20 +249,26 @@ fn build(parent: Option<HWND>) -> Option<HWND> {
     // SAFETY: no arguments to get wrong; the process module always exists.
     let instance = unsafe { GetModuleHandleW(None) }.ok()?;
 
+    // The owner's DPI, because the box comes up on the owner's monitor. Per-monitor v2 means
+    // that answer and `SystemParametersInfoForDpi`'s always name the same display.
     let dpi = parent.map_or(USER_DEFAULT_SCREEN_DPI, |hwnd| {
         // SAFETY: a live window this thread owns.
         unsafe { GetDpiForWindow(hwnd) }
     });
-    let scale = |value: i32| value * dpi as i32 / USER_DEFAULT_SCREEN_DPI as i32;
+    let layout = Layout::compute();
+    let scale = |value: i32| scale_for_dpi(value, dpi);
 
     let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
-    let client_width = scale(layout::WIDTH);
-    let client_height = scale(client_height_at_96_dpi());
-    let (window_width, window_height) = outer_size(client_width, client_height, style, dpi);
+    let (window_width, window_height) = outer_size(
+        scale(layout.client_width),
+        scale(layout.client_height),
+        style,
+        dpi,
+    );
     let (x, y) = centered_on(parent, window_width, window_height);
 
     // SAFETY: the class is registered, the strings outlive the call, and an owner of `None` is
-    // valid (it means an unowned popup, which only happens before the main window exists).
+    // valid (an unowned popup, which only happens if the main window isn't up yet).
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_DLGMODALFRAME,
@@ -185,18 +291,16 @@ fn build(parent: Option<HWND>) -> Option<HWND> {
     dark_mode::apply_to_window(hwnd, theme);
     set_caption_theme(hwnd, theme);
 
-    let body_font = message_font(dpi, 1.0, false);
-    let heading_font = message_font(dpi, layout::HEADING_SCALE, true);
     OPEN.with_borrow_mut(|open| {
         *open = Some(AboutWindow {
             hwnd,
             theme,
-            body_font,
-            heading_font,
+            body_font: message_font(dpi, 1.0, false),
+            heading_font: message_font(dpi, Layout::HEADING_SCALE, true),
         });
     });
 
-    add_controls(hwnd, instance.into(), &content, dpi, theme);
+    add_controls(hwnd, instance.into(), &content, dpi, theme, &layout);
 
     // SAFETY: a window we just created.
     unsafe {
@@ -206,21 +310,19 @@ fn build(parent: Option<HWND>) -> Option<HWND> {
     Some(hwnd)
 }
 
-/// How tall the client area has to be, before DPI scaling. Derived from the same constants the
-/// controls are placed with, so the two can't drift.
-const fn client_height_at_96_dpi() -> i32 {
-    let below_icon = layout::PADDING + layout::ICON + layout::LINE;
-    // Tagline, author, the two-line licence, and the two links.
-    let body = layout::LINE_STEP * 2 + (layout::LINE * 2 + 4) + layout::LINE_STEP * 2;
-    below_icon + body + layout::BUTTON_HEIGHT + layout::PADDING
+/// A 96-DPI logical measurement in this window's physical pixels.
+fn scale_for_dpi(value: i32, dpi: u32) -> i32 {
+    value * dpi as i32 / USER_DEFAULT_SCREEN_DPI as i32
 }
 
-fn add_controls(hwnd: HWND, instance: HINSTANCE, content: &AboutContent, dpi: u32, theme: Theme) {
-    let scale = |value: i32| value * dpi as i32 / USER_DEFAULT_SCREEN_DPI as i32;
-    let content_width = layout::WIDTH - layout::PADDING * 2;
-    let heading_left = layout::PADDING + layout::ICON + layout::GAP;
-    let heading_width = layout::WIDTH - heading_left - layout::PADDING;
-
+fn add_controls(
+    hwnd: HWND,
+    instance: HINSTANCE,
+    content: &AboutContent,
+    dpi: u32,
+    theme: Theme,
+    layout: &Layout,
+) {
     let place = |class: PCWSTR, text: &str, style: WINDOW_STYLE, id: i32, rect: [i32; 4]| {
         // SAFETY: `hwnd` is the live parent, the class is one comctl32 registered, and the text
         // is copied by Windows before the call returns.
@@ -230,10 +332,10 @@ fn add_controls(hwnd: HWND, instance: HINSTANCE, content: &AboutContent, dpi: u3
                 class,
                 &HSTRING::from(text),
                 style | WS_CHILD | WS_VISIBLE,
-                scale(rect[0]),
-                scale(rect[1]),
-                scale(rect[2]),
-                scale(rect[3]),
+                scale_for_dpi(rect[0], dpi),
+                scale_for_dpi(rect[1], dpi),
+                scale_for_dpi(rect[2], dpi),
+                scale_for_dpi(rect[3], dpi),
                 Some(hwnd),
                 Some(HMENU(id as usize as *mut c_void)),
                 Some(instance),
@@ -245,104 +347,79 @@ fn add_controls(hwnd: HWND, instance: HINSTANCE, content: &AboutContent, dpi: u3
         }
         control.ok()
     };
+    let static_style = WINDOW_STYLE(SS_LEFT);
 
     // The app icon, which `build.rs` puts in the executable as group icon 1.
     if let Some(icon) = place(
         w!("STATIC"),
         "",
         WINDOW_STYLE(SS_ICON | SS_REALSIZECONTROL),
-        ID_FIRST_LINK - 1,
-        [layout::PADDING, layout::PADDING, layout::ICON, layout::ICON],
+        ID_STATIC,
+        layout.icon,
     ) {
-        set_app_icon(icon, instance, scale(layout::ICON));
+        set_app_icon(icon, instance, scale_for_dpi(Layout::ICON, dpi));
     }
 
     let heading = place(
         w!("STATIC"),
         content.name,
-        WINDOW_STYLE(SS_LEFT),
-        ID_FIRST_LINK - 2,
-        [
-            heading_left,
-            layout::PADDING,
-            heading_width,
-            layout::HEADING_HEIGHT,
-        ],
+        static_style,
+        ID_STATIC,
+        layout.heading,
     );
-
-    let mut y = layout::PADDING + layout::HEADING_HEIGHT + 2;
     place(
         w!("STATIC"),
         content.version,
-        WINDOW_STYLE(SS_LEFT),
-        ID_FIRST_LINK - 3,
-        [heading_left, y, heading_width, layout::LINE],
+        static_style,
+        ID_STATIC,
+        layout.version,
     );
-
-    y = layout::PADDING + layout::ICON + layout::LINE;
     place(
         w!("STATIC"),
         content.tagline,
-        WINDOW_STYLE(SS_LEFT),
-        ID_FIRST_LINK - 4,
-        [layout::PADDING, y, content_width, layout::LINE],
+        static_style,
+        ID_STATIC,
+        layout.tagline,
     );
-
-    y += layout::LINE_STEP;
     place(
         w!("STATIC"),
         content.author,
-        WINDOW_STYLE(SS_LEFT),
-        ID_FIRST_LINK - 5,
-        [layout::PADDING, y, content_width, layout::LINE],
+        static_style,
+        ID_STATIC,
+        layout.author,
     );
-
-    // Two lines of room: at 400 logical pixels the licence sentence wraps once, and a `SysLink`
-    // wraps at word boundaries like a static does.
-    y += layout::LINE_STEP;
     place(
         WC_LINK,
         &content.license.markup(),
         WS_TABSTOP,
         ID_FIRST_LINK,
-        [layout::PADDING, y, content_width, layout::LINE * 2 + 4],
+        layout.license,
     );
-
-    y += layout::LINE * 2 + 4 + 4;
     place(
         WC_LINK,
         &link_markup(content.author_site.url, content.author_site.label),
         WS_TABSTOP,
         ID_FIRST_LINK + 1,
-        [layout::PADDING, y, content_width, layout::LINE],
+        layout.author_site,
     );
-
-    y += layout::LINE_STEP;
     place(
         WC_LINK,
         &link_markup(content.website.url, content.website.label),
         WS_TABSTOP,
         ID_FIRST_LINK + 2,
-        [layout::PADDING, y, content_width, layout::LINE],
+        layout.website,
     );
-
-    y += layout::LINE_STEP + 4;
     let close = place(
         w!("BUTTON"),
         "Close",
         WINDOW_STYLE(BS_DEFPUSHBUTTON as u32) | WS_TABSTOP,
         ID_CLOSE,
-        [
-            layout::WIDTH - layout::PADDING - layout::BUTTON_WIDTH,
-            y,
-            layout::BUTTON_WIDTH,
-            layout::BUTTON_HEIGHT,
-        ],
+        layout.close,
     );
 
     apply_fonts(hwnd, heading);
     if let Some(close) = close {
-        // SAFETY: a live control; the button takes focus so Enter and Space work at once.
+        // SAFETY: a live control. The button takes focus, so Enter and Space work at once.
         let _ = unsafe { SetFocus(Some(close)) };
     }
 }
@@ -588,6 +665,28 @@ extern "system" fn window_proc(
             }
             return LRESULT(dark_mode::background_brush(theme).0 as isize);
         }
+        WM_DPICHANGED => {
+            // Windows suggests where the window should go on the new monitor. Taking it keeps
+            // the frame right; the controls keep the metrics they were built with, which is the
+            // known limit in `about/CLAUDE.md`.
+            if lparam.0 != 0 {
+                // SAFETY: for this message `lParam` is a `RECT` that outlives the handler.
+                let suggested = unsafe { &*(lparam.0 as *const RECT) };
+                // SAFETY: a live window, and a rect Windows just handed us.
+                let _ = unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        None,
+                        suggested.left,
+                        suggested.top,
+                        suggested.right - suggested.left,
+                        suggested.bottom - suggested.top,
+                        SWP_NOZORDER | SWP_NOACTIVATE,
+                    )
+                };
+            }
+            return LRESULT(0);
+        }
         WM_SETTINGCHANGE => {
             // Someone flipped light/dark while the box was open. `lParam` names the area.
             if setting_is_color_scheme(lparam) {
@@ -693,24 +792,60 @@ fn current_theme() -> Theme {
 mod tests {
     use super::*;
 
-    /// The window is tall enough for everything in it. A layout constant that grows without the
-    /// height following leaves the Close button under the bottom edge.
+    /// Every control lands inside the client area, with the padding kept at the bottom. The
+    /// height is derived from the same running `y` the positions are, so this is really a check
+    /// that a constant nobody meant to change didn't move a row out of the box.
     #[test]
-    fn the_client_area_fits_its_contents() {
-        let bottom = layout::PADDING
-            + layout::ICON
-            + layout::LINE
-            + layout::LINE_STEP * 2
-            + (layout::LINE * 2 + 4)
-            + 4
-            + layout::LINE_STEP * 2
-            + 4
-            + layout::BUTTON_HEIGHT;
-        assert!(
-            client_height_at_96_dpi() >= bottom + layout::PADDING - layout::LINE_STEP,
-            "the client area is {} but the last control ends at {bottom}",
-            client_height_at_96_dpi()
+    fn every_control_sits_inside_the_client_area() {
+        let layout = Layout::compute();
+        for [x, y, width, height] in layout.rows() {
+            assert!(
+                x >= Layout::PADDING,
+                "a row starts at {x}, inside the padding"
+            );
+            assert!(
+                x + width <= layout.client_width - Layout::PADDING,
+                "a row reaches {}, past the right padding",
+                x + width
+            );
+            assert!(
+                y + height <= layout.client_height - Layout::PADDING,
+                "a row ends at {}, and the client area is {}",
+                y + height,
+                layout.client_height
+            );
+        }
+        assert_eq!(
+            layout.close[1] + layout.close[3] + Layout::PADDING,
+            layout.client_height,
+            "the Close button should be the last thing, one padding above the bottom"
         );
+    }
+
+    /// The full-width rows don't overlap each other. The licence line is the one with two lines
+    /// of room, so it's the one a smaller `LINE_STEP` would push into.
+    #[test]
+    fn the_body_rows_dont_overlap() {
+        let layout = Layout::compute();
+        let body = [
+            layout.tagline,
+            layout.author,
+            layout.license,
+            layout.author_site,
+            layout.website,
+            layout.close,
+        ];
+        for pair in body.windows(2) {
+            let [above, below] = [pair[0], pair[1]];
+            assert!(
+                above[1] + above[3] <= below[1],
+                "a row ending at {} runs into the one starting at {}",
+                above[1] + above[3],
+                below[1]
+            );
+        }
+        // And the first body row clears the icon.
+        assert!(layout.tagline[1] >= layout.icon[1] + layout.icon[3]);
     }
 
     /// A link's markup is what `SysLink` parses, and the label is what a person reads.

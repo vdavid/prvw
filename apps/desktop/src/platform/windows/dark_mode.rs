@@ -32,6 +32,9 @@ use std::ffi::c_void;
 use std::sync::OnceLock;
 
 use windows::Win32::Foundation::{COLORREF, HWND};
+use windows::Win32::Graphics::Gdi::{
+    COLOR_BTNFACE, COLOR_BTNTEXT, CreateSolidBrush, GetSysColor, GetSysColorBrush, HBRUSH,
+};
 use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
@@ -73,12 +76,23 @@ impl Theme {
 
     /// Window background and body text, as `COLORREF` (`0x00BBGGRR`).
     ///
-    /// The dark pair is Windows 11's own dialog grey and near-white, rather than pure black on
+    /// Light asks the system rather than naming a colour, and that's what makes high contrast
+    /// work: [`theme_for`] answers `Light` there, and a high-contrast scheme's own colours come
+    /// back from `GetSysColor`. Painting a hard-coded black on white would go straight over the
+    /// person's accessibility setting, which is the opposite of respecting it.
+    ///
+    /// The dark pair is Windows 11's own dialog grey and near-white rather than pure black on
     /// pure white: comctl32's dark assets are drawn against that grey, and a black window behind
-    /// them reads as two different dark themes touching.
+    /// them reads as two dark themes touching.
     pub fn colors(self) -> (COLORREF, COLORREF) {
         match self {
-            Theme::Light => (COLORREF(0x00FF_FFFF), COLORREF(0x0000_0000)),
+            // SAFETY: two constant indices, and the call has no failure mode.
+            Theme::Light => unsafe {
+                (
+                    COLORREF(GetSysColor(COLOR_BTNFACE)),
+                    COLORREF(GetSysColor(COLOR_BTNTEXT)),
+                )
+            },
             Theme::Dark => (COLORREF(0x0020_2020), COLORREF(0x00F0_F0F0)),
         }
     }
@@ -252,21 +266,26 @@ fn registry_string(
     (end > 0).then(|| String::from_utf16_lossy(&buffer[..end]))
 }
 
-/// A solid brush for a theme's background, made once per theme and never freed: the About box
-/// is the only client and the process outlives it.
-pub fn background_brush(theme: Theme) -> windows::Win32::Graphics::Gdi::HBRUSH {
-    static BRUSHES: OnceLock<[isize; 2]> = OnceLock::new();
-    let brushes = BRUSHES.get_or_init(|| {
-        [Theme::Light, Theme::Dark].map(|theme| {
-            // SAFETY: a colour in, a brush out. A failed call returns a null brush, which the
-            // window procedure passes to `DefWindowProc` and Windows treats as "no brush".
-            let brush =
-                unsafe { windows::Win32::Graphics::Gdi::CreateSolidBrush(theme.colors().0) };
-            brush.0 as isize
-        })
+/// What to fill a window's background with: `WM_ERASEBKGND` paints with it, and the
+/// `WM_CTLCOLOR*` reply hands it back so a control's own background matches.
+///
+/// Light hands back the system's dialog brush, which Windows owns and keeps current, so a
+/// high-contrast scheme or a custom colour arrives without us asking for it. Dark has to be
+/// ours, and it's made once and never freed: the process outlives every window painting with it.
+pub fn background_brush(theme: Theme) -> HBRUSH {
+    if theme == Theme::Light {
+        // SAFETY: a constant index. The brush belongs to the system and must not be deleted,
+        // which is exactly what every caller does with it.
+        return unsafe { GetSysColorBrush(COLOR_BTNFACE) };
+    }
+    static DARK: OnceLock<isize> = OnceLock::new();
+    let brush = *DARK.get_or_init(|| {
+        // SAFETY: a colour in, a brush out. A failed call answers with a null brush, which
+        // Windows reads as "no brush" rather than misbehaving.
+        let brush = unsafe { CreateSolidBrush(Theme::Dark.colors().0) };
+        brush.0 as isize
     });
-    let index = usize::from(theme == Theme::Dark);
-    windows::Win32::Graphics::Gdi::HBRUSH(brushes[index] as *mut c_void)
+    HBRUSH(brush as *mut c_void)
 }
 
 #[cfg(test)]
