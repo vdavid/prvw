@@ -135,10 +135,10 @@ anyone could write by hand today points at a release asset that doesn't exist.
 **It's optional, and a URL alone doesn't count as released.** It points at `PrvwSetup-<version>-x64.exe`, and
 `download.ts` exports it as `windowsUrl` / `windowsSize`. Both stay `null` unless the entry carries a **real byte size**
 in `platforms["windows-x86_64"].size` (not in `dmgSizes`, which is DMG-specific). Same convention as `dmgSizes`, for a
-sharper reason: this file is a **build-time static import**, so a placeholder entry doesn't sit inert, it gets baked into
-the deployed site as a live button pointing at a 404. CI can only know the size once it has an installer in hand, so
-"has a size" is the honest test for "shipped". A missing or zero size falls back exactly as an absent key does, and the
-URL never reaches `dist/` at all.
+sharper reason: this file is a **build-time static import**, so a placeholder entry doesn't sit inert, it gets baked
+into the deployed site as a live button pointing at a 404. CI can only know the size once it has an installer in hand,
+so "has a size" is the honest test for "shipped". A missing or zero size falls back exactly as an absent key does, and
+the URL never reaches `dist/` at all.
 
 **Adding a key here is safe by construction.** The macOS updater (`apps/desktop/src/updater/`) deserializes `platforms`
 into a `HashMap<String, PlatformEntry>` and looks up its own `<os>-<arch>` key, so entries it doesn't know about never
