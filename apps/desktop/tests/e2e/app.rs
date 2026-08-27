@@ -1,12 +1,78 @@
 //! `TestApp`: one spawned `prvw` process plus the HTTP client that drives it.
+//!
+//! ## Every failed request says what happened to the app
+//!
+//! A test that can't reach the QA server has no other way to find out why, and on Windows there
+//! is no terminal to look at afterwards: `prvw.exe` is a GUI-subsystem binary, and a CI run is
+//! over by the time anyone reads it. So the harness pipes the child's stderr into
+//! [`AppLog`], and every request that fails panics with [`TestApp::diagnose`] — which names the
+//! request, what the transport actually did (a timed-out request means the app is wedged; a
+//! reset connection means it's gone), whether the process is still alive, its exit status in hex
+//! (`0xc0000005` is an access violation, `101` is a Rust panic), and the tail of its log.
+//!
+//! `logging::pick_sink` writes to stderr whenever the process has one, so piping it is all it
+//! takes to capture the app's own log on every platform. `RUST_BACKTRACE=1` goes on the child so
+//! a panic names its frames.
 
-use std::process::{Child, Command};
+use std::io::BufRead;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::fixtures::create_fixture_image;
 
+/// How much of the app's log a failure quotes. Enough for the whole of a short launch, and the
+/// last thing it managed to say before dying in a long one.
+const LOG_TAIL_LINES: usize = 60;
+
+/// The child's stderr, drained by a thread of its own so a full pipe can never wedge the app.
+#[derive(Clone, Default)]
+pub struct AppLog(Arc<Mutex<Vec<String>>>);
+
+impl AppLog {
+    /// Start draining `stderr` into this log. The thread ends when the pipe closes, which is
+    /// when the app exits.
+    fn drain(&self, stderr: std::process::ChildStderr) {
+        let lines = Arc::clone(&self.0);
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+            {
+                // Echoed as well as kept, so the app's log still lands in the test's own
+                // captured output (and in a `--no-capture` run) the way it did when the child
+                // simply inherited stderr.
+                eprintln!("[prvw] {line}");
+                if let Ok(mut lines) = lines.lock() {
+                    lines.push(line);
+                }
+            }
+        });
+    }
+
+    /// The last [`LOG_TAIL_LINES`] lines, indented so they read as a quotation inside a panic.
+    fn tail(&self) -> String {
+        let Ok(lines) = self.0.lock() else {
+            return "    <the app log is poisoned>".to_string();
+        };
+        if lines.is_empty() {
+            return "    <the app logged nothing>".to_string();
+        }
+        let start = lines.len().saturating_sub(LOG_TAIL_LINES);
+        lines[start..]
+            .iter()
+            .map(|line| format!("    {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 pub struct TestApp {
-    child: Child,
+    // Behind a mutex so `&self` methods can ask whether the app is still alive: that answer is
+    // the difference between "it crashed" and "it's wedged", and it's the first thing anyone
+    // debugging a failed request wants.
+    child: Mutex<Child>,
+    log: AppLog,
     pub base_url: String,
     pub client: reqwest::blocking::Client,
     // Per-test settings dir. Kept alive for the test's duration; auto-removed on Drop.
@@ -88,7 +154,14 @@ impl TestApp {
             // Open the window unfocused and behind everything so a run's swarm of test
             // windows doesn't grab the developer's keystrokes. Tests drive the app via
             // the QA HTTP server, not OS input, so this changes nothing they observe.
-            .env("PRVW_BACKGROUND_WINDOW", "1");
+            .env("PRVW_BACKGROUND_WINDOW", "1")
+            // The app's own log goes to stderr wherever the process has one (`logging::init`),
+            // so piping it is what makes a Windows crash readable from a Mac. Draining it on a
+            // thread of its own is not optional: a full pipe blocks the app's next log line.
+            .stderr(Stdio::piped())
+            // A panic that reaches the top of a thread prints its frames, which is the one line
+            // that turns "the process died" into "the process died here".
+            .env("RUST_BACKTRACE", "1");
         if let Some(home) = home {
             // Canonicalize the home path so it matches the launch arg's canonical form. On macOS
             // `$TMPDIR` lives under `/var/folders/...`, a symlink to `/private/var/...`;
@@ -103,7 +176,11 @@ impl TestApp {
             command.env("HOME", &canonical_home);
             command.env("USERPROFILE", &canonical_home);
         }
-        let child = command.spawn().expect("Failed to start prvw");
+        let mut child = command.spawn().expect("Failed to start prvw");
+        let log = AppLog::default();
+        if let Some(stderr) = child.stderr.take() {
+            log.drain(stderr);
+        }
 
         let base_url = format!("http://127.0.0.1:{port}");
         // Generous per-request timeout: each `POST` that changes app state blocks on a main-thread
@@ -119,7 +196,11 @@ impl TestApp {
         let start = Instant::now();
         loop {
             if start.elapsed() > Duration::from_secs(10) {
-                panic!("QA server didn't start within 10 seconds");
+                panic!(
+                    "The QA server never came up on {base_url} within 10 seconds.\n{}\napp log:\n{}",
+                    process_status(&mut child),
+                    log.tail()
+                );
             }
             if client.get(format!("{base_url}/state")).send().is_ok() {
                 break;
@@ -131,7 +212,8 @@ impl TestApp {
         std::thread::sleep(Duration::from_millis(500));
 
         Self {
-            child,
+            child: Mutex::new(child),
+            log,
             base_url,
             client,
             data_dir,
@@ -145,12 +227,36 @@ impl TestApp {
         self.data_dir.path().join("settings.json")
     }
 
+    /// Why a request to the app failed, in the words of whoever has to read it in a CI log.
+    ///
+    /// The transport error alone doesn't say much: a reset connection and a timeout look
+    /// similar in a panic and mean opposite things. So this separates them, asks the OS whether
+    /// the process is still there, and quotes the app's own log.
+    fn diagnose(&self, request: &str, error: &reqwest::Error) -> String {
+        let what = if error.is_timeout() {
+            "the request timed out, so the app is alive but not answering (its main thread is \
+             blocked, or a native modal is running its own message loop)"
+        } else if error.is_connect() {
+            "the connection couldn't be made at all"
+        } else {
+            "the connection failed mid-request, which is what a process that went away looks like"
+        };
+        let status = match self.child.lock() {
+            Ok(mut child) => process_status(&mut child),
+            Err(_) => "the child handle is poisoned".to_string(),
+        };
+        format!(
+            "{request} failed: {what}.\n{status}\nerror: {error:?}\napp log:\n{}",
+            self.log.tail()
+        )
+    }
+
     pub fn get_screenshot(&self) -> image::DynamicImage {
         let bytes = self
             .client
             .get(format!("{}/screenshot", self.base_url))
             .send()
-            .expect("Failed to get screenshot")
+            .unwrap_or_else(|error| panic!("{}", self.diagnose("GET /screenshot", &error)))
             .bytes()
             .expect("Failed to read screenshot bytes");
         image::load_from_memory(&bytes).expect("Failed to decode screenshot PNG")
@@ -160,7 +266,7 @@ impl TestApp {
         self.client
             .get(format!("{}/state", self.base_url))
             .send()
-            .expect("Failed to get state")
+            .unwrap_or_else(|error| panic!("{}", self.diagnose("GET /state", &error)))
             .json()
             .expect("Failed to parse state JSON")
     }
@@ -171,7 +277,7 @@ impl TestApp {
         self.client
             .get(format!("{}/parity", self.base_url))
             .send()
-            .expect("Failed to get parity table")
+            .unwrap_or_else(|error| panic!("{}", self.diagnose("GET /parity", &error)))
             .json()
             .expect("Failed to parse parity JSON")
     }
@@ -228,7 +334,7 @@ impl TestApp {
             .post(format!("{}{path}", self.base_url))
             .body(body.to_string())
             .send()
-            .unwrap_or_else(|_| panic!("Failed to POST {path}"))
+            .unwrap_or_else(|error| panic!("{}", self.diagnose(&format!("POST {path}"), &error)))
             .json()
             .expect("Failed to parse response JSON")
     }
@@ -238,7 +344,7 @@ impl TestApp {
             .post(format!("{}{path}", self.base_url))
             .json(json)
             .send()
-            .unwrap_or_else(|_| panic!("Failed to POST {path}"))
+            .unwrap_or_else(|error| panic!("{}", self.diagnose(&format!("POST {path}"), &error)))
             .json()
             .expect("Failed to parse response JSON")
     }
@@ -256,7 +362,7 @@ impl TestApp {
             .post(format!("{}/mcp", self.base_url))
             .json(&req)
             .send()
-            .expect("MCP request failed")
+            .unwrap_or_else(|error| panic!("{}", self.diagnose("POST /mcp", &error)))
             .text()
             .expect("MCP response read failed");
         serde_json::from_str(&body).expect("MCP response is JSON")
@@ -265,8 +371,28 @@ impl TestApp {
 
 impl Drop for TestApp {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// Whether the app is still running, and how it ended if it isn't.
+///
+/// The exit status is spelled in hex as well as decimal because that is the only form a Windows
+/// crash code is legible in: `0xc0000005` is an access violation, `0xc0000409` is the abort a
+/// panic unwinding out of a window procedure turns into, and plain `101` is an ordinary Rust
+/// panic on the main thread.
+fn process_status(child: &mut Child) -> String {
+    match child.try_wait() {
+        Ok(None) => "the app process is still running".to_string(),
+        Ok(Some(status)) => match status.code() {
+            #[allow(clippy::cast_sign_loss)]
+            Some(code) => format!("the app process exited with {code} (0x{:08x})", code as u32),
+            None => format!("the app process was terminated by a signal: {status}"),
+        },
+        Err(error) => format!("couldn't read the app process's status: {error}"),
     }
 }
 

@@ -49,11 +49,15 @@
 //! - **Paths.** Nothing here hardcodes a POSIX path (every fixture is a `tempfile` dir), and the
 //!   file assertions match on the file name rather than the separator. What isn't covered is the
 //!   app's own path handling, which is M1 step 10.
-//! - **`HOME`.** `TestApp` sets both `HOME` and `USERPROFILE` so the fixture stays scoped
-//!   wherever it runs, but only macOS reads either today (the browse tree's home root).
-//! - **A directory argument.** `main.rs` accepts one everywhere. macOS boots into browse mode;
-//!   everywhere else the folder's images open in image mode, starting at the first (M1 step 2).
-//!   Only the macOS driver launches that way, so nothing here covers the other half.
+//! - **`HOME`, and what Windows has instead of it.** `TestApp` sets both `HOME` and
+//!   `USERPROFILE`, but only macOS reads either: the Windows tree's roots come from
+//!   `SHGetKnownFolderPath` and the drive letters, which no environment variable can scope. So a
+//!   fixture there is revealed by walking down from `C:\`, through the hidden `AppData` its temp
+//!   folder lives under — which is why `TreeScanner::scan_revealing` exists. The walk is longer
+//!   and slower than the macOS one, and the browse timeouts have to hold for it.
+//! - **A directory argument.** `main.rs` accepts one everywhere. macOS and Windows boot into
+//!   browse mode; Linux, which has no browser, opens the folder's images in image mode starting
+//!   at the first.
 //!
 //! ## What this gate can't ask for
 //!

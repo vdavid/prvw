@@ -134,6 +134,11 @@ are load-bearing:
 The Rust checks all run workspace-wide (`cargo fmt --all`, `cargo clippy --workspace`, `cargo nextest run --workspace`),
 so the `xtask` crate is linted, formatted, cross-checked, and tested by the same runs as the app.
 
+`PRVW_TEST_NO_FAIL_FAST=1` adds `--no-fail-fast` to the nextest run. nextest cancels the whole run on the first test
+failure, which is what you want day to day and the opposite of what you want the first time a platform runs the suite:
+one cycle reports one defect and leaves the other 900 tests unexecuted. Opt-in and env-driven on purpose, so a
+`workflow_dispatch` run turns it on in one `env:` line and nothing about the default path changes.
+
 ## The Windows installer check
 
 `desktop-windows-installer` (nickname `installer`) is the parity check's twin over

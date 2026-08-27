@@ -27,7 +27,16 @@ func RunCargoTest(ctx *CheckContext) (CheckResult, error) {
 		}
 	}
 
-	cmd := exec.Command("cargo", "nextest", "run", "--workspace")
+	args := []string{"nextest", "run", "--workspace"}
+	// nextest cancels the whole run on the first test failure, which is right day to day and
+	// wrong when a platform is failing for the first time: one CI cycle then reports one defect
+	// and hides every other. Setting PRVW_TEST_NO_FAIL_FAST=1 asks for the full picture instead.
+	// Deliberately opt-in and env-driven: a workflow_dispatch run sets it in one `env:` line,
+	// and nothing about the default path changes.
+	if os.Getenv("PRVW_TEST_NO_FAIL_FAST") != "" {
+		args = append(args, "--no-fail-fast")
+	}
+	cmd := exec.Command("cargo", args...)
 	cmd.Dir = rustDir
 	output, err := RunCommand(cmd, true)
 	if err != nil {

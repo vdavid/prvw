@@ -37,10 +37,10 @@ images in image mode instead. See `docs/specs/image-browser.md`, `src/browser/CL
 **How a file reaches the app.** A path on the command line, a Finder double-click (macOS, through an Apple Event),
 **File → Open…** (Cmd+O on macOS, Ctrl+O elsewhere, every platform, `src/open_dialog.rs`), or a **drop onto the window**
 (every platform, through winit's `DroppedFile`). A drop follows the same rule as the command line, in
-`launch::classify_open_request`: images open as a set, a lone folder is browsed on macOS and played in image mode
-elsewhere, and anything Prvw can't decode is ignored rather than opened and failed. A launch with nothing to open waits
-for Finder on macOS and puts up an empty window everywhere else; `src/launch.rs` decides, and `apps/desktop/CLAUDE.md`
-has the full picture.
+`launch::classify_open_request`: images open as a set, a lone folder is browsed on macOS and Windows and played in image
+mode on Linux (the one platform with no browser), and anything Prvw can't decode is ignored rather than opened and
+failed. A launch with nothing to open waits for Finder on macOS and puts up an empty window everywhere else;
+`src/launch.rs` decides, and `apps/desktop/CLAUDE.md` has the full picture.
 
 - Desktop app: `cd apps/desktop && cargo run -- <image_path_or_dir>`
 - Website dev: `cd apps/website && pnpm dev`
@@ -106,7 +106,12 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 - Specific Rust tests by name: `cd apps/desktop && cargo test <test_name>`
 - **E2E tests** spawn the real binary and drive it through the QA HTTP server. `tests/e2e_shared.rs` runs on every
   platform, `tests/e2e_macos.rs` holds what has to poke a native widget, and `tests/e2e/` is the harness. A shared test
-  names the actions it exercises and the parity registries decide whether the host runs it: see `src/qa/CLAUDE.md`.
+  names the actions it exercises and the parity registries decide whether the host runs it: see `src/qa/CLAUDE.md`. The
+  harness pipes the app's stderr, so a request that fails panics with the app's own log, whether the process is still
+  alive, and its exit status in hex — which is the only account a Windows crash leaves behind.
+- **`PRVW_TEST_NO_FAIL_FAST=1`** makes the `cargo-test` check pass `--no-fail-fast` to nextest. nextest otherwise
+  cancels the whole run on the first test failure, so a platform failing for the first time reports one defect and hides
+  the rest. Opt-in, for the run where you want the full picture.
 - On Windows, `scripts/check.ps1` replaces `check.sh` (which is bash). Same flags, same exit code, same Go runner.
 - CI: Runs on PRs and pushes to main for changed files. A Rust change runs clippy and the tests on Linux, macOS, and
   Windows. Full run: Actions -> CI -> "Run workflow".
