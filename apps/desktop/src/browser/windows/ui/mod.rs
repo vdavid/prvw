@@ -37,9 +37,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{
-    FillRect, HBRUSH, HDC, HFONT, InvalidateRect, ScreenToClient, SetBkColor, SetTextColor,
-};
+use windows::Win32::Graphics::Gdi::{FillRect, HBRUSH, HDC, HFONT, InvalidateRect, ScreenToClient};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
     ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES, ICC_TREEVIEW_CLASSES,
@@ -60,7 +58,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{PCWSTR, w};
 
 use crate::browser::PaneSide;
-use crate::platform::windows::dark_mode::{self, Theme};
+use crate::chrome::{Ink, Surface, Theme};
+use crate::platform::windows::dark_mode;
 
 use super::layout::{self, Metrics, Rect};
 use super::{keys, status};
@@ -732,7 +731,7 @@ unsafe extern "system" fn container_proc(
                     FillRect(
                         HDC(wparam.0 as *mut _),
                         &client,
-                        dark_mode::background_brush(theme),
+                        dark_mode::background_brush(theme, Surface::Dialog),
                     )
                 };
             }
@@ -745,14 +744,15 @@ unsafe extern "system" fn container_proc(
             let Some(theme) = with_ui(|ui| ui.theme) else {
                 return LRESULT(0);
             };
-            let (background, text) = theme.colors();
-            let hdc = HDC(wparam.0 as *mut _);
-            // SAFETY: the device context is the one Windows is asking us to prepare.
-            unsafe {
-                SetBkColor(hdc, background);
-                SetTextColor(hdc, text);
-            }
-            LRESULT(dark_mode::background_brush(theme).0 as isize)
+            // `paint_control` is the one place that decides a control's colours, shared with the
+            // settings dialog and the About box. It keys on the control's class rather than the
+            // message, which is what stops a field being painted like a label.
+            LRESULT(dark_mode::paint_control(
+                HDC(wparam.0 as *mut _),
+                HWND(lparam.0 as *mut _),
+                theme,
+                Ink::Body,
+            ))
         }
 
         WM_NOTIFY => {

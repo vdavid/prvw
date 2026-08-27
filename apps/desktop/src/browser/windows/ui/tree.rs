@@ -102,7 +102,7 @@ pub(super) fn create(
     parent: HWND,
     instance: HINSTANCE,
     font: HFONT,
-    theme: crate::platform::windows::dark_mode::Theme,
+    theme: crate::chrome::Theme,
 ) -> Option<(HWND, TreeState)> {
     // `TVS_TRACKSELECT` is Explorer's hot-tracking; `TVS_SHOWSELALWAYS` keeps the selected
     // folder visible while the grid has focus, which is what makes Tab legible.

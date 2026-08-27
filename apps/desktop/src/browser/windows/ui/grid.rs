@@ -113,7 +113,7 @@ pub(super) fn create(
     parent: HWND,
     instance: HINSTANCE,
     font: windows::Win32::Graphics::Gdi::HFONT,
-    theme: crate::platform::windows::dark_mode::Theme,
+    theme: crate::chrome::Theme,
     dpi: u32,
     sort_by: SortBy,
 ) -> Option<(HWND, GridState)> {
@@ -555,9 +555,9 @@ fn pane_background(ui: &Ui) -> (u8, u8, u8) {
     const DARK_LIST_BACKGROUND: u32 = 0x0019_1919;
 
     let value = match ui.theme {
-        crate::platform::windows::dark_mode::Theme::Dark => DARK_LIST_BACKGROUND,
+        crate::chrome::Theme::Dark => DARK_LIST_BACKGROUND,
         // SAFETY: a constant index, and the call has no failure mode.
-        crate::platform::windows::dark_mode::Theme::Light => unsafe {
+        crate::chrome::Theme::Light => unsafe {
             windows::Win32::Graphics::Gdi::GetSysColor(windows::Win32::Graphics::Gdi::COLOR_WINDOW)
         },
     };
