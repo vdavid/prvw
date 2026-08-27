@@ -58,6 +58,9 @@ pub struct Renderer {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
+    /// The adapter the surface runs on. Kept past creation because `Surface::display_hdr_info`
+    /// needs it, and that answer changes every time the window moves to another display.
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -335,18 +338,19 @@ impl Renderer {
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
-        // Phase 5.1: the EDR surface path wants `Rgba16Float`. Check the
-        // adapter actually supports it; log once at init so we know whether
-        // dynamic HDR switching is possible on this machine. When the
-        // format is missing (older Intel Mac, unusual GPUs), the surface
-        // stays SDR-only forever and `Renderer::reconfigure_surface_format`
-        // silently refuses the HDR switch.
+        // The EDR surface path wants `Rgba16Float` **presented as scRGB**, which is one
+        // question rather than two: a surface that offers the format but not the colour space
+        // would take the configure and then clamp everything at display white, which is the
+        // whole thing the HDR path exists to avoid. When either is missing (an older Intel Mac,
+        // unusual GPUs) the surface stays SDR forever and `reconfigure_surface_format` refuses
+        // the switch. Logged once at init, because it's the line a QA report from unfamiliar
+        // hardware has to carry.
         let hdr_surface_supported = surface_caps
-            .formats
-            .contains(&wgpu::TextureFormat::Rgba16Float);
+            .color_spaces(wgpu::TextureFormat::Rgba16Float)
+            .contains(wgpu::SurfaceColorSpaces::EXTENDED_SRGB_LINEAR);
         log::info!(
             "GPU surface formats: {:?} (HDR-capable: {})",
-            surface_caps.formats,
+            surface_caps.format_capabilities,
             hdr_surface_supported,
         );
 
@@ -661,6 +665,7 @@ impl Renderer {
             histogram_storage,
             histogram_bind_group,
             scale_factor,
+            adapter,
             // `resumed()` hands over the real profile right after this, through
             // `set_display_icc`. Until then there's nothing to re-assert.
             display_icc: Vec::new(),
@@ -684,6 +689,29 @@ impl Renderer {
             self.config.format == wgpu::TextureFormat::Rgba16Float,
             &self.display_icc,
         );
+    }
+
+    /// How much brighter than SDR white the display behind this surface can go, as a multiplier.
+    /// `1.0` means no headroom, and the RAW decoder stays on its 8-bit path.
+    ///
+    /// One question, two very different answers underneath, which is why it comes from wgpu rather
+    /// than from each platform's own API. macOS reports a live multiplier (`NSScreen`'s
+    /// `maximumExtendedDynamicRangeColorComponentValue`), which moves with brightness, ambient
+    /// light, and battery. Windows reports absolute nits through DXGI, and the multiplier is the
+    /// panel's peak over the level the OS maps SDR white to; when the user hasn't switched that
+    /// display into HDR mode, Windows says so outright and the answer is exactly `1.0`.
+    ///
+    /// That difference is behavioural, not a bug: on macOS the headroom is ours to use, and on
+    /// Windows it is ours to respect.
+    ///
+    /// **Gotcha:** on Metal this reads main-thread-only AppKit objects and answers "nothing known"
+    /// off the main thread. Call it from the event loop.
+    pub fn display_hdr_headroom(&self) -> f32 {
+        let info = self.surface.display_hdr_info(&self.adapter);
+        log::debug!("Display HDR info: {info:?}");
+        info.tone_map_headroom()
+            .filter(|headroom| headroom.is_finite() && *headroom >= 1.0)
+            .unwrap_or(1.0)
     }
 
     /// Tell the renderer which profile the pixels it's handed have been transformed into, so the
@@ -722,6 +750,16 @@ impl Renderer {
         if target == self.config.format {
             return false;
         }
+        // Named rather than left to `Auto`, so what the compositor is told matches what
+        // `color::profiles::HdrDisplaySpace` makes the decoder write. `ExtendedSrgbLinear` is
+        // scRGB, and it's the only colour space a DXGI fp16 swapchain presents; on macOS
+        // `restore_layer_colorspace` overwrites it with linear Display P3, which wgpu has no name
+        // for. `Auto` is what the platform preferred for the SDR format at init.
+        self.config.color_space = if effective_hdr {
+            wgpu::SurfaceColorSpace::ExtendedSrgbLinear
+        } else {
+            wgpu::SurfaceColorSpace::Auto
+        };
 
         let from = self.config.format;
         log::info!(

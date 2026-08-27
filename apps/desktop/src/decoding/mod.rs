@@ -158,9 +158,9 @@ pub type SalvageSink = Box<dyn FnOnce(DecodedImage) + Send>;
 /// cancellation instead of discarding it — see [`run_decode_cancellable`] and
 /// [`SalvageSink`]. Pass `None` if you don't want the recovered image.
 ///
-/// `edr_headroom` is the peak-white headroom the display can show (use
-/// [`crate::color::display_profile::current_edr_headroom`] on macOS). `1.0`
-/// means "SDR only — clip highlights at display-white". Anything above
+/// `edr_headroom` is the peak-white headroom the display can show (from
+/// [`crate::render::renderer::Renderer::display_hdr_headroom`]). `1.0`
+/// means "SDR only, clip highlights at display-white". Anything above
 /// `1.0` combined with `raw_flags.hdr_output == true` triggers the
 /// `RGBA16F` output path for RAW files.
 pub fn load_image(

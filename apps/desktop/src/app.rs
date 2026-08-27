@@ -627,11 +627,8 @@ impl App {
         // RAW decoder stays on the Phase 4 RGBA8 path, bit-identical).
         // XDR and OLED displays return >1.0 which promotes RAWs to the
         // RGBA16F + filmic-4×-shoulder path.
-        #[cfg(target_os = "macos")]
-        {
-            self.edr_headroom = display_profile::current_edr_headroom(&win);
-            log::info!("Display EDR headroom: {:.2}", self.edr_headroom);
-        }
+        self.edr_headroom = self.query_edr_headroom();
+        log::info!("Display EDR headroom: {:.2}", self.edr_headroom);
         let hdr_active = self.raw_flags.hdr_output && self.edr_headroom > 1.0;
         self.navigation.image_cache.set_hdr_mode(hdr_active);
         #[cfg(target_os = "macos")]
@@ -3123,6 +3120,37 @@ impl App {
         }
     }
 
+    /// How much headroom above SDR white the display can show right now. `1.0` (no headroom, so
+    /// the RAW decoder stays on its 8-bit path) until the renderer exists to ask. See
+    /// [`renderer::Renderer::display_hdr_headroom`] for what each platform means by the number.
+    fn query_edr_headroom(&self) -> f32 {
+        self.renderer
+            .as_ref()
+            .map_or(1.0, renderer::Renderer::display_hdr_headroom)
+    }
+
+    /// Re-read the display's headroom and, when it moved, re-tune everything downstream of it: the
+    /// decoder's output depth, the cache's memory budget, and the cache's contents (every buffer
+    /// in it was decoded for the old headroom).
+    fn refresh_edr_headroom(&mut self) {
+        let new_headroom = self.query_edr_headroom();
+        if (new_headroom - self.edr_headroom).abs() <= 1e-3 {
+            return;
+        }
+        log::info!(
+            "EDR headroom changed: {:.2} -> {:.2}",
+            self.edr_headroom,
+            new_headroom
+        );
+        self.edr_headroom = new_headroom;
+        if let Some(preloader) = &mut self.navigation.preloader {
+            preloader.set_edr_headroom(new_headroom);
+        }
+        let hdr_active = self.raw_flags.hdr_output && new_headroom > 1.0;
+        self.navigation.image_cache.set_hdr_mode(hdr_active);
+        self.navigation.image_cache.clear();
+    }
+
     /// Re-read the display profile when a move put the window on a different monitor, and do
     /// nothing at all when it didn't.
     ///
@@ -3140,7 +3168,11 @@ impl App {
             return;
         }
         log::debug!("The window is on a different display, so its colour profile is re-read");
+        // The new display may have different headroom, too: a laptop panel with HDR switched on
+        // and an external SDR monitor is an ordinary Windows desk.
+        self.refresh_edr_headroom();
         self.apply_icc_settings();
+        self.apply_edr_surface_state();
     }
 
     /// Single source of truth for "should the wgpu surface run in EDR mode
@@ -3168,7 +3200,12 @@ impl App {
 
         #[cfg(target_os = "macos")]
         if let Some(win) = &self.window {
-            display_profile::set_layer_edr_state(win, want_hdr, &self.color.display_icc);
+            display_profile::set_layer_edr_state(
+                win,
+                want_hdr,
+                &self.color.display_icc,
+                self.edr_headroom,
+            );
         }
 
         // After reconfiguring, re-apply the transform so the next frame
@@ -3206,24 +3243,7 @@ impl App {
     fn handle_display_changed(&mut self) {
         log::debug!("Display changed, re-evaluating ICC + EDR");
         self.color.monitors.forget();
-        #[cfg(target_os = "macos")]
-        if let Some(win) = &self.window {
-            let new_headroom = display_profile::current_edr_headroom(win);
-            if (new_headroom - self.edr_headroom).abs() > 1e-3 {
-                log::info!(
-                    "EDR headroom changed: {:.2} -> {:.2}",
-                    self.edr_headroom,
-                    new_headroom
-                );
-                self.edr_headroom = new_headroom;
-                if let Some(preloader) = &mut self.navigation.preloader {
-                    preloader.set_edr_headroom(new_headroom);
-                }
-                let hdr_active = self.raw_flags.hdr_output && new_headroom > 1.0;
-                self.navigation.image_cache.set_hdr_mode(hdr_active);
-                self.navigation.image_cache.clear();
-            }
-        }
+        self.refresh_edr_headroom();
         self.apply_icc_settings();
         // `apply_icc_settings` re-decodes, which goes through `display_image`
         // and thus `apply_edr_surface_state`. If nothing changed (same

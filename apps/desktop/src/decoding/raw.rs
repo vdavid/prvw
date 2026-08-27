@@ -196,9 +196,10 @@ impl StageTimings {
 /// - `PixelBuffer::Rgba8` otherwise — identical output to Phase 4 for SDR
 ///   displays or when the user has opted out via the Settings toggle.
 ///
-/// `edr_headroom` is the `maximumExtendedDynamicRangeColorComponentValue`
-/// reported by the active `NSScreen` (see
-/// `crate::color::display_profile::current_edr_headroom`).
+/// `edr_headroom` is how much brighter than SDR white the display can go, as a
+/// multiplier: `NSScreen`'s `maximumExtendedDynamicRangeColorComponentValue` on
+/// macOS, DXGI's peak-over-SDR-white ratio on Windows, both through
+/// `crate::render::renderer::Renderer::display_hdr_headroom`.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode(
     path: &Path,
@@ -657,7 +658,10 @@ pub(super) fn decode(
         if (flags.hdr_gain - 1.0).abs() > f32::EPSILON {
             rec2020.par_iter_mut().for_each(|v| *v *= flags.hdr_gain);
         }
-        color::profiles::rec2020_to_linear_display_p3_inplace(&mut rec2020);
+        // Which primaries this writes is the platform's call, and it has to match what the
+        // compositor is told the surface holds. See `color::profiles::HdrDisplaySpace`.
+        let hdr_space = color::profiles::HdrDisplaySpace::for_host();
+        color::profiles::rec2020_to_hdr_display_inplace(&mut rec2020, hdr_space);
     } else {
         let source_profile = color::linear_rec2020_profile();
         color::transform_f32_with_profile(

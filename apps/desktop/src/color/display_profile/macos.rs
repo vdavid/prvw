@@ -74,49 +74,6 @@ const MTL_PIXEL_FORMAT_RGBA16_FLOAT: u64 = 115;
 /// `MTLPixelFormatBGRA8Unorm_sRGB`: the SDR default wgpu/Metal pair.
 const MTL_PIXEL_FORMAT_BGRA8_UNORM_SRGB: u64 = 81;
 
-/// Query the EDR (extended dynamic range) headroom for the display the
-/// window is on. Returns the NSScreen property
-/// `maximumExtendedDynamicRangeColorComponentValue`, which reports how much
-/// peak-white headroom a pixel value of `1.0` leaves on top.
-///
-/// - SDR-only displays return `1.0` (no headroom — anything above display-
-///   white would clip).
-/// - mini-LED XDR (16-inch MacBook Pro, Pro Display XDR) typically reports
-///   `3.5` to `16.0` depending on brightness, battery state, and ambient.
-///   macOS varies this live: turning down brightness drops the number.
-/// - OLED displays report values around `1.6`–`3.0`.
-///
-/// Re-query on `AppCommand::DisplayChanged` and again on any brightness
-/// change notification we subscribe to. Returns `1.0` on any failure so
-/// the rest of the pipeline falls back to the SDR path.
-pub fn current_edr_headroom(window: &Window) -> f32 {
-    let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
-        return 1.0;
-    };
-    let RawWindowHandle::AppKit(handle) = handle else {
-        return 1.0;
-    };
-    unsafe {
-        let ns_view = handle.ns_view.as_ptr() as *const AnyObject;
-        let ns_window: *const AnyObject = msg_send![ns_view, window];
-        if ns_window.is_null() {
-            return 1.0;
-        }
-        let screen: *const AnyObject = msg_send![ns_window, screen];
-        if screen.is_null() {
-            return 1.0;
-        }
-        // `maximumExtendedDynamicRangeColorComponentValue` exists on all
-        // NSScreen on macOS 10.11+. Every Mac we care about has it.
-        let headroom: f64 = msg_send![screen, maximumExtendedDynamicRangeColorComponentValue];
-        if !headroom.is_finite() || headroom < 1.0 {
-            1.0
-        } else {
-            headroom as f32
-        }
-    }
-}
-
 /// Get the ICC profile bytes for the display the window is currently on.
 /// Returns `None` if the display profile can't be queried (headless, SSH, etc.).
 pub fn display_icc(window: &Window) -> Option<Vec<u8>> {
@@ -228,7 +185,16 @@ pub fn set_layer_colorspace(window: &Window, icc_bytes: &[u8]) {
 /// When the caller has no ICC bytes to restore (for example, ICC
 /// management is off), pass an empty slice — the colorspace is left
 /// whatever it was.
-pub fn set_layer_edr_state(window: &Window, edr_active: bool, icc_for_sdr: &[u8]) {
+///
+/// `headroom_now` is only logged. It's the caller's `App::edr_headroom`
+/// rather than a fresh query, so the diagnostic below can't disagree with
+/// the number the decode path actually ran on.
+pub fn set_layer_edr_state(
+    window: &Window,
+    edr_active: bool,
+    icc_for_sdr: &[u8],
+    headroom_now: f32,
+) {
     let Ok(handle) = window.window_handle().map(|h| h.as_raw()) else {
         return;
     };
@@ -249,13 +215,6 @@ pub fn set_layer_edr_state(window: &Window, edr_active: bool, icc_for_sdr: &[u8]
             log::warn!("No CAMetalLayer found, can't set EDR state");
             return;
         }
-
-        // Diagnostic: capture the current NSScreen headroom at the moment
-        // we configure the layer. On XDR displays this swings live with
-        // brightness and the ambient-light sensor, so correlating the
-        // configure-time value with visible EDR effect in the image is
-        // useful when debugging "no visible HDR" reports.
-        let headroom_now = current_edr_headroom(window);
 
         // wantsExtendedDynamicRangeContent: BOOL
         let _: () = msg_send![metal_layer, setWantsExtendedDynamicRangeContent: edr_active];
