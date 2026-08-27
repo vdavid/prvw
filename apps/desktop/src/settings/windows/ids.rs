@@ -88,6 +88,18 @@ pub const fn row(id: i32) -> Option<(usize, Slot)> {
     }
 }
 
+/// Whether the control with this id draws its text in the dimmer secondary ink.
+///
+/// A row's description and the number beside a trackbar, plus the File associations paragraph,
+/// which is a row description the page draws as its own furniture rather than as part of a row.
+/// Everything else is body text.
+pub const fn is_secondary(id: i32) -> bool {
+    if id == FILE_TYPE_EXPLANATION {
+        return true;
+    }
+    matches!(row(id), Some((_, Slot::Description | Slot::Value)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +154,28 @@ mod tests {
         ];
         for (index, id) in ids.iter().enumerate() {
             assert!(!ids[index + 1..].contains(id), "{id} is used twice");
+        }
+    }
+
+    /// Which text is grey. The File associations paragraph is the one that isn't a row's, and
+    /// it reads as one, so it takes the same ink.
+    #[test]
+    fn the_grey_text_is_the_descriptions_and_the_trackbar_values() {
+        assert!(is_secondary(control(3, Slot::Description)));
+        assert!(is_secondary(control(3, Slot::Value)));
+        assert!(is_secondary(FILE_TYPE_EXPLANATION));
+        for slot in [Slot::Control, Slot::Browse, Slot::Clear, Slot::Title] {
+            assert!(!is_secondary(control(3, slot)), "{slot:?}");
+        }
+        for id in [
+            TAB,
+            RESET,
+            REGISTER_FILE_TYPES,
+            OPEN_DEFAULT_APPS,
+            FILE_TYPE_LIST,
+            GROUP_BOX,
+        ] {
+            assert!(!is_secondary(id), "{id}");
         }
     }
 }

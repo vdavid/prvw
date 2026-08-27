@@ -3,9 +3,8 @@
 //!
 //! This is the only module here a Mac can't run, so it is deliberately thin. It decides nothing
 //! about what a page holds ([`model`]), where a control goes ([`layout`]), which id a control
-//! carries ([`ids`]), or what dark mode means (`platform::windows::dark_mode`, shared with the
-//! About box). It creates windows at the rects it's
-//! handed and forwards what they say.
+//! carries ([`ids`]), or what colour anything is painted (`crate::chrome`, shared with the About
+//! box). It creates windows at the rects it's handed and forwards what they say.
 //!
 //! ## The shape, and why
 //!
@@ -22,27 +21,28 @@
 //! - **Six pages, built once, shown and hidden.** Each is a child dialog with
 //!   `WS_EX_CONTROLPARENT`, so `IsDialogMessageW` walks into it for Tab navigation.
 //!
-//! ## What has never run
+//! ## What has run
 //!
-//! All of it. Nothing in this file has executed on Windows. Every call is against documented
-//! behaviour and the API shapes are checked by `./scripts/check.sh --check windows-cross`, but
-//! the runtime is unproven, so the logic worth being sure about lives in the pure modules.
+//! One session, on 2026-08-27, which found both of the painting gotchas in this directory's
+//! `CLAUDE.md`. Everything else is still only checked by `./scripts/check.sh --check
+//! windows-cross`, which sees API shapes and no runtime behaviour, so the logic worth being sure
+//! about lives in the pure modules.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    COLOR_GRAYTEXT, CreateFontIndirectW, DT_CALCRECT, DT_NOPREFIX, DT_WORDBREAK, DeleteObject,
-    DrawTextW, GetDC, GetSysColor, HDC, HFONT, HGDIOBJ, InvalidateRect, ReleaseDC, SelectObject,
-    SetBkColor, SetTextColor,
+    CreateFontIndirectW, DT_CALCRECT, DT_NOPREFIX, DT_WORDBREAK, DeleteObject, DrawTextW, GetDC,
+    HDC, HFONT, HGDIOBJ, InvalidateRect, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RedrawWindow,
+    ReleaseDC, SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    EnableThemeDialogTexture, ICC_BAR_CLASSES, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES,
-    INITCOMMONCONTROLSEX, InitCommonControlsEx, NMHDR, SetScrollInfo, TBM_SETPAGESIZE, TBM_SETPOS,
-    TBM_SETRANGE, TBM_SETTICFREQ, TBS_AUTOTICKS, TBS_HORZ, TCIF_TEXT, TCITEMW, TCM_ADJUSTRECT,
-    TCM_GETCURSEL, TCM_INSERTITEMW, TCM_SETCURSEL, TCN_SELCHANGE, TRACKBAR_CLASSW, WC_TABCONTROLW,
+    ICC_BAR_CLASSES, ICC_STANDARD_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
+    InitCommonControlsEx, NMHDR, SetScrollInfo, TBM_SETPAGESIZE, TBM_SETPOS, TBM_SETRANGE,
+    TBM_SETTICFREQ, TBS_AUTOTICKS, TBS_HORZ, TCIF_TEXT, TCITEMW, TCM_ADJUSTRECT, TCM_GETCURSEL,
+    TCM_INSERTITEMW, TCM_SETCURSEL, TCN_SELCHANGE, TRACKBAR_CLASSW, WC_TABCONTROLW,
 };
 use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi,
@@ -58,17 +58,19 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SCROLLINFO, SIF_ALL, SPI_GETNONCLIENTMETRICS, SW_ERASE, SW_HIDE, SW_INVALIDATE,
     SW_SCROLLCHILDREN, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, ScrollWindowEx, SendMessageW,
     SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORDLG, WM_CTLCOLORSTATIC, WM_DPICHANGED,
-    WM_HSCROLL, WM_NCDESTROY, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_SETTINGCHANGE, WM_VSCROLL,
-    WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_CONTROLPARENT,
-    WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORDLG, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX,
+    WM_CTLCOLORSTATIC, WM_DPICHANGED, WM_HSCROLL, WM_NCDESTROY, WM_NEXTDLGCTL, WM_NOTIFY,
+    WM_SETFONT, WM_SETTINGCHANGE, WM_VSCROLL, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
+    WS_CLIPSIBLINGS, WS_EX_CONTROLPARENT, WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    WS_VSCROLL,
 };
 use windows::core::{PCWSTR, w};
 
+use crate::chrome::{Ink, Theme};
 use crate::commands::{self, AppCommand};
 use crate::parity::setting_keys::SettingKey;
 use crate::parity::{Audit, Mismatch, Platform};
-use crate::platform::windows::dark_mode::{self, Theme};
+use crate::platform::windows::dark_mode;
 use crate::platform::windows::msg_hook;
 use crate::settings::Settings;
 
@@ -89,9 +91,6 @@ const SS_RIGHT: i32 = 0x0002;
 const SS_NOPREFIX: i32 = 0x0080;
 /// `TBM_GETPOS`, which is `WM_USER + 0`.
 const TBM_GETPOS: u32 = 0x0400;
-/// `ETDT_ENABLETAB` (`ETDT_ENABLE | ETDT_USETABTEXTURE`), from `uxtheme.h`. It's what makes a
-/// child dialog on a tab control paint the tab body's background rather than a flat grey.
-const ETDT_ENABLETAB: u32 = 0x0000_0006;
 
 /// The dialog's caption.
 const TITLE: &str = "Settings";
@@ -136,8 +135,8 @@ struct SettingsDialog {
     dcp_field: Option<HWND>,
     font: HFONT,
     /// Which way it's painting right now, so a `WM_SETTINGCHANGE` can tell a real switch from
-    /// the many that aren't one. The brush isn't held: `dark_mode::background_brush` owns both
-    /// of them for the life of the process, so there's nothing here to free.
+    /// the many that aren't one. No brush is held: `dark_mode::background_brush` owns one per
+    /// surface per theme for the life of the process, so there's nothing here to free.
     theme: Theme,
     current: usize,
 }
@@ -420,8 +419,6 @@ fn build_page(
             area.height,
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
-        // Paint the tab body's own background rather than a flat grey.
-        let _ = EnableThemeDialogTexture(hwnd, ETDT_ENABLETAB);
     }
     dark_mode::apply_to_window(hwnd, theme);
 
@@ -1009,7 +1006,8 @@ unsafe extern "system" fn dialog_proc(
             }
             0
         }
-        WM_CTLCOLORDLG | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => paint_control(wparam, lparam),
+        WM_CTLCOLORDLG | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT
+        | WM_CTLCOLORLISTBOX => paint_control(wparam, lparam),
         // The monitor's scale changed, or the dialog was dragged to one at a different scale.
         // Everything on it was sized for the old DPI, and it's all built from data, so the
         // honest answer is to build it again rather than to walk it resizing controls.
@@ -1082,58 +1080,42 @@ unsafe extern "system" fn page_proc(
             scrolled(hwnd, code);
             0
         }
-        WM_CTLCOLORDLG | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => paint_control(wparam, lparam),
+        WM_CTLCOLORDLG | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN | WM_CTLCOLOREDIT
+        | WM_CTLCOLORLISTBOX => paint_control(wparam, lparam),
         _ => 0,
     }
 }
 
-/// The colour a description is drawn in: dimmer than body text, still legible on the window's
-/// own background.
+/// Answer a `WM_CTLCOLOR*`, whichever of them it was.
 ///
-/// `dark_mode::Theme` names two colours and a settings row wants a third. Light asks the system
-/// rather than naming a grey, which is what carries a high-contrast scheme's own disabled colour
-/// through; `theme_for` answers `Light` there, so this is the path high contrast takes. Dark has
-/// to be ours, and it's a grey that reads as secondary against that theme's `0x202020`.
-fn secondary_text(theme: Theme) -> COLORREF {
-    match theme {
-        // SAFETY: a constant index, and the call has no failure mode.
-        Theme::Light => COLORREF(unsafe { GetSysColor(COLOR_GRAYTEXT) }),
-        Theme::Dark => COLORREF(0x00a0_a0a0),
-    }
-}
-
-/// Paint a control's text and background, which comctl32 won't do for us in dark mode and
-/// wouldn't grey a description in either.
+/// The dialog gives one reply to all five it hears (the sixth, `WM_CTLCOLORSCROLLBAR`, is for
+/// scroll-bar controls, and the RAW page's bar is a window's own), because the message is the
+/// wrong thing to key on: a read-only edit sends `WM_CTLCOLORSTATIC` and arrives indistinguishable from a
+/// label. `dark_mode::paint_control` asks the control's class instead. All this adds is which
+/// ink the text takes, which is the one thing the class can't say: a description and the title
+/// above it are both statics, and only one of them is grey.
 fn paint_control(wparam: WPARAM, lparam: LPARAM) -> isize {
     let Some(theme) = with_dialog(|dialog| dialog.theme) else {
         return 0;
     };
-    let (background, body_text) = theme.colors();
+    // SAFETY: `lParam` on a `WM_CTLCOLOR*` is the control's own window, or the dialog itself for
+    // `WM_CTLCOLORDLG`.
     let control = HWND(lparam.0 as *mut c_void);
-    // SAFETY: `lParam` on a `WM_CTLCOLOR*` is the control's own window, or null for the dialog.
     let id = if control.is_invalid() {
         0
     } else {
+        // SAFETY: a live window of ours. A window that isn't a control answers 0, which is
+        // none of our rows.
         unsafe { GetDlgCtrlID(control) }
     };
-    let secondary = matches!(
-        ids::row(id),
-        Some((_, Slot::Description)) | Some((_, Slot::Value))
-    );
-    let text = if secondary {
-        secondary_text(theme)
+    let ink = if ids::is_secondary(id) {
+        Ink::Secondary
     } else {
-        body_text
+        Ink::Body
     };
-
-    let hdc = HDC(wparam.0 as *mut c_void);
     // SAFETY: `wParam` on a `WM_CTLCOLOR*` is the device context the control is about to draw
     // into, valid for the duration of the message.
-    unsafe {
-        SetTextColor(hdc, text);
-        SetBkColor(hdc, background);
-    }
-    dark_mode::background_brush(theme).0 as isize
+    dark_mode::paint_control(HDC(wparam.0 as *mut c_void), control, theme, ink)
 }
 
 /// Show one page and hide the rest. `TCM_SETCURSEL` doesn't notify, so this is called both from
@@ -1482,10 +1464,18 @@ fn retheme() {
             dialog.theme = theme;
         }
     });
-    dark_mode::apply_to_window(hwnd, theme);
-    // SAFETY: a live window of ours.
+    dark_mode::apply_to_tree(hwnd, theme);
+    // `RDW_ALLCHILDREN`, because the dialog and its pages are `WS_CLIPCHILDREN`: invalidating
+    // the dialog alone repaints the background the controls sit on and leaves every control
+    // still painted the old way.
+    // SAFETY: a live window of ours; both optional arguments mean "the whole window".
     unsafe {
-        let _ = InvalidateRect(Some(hwnd), None, true);
+        let _ = RedrawWindow(
+            Some(hwnd),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+        );
     }
 }
 

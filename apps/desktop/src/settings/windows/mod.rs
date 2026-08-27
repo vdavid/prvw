@@ -26,9 +26,10 @@
 //!   creates one control per row, and pumps `WM_COMMAND`, `WM_HSCROLL`, and `WM_VSCROLL` back
 //!   through [`model::apply`].
 //!
-//! Dark mode isn't here: `platform::windows::dark_mode` owns it for every Win32 window Prvw
-//! puts up, this dialog and the About box alike, and its `theme_for` is pure so the decision is
-//! asserted rather than eyeballed.
+//! Painting isn't here either: `crate::chrome` holds the colour policy for every Win32 window
+//! Prvw puts up, this dialog and the About box alike, and `platform::windows::dark_mode` calls
+//! Win32 with it. `chrome` compiles everywhere, so which colour a control gets is asserted on a
+//! Mac rather than eyeballed on a Windows box.
 //!
 //! Everything but `dialog` compiles on every platform and is tested on macOS. Nothing here has
 //! ever executed on Windows, so that's where the correctness lives, and the FFI layer is kept

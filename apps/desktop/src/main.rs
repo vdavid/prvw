@@ -9,6 +9,12 @@
 
 // Infrastructure
 mod app;
+// The colour policy behind every Win32 window Prvw puts up: which theme, which surface, which
+// ink. Pure, so a Mac can assert what a Windows user will see; `platform::windows::dark_mode` is
+// the half that calls Win32. macOS and Linux never paint a Win32 window, so on those two the
+// module is only its own tests' subject.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod chrome;
 // Windows' clipboard formats are byte layouts, so they're written and tested here rather than
 // behind a `#[cfg]` (`clipboard.rs` says why). macOS builds `NSPasteboard` objects instead and
 // Linux has no clipboard yet, so on those two the module is only its own tests' subject.

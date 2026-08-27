@@ -14,26 +14,22 @@
 //! or a failed call leaves the window light rather than half-painted, and nothing above has to
 //! handle an error.
 //!
-//! ## What decides the theme
+//! ## What decides the theme, and what decides the colours
 //!
-//! [`theme_for`] is the whole decision, and it's pure so it can be asserted rather than
-//! eyeballed. Three inputs, in priority order:
-//!
-//! 1. **High contrast wins outright.** It's an accessibility setting, and overriding a person's
-//!    contrast choice with our idea of a nice dark grey is exactly the wrong move.
-//! 2. **The OS build**, because the ordinals only mean what we think they mean from 18362 on.
-//!    Below that we stay light. ❌ Don't copy `win32-darkmode`'s exact-match build allowlist:
-//!    it refuses 19045, which is Prvw's actual floor.
-//! 3. **`AppsUseLightTheme`**, the value PowerToys, WPF, and WinForms all read.
-//!    `ShouldAppsUseDarkMode` (ordinal 132) is the alternative and it has reports of answering
-//!    `true` unconditionally on Windows 11 23H2, so the registry is the more reliable source.
+//! Neither is here. `crate::chrome` owns both, because both are pure and this file can't be run
+//! from a Mac: [`crate::chrome::theme_for`] is the three-input decision about light versus dark,
+//! and [`crate::chrome::Theme::background`] and `text` are the colour table. This module reads
+//! the three inputs out of the system, turns a [`Color`] into a `COLORREF`, keeps the brushes,
+//! and answers `WM_CTLCOLOR*`.
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::{COLORREF, HWND};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM};
 use windows::Win32::Graphics::Gdi::{
-    COLOR_BTNFACE, COLOR_BTNTEXT, CreateSolidBrush, GetSysColor, GetSysColorBrush, HBRUSH,
+    COLOR_BTNFACE, COLOR_BTNTEXT, COLOR_GRAYTEXT, COLOR_WINDOW, COLOR_WINDOWTEXT, CreateSolidBrush,
+    GetSysColor, GetSysColorBrush, HBRUSH, HDC, OPAQUE, SYS_COLOR_INDEX, SetBkColor, SetBkMode,
+    SetTextColor, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
@@ -44,78 +40,31 @@ use windows::Win32::System::Registry::{
 use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::Controls::SetWindowTheme;
 use windows::Win32::UI::WindowsAndMessaging::{
-    SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    EnumChildWindows, GetClassNameW, SPI_GETHIGHCONTRAST, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SystemParametersInfoW,
 };
 use windows::core::{BOOL, PCSTR, PCWSTR, w};
 
-/// The first build where ordinal 135 is `SetPreferredAppMode(PreferredAppMode)` rather than
-/// 17763's `AllowDarkModeForApp(BOOL)`. Below it, we don't try.
-const FIRST_DARK_MODE_BUILD: u32 = 18362;
+use crate::chrome::{self, Color, FIRST_DARK_MODE_BUILD, Ink, Surface, SystemColor, Theme};
 
 /// `PreferredAppMode::AllowDark`: follow the system, and let a window opt in per window.
 const ALLOW_DARK: i32 = 1;
 
-/// Which way a window paints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Theme {
-    Light,
-    Dark,
-}
-
-impl Theme {
-    /// The theme name `SetWindowTheme` takes for a control. `DarkMode_Explorer` is reported to
-    /// get about 95% of the way, with poor highlight contrast on Windows 11; the alternatives
-    /// are per-control-class (`DarkMode_CFD` for combos, `DarkMode_ItemsView::ListView`) and
-    /// this box has neither.
-    fn control_theme(self) -> PCWSTR {
-        match self {
-            Theme::Light => w!("Explorer"),
-            Theme::Dark => w!("DarkMode_Explorer"),
-        }
-    }
-
-    /// Window background and body text, as `COLORREF` (`0x00BBGGRR`).
-    ///
-    /// Light asks the system rather than naming a colour, and that's what makes high contrast
-    /// work: [`theme_for`] answers `Light` there, and a high-contrast scheme's own colours come
-    /// back from `GetSysColor`. Painting a hard-coded black on white would go straight over the
-    /// person's accessibility setting, which is the opposite of respecting it.
-    ///
-    /// The dark pair is Windows 11's own dialog grey and near-white rather than pure black on
-    /// pure white: comctl32's dark assets are drawn against that grey, and a black window behind
-    /// them reads as two dark themes touching.
-    pub fn colors(self) -> (COLORREF, COLORREF) {
-        match self {
-            // SAFETY: two constant indices, and the call has no failure mode.
-            Theme::Light => unsafe {
-                (
-                    COLORREF(GetSysColor(COLOR_BTNFACE)),
-                    COLORREF(GetSysColor(COLOR_BTNTEXT)),
-                )
-            },
-            Theme::Dark => (COLORREF(0x0020_2020), COLORREF(0x00F0_F0F0)),
-        }
-    }
-}
-
-/// Which theme a window should paint in, given the three things the system can tell us.
-///
-/// `apps_use_light_theme` is `None` when the value isn't there at all, which is how a fresh
-/// profile looks and means light.
-pub fn theme_for(build: u32, apps_use_light_theme: Option<u32>, high_contrast: bool) -> Theme {
-    if high_contrast || build < FIRST_DARK_MODE_BUILD {
-        return Theme::Light;
-    }
-    match apps_use_light_theme {
-        Some(0) => Theme::Dark,
-        _ => Theme::Light,
+/// The theme name `SetWindowTheme` takes for a control. `DarkMode_Explorer` is reported to get
+/// about 95% of the way, with poor highlight contrast on Windows 11; the alternatives are
+/// per-control-class (`DarkMode_CFD` for combos, `DarkMode_ItemsView::ListView`) and this box
+/// has neither.
+fn control_theme(theme: Theme) -> PCWSTR {
+    match theme {
+        Theme::Light => w!("Explorer"),
+        Theme::Dark => w!("DarkMode_Explorer"),
     }
 }
 
 /// What this machine is set to right now. Read per window open, so a person who flips the
 /// system theme and reopens the box gets the new one.
 pub fn current_theme() -> Theme {
-    theme_for(os_build(), apps_use_light_theme(), high_contrast_on())
+    chrome::theme_for(os_build(), apps_use_light_theme(), high_contrast_on())
 }
 
 /// Let comctl32 render dark in this process. Idempotent, and the first thing any dark window
@@ -151,7 +100,36 @@ pub fn apply_to_window(hwnd: HWND, theme: Theme) {
         let _ = unsafe { allow_dark_mode_for_window(hwnd, BOOL::from(theme == Theme::Dark)) };
     }
     // SAFETY: documented API. A null third argument means "no sub-app-name override".
-    let _ = unsafe { SetWindowTheme(hwnd, theme.control_theme(), None) };
+    let _ = unsafe { SetWindowTheme(hwnd, control_theme(theme), None) };
+}
+
+/// Dress a window and every control under it.
+///
+/// [`apply_to_window`] is per window, and that's enough while a window is being built, because
+/// every control is dressed as it's created. A live theme switch is the case that needs this
+/// one: the controls already exist, and a dialog's pages sit between them and the frame.
+pub fn apply_to_tree(hwnd: HWND, theme: Theme) {
+    apply_to_window(hwnd, theme);
+    // SAFETY: a live window of ours, and a callback that only reads back the flag this call
+    // put in the `LPARAM`.
+    unsafe {
+        let _ = EnumChildWindows(
+            Some(hwnd),
+            Some(dress_child),
+            LPARAM(matches!(theme, Theme::Dark) as isize),
+        );
+    }
+}
+
+/// `EnumChildWindows`' callback: one control, dressed the way the `LPARAM` says.
+unsafe extern "system" fn dress_child(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let theme = if lparam.0 == 0 {
+        Theme::Light
+    } else {
+        Theme::Dark
+    };
+    apply_to_window(hwnd, theme);
+    true.into()
 }
 
 /// One export of `uxtheme.dll`, by ordinal. `None` when the DLL or the ordinal isn't there,
@@ -190,6 +168,10 @@ fn os_build() -> u32 {
 }
 
 /// `HKCU\…\Themes\Personalize\AppsUseLightTheme`. `None` when it isn't set.
+///
+/// It's the value PowerToys, WPF, and WinForms all read. `ShouldAppsUseDarkMode` (ordinal 132)
+/// is the alternative and it has reports of answering `true` unconditionally on Windows 11
+/// 23H2, so the registry is the more reliable source.
 fn apps_use_light_theme() -> Option<u32> {
     registry_dword(
         HKEY_CURRENT_USER,
@@ -266,58 +248,96 @@ fn registry_string(
     (end > 0).then(|| String::from_utf16_lossy(&buffer[..end]))
 }
 
-/// What to fill a window's background with: `WM_ERASEBKGND` paints with it, and the
+/// What `GetSysColor` and `GetSysColorBrush` call each of `chrome`'s colour jobs.
+fn system_index(color: SystemColor) -> SYS_COLOR_INDEX {
+    match color {
+        SystemColor::ButtonFace => COLOR_BTNFACE,
+        SystemColor::ButtonText => COLOR_BTNTEXT,
+        SystemColor::Window => COLOR_WINDOW,
+        SystemColor::WindowText => COLOR_WINDOWTEXT,
+        SystemColor::GrayText => COLOR_GRAYTEXT,
+    }
+}
+
+/// One of `chrome`'s colours as the `COLORREF` Win32 wants.
+pub fn resolve(color: Color) -> COLORREF {
+    match color {
+        // SAFETY: a constant index, and the call has no failure mode.
+        Color::System(system) => COLORREF(unsafe { GetSysColor(system_index(system)) }),
+        Color::Fixed(value) => COLORREF(value),
+    }
+}
+
+/// What a surface's background is filled with: `WM_ERASEBKGND` paints with it, and the
 /// `WM_CTLCOLOR*` reply hands it back so a control's own background matches.
 ///
-/// Light hands back the system's dialog brush, which Windows owns and keeps current, so a
-/// high-contrast scheme or a custom colour arrives without us asking for it. Dark has to be
-/// ours, and it's made once and never freed: the process outlives every window painting with it.
-pub fn background_brush(theme: Theme) -> HBRUSH {
+/// ❌ **Never delete one of these.** Light hands back a system brush, which Windows owns and
+/// keeps current, so a high-contrast scheme or a custom colour arrives without us asking for it.
+/// Dark has to be ours, and each is made once and never freed: the process outlives every window
+/// painting with it.
+pub fn background_brush(theme: Theme, surface: Surface) -> HBRUSH {
     if theme == Theme::Light {
-        // SAFETY: a constant index. The brush belongs to the system and must not be deleted,
-        // which is exactly what every caller does with it.
-        return unsafe { GetSysColorBrush(COLOR_BTNFACE) };
+        let Color::System(system) = theme.background(surface) else {
+            // `the_light_theme_never_names_a_colour` is what makes this unreachable.
+            return HBRUSH::default();
+        };
+        // SAFETY: a constant index. The brush belongs to the system and must not be deleted.
+        return unsafe { GetSysColorBrush(system_index(system)) };
     }
-    static DARK: OnceLock<isize> = OnceLock::new();
-    let brush = *DARK.get_or_init(|| {
+    static DARK_DIALOG: OnceLock<isize> = OnceLock::new();
+    static DARK_FIELD: OnceLock<isize> = OnceLock::new();
+    let cell = match surface {
+        Surface::Dialog => &DARK_DIALOG,
+        Surface::Field => &DARK_FIELD,
+    };
+    let brush = *cell.get_or_init(|| {
         // SAFETY: a colour in, a brush out. A failed call answers with a null brush, which
         // Windows reads as "no brush" rather than misbehaving.
-        let brush = unsafe { CreateSolidBrush(Theme::Dark.colors().0) };
+        let brush = unsafe { CreateSolidBrush(resolve(theme.background(surface))) };
         brush.0 as isize
     });
     HBRUSH(brush as *mut c_void)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// High contrast is an accessibility setting and it beats everything, including an explicit
-    /// dark preference on a build that could honour it.
-    #[test]
-    fn high_contrast_stays_light() {
-        assert_eq!(theme_for(22631, Some(0), true), Theme::Light);
-        assert_eq!(theme_for(19045, Some(0), true), Theme::Light);
+/// Answer a `WM_CTLCOLOR*`: colour the device context Windows is about to draw the control with,
+/// and hand back the brush it should fill the control's background with.
+///
+/// All six messages get the same reply, because the message is the wrong thing to key on: a
+/// read-only edit sends `WM_CTLCOLORSTATIC` and arrives indistinguishable from a label. The
+/// control's own class is what decides its surface (`chrome::surface_for_class`), and `control`
+/// is the message's `lParam` — the control's window, or the dialog itself for
+/// `WM_CTLCOLORDLG`.
+///
+/// The return is an `isize` rather than an `HBRUSH` because that's what a window procedure hands
+/// back, and because a caller that forgot to return it would paint nothing.
+pub fn paint_control(hdc: HDC, control: HWND, theme: Theme, ink: Ink) -> isize {
+    let surface = chrome::surface_for_class(&class_name(control));
+    // Text on the window is drawn transparently over a background the brush has already filled,
+    // which is what keeps a label from stamping a rectangle of its own onto it. A field draws
+    // its text opaquely instead, so a repainted run erases what was under it. ❌ Neither is
+    // droppable as a no-op: `OPAQUE` is the default of a *fresh* device context, and Windows
+    // hands the same one to the next control it asks about.
+    let mode = match surface {
+        Surface::Dialog => TRANSPARENT,
+        Surface::Field => OPAQUE,
+    };
+    // SAFETY: `hdc` is the device context Windows passed with the message, valid for the
+    // duration of it. None of the three calls can fail in a way worth handling.
+    unsafe {
+        SetTextColor(hdc, resolve(theme.text(surface, ink)));
+        SetBkColor(hdc, resolve(theme.background(surface)));
+        SetBkMode(hdc, mode);
     }
+    background_brush(theme, surface).0 as isize
+}
 
-    /// 19045 is Prvw's floor and it gets dark mode. This is the case `win32-darkmode`'s
-    /// exact-match build list gets wrong, and the reason we don't copy it.
-    #[test]
-    fn the_support_floor_gets_dark_mode() {
-        assert_eq!(theme_for(19045, Some(0), false), Theme::Dark);
-        assert_eq!(theme_for(19045, Some(1), false), Theme::Light);
-    }
-
-    /// Below 18362 the ordinal means something else, so we don't touch it.
-    #[test]
-    fn older_builds_stay_light_whatever_the_preference() {
-        assert_eq!(theme_for(17763, Some(0), false), Theme::Light);
-        assert_eq!(theme_for(0, Some(0), false), Theme::Light);
-    }
-
-    /// A profile that never set the value is a light profile.
-    #[test]
-    fn a_missing_preference_means_light() {
-        assert_eq!(theme_for(22631, None, false), Theme::Light);
-    }
+/// A window's class name. Empty for a handle Windows doesn't recognise, which
+/// `chrome::surface_for_class` reads as the window's own surface.
+fn class_name(hwnd: HWND) -> String {
+    // Longer than every class Prvw creates or hosts; the call truncates rather than failing,
+    // and a truncated name simply doesn't match, which lands on the safe surface.
+    let mut buffer = [0u16; 64];
+    // SAFETY: the length is the buffer's, and the call writes no more than that.
+    let written = unsafe { GetClassNameW(hwnd, &mut buffer) };
+    String::from_utf16_lossy(&buffer[..written.max(0) as usize])
 }

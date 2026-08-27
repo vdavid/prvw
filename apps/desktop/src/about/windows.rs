@@ -29,8 +29,8 @@ use std::ffi::c_void;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
-    CreateFontIndirectW, DeleteObject, FW_SEMIBOLD, FillRect, HDC, HFONT, InvalidateRect,
-    SetBkColor, SetTextColor, UpdateWindow,
+    CreateFontIndirectW, DeleteObject, FW_SEMIBOLD, FillRect, HDC, HFONT, RDW_ALLCHILDREN,
+    RDW_ERASE, RDW_INVALIDATE, RedrawWindow, UpdateWindow,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
@@ -46,7 +46,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, HSTRING, PCWSTR, w};
 
 use super::content::AboutContent;
-use crate::platform::windows::dark_mode::{self, Theme};
+use crate::chrome::{Ink, Surface, Theme};
+use crate::platform::windows::dark_mode;
 use crate::platform::windows::msg_hook;
 
 /// The Close button. `IDOK` rather than a private id so `IsDialogMessageW` fires it on Enter,
@@ -640,21 +641,23 @@ extern "system" fn window_proc(
                 FillRect(
                     HDC(wparam.0 as *mut c_void),
                     &rect,
-                    dark_mode::background_brush(theme),
+                    dark_mode::background_brush(theme, Surface::Dialog),
                 );
             }
             return LRESULT(1);
         }
+        // The box has statics, push buttons, and a `SysLink`, and they all sit on the window
+        // itself. `dark_mode::paint_control` decides that from the class rather than from the
+        // message, which is what keeps this box and the settings dialog painting one way.
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
-            let theme = current_theme();
-            let (background, text) = theme.colors();
-            // SAFETY: `wparam` is the `HDC` Windows is about to draw the control with.
-            unsafe {
-                let hdc = HDC(wparam.0 as *mut c_void);
-                SetTextColor(hdc, text);
-                SetBkColor(hdc, background);
-            }
-            return LRESULT(dark_mode::background_brush(theme).0 as isize);
+            // SAFETY: `wparam` is the `HDC` Windows is about to draw the control with, and
+            // `lparam` is the control itself; both are valid for the message.
+            return LRESULT(dark_mode::paint_control(
+                HDC(wparam.0 as *mut c_void),
+                HWND(lparam.0 as *mut c_void),
+                current_theme(),
+                Ink::Body,
+            ));
         }
         WM_DPICHANGED => {
             // Windows suggests where the window should go on the new monitor. Taking it keeps
@@ -763,12 +766,18 @@ fn retheme(hwnd: HWND) {
             window.theme = theme;
         }
     });
-    dark_mode::apply_to_window(hwnd, theme);
+    dark_mode::apply_to_tree(hwnd, theme);
     set_caption_theme(hwnd, theme);
-    // SAFETY: a live window; `true` asks for the background to be erased, which is what picks
-    // up the new brush.
+    // `RDW_ALLCHILDREN`: invalidating the window alone repaints the background the controls sit
+    // on and leaves every control still painted the old way.
+    // SAFETY: a live window; both optional arguments mean "the whole window".
     unsafe {
-        let _ = InvalidateRect(Some(hwnd), None, true);
+        let _ = RedrawWindow(
+            Some(hwnd),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+        );
     }
 }
 

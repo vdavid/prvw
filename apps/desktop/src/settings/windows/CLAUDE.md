@@ -4,9 +4,10 @@ The Win32 settings dialog: a modeless `SysTabControl32` with six tabs, one Close
 window (`../window.rs`) is its counterpart, and the two share the model underneath and nothing above it. Design:
 [windows-ui-design.md](../../../../docs/specs/windows-ui-design.md), "The settings surface".
 
-**Nothing in this directory has ever run on Windows.** `dialog.rs` is compile-verified only. That shapes the whole
-layout of the module: everything decidable without Win32 is decided in a module that compiles on every platform and is
-tested from macOS, and `dialog.rs` creates windows at the rects it's handed without deciding anything.
+**`dialog.rs` has run on Windows exactly once**, on 2026-08-27, and the two gotchas below are what that one run found.
+Everything else here is still compile-verified only. That shapes the whole layout of the module: everything decidable
+without Win32 is decided in a module that compiles on every platform and is tested from macOS, and `dialog.rs` creates
+windows at the rects it's handed without deciding anything.
 
 | File            | Purpose                                                                                                                              | Runs on a Mac |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------- |
@@ -15,7 +16,6 @@ tested from macOS, and `dialog.rs` creates windows at the rects it's handed with
 | `file_types.rs` | The `HKCU` writes behind "Register Prvw's file types", and the extension list the page shows                                         | yes           |
 | `ids.rs`        | `WM_COMMAND` id ↔ (row, part). A collision here is a click changing the wrong setting                                                | yes           |
 | `template.rs`   | The in-memory `DLGTEMPLATE` bytes, DWORD-aligned                                                                                     | yes           |
-| `theme.rs`      | Dark mode: the two rules are pure, the `uxtheme` ordinals under them are Windows-only                                                | half          |
 | `dialog.rs`     | The Win32 layer: create the windows, forward the messages                                                                            | no            |
 
 ## Decision: every user-visible string lives in `model.rs`
@@ -66,6 +66,34 @@ that writes there either fails or gets reset by the OS with a notification. What
 stays `Present`: the capability is reachable, only the surface differs. `file_types.rs`'s
 `nothing_touches_the_user_choice` is the test that keeps a future contributor honest about it.
 
+## Gotcha: a read-only edit sends `WM_CTLCOLORSTATIC`, so the message can't pick the colour
+
+**Gotcha:** the six `WM_CTLCOLOR*` messages look like they name the control class, and they don't. **A read-only or
+disabled edit sends `WM_CTLCOLORSTATIC`**, exactly like a label. The dialog's two read-only edits are the file-extension
+list and the custom DCP folder field, so a handler that switched on the message painted both with the window's own
+colour instead of a field's — a grey slab where a text area should be, which is half of what David reported the first
+time this dialog ran.
+
+**Why it matters beyond the two fields:** the same handler is the only thing that colours a label, a checkbox's text, a
+group box, or a trackbar in dark mode, so it can't just be skipped. `dark_mode::paint_control` answers all of them the
+same way and asks `chrome::surface_for_class` which surface the control sits on, which makes the message irrelevant.
+This dialog adds only the ink, from `ids::is_secondary`.
+
+## Gotcha: `EnableThemeDialogTexture` and a `WM_CTLCOLOR*` handler can't both win
+
+**Gotcha:** a child dialog on a tab control can opt into the tab body's own background with
+`EnableThemeDialogTexture(hwnd, ETDT_ENABLETAB)`, and `uxtheme` paints it through the page's erase — where a
+`WM_CTLCOLORSTATIC` handler that returns a brush can't reach it. So the page came up in the tab body's near-white and
+every label on it came up in `COLOR_BTNFACE` grey, one grey rectangle per label. That's the other half of the first
+Windows report.
+
+**Why we dropped the texture rather than working with it:** it only exists for the light theme. `uxtheme` would paint
+the light tab body under a dark dialog, so keeping it means light and dark diverge at the one place they most need to
+agree, and there is no supported way to hand a themed brush back from a handler that also needs to set a text colour.
+Every surface on the dialog now comes from `chrome::Theme::background`, which is one table for both themes, and a grey
+tab page is what Windows' own hand-rolled tabbed dialogs look like anyway. ❌ Don't reintroduce `ETDT_ENABLETAB` without
+solving the dark half of it first.
+
 ## Decision: a scale change rebuilds the dialog
 
 **Decision:** `WM_DPICHANGED` posts `WM_REBUILD_FOR_DPI` to the dialog, which closes it and opens it again on the same
@@ -107,7 +135,8 @@ Everything `dialog.rs` does. In rough order of how likely a surprise is:
 
 - Whether `with_msg_hook` plus `IsDialogMessageW` composes cleanly. We found no other Rust project doing this.
 - Whether `CreateDialogIndirectParamW` with a zero-control template and a later `SetWindowPos` gives the right frame.
-- How much `WM_CTLCOLOR*` has to cover before the dark theme looks finished. The `uxtheme` ordinals themselves are the
-  About box's problem too, so one Windows session checks both.
+- How much `WM_CTLCOLOR*` has to cover before the dark theme looks finished. Light is answered now (the two gotchas
+  above); dark has still never been seen, and the tab control itself is the part most likely to stay light, because
+  comctl32 doesn't dark-render `SysTabControl32` and we don't own-draw it.
 - Whether `ScrollWindowEx` with `SW_SCROLLCHILDREN` scrolls the RAW page cleanly, or leaves trails under a trackbar.
 - Whether the `WM_DPICHANGED` rebuild is quick enough to look like a resize rather than a flicker.

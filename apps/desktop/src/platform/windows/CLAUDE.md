@@ -7,7 +7,7 @@ monitor work area), and anything with real substance gets its own module here.
 | File                | Purpose                                                                                                                                       |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `clipboard.rs`      | Copy the current image to the clipboard as the original file plus sRGB pixels (Edit → Copy, Ctrl+C, right-click)                              |
-| `dark_mode.rs`      | Dark chrome for our Win32 windows: the `uxtheme` ordinals, and the pure decision about when to use them                                       |
+| `dark_mode.rs`      | Dark chrome for our Win32 windows: the `uxtheme` ordinals, and the Win32 half of `crate::chrome`'s colour policy                              |
 | `msg_hook.rs`       | The one hook in winit's message pump: display changes, menu accelerators, and the seam the About box and the settings dialog register through |
 | `print.rs`          | File → Print: `PrintDlgW` on a worker thread, then the image drawn onto one page with GDI                                                     |
 | `ui_common.rs`      | The sRGB re-decode Copy and Print share                                                                                                       |
@@ -169,8 +169,20 @@ refuses 19045 — Prvw's actual support floor.
 PowerToys, WPF, and WinForms read; `ShouldAppsUseDarkMode` (ordinal 132) has reports of answering `true` unconditionally
 on Windows 11 23H2.
 
-`about::windows` is the first caller. M4's settings dialog is the next one, and it should use this module rather than
-growing its own.
+It lives in `crate::chrome` rather than here, along with the colour table, because neither needs Win32 and this file
+can't be run from a Mac. `dark_mode` is the half that reads the three inputs out of the system, turns a `chrome::Color`
+into a `COLORREF`, keeps the brushes, and answers `WM_CTLCOLOR*`.
+
+## Decision: one `WM_CTLCOLOR*` reply, keyed on the control's class
+
+**Decision:** `dark_mode::paint_control` answers every `WM_CTLCOLOR*` the same way. It reads the control's window class
+and asks `chrome::surface_for_class` which of the two surfaces it sits on, and the caller supplies only the ink (body,
+or the dimmer secondary). The About box and the settings dialog both go through it.
+
+**Why:** the message looks like it names the control class and doesn't. **A read-only or disabled edit sends
+`WM_CTLCOLORSTATIC`**, so a handler that switches on the message paints a text field with the window's own colour. That
+shipped, and it's what David saw the first time Settings ran on Windows: a grey slab where the file-extension list
+should have had a field's background. Keying on the class makes the message irrelevant and the mistake unrepeatable.
 
 ## The first dialog through the hook is the About box
 

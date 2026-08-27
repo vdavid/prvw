@@ -11,6 +11,7 @@ src/
 │
 │   Infrastructure:
 ├── app.rs + app/            App struct, ApplicationHandler, command dispatcher, shared-state snapshot
+├── chrome.rs                What colour every Win32 window of ours paints (theme, surface, ink), pure so a Mac can assert it
 ├── clipboard.rs             The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`), pure and testable anywhere
 ├── commands.rs              AppCommand enum + global EventLoopProxy
 ├── input.rs                 Maps keys/QA keys → AppCommand

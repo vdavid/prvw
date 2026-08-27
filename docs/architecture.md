@@ -16,6 +16,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | --------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `main.rs`                   | Thin entry: CLI, logger, event-loop setup                                                             |
 | `app.rs` + `app/`           | `App`, `ApplicationHandler`, command dispatcher, `SharedAppState`                                     |
+| `chrome.rs`                 | What colour every Win32 window of ours paints: theme, surface, ink, and the high-contrast rule        |
 | `clipboard.rs`              | The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`)                   |
 | `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                                                           |
 | `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce + off-thread re-scan lister      |
