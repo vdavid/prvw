@@ -855,9 +855,9 @@ two sit near the end only because they're smaller.
       `docs/notes/directory-index-lookup.md`. Opening a photo from the middle of a 5,000-image folder went from 29 ms to
       0.09 ms on local APFS; the per-entry scan is kept as the fallback for a symlink into another folder. The Windows
       and SMB argument in that note is a syscall count, not a measurement, and says so.
-    - **Still open, for M5:** `reveal_path_chain`'s ancestor walk uses `Path::ancestors`, which splits with the HOST's
-      separators, so its Windows shapes still can only be tested from a Windows host. Its two comparisons are on the
-      policy; the walk isn't.
+    - **Finished in M5:** `reveal_path_chain`'s ancestor walk is on the policy too, through
+      `PathPolicy::ancestors` and `PathPolicy::component_count`, so its Windows shapes (drive roots, `\\?\` spellings,
+      NAS shares, NTFS casing) are all asserted from a Mac.
 11. **Give the QA screenshot tool a Windows path.** `qa/mcp.rs:803` gates `screenshot_window`, which shells out to
     `/usr/sbin/screencapture` at `:827`. Either add a `PrintWindow` / `BitBlt` implementation, or do a **wgpu surface
     readback**, which would be portable and arguably better than either native path. Without this, agents can't do

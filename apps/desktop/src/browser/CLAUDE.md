@@ -80,14 +80,15 @@ path" can't expand synchronously — there'd be no children yet. Instead it's a 
 
 - `tree_model::reveal_path_chain(roots, target)` (pure, tested) computes the root-to-target path list: the **root** is
   the longest-prefix `Root` match (a path under home reveals under Home, not the `/` volume), then every intermediate
-  directory, ending at `target`. `None` when no root contains `target`. Both comparisons go through `crate::paths`, so
-  on Windows a canonical `\\?\C:\Users\dave\pics` reveals under the `C:\` row a drive enumeration produced, and a
-  `\\?\UNC\naspi\photos\...` reveals under a `\\naspi\photos` root. The chain's first element is the root's own
+  directory, ending at `target`. `None` when no root contains `target`. The chain's first element is the root's own
   spelling, never the target's, because the caller looks rows up by path.
 
-  **Still M5's to finish**: the ancestor walk itself uses `Path::ancestors`, which splits with the HOST's separators, so
-  the Windows shapes can only be tested from a Windows host (`reveal_path_chain_handles_drive_rooted_paths` is gated on
-  that). Moving the walk onto `paths` would make it host-independent the way the comparisons already are.
+  **Every step of it goes through a `PathPolicy`**, the walk included: `reveal_path_chain_under(policy, …)` is the real
+  function and `reveal_path_chain` is the host wrapper. So a canonical `\\?\C:\Users\dave\pics` reveals under the
+  `C:\` row a drive enumeration produced, `\\?\UNC\naspi\photos\...` reveals under a `\\naspi\photos` root, and
+  `c:\users\dave` finds a `C:\Users\Dave` row — all of it asserted **from a Mac**, because the policy is an argument
+  rather than a `cfg`. `Path::ancestors` and `Path::components` both split on the host's separators, which is why
+  `PathPolicy::ancestors` and `PathPolicy::component_count` exist.
 
 - `BrowseTree::reveal_to_folder(folder)` computes the chain from its own roots and starts a
   `RevealWalk { chain, position }`. It expands `chain[0]` (the root), which makes AppKit query its children → enqueues

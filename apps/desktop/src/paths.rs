@@ -40,7 +40,7 @@
 //! policy is byte-wise anyway, so the fallback is exact there rather than approximate.
 
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The prefix `Path::canonicalize` returns on Windows, and the one that lifts `MAX_PATH`.
 const VERBATIM: &str = r"\\?\";
@@ -229,6 +229,62 @@ impl PathPolicy {
             .eq(b.chars().flat_map(char::to_lowercase))
     }
 
+    /// How many components `path` has under this policy's syntax. `Path::components` splits on
+    /// the host's separators, so a Windows path counted from a Mac comes back as 1 however deep
+    /// it is; the browse-mode tree breaks its longest-prefix root tie on this number.
+    pub fn component_count(self, path: &Path) -> usize {
+        if !self.windows_syntax {
+            return path.components().count();
+        }
+        let Some(text) = path.to_str() else {
+            return path.components().count();
+        };
+        self.components(text).count()
+    }
+
+    /// `path` itself, then each ancestor folder, longest first, ending at the path's root.
+    ///
+    /// `Path::ancestors` splits on the **host's** separators, so a Windows path examined from a
+    /// Mac comes back as one indivisible name and the browse-mode reveal walk expands nothing.
+    /// This splits under *this* policy's syntax instead, which is what lets a Mac assert what
+    /// the Windows tree will do.
+    ///
+    /// Each step keeps the spelling `path` came in with, verbatim prefix included: the prefix is
+    /// what lifts `MAX_PATH`, and these paths go straight back to the filesystem. Two roots are
+    /// deliberately indivisible, because neither half of them names a folder anything can list:
+    /// a drive (`C:\`) and a share (`\\naspi\photos`, server and share name together).
+    pub fn ancestors(self, path: &Path) -> Vec<PathBuf> {
+        if !self.windows_syntax {
+            return path.ancestors().map(Path::to_path_buf).collect();
+        }
+        let Some(text) = path.to_str() else {
+            // No text to split, so nothing better than `Path`'s own walk is available.
+            return path.ancestors().map(Path::to_path_buf).collect();
+        };
+        let root = windows_root_len(text);
+        let mut out = Vec::new();
+        let mut end = text.len();
+        loop {
+            // A trailing separator names the same folder rather than one more step.
+            while end > root && is_windows_separator(text.as_bytes()[end - 1]) {
+                end -= 1;
+            }
+            if end <= root {
+                break;
+            }
+            out.push(PathBuf::from(&text[..end]));
+            match text[..end].rfind(is_windows_separator_char) {
+                Some(cut) => end = cut,
+                // A relative path with no separator left: `pics` has no ancestor above it.
+                None => break,
+            }
+        }
+        if root > 0 {
+            out.push(PathBuf::from(&text[..root]));
+        }
+        out
+    }
+
     /// The last component, or `None` when the path names no file of its own.
     fn file_name(self, path: &str) -> Option<&str> {
         self.components(path)
@@ -244,14 +300,80 @@ fn strip_verbatim_unc(path: &str) -> Option<&str> {
     rest.starts_with('\\').then_some(rest)
 }
 
+/// Either separator Windows accepts.
+fn is_windows_separator(byte: u8) -> bool {
+    byte == b'\\' || byte == b'/'
+}
+
+/// The `char` form, for `str::rfind`.
+fn is_windows_separator_char(c: char) -> bool {
+    c == '\\' || c == '/'
+}
+
+/// How many bytes of a Windows path are its root — the part [`PathPolicy::ancestors`] must never
+/// climb into, because what is left of it names no folder.
+///
+/// Five shapes, and the two that aren't obvious: a share's root is the server AND the share name
+/// together (`\\naspi` is a machine, not something to list), and a volume-GUID path's root is the
+/// whole GUID component. Returns 0 for a relative path, which has no root to stop at.
+fn windows_root_len(text: &str) -> usize {
+    // `\\?\UNC\server\share`.
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return r"\\?\UNC\".len() + share_body_len(rest);
+    }
+    if let Some(rest) = text.strip_prefix(VERBATIM) {
+        // `\\?\C:\`, and `\\?\Volume{…}\` — one component either way.
+        let component = rest
+            .find(is_windows_separator_char)
+            .map_or(rest.len(), |cut| cut + 1);
+        return VERBATIM.len() + component;
+    }
+    // A plain share, `\\server\share`. Both separators are part of the name.
+    if let Some(body) = text.strip_prefix(r"\\") {
+        return 2 + share_body_len(body);
+    }
+    // A drive, `C:\` — or a bare `C:`, which is relative to that drive's current directory and
+    // still can't be climbed past.
+    if is_drive_prefix(text) {
+        return 3.min(text.len());
+    }
+    // Rooted on the current drive, `\photos`.
+    if text
+        .as_bytes()
+        .first()
+        .copied()
+        .is_some_and(is_windows_separator)
+    {
+        return 1;
+    }
+    0
+}
+
+/// The length of `server\share` at the start of `body`, up to but not including the separator
+/// that ends it. A path naming only the server has no share to stop at, so the whole of it is
+/// the root.
+fn share_body_len(body: &str) -> usize {
+    let mut seen = 0usize;
+    for (index, c) in body.char_indices() {
+        if is_windows_separator_char(c) {
+            seen += 1;
+            if seen == 2 {
+                return index;
+            }
+        }
+    }
+    body.len()
+}
+
+/// Whether `text` starts `C:`, the only prefix Windows reads as a drive.
+fn is_drive_prefix(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':')
+}
+
 /// Do these two paths name the same file, by the host platform's rules?
 pub fn same_path(a: &Path, b: &Path) -> bool {
     PathPolicy::HOST.same_path(a, b)
-}
-
-/// Is `root` an ancestor of `path`, or `path` itself, by the host platform's rules?
-pub fn starts_with(path: &Path, root: &Path) -> bool {
-    PathPolicy::HOST.starts_with(path, root)
 }
 
 /// Do these two paths end in the same file name, by the host platform's rules?
@@ -348,6 +470,7 @@ fn is_dos_device(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     /// Every platform's policy, so a test can say what each one does from whichever host runs it.
     fn every_platform() -> [(&'static str, PathPolicy); 3] {
@@ -599,7 +722,6 @@ mod tests {
         assert_eq!(PathPolicy::HOST, expected);
         // The free functions are the host policy, so a call site never picks the wrong one.
         assert!(same_path(Path::new("/a/b"), Path::new("/a/b")));
-        assert!(starts_with(Path::new("/a/b"), Path::new("/a")));
         assert!(same_file_name(Path::new("/a/b.jpg"), Path::new("/c/b.jpg")));
         assert_eq!(for_display(Path::new("/a/b.jpg")), "/a/b.jpg");
     }
@@ -611,7 +733,6 @@ mod tests {
     fn a_name_that_isnt_utf8_still_compares() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
-        use std::path::PathBuf;
         let odd = PathBuf::from(OsStr::from_bytes(b"/photos/\xff\xfe.jpg"));
         for (platform, policy) in every_platform() {
             assert!(policy.same_path(&odd, &odd.clone()), "{platform}");
@@ -680,5 +801,88 @@ mod tests {
             shell(r"\\?\Volume{b75e2c83-0000-0000-0000-602f00000000}\a.jpg"),
             None
         );
+    }
+
+    /// The reveal walk climbs a Windows path from a Mac. `Path::ancestors` splits on the HOST's
+    /// separators, so it sees `C:\Users\dave\pics` as one indivisible name and the browse-mode
+    /// tree would never expand anything. Under the Windows policy the same string climbs properly.
+    #[test]
+    fn windows_ancestors_climb_backslashes_from_any_host() {
+        let policy = PathPolicy::windows();
+        assert_eq!(
+            policy.ancestors(Path::new(r"C:\Users\dave\pics")),
+            [
+                PathBuf::from(r"C:\Users\dave\pics"),
+                PathBuf::from(r"C:\Users\dave"),
+                PathBuf::from(r"C:\Users"),
+                PathBuf::from(r"C:\"),
+            ]
+        );
+    }
+
+    /// A canonicalised path keeps its verbatim prefix at every step, because the prefix is what
+    /// lifts `MAX_PATH` and the walk hands these paths straight back to the filesystem.
+    #[test]
+    fn windows_ancestors_keep_the_verbatim_prefix() {
+        let policy = PathPolicy::windows();
+        assert_eq!(
+            policy.ancestors(Path::new(r"\\?\C:\photos\2026")),
+            [
+                PathBuf::from(r"\\?\C:\photos\2026"),
+                PathBuf::from(r"\\?\C:\photos"),
+                PathBuf::from(r"\\?\C:\"),
+            ]
+        );
+    }
+
+    /// A share's server and share name are its root together: climbing past `\\naspi\photos`
+    /// would name a machine rather than a folder, and nothing can list it.
+    #[test]
+    fn windows_ancestors_stop_at_the_share_not_the_server() {
+        let policy = PathPolicy::windows();
+        assert_eq!(
+            policy.ancestors(Path::new(r"\\naspi\photos\2026\may")),
+            [
+                PathBuf::from(r"\\naspi\photos\2026\may"),
+                PathBuf::from(r"\\naspi\photos\2026"),
+                PathBuf::from(r"\\naspi\photos"),
+            ]
+        );
+        assert_eq!(
+            policy.ancestors(Path::new(r"\\?\UNC\naspi\photos\2026")),
+            [
+                PathBuf::from(r"\\?\UNC\naspi\photos\2026"),
+                PathBuf::from(r"\\?\UNC\naspi\photos"),
+            ]
+        );
+    }
+
+    /// Forward slashes are legal separators on Windows, and a path that mixes them still climbs.
+    /// A trailing separator names the same folder rather than an extra step.
+    #[test]
+    fn windows_ancestors_accept_slashes_and_ignore_a_trailing_one() {
+        let policy = PathPolicy::windows();
+        assert_eq!(
+            policy.ancestors(Path::new(r"C:/photos\2026\")),
+            [
+                PathBuf::from(r"C:/photos\2026"),
+                PathBuf::from(r"C:/photos"),
+                PathBuf::from("C:/"),
+            ]
+        );
+    }
+
+    /// macOS and Linux keep `Path`'s own walk: it is already right there, and it is the one that
+    /// handles names that aren't UTF-8.
+    #[test]
+    fn unix_ancestors_match_paths_own_walk() {
+        for (name, policy) in every_platform() {
+            if name == "Windows" {
+                continue;
+            }
+            let path = Path::new("/Users/dave/pics/2026");
+            let expected: Vec<PathBuf> = path.ancestors().map(Path::to_path_buf).collect();
+            assert_eq!(policy.ancestors(path), expected, "{name}");
+        }
     }
 }

@@ -158,26 +158,37 @@ pub struct Root {
 /// so no disk access happens here.
 #[must_use]
 pub fn reveal_path_chain(roots: &[Root], target: &Path) -> Option<Vec<PathBuf>> {
-    // Longest-prefix root match: a path under home (`/Users/dave/...`) must reveal under the Home
-    // row, not under the `/` volume row, even though both are ancestors.
+    reveal_path_chain_under(crate::paths::PathPolicy::HOST, roots, target)
+}
+
+/// [`reveal_path_chain`] under a named path policy, so a Mac can assert what the Windows tree
+/// will do. Every comparison and the ancestor walk itself go through `policy`; nothing here
+/// reads the host's separators or case rules.
+#[must_use]
+pub fn reveal_path_chain_under(
+    policy: crate::paths::PathPolicy,
+    roots: &[Root],
+    target: &Path,
+) -> Option<Vec<PathBuf>> {
+    // Longest-prefix root match: a path under home (`/Users/dave/...`, `C:\Users\dave\...`) must
+    // reveal under the Home row, not under the `/` or `C:\` row, even though both are ancestors.
     let root = roots
         .iter()
-        .filter(|r| crate::paths::starts_with(target, &r.path))
-        .max_by_key(|r| r.path.components().count())?;
+        .filter(|r| policy.starts_with(target, &r.path))
+        .max_by_key(|r| policy.component_count(&r.path))?;
 
     // Build [root, …ancestors…, target] by walking target's ancestors up to (and including) the
-    // root, then reversing. `Path::ancestors` yields target, its parent, … up to the filesystem
-    // root, so we stop once we pass the matched root's path.
+    // root, then reversing.
     let mut chain: Vec<PathBuf> = Vec::new();
-    for ancestor in target.ancestors() {
+    for ancestor in policy.ancestors(target) {
         // The root goes in with the row's own spelling, never the ancestor's: on Windows the
         // target is canonical (`\\?\C:\...`) while the root came from a drive enumeration
         // (`C:\`), and the caller looks rows up by path.
-        if crate::paths::same_path(ancestor, &root.path) {
+        if policy.same_path(&ancestor, &root.path) {
             chain.push(root.path.clone());
             break;
         }
-        chain.push(ancestor.to_path_buf());
+        chain.push(ancestor);
     }
     chain.reverse();
     Some(chain)
@@ -523,51 +534,123 @@ mod tests {
         );
     }
 
-    /// The cases above are POSIX-shaped, which `Path` still parses correctly on Windows (both
-    /// `/` and `\` are separators there), so they cover the algorithm on every platform. What
-    /// they don't cover is the shape browse mode will actually see on Windows: a drive-rooted
-    /// path, which carries a `Prefix` component ahead of its `RootDir`.
+    /// The cases above are POSIX-shaped. What they don't cover is the shape browse mode will
+    /// actually see on Windows: drive-rooted paths, the canonical `\\?\` spelling the launch
+    /// argument arrives in, and a NAS share. All three run from any host, because the walk takes
+    /// the policy as an argument.
     #[test]
-    #[cfg(target_os = "windows")]
-    fn reveal_path_chain_handles_drive_rooted_paths() {
-        // A drive root has to be spelled `C:\`, never a bare `C:`: `C:` parses to a prefix with
-        // no `RootDir`, and `Path::new(r"C:\Users").starts_with("C:")` is then false.
+    fn reveal_path_chain_walks_windows_paths_from_any_host() {
+        let policy = crate::paths::PathPolicy::windows();
+        // A drive root has to be spelled `C:\`, never a bare `C:`: `C:` is relative to that
+        // drive's current directory rather than its root.
         let roots = vec![
             Root {
-                name: "Home".to_string(),
-                path: PathBuf::from(r"C:\Users\dave"),
+                name: "Pictures".to_string(),
+                path: PathBuf::from(r"C:\Users\dave\Pictures"),
             },
             Root {
-                name: "Windows (C:)".to_string(),
+                name: "Local Disk (C:)".to_string(),
                 path: PathBuf::from(r"C:\"),
             },
             Root {
                 name: "Photos (D:)".to_string(),
                 path: PathBuf::from(r"D:\"),
             },
+            Root {
+                name: "photos".to_string(),
+                path: PathBuf::from(r"\\naspi\photos"),
+            },
         ];
+        let chain = |target: &str| reveal_path_chain_under(policy, &roots, Path::new(target));
 
-        // Longest prefix wins, same as under home on macOS: `C:\Users\dave` is four components,
-        // `C:\` is two.
+        // Longest prefix wins, same as under home on macOS: the Pictures known folder beats `C:\`.
         assert_eq!(
-            reveal_path_chain(&roots, Path::new(r"C:\Users\dave\Pictures\Trip")).unwrap(),
+            chain(r"C:\Users\dave\Pictures\Trip\2026").unwrap(),
             vec![
-                PathBuf::from(r"C:\Users\dave"),
                 PathBuf::from(r"C:\Users\dave\Pictures"),
                 PathBuf::from(r"C:\Users\dave\Pictures\Trip"),
+                PathBuf::from(r"C:\Users\dave\Pictures\Trip\2026"),
+            ]
+        );
+
+        // Not under a known folder: the walk climbs to the drive row, one step per folder.
+        assert_eq!(
+            chain(r"C:\Program Files\Prvw").unwrap(),
+            vec![
+                PathBuf::from(r"C:\"),
+                PathBuf::from(r"C:\Program Files"),
+                PathBuf::from(r"C:\Program Files\Prvw"),
             ]
         );
 
         // A path on another drive reveals under that drive, never under `C:\`.
         assert_eq!(
-            reveal_path_chain(&roots, Path::new(r"D:\Photos")).unwrap(),
+            chain(r"D:\Photos").unwrap(),
             vec![PathBuf::from(r"D:\"), PathBuf::from(r"D:\Photos")]
         );
 
         // A drive root as the target is just itself: `C:\` has no parent to walk up to.
+        assert_eq!(chain(r"C:\").unwrap(), vec![PathBuf::from(r"C:\")]);
+
+        // Nothing on the tree contains it.
+        assert_eq!(chain(r"E:\Photos"), None);
+    }
+
+    /// The launch path is canonicalised, so it arrives verbatim while the drive row came from a
+    /// letter enumeration. The row keeps its own spelling and every step below it keeps the
+    /// prefix, which is what stops a deep library from being truncated on its way back to disk.
+    #[test]
+    fn reveal_path_chain_matches_a_canonical_target_to_a_plain_root() {
+        let policy = crate::paths::PathPolicy::windows();
+        let roots = vec![Root {
+            name: "Local Disk (C:)".to_string(),
+            path: PathBuf::from(r"C:\"),
+        }];
         assert_eq!(
-            reveal_path_chain(&roots, Path::new(r"C:\")).unwrap(),
-            vec![PathBuf::from(r"C:\")]
+            reveal_path_chain_under(policy, &roots, Path::new(r"\\?\C:\Photos\2026")).unwrap(),
+            vec![
+                PathBuf::from(r"C:\"),
+                PathBuf::from(r"\\?\C:\Photos"),
+                PathBuf::from(r"\\?\C:\Photos\2026"),
+            ]
+        );
+    }
+
+    /// A share's root is the server and the share name together. Climbing past it would name a
+    /// machine, which no tree row lists, so the walk has to stop at `\\naspi\photos`.
+    #[test]
+    fn reveal_path_chain_stops_at_a_share_root() {
+        let policy = crate::paths::PathPolicy::windows();
+        let roots = vec![Root {
+            name: "photos".to_string(),
+            path: PathBuf::from(r"\\naspi\photos"),
+        }];
+        assert_eq!(
+            reveal_path_chain_under(policy, &roots, Path::new(r"\\naspi\photos\2026\may")).unwrap(),
+            vec![
+                PathBuf::from(r"\\naspi\photos"),
+                PathBuf::from(r"\\naspi\photos\2026"),
+                PathBuf::from(r"\\naspi\photos\2026\may"),
+            ]
+        );
+    }
+
+    /// NTFS is case-insensitive, so the casing the user typed on the command line must still
+    /// find the row the drive enumeration spelled.
+    #[test]
+    fn reveal_path_chain_ignores_case_on_windows() {
+        let policy = crate::paths::PathPolicy::windows();
+        let roots = vec![Root {
+            name: "Pictures".to_string(),
+            path: PathBuf::from(r"C:\Users\Dave\Pictures"),
+        }];
+        assert_eq!(
+            reveal_path_chain_under(policy, &roots, Path::new(r"c:\users\dave\pictures\trip"))
+                .unwrap(),
+            vec![
+                PathBuf::from(r"C:\Users\Dave\Pictures"),
+                PathBuf::from(r"c:\users\dave\pictures\trip"),
+            ]
         );
     }
 
