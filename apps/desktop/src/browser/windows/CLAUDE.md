@@ -32,12 +32,12 @@ wgpu's DX12 backend uses a **flip-model swapchain**, which composes as its own D
 child-window clipping, so a control "in front of" it is not reliably in front of it. One window to show and hide is safe
 by construction either way.
 
-`WS_CLIPCHILDREN` goes on **winit's own window** when the container is built — winit doesn't set it
-and has no API to ask for it — and showing the container puts it at `HWND_TOP`.
+`WS_CLIPCHILDREN` goes on **winit's own window** when the container is built — winit doesn't set it and has no API to
+ask for it — and showing the container puts it at `HWND_TOP`.
 
-**Gotcha: hiding a focused window doesn't move the focus.** **Why:** the pane keeps it, and image
-mode is then dead to the keyboard. `set_hidden(true)` calls `SetFocus` on winit's window, which is
-the Win32 form of what `restore_content_view_first_responder` does on macOS.
+**Gotcha: hiding a focused window doesn't move the focus.** **Why:** the pane keeps it, and image mode is then dead to
+the keyboard. `set_hidden(true)` calls `SetFocus` on winit's window, which is the Win32 form of what
+`restore_content_view_first_responder` does on macOS.
 
 **Decision: stop presenting while the browser is up.** **Why:** `App::enter_view_mode` clears the image, paints one
 frame, and then stops asking for redraws, so no `Present` happens while browse mode is visible and there is nothing to
@@ -106,11 +106,10 @@ it is asserted from a Mac. `LVN_ODCACHEHINT` widens it on scroll.
 after the handler returns. The buffer lives in `GridState::label`; one cell is asked about at a time, so one buffer is
 enough.
 
-**Gotcha: the letterbox colour is the listview's background, not the dialog's.** **Why:**
-`Theme::colors` is the grey a settings window paints on, and a thumbnail letterboxed against it
-would sit in a visible box on a white grid. `pane_background` asks for `COLOR_WINDOW` in light mode
-— asked for rather than named, so a high-contrast scheme's own colour comes back — and comctl32's
-near-black list background in dark.
+**Gotcha: the letterbox colour is the listview's background, not the dialog's.** **Why:** `Theme::colors` is the grey a
+settings window paints on, and a thumbnail letterboxed against it would sit in a visible box on a white grid.
+`pane_background` asks for `COLOR_WINDOW` in light mode — asked for rather than named, so a high-contrast scheme's own
+colour comes back — and comctl32's near-black list background in dark.
 
 **Gotcha: image list bitmaps are BGRA and top-down.** **Why:** a DIB stores blue first, and the DIB section is created
 with a negative `biHeight`. `thumbnail::compose_slot` does both conversions in the pass that letterboxes, and its tests
