@@ -599,12 +599,12 @@ impl State {
     /// has images else the tree) and render it.
     #[cfg(target_os = "windows")]
     pub fn enter_browse(&mut self, window: &winit::window::Window) {
-        if self.browse_ui.is_none() {
-            let Some(owner) = window_hwnd(window) else {
-                return;
-            };
-            self.browse_ui = windows::BrowseUi::create(owner, self.sort_by);
-        }
+        let Some(owner) = window_hwnd(window) else {
+            return;
+        };
+        // `create` is idempotent and answers with the existing browser, so this is also what
+        // rebuilds one whose window went away rather than leaving every later entry a no-op.
+        self.browse_ui = windows::BrowseUi::create(owner, self.sort_by);
         crate::window::grow_to_browse_minimum(window);
         self.enter_browse_state(self.grid_is_empty());
         self.sync_native(window);
