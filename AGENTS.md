@@ -109,9 +109,10 @@ Always use the checker script for compilation, linting, formatting, and tests. I
   names the actions it exercises and the parity registries decide whether the host runs it: see `src/qa/CLAUDE.md`. The
   harness pipes the app's stderr, so a request that fails panics with the app's own log, whether the process is still
   alive, and its exit status in hex — which is the only account a Windows crash leaves behind.
-- **`PRVW_TEST_NO_FAIL_FAST=1`** makes the `cargo-test` check pass `--no-fail-fast` to nextest. nextest otherwise
-  cancels the whole run on the first test failure, so a platform failing for the first time reports one defect and hides
-  the rest. Opt-in, for the run where you want the full picture.
+- **`PRVW_TEST_NO_FAIL_FAST=1`** makes the `cargo-test` check pass `--no-fail-fast` to nextest, which otherwise cancels
+  the whole run on the first test failure. CI's Windows leg sets it, because that's the platform with the least evidence
+  behind it and one cancelled run there leaves hundreds of tests unexecuted; macOS and Linux keep fail-fast, which saves
+  real minutes on a green history. Set it locally for a run where you want the full picture.
 - On Windows, `scripts/check.ps1` replaces `check.sh` (which is bash). Same flags, same exit code, same Go runner.
 - CI: Runs on PRs and pushes to main for changed files. A Rust change runs clippy and the tests on Linux, macOS, and
   Windows. Full run: Actions -> CI -> "Run workflow".

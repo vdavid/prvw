@@ -218,13 +218,20 @@ jobs:
       - name: Run clippy
         run: ./scripts/check/check.exe --check clippy --ci
 
-      # This is where `tests/e2e_shared.rs` first meets a Windows box: 41 E2E tests that spawn
-      # a real window and drive it through the QA server. They compile and lint for Windows
-      # (`--check windows-cross`) and have never run, so treat the first red run as news about
-      # the app or the harness, not as a reason to gate them off. `tests/e2e_macos.rs` compiles
-      # to nothing here.
+      # This is where `tests/e2e_shared.rs` meets a Windows box: 41 E2E tests that spawn a real
+      # window and drive it through the QA server. Treat a red run here as news about the app or
+      # the harness, not as a reason to gate the tests off. `tests/e2e_macos.rs` compiles to
+      # nothing here.
+      #
+      # Windows is the only leg that runs without fail-fast, and it's the only one that needs to:
+      # nextest cancels the whole run on the first failure, which on this platform means one
+      # cycle reports two defects and leaves 904 tests unexecuted. macOS and Linux have a long
+      # green history, so there fail-fast saves real minutes and costs nothing. Windows has
+      # almost no history, so the whole picture is worth the minutes.
       - name: Run Rust tests
         run: ./scripts/check/check.exe --check cargo-test --ci
+        env:
+          PRVW_TEST_NO_FAIL_FAST: '1'
 
   # ===========================================
   # Website

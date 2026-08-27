@@ -9,6 +9,22 @@ import (
 	"strconv"
 )
 
+// nextestArgs builds the cargo-nextest command line. `noFailFast` is the raw value of
+// PRVW_TEST_NO_FAIL_FAST; any non-empty setting turns nextest's fail-fast off.
+//
+// nextest cancels the whole run on the first test failure, which is what you want day to day and
+// the opposite of what you want on a platform with no track record: one cycle reports one defect
+// and leaves the rest of the suite unexecuted. CI's Windows job sets the variable and the other
+// two don't. It's read here in the runner rather than in a shell, so it reaches nextest the same
+// way through check.sh, check.ps1, and the check.exe the Windows job runs directly.
+func nextestArgs(noFailFast string) []string {
+	args := []string{"nextest", "run", "--workspace"}
+	if noFailFast != "" {
+		args = append(args, "--no-fail-fast")
+	}
+	return args
+}
+
 // RunCargoTest runs Rust tests using cargo-nextest, across the whole workspace so the
 // `xtask` crate's tests run alongside the app's.
 func RunCargoTest(ctx *CheckContext) (CheckResult, error) {
@@ -27,16 +43,7 @@ func RunCargoTest(ctx *CheckContext) (CheckResult, error) {
 		}
 	}
 
-	args := []string{"nextest", "run", "--workspace"}
-	// nextest cancels the whole run on the first test failure, which is right day to day and
-	// wrong when a platform is failing for the first time: one CI cycle then reports one defect
-	// and hides every other. Setting PRVW_TEST_NO_FAIL_FAST=1 asks for the full picture instead.
-	// Deliberately opt-in and env-driven: a workflow_dispatch run sets it in one `env:` line,
-	// and nothing about the default path changes.
-	if os.Getenv("PRVW_TEST_NO_FAIL_FAST") != "" {
-		args = append(args, "--no-fail-fast")
-	}
-	cmd := exec.Command("cargo", args...)
+	cmd := exec.Command("cargo", nextestArgs(os.Getenv("PRVW_TEST_NO_FAIL_FAST"))...)
 	cmd.Dir = rustDir
 	output, err := RunCommand(cmd, true)
 	if err != nil {

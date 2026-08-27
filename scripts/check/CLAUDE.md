@@ -134,10 +134,11 @@ are load-bearing:
 The Rust checks all run workspace-wide (`cargo fmt --all`, `cargo clippy --workspace`, `cargo nextest run --workspace`),
 so the `xtask` crate is linted, formatted, cross-checked, and tested by the same runs as the app.
 
-`PRVW_TEST_NO_FAIL_FAST=1` adds `--no-fail-fast` to the nextest run. nextest cancels the whole run on the first test
-failure, which is what you want day to day and the opposite of what you want the first time a platform runs the suite:
-one cycle reports one defect and leaves the other 900 tests unexecuted. Opt-in and env-driven on purpose, so a
-`workflow_dispatch` run turns it on in one `env:` line and nothing about the default path changes.
+`PRVW_TEST_NO_FAIL_FAST=1` adds `--no-fail-fast` to the nextest run (`nextestArgs`). nextest cancels the whole run on
+the first test failure, which is what you want day to day and the opposite of what you want on a platform with no track
+record: one cycle reports one defect and leaves the other 900 unexecuted. CI's Windows job sets it and the other two
+don't. The lever is read in the runner rather than in a shell, so it reaches nextest the same way through `check.sh`,
+`check.ps1`, and the `check.exe` the Windows job runs directly.
 
 ## The Windows installer check
 
