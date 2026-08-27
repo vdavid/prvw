@@ -24,7 +24,8 @@ use windows::Win32::System::Diagnostics::Debug::{
     SEM_FAILCRITICALERRORS, SetThreadErrorMode, THREAD_ERROR_MODE,
 };
 use windows::Win32::UI::Shell::{
-    FOLDERID_Desktop, FOLDERID_Downloads, FOLDERID_Pictures, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+    FOLDERID_Desktop, FOLDERID_Downloads, FOLDERID_Pictures, FOLDERID_Profile, KF_FLAG_DEFAULT,
+    SHGetKnownFolderPath,
 };
 use windows::core::{GUID, PCWSTR};
 
@@ -35,7 +36,19 @@ use super::roots::{self, DriveKind};
 /// The tree's top-level rows: the known folders, then every drive letter.
 #[must_use]
 pub fn enumerate() -> Vec<Root> {
-    roots::build_windows_roots(known_folders(), drives())
+    roots::build_windows_roots(known_folders(), home(), drives())
+}
+
+/// The user's profile folder. `%USERPROFILE%` first, the same way macOS reads `$HOME`, and
+/// `FOLDERID_Profile` when that's unset or nonsense. The shell's answer comes from the login
+/// token rather than the environment, so it is the right fallback and the wrong first choice.
+fn home() -> Option<Root> {
+    roots::home_from_environment(std::env::var_os("USERPROFILE").as_deref()).or_else(|| {
+        known_folder_path(&FOLDERID_Profile).map(|path| Root {
+            name: roots::HOME_LABEL.to_string(),
+            path,
+        })
+    })
 }
 
 /// Pictures, Desktop, and Downloads, in that order. A folder that doesn't resolve is left out

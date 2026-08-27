@@ -10,7 +10,7 @@
 //! `SHGetKnownFolderPath` — lives in [`super::shell_roots`] and does nothing but feed these
 //! functions.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::browser::tree_model::Root;
 use crate::paths::PathPolicy;
@@ -23,6 +23,11 @@ use crate::paths::PathPolicy;
 /// throughout, and a row called "Bilder" beside menus that say "Image browser" would read as a
 /// bug rather than as localization.
 pub const KNOWN_FOLDER_LABELS: [&str; 3] = ["Pictures", "Desktop", "Downloads"];
+
+/// What the user's profile folder's row is called. macOS's source list calls the same row "Home"
+/// ([`crate::browser::tree_model::build_roots`]), and the two trees agreeing on the word is worth
+/// more here than matching Explorer, which shows the account name.
+pub const HOME_LABEL: &str = "Home";
 
 /// What `GetDriveTypeW` said a letter is. Carried as data rather than read from Win32 at the
 /// point of use, so the labelling below is testable from any host.
@@ -106,16 +111,27 @@ pub fn drive_root_path(letter: char) -> PathBuf {
 }
 
 /// Assemble the tree's top-level rows: the known folders in [`KNOWN_FOLDER_LABELS`] order, then
-/// every drive in letter order.
+/// the user's profile folder, then every drive in letter order.
+///
+/// Home sits below the three photo folders (this is a photo viewer, and that is where photos are)
+/// and above the drives, because it is what most of what anyone opens sits under. Its real work is
+/// the reveal walk: [`crate::browser::tree_model::reveal_path_chain`] reveals under the
+/// longest-matching root, so a folder in the profile expands two or three levels from Home rather
+/// than six from `C:\` — and the walk lists each level it passes, one of which would otherwise be
+/// the machine's temp directory.
 ///
 /// Two rows naming the same folder are collapsed to the first, under Windows path rules — a
 /// Desktop redirected onto a drive root, or two known folders redirected onto each other, would
 /// otherwise appear twice and the tree would expand only one of them.
 #[must_use]
-pub fn build_windows_roots(known_folders: Vec<Root>, drives: Vec<Root>) -> Vec<Root> {
+pub fn build_windows_roots(
+    known_folders: Vec<Root>,
+    home: Option<Root>,
+    drives: Vec<Root>,
+) -> Vec<Root> {
     let policy = PathPolicy::windows();
-    let mut roots: Vec<Root> = Vec::with_capacity(known_folders.len() + drives.len());
-    for candidate in known_folders.into_iter().chain(drives) {
+    let mut roots: Vec<Root> = Vec::with_capacity(known_folders.len() + drives.len() + 1);
+    for candidate in known_folders.into_iter().chain(home).chain(drives) {
         if roots
             .iter()
             .any(|existing| policy.same_path(&existing.path, &candidate.path))
@@ -125,6 +141,44 @@ pub fn build_windows_roots(known_folders: Vec<Root>, drives: Vec<Root>) -> Vec<R
         roots.push(candidate);
     }
     roots
+}
+
+/// The user's profile folder, from `%USERPROFILE%`.
+///
+/// The environment variable rather than `SHGetKnownFolderPath(FOLDERID_Profile)`, for the reason
+/// macOS reads `$HOME`: it is what the session says the profile is, and it is the one a launcher
+/// or a test fixture can point somewhere else. The caller falls back to the shell when it's unset.
+///
+/// Only an absolute path counts — a relative one would name whatever the working directory happens
+/// to be. Deliberately **not** checked against the disk: this runs on the event loop's thread, and
+/// an enterprise roaming profile on a dead share would block it for the SMB timeout, which is the
+/// hang the whole tree is built to avoid. A profile that isn't there simply expands to nothing.
+#[must_use]
+pub fn home_from_environment(value: Option<&std::ffi::OsStr>) -> Option<Root> {
+    let path = PathBuf::from(value?);
+    is_absolute_windows_path(&path).then(|| Root {
+        name: HOME_LABEL.to_string(),
+        path,
+    })
+}
+
+/// Whether a Windows path names a place on its own rather than one relative to a current
+/// directory: a drive with a separator (`C:\`), a share (`\\naspi\home`), or either in the
+/// verbatim spelling. A bare `C:` is relative to that drive's current directory and doesn't count.
+fn is_absolute_windows_path(path: &Path) -> bool {
+    /// The prefix `canonicalize` returns, which `paths.rs` spells the same way.
+    const VERBATIM: &str = r"\\?\";
+    let Some(text) = path.to_str() else {
+        return false;
+    };
+    // A verbatim path is absolute by definition; that is what the prefix means.
+    if text.starts_with(VERBATIM) || text.starts_with(r"\\") || text.starts_with("//") {
+        return true;
+    }
+    let mut chars = text.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.next() == Some(':')
+        && matches!(chars.next(), Some('\\' | '/'))
 }
 
 /// Whether a directory entry with these `FILE_ATTRIBUTE_*` flags stays out of the tree.
@@ -228,19 +282,77 @@ mod tests {
     }
 
     #[test]
-    fn known_folders_lead_and_drives_follow() {
+    fn known_folders_lead_then_home_then_drives() {
         let roots = build_windows_roots(
             vec![
                 root("Pictures", r"C:\Users\dave\Pictures"),
                 root("Desktop", r"C:\Users\dave\Desktop"),
             ],
+            Some(root("Home", r"C:\Users\dave")),
             vec![root("Local disk (C:)", r"C:\"), root("Photos (D:)", r"D:\")],
         );
         let names: Vec<&str> = roots.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(
             names,
-            vec!["Pictures", "Desktop", "Local disk (C:)", "Photos (D:)"]
+            vec![
+                "Pictures",
+                "Desktop",
+                "Home",
+                "Local disk (C:)",
+                "Photos (D:)"
+            ]
         );
+    }
+
+    /// What the Home row is really for: the reveal walk expands under the longest-matching root,
+    /// so a folder in the profile is two steps from Home rather than six from the drive — and the
+    /// walk lists every level it passes, one of which is the machine's temp directory.
+    #[test]
+    fn a_folder_in_the_profile_reveals_from_home_not_the_drive() {
+        use crate::browser::tree_model::reveal_path_chain_under;
+        let roots = build_windows_roots(
+            Vec::new(),
+            Some(root("Home", r"C:\Users\dave")),
+            vec![root("Local disk (C:)", r"C:\")],
+        );
+        let chain = reveal_path_chain_under(
+            PathPolicy::windows(),
+            &roots,
+            Path::new(r"\\?\C:\Users\dave\AppData\Local\Temp\t\pics"),
+        )
+        .expect("the profile contains it");
+        assert_eq!(chain.first(), Some(&PathBuf::from(r"C:\Users\dave")));
+        assert_eq!(chain.len(), 6);
+    }
+
+    /// `%USERPROFILE%` is what a session (or a test fixture) says the profile is. Only an absolute
+    /// path counts; a relative one would name whatever the working directory happens to be.
+    #[test]
+    fn home_comes_from_the_environment_when_it_names_somewhere_absolute() {
+        use std::ffi::OsStr;
+        let home = home_from_environment(Some(OsStr::new(r"C:\Users\dave")))
+            .expect("a drive path is absolute");
+        assert_eq!(home.name, HOME_LABEL);
+        assert_eq!(home.path, PathBuf::from(r"C:\Users\dave"));
+        // Every absolute spelling Windows has, including the one `canonicalize` returns.
+        for spelling in [
+            r"\\?\C:\Users\dave",
+            r"\\naspi\homes\dave",
+            r"\\?\UNC\naspi\homes\dave",
+            "C:/Users/dave",
+        ] {
+            assert!(
+                home_from_environment(Some(OsStr::new(spelling))).is_some(),
+                "{spelling} is absolute"
+            );
+        }
+        for junk in ["", "dave", r"Users\dave", "C:", "C:dave"] {
+            assert!(
+                home_from_environment(Some(OsStr::new(junk))).is_none(),
+                "{junk:?} names nowhere on its own"
+            );
+        }
+        assert!(home_from_environment(None).is_none());
     }
 
     /// A redirected known folder can land on a drive root, or on another known folder. Two rows
@@ -253,6 +365,8 @@ mod tests {
                 // Desktop redirected onto Pictures, and spelled in a different case.
                 root("Desktop", r"d:\"),
             ],
+            // And a profile redirected onto the same drive root.
+            Some(root("Home", r"D:\")),
             vec![root("Photos (D:)", r"D:\")],
         );
         let names: Vec<&str> = roots.iter().map(|r| r.name.as_str()).collect();
@@ -263,7 +377,7 @@ mod tests {
     /// folder on a disconnected share). The tree then shows drives alone rather than nothing.
     #[test]
     fn no_known_folders_still_leaves_the_drives() {
-        let roots = build_windows_roots(Vec::new(), vec![root("Local disk (C:)", r"C:\")]);
+        let roots = build_windows_roots(Vec::new(), None, vec![root("Local disk (C:)", r"C:\")]);
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].path, PathBuf::from(r"C:\"));
     }
@@ -299,6 +413,7 @@ mod tests {
             .iter()
             .map(|kind| kind.fallback_label().to_string())
             .chain(KNOWN_FOLDER_LABELS.iter().map(|s| (*s).to_string()))
+            .chain(std::iter::once(HOME_LABEL.to_string()))
             .collect();
         for line in &strings {
             assert!(!line.contains('\u{2014}'), "em dash in {line:?}");
