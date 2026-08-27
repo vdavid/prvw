@@ -243,6 +243,13 @@ folder.
 reports nothing that happened before its stream started. `/state`'s `watched_folders` lists what's actually applied, and
 every `live_sync_*` test polls it (`TestApp::wait_for_watch`) before mutating its folder. See `qa/CLAUDE.md`.
 
+**The active folder is the grid's in browse mode, on every platform that has a browser.** `App::active_folder` reads
+`browser::selected_folder()` there and the current image's parent otherwise. The browse branch is gated on
+`any(macos, windows)`: with it macOS-only, a Windows dir-arg launch had no image at all, so nothing was watched and
+browse-mode live sync did nothing. `watched_folders` reports the folder as the tree spelled it, which needn't be the
+canonical spelling a test would canonicalize to — `wait_for_watch` compares under the platform's path rules for that
+reason.
+
 ## Gotcha/Why: shared state on neighbour-only Ready
 
 `poll_preloader` only used to call `update_shared_state` when the arrived index matched `pending_current`. Background

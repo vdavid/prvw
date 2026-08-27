@@ -316,9 +316,11 @@ impl TestApp {
         let start = Instant::now();
         loop {
             let state = self.get_state();
-            let armed = state["watched_folders"]
-                .as_array()
-                .is_some_and(|f| f.iter().any(|p| p.as_str() == Some(wanted.as_str())));
+            let armed = state["watched_folders"].as_array().is_some_and(|f| {
+                f.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .any(|p| names_one_folder(p, &wanted))
+            });
             if armed {
                 return;
             }
@@ -420,4 +422,30 @@ fn prvw_binary() -> std::path::PathBuf {
         return sibling;
     }
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_prvw"))
+}
+
+/// Do these two paths name one folder? The harness's own copy of `paths::same_path`, because the
+/// app is a binary and a test crate can't reach into it.
+///
+/// A test canonicalizes the folder it created, which on Windows returns `\\?\C:\…`, while the app
+/// watches the folder its browse tree handed it, spelled the way a drive enumeration and
+/// `read_dir` produced it (`C:\…`). NTFS calls those one folder and so does Prvw; only a byte
+/// comparison disagrees. Off Windows there are no verbatim prefixes and case is significant, so
+/// this is the byte comparison it always was.
+fn names_one_folder(left: &str, right: &str) -> bool {
+    if !cfg!(windows) {
+        return left == right;
+    }
+    fn body(path: &str) -> String {
+        let plain = match path.strip_prefix(r"\\?\UNC\") {
+            // A share keeps the two separators that name it: `\\?\UNC\naspi\a` is `\\naspi\a`.
+            Some(share) => format!(r"\\{share}"),
+            None => path.strip_prefix(r"\\?\").unwrap_or(path).to_string(),
+        };
+        plain
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    }
+    body(left) == body(right)
 }

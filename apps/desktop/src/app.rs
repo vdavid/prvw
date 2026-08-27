@@ -978,7 +978,7 @@ impl App {
     /// once synced, but a user can browse a different folder than the open image — we watch what's
     /// shown. `None` when nothing's listed/open (empty state). Drives `retarget_active_folder_watch`.
     fn active_folder(&self) -> Option<PathBuf> {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         if self.browser.is_browse() {
             return self.browser.selected_folder().map(Path::to_path_buf);
         }
