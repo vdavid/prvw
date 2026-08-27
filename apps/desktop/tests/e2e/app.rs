@@ -80,7 +80,7 @@ impl TestApp {
         // Fresh per-test settings dir — no cross-test leakage.
         let data_dir = tempfile::tempdir().expect("Couldn't create temp data dir");
 
-        let mut command = Command::new(env!("CARGO_BIN_EXE_prvw"));
+        let mut command = Command::new(prvw_binary());
         command
             .args(args)
             .env("PRVW_QA_PORT", port.to_string())
@@ -268,4 +268,30 @@ impl Drop for TestApp {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The `prvw` binary these tests drive, in order of preference.
+///
+/// `CARGO_BIN_EXE_prvw` is an absolute path baked in when the test binary is compiled, which is
+/// right for `cargo test` on the machine that built it and wrong the moment the binary runs
+/// anywhere else. Cross-compiling the suite for Windows from a Mac is exactly that case: the
+/// baked path names a directory that doesn't exist on the machine running the tests. So:
+///
+/// 1. `PRVW_TEST_BINARY`, for pointing the suite at a specific build.
+/// 2. The sibling of the test executable's own directory. Cargo puts test binaries in
+///    `<target>/deps/` and the app one level up, so a copied target directory just works.
+/// 3. The compile-time path, which is the normal local `cargo test` case.
+fn prvw_binary() -> std::path::PathBuf {
+    if let Some(explicit) = std::env::var_os("PRVW_TEST_BINARY") {
+        return std::path::PathBuf::from(explicit);
+    }
+    let exe_name = if cfg!(windows) { "prvw.exe" } else { "prvw" };
+    if let Some(sibling) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent()?.parent().map(|dir| dir.join(exe_name)))
+        && sibling.is_file()
+    {
+        return sibling;
+    }
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_prvw"))
 }
