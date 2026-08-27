@@ -47,6 +47,12 @@ rfd = { version = "0.17.2", default-features = false }
 muda = { version = "0.19.3", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# The updater's manifest fetch. `native-tls` is the TLS backend that costs nothing to build
+# here: it binds Schannel, the system's own stack, through the pure-Rust `schannel` crate,
+# where `rustls` would pull `aws-lc-sys` and with it a NASM assembler that neither this Mac nor
+# `cargo xwin` has. No download path on this platform, so the 30-second client is all of it.
+# MIT OR Apache-2.0.
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "native-tls"] }
 # Process RSS (`diagnostics`), installed RAM (`platform`), the console attach behind
 # `windows_subsystem = "windows"` (`platform::windows`), the system UI font name
 # (`render::text`), the monitor work area (`window`), the wheel and double-click preferences
@@ -102,8 +108,9 @@ libc = "0.2"
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Only the macOS updater speaks HTTPS. Scoping `reqwest` here keeps `aws-lc-sys` (and its
-# NASM build requirement) out of the Windows and Linux targets entirely.
+# The updater's manifest fetch and DMG download. `rustls` here means `aws-lc-rs`, which builds
+# on a Mac without help; the Windows target asks for a different backend, and Linux publishes no
+# builds to check against, so it gets no HTTP client at all.
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
 libc = "0.2"
 objc2 = "0.6"

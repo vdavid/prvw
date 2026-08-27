@@ -727,7 +727,8 @@ pub struct Change {
     ///
     /// `None` means the setting has no `AppCommand` at all, so nothing in the running app
     /// reads it live and persisting it is the whole job. Auto-update is the only one:
-    /// `updater` reads it at the next startup. The macOS window does the same thing.
+    /// `updater::check_on_launch` reads it at the next startup, and opens the download page
+    /// in a browser when a newer release is out. The macOS window does the same thing.
     pub command: Option<AppCommand>,
 }
 

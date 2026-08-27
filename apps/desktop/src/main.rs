@@ -72,7 +72,10 @@ mod previews;
 mod qa;
 mod settings;
 mod slideshow;
-#[cfg(target_os = "macos")]
+// Two halves again. `updater::manifest` decides whether a newer release exists and is pure, so
+// every host compiles and tests it; the acting half only exists where there's a way to deliver
+// an update, which leaves Linux with the policy and no caller for it.
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 mod updater;
 mod window;
 mod zoom;

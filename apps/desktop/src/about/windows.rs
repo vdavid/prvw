@@ -41,7 +41,6 @@ use windows::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, GetDpiForWindow, SystemParametersInfoForDpi,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
-use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, HSTRING, PCWSTR, w};
 
@@ -628,7 +627,9 @@ extern "system" fn window_proc(
         }
         WM_NOTIFY => {
             if let Some(url) = clicked_link_url(lparam) {
-                open_url(&url);
+                if let Err(e) = crate::platform::windows::open_url(&url) {
+                    log::warn!("{e}");
+                }
                 return LRESULT(0);
             }
         }
@@ -724,27 +725,6 @@ fn clicked_link_url(lparam: LPARAM) -> Option<String> {
     let url = &link.item.szUrl;
     let end = url.iter().position(|unit| *unit == 0).unwrap_or(url.len());
     (end > 0).then(|| String::from_utf16_lossy(&url[..end]))
-}
-
-/// Hand a URL to the default browser. Only ever ours, from [`super::content`].
-fn open_url(url: &str) {
-    let url = HSTRING::from(url);
-    // SAFETY: both strings outlive the call. `ShellExecuteW` returns a pseudo-`HINSTANCE` that
-    // is an error code below 32, which we don't act on: a browser that won't start is nothing
-    // this box can fix.
-    let result = unsafe {
-        ShellExecuteW(
-            None,
-            w!("open"),
-            PCWSTR(url.as_ptr()),
-            None,
-            None,
-            SW_SHOWNORMAL,
-        )
-    };
-    if result.0 as isize <= 32 {
-        log::warn!("Couldn't open {url} in a browser");
-    }
 }
 
 /// Whether a `WM_SETTINGCHANGE` is the one that means light/dark changed.

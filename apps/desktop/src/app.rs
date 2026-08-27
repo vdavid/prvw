@@ -19,7 +19,7 @@ use crate::pixels::{
     to_logical_size,
 };
 use crate::render::{renderer, text};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::updater;
 use crate::{
     TITLE_BAR_HEIGHT, color, decoding, exif_overlay, histogram, input, menu, navigation, qa,
@@ -792,9 +792,9 @@ impl App {
         ));
         self.retarget_active_folder_watch();
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         if settings::Settings::load().auto_update {
-            updater::check_and_update();
+            updater::check_on_launch();
         }
 
         // Directory launch: boot straight into browse mode with the folder revealed + selected in

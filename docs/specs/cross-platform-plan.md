@@ -324,15 +324,15 @@ Two things rule out the obvious workaround and point at a better one:
 - **Switching rustls to the `ring` provider does not remove the NASM requirement.** `ring` 0.17.14's `build.rs` also
   requires NASM on x86_64 Windows. `ring` 0.17.14 is already in `Cargo.lock` via `quinn-proto` and `rustls-webpki`, so
   this is checkable locally.
-- **`reqwest` appears in exactly four places**: `updater.rs:126` and `:175` (inside the macOS-gated `updater` module,
-  `main.rs:35-36`), and twice in the E2E harness (`tests/e2e/app.rs`). The harness talks **plain HTTP to `127.0.0.1`**
-  (`qa/server.rs:42`), so it needs no TLS provider at all.
+- **`reqwest` appears in exactly two areas**: the `updater` module, and the E2E harness (`tests/e2e/app.rs`). The
+  harness talks **plain HTTP to `127.0.0.1`** (`qa/server.rs`), so it needs no TLS provider at all.
 
 So: move `reqwest` into `[target.'cfg(target_os = "macos")'.dependencies]`, and add a dev-dependency with
 `default-features = false, features = ["blocking", "json"]` for the harness. Done in M0 step 7. That removes
 `aws-lc-sys` from the Windows target entirely, retires the NASM question, and shrinks the Windows binary. Keep
-installing `nasm` in CI as the fallback if something unexpected still pulls it in. (When M7 brings a Windows updater,
-it'll need a TLS story again; Schannel via `native-tls` is the C-free choice then.)
+installing `nasm` in CI as the fallback if something unexpected still pulls it in. (The Windows update check took the
+C-free route back to HTTPS: `reqwest` with `native-tls`, which binds Schannel through the pure-Rust `schannel` crate and
+leaves `aws-lc-sys` out. Both cross-checks stay green.)
 
 ### Cross-compiling from macOS: Windows works, Linux doesn't yet
 

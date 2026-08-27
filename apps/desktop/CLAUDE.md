@@ -42,14 +42,14 @@ src/
 ├── settings/                JSON persistence + Settings window shell + widgets + General panel + RAW panel (Phase 3.7)
 ├── slideshow/               Timer-driven auto-advance + crossfade + Slideshow settings panel + slideshow::State
 ├── previews/                Header-only dimensions (all platforms) + preview preload (QuickLook on macOS, our own pool on Windows)
-├── updater.rs               Auto-update
+├── updater.rs + updater/    Is a newer release out: portable policy, a macOS install, a Windows hand-off to the browser
 ├── window.rs                Main viewer window: create, fullscreen, auto-fit, vibrancy
 └── zoom/                    ViewState + zoom/pan math + Zoom settings panel + zoom::State
 ```
 
-Single-file features (`about.rs`, `diagnostics.rs`, `open_dialog.rs`, `updater.rs`, `window.rs`) use their `//!` module
-docs in place of a `CLAUDE.md`. Directory-based features have a colocated `CLAUDE.md` or rely on `//!` docs on each
-submodule (`onboarding/`).
+Single-file features (`about.rs`, `diagnostics.rs`, `open_dialog.rs`, `window.rs`) use their `//!` module docs in place
+of a `CLAUDE.md`. Directory-based features have a colocated `CLAUDE.md` or rely on `//!` docs on each submodule
+(`onboarding/`).
 
 ## What ships beside the code
 

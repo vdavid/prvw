@@ -6,19 +6,19 @@ Prvw is a fast, minimal image viewer for macOS written in Rust (`winit` + `wgpu`
 pic, see it instantly, zoom/pan, arrow keys for next/prev (preloaded in background), ESC to close. Free forever for
 personal use (BSL license). Website at [getprvw.com](https://getprvw.com).
 
-**Supported platforms.** macOS is the shipping target. Onboarding, QuickLook previews, and the updater are macOS-only.
-Windows has a native menu bar with working accelerators, its own About box under Help, its own Win32 settings dialog
-(`src/settings/windows/`), its own Win32 browse mode (`src/browser/windows/`), printing, preview placeholders of its own
-(`src/previews/generator.rs`, reading the shell thumbnail cache), display-profile matching (the differentiator: images
-transformed into the calibrated monitor's own ICC profile, re-read when the window crosses screens), and the
-cross-platform core (decode, RAW pipeline, color transform, settings, navigation, and the header-only dimension read
-that sizes the window before the first pixel paints). That is the whole parity table: 111 of 117 done, six not
-applicable, nothing missing. Linux has the core, no menu bar, no settings window, no browser, and no display profile.
-Windows deliberately gets no onboarding window, and the launch empty state is the whole of it there
-(`apps/desktop/src/onboarding/CLAUDE.md` says why). Neither ships a release yet, and `docs/parity.md` is the honest
-per-item picture. Anything you write has to at least compile for all three: check Windows and Linux from this Mac with
-`./scripts/check.sh --check windows-cross --check linux-cross` (see below), and prefer a cross-platform implementation
-over a `#[cfg]` fence when the cost is comparable.
+**Supported platforms.** macOS is the shipping target. Onboarding, QuickLook previews, and installing an update in place
+are macOS-only. Windows has a native menu bar with working accelerators, its own About box under Help, its own Win32
+settings dialog (`src/settings/windows/`), its own Win32 browse mode (`src/browser/windows/`), printing, preview
+placeholders of its own (`src/previews/generator.rs`, reading the shell thumbnail cache), a startup update check that
+opens the download in a browser (`src/updater/`), display-profile matching (the differentiator: images transformed into
+the calibrated monitor's own ICC profile, re-read when the window crosses screens), and the cross-platform core (decode,
+RAW pipeline, color transform, settings, navigation, and the header-only dimension read that sizes the window before the
+first pixel paints). That is the whole parity table: 111 of 117 done, six not applicable, nothing missing. Linux has the
+core, no menu bar, no settings window, no browser, and no display profile. Windows deliberately gets no onboarding
+window, and the launch empty state is the whole of it there (`apps/desktop/src/onboarding/CLAUDE.md` says why). Neither
+ships a release yet, and `docs/parity.md` is the honest per-item picture. Anything you write has to at least compile for
+all three: check Windows and Linux from this Mac with `./scripts/check.sh --check windows-cross --check linux-cross`
+(see below), and prefer a cross-platform implementation over a `#[cfg]` fence when the cost is comparable.
 
 **Never compare paths with `==` or `Path::starts_with`.** Both are byte-wise, and on Windows the same folder arrives
 spelled three ways: `canonicalize` returns `\\?\C:\...`, argv returns whatever the user typed, and a drive enumeration

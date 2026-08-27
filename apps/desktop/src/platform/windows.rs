@@ -20,7 +20,34 @@ use windows::Win32::System::Console::{
     GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetConsoleMode,
     SetStdHandle,
 };
-use windows::core::w;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::core::{HSTRING, PCWSTR, w};
+
+/// Hand a URL to whatever the person browses with.
+///
+/// The shell takes it and this returns straight away, which is why every "here's a web page"
+/// path in the app goes through here: nothing of ours opens, so there's no window to own and
+/// no message loop to nest inside winit's pump.
+pub fn open_url(url: &str) -> Result<(), String> {
+    let wide = HSTRING::from(url);
+    // SAFETY: both strings outlive the call. `ShellExecuteW` returns a pseudo-`HINSTANCE`
+    // that's an error code at or below 32.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(wide.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    if result.0 as isize <= 32 {
+        return Err(format!("Couldn't open {url} in a browser"));
+    }
+    Ok(())
+}
 
 /// Make sure this process's stderr goes somewhere a person can read, and report whether ANSI
 /// escapes will render there.

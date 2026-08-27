@@ -127,7 +127,7 @@ macro_rules! setting_keys {
 
 setting_keys! {
     // ── General panel ────────────────────────────────────────────────
-    /// Check for updates at startup. The updater itself is macOS-only today.
+    /// Check for updates at startup. macOS installs one; Windows opens the download page.
     AutoUpdate { label: "Auto-update", panel: General, control: Toggle, field: "auto_update", }
     /// Scroll wheel and trackpad zoom instead of navigating.
     ScrollToZoom { label: "Scroll to zoom", panel: General, control: Toggle, field: "scroll_to_zoom", }
