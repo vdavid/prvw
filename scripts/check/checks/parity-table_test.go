@@ -93,7 +93,7 @@ func TestParityTableRejectsAnEmptyGeneration(t *testing.T) {
 }
 
 func TestParityTableDiffNamesTheFirstDifference(t *testing.T) {
-	diff := parityTableDiff("same\nold line\ntail\n", "same\nnew line\ntail\n")
+	diff := generatedFileDiff("same\nold line\ntail\n", "same\nnew line\ntail\n")
 
 	if !strings.Contains(diff, "line 2") {
 		t.Errorf("the diff should point at line 2, got:\n%s", diff)
@@ -101,13 +101,13 @@ func TestParityTableDiffNamesTheFirstDifference(t *testing.T) {
 	if !strings.Contains(diff, "old line") || !strings.Contains(diff, "new line") {
 		t.Errorf("the diff should show both sides, got:\n%s", diff)
 	}
-	if diff := parityTableDiff("a\nb\n", "a\nb\n"); diff != "" {
+	if diff := generatedFileDiff("a\nb\n", "a\nb\n"); diff != "" {
 		t.Errorf("identical content reported a difference: %s", diff)
 	}
 }
 
 func TestParityTableDiffReportsALengthMismatch(t *testing.T) {
-	diff := parityTableDiff("a\n", "a\nb\n")
+	diff := generatedFileDiff("a\n", "a\nb\n")
 
 	if !strings.Contains(diff, "line 2") || !strings.Contains(diff, "b") {
 		t.Errorf("a shorter committed file should be reported, got:\n%s", diff)

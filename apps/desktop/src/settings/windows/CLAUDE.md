@@ -13,7 +13,7 @@ windows at the rects it's handed without deciding anything.
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------- |
 | `model.rs`      | Every tab, row, description, and trackbar range, plus `apply` (a control's new value → an `AppCommand`) and `value_of` (the reverse) | yes           |
 | `layout.rs`     | Where every control goes, in device pixels at the monitor's DPI, plus `ScrollState` for the RAW page                                 | yes           |
-| `file_types.rs` | The `HKCU` writes behind "Register Prvw's file types", and the extension list the page shows                                         | yes           |
+| `file_types.rs` | The `HKCU` writes behind "Register Prvw's file types", their inverse for an uninstall, and the extension list the page shows         | yes           |
 | `ids.rs`        | `WM_COMMAND` id ↔ (row, part). A collision here is a click changing the wrong setting                                                | yes           |
 | `template.rs`   | The in-memory `DLGTEMPLATE` bytes, DWORD-aligned                                                                                     | yes           |
 | `dialog.rs`     | The Win32 layer: create the windows, forward the messages                                                                            | no            |
@@ -61,10 +61,22 @@ queue a hundred of them. The macOS RAW sliders make the same call with `setConti
 default apps settings". Not 16 per-format toggles.
 
 **Why:** Windows removed programmatic default-handler setting in 10 20H2. `UserChoice` is hash-protected, and an app
-that writes there either fails or gets reset by the OS with a notification. What still works is the ProgID plus
-`OpenWithProgids`, which is what puts Prvw in "Open with" and in the Settings picker. `SettingKey::FileAssociations`
-stays `Present`: the capability is reachable, only the surface differs. `file_types.rs`'s
-`nothing_touches_the_user_choice` is the test that keeps a future contributor honest about it.
+that writes there either fails or gets reset by the OS with a notification. What still works is the ProgID,
+`OpenWithProgids`, and a `Capabilities` block announced in `RegisteredApplications`, which together put Prvw in "Open
+with" and give it a page of its own in the Settings picker. `SettingKey::FileAssociations` stays `Present`: the
+capability is reachable, only the surface differs. `file_types.rs`'s `nothing_touches_the_user_choice` is the test that
+keeps a future contributor honest about it.
+
+## Decision: `file_types.rs` is the only list, and the installer reads it too
+
+**Decision:** `registration` and `removal` are the whole story of what Prvw owns in the registry. The Windows installer
+compiles a generated NSIS include rendered from those two functions by `cargo xtask installer-registry`, and
+`./scripts/check.sh --check installer` fails when the two disagree.
+
+**Why:** the button on this page is the repair path for a registration the installer made, so the two writing different
+keys would mean repairing something into a state the install never produced. NSIS can't link a Rust crate to ask, and
+the alternative was a hand-written list in the `.nsi` that drifts the first time a format is added to
+`decoding::dispatch`. `an_uninstall_takes_back_every_key_it_wrote` is what keeps `removal` the exact inverse.
 
 ## Gotcha: a read-only edit sends `WM_CTLCOLORSTATIC`, so the message can't pick the colour
 

@@ -78,7 +78,7 @@ func compareParityTable(ctx *CheckContext, path string, generated string) (Check
 		}
 		return CheckResult{}, fmt.Errorf(
 			"%s no longer matches the registries. Run `./scripts/check.sh --check parity` locally and commit the result.\n%s",
-			filepath.Base(path), parityTableDiff(string(committed), generated))
+			filepath.Base(path), generatedFileDiff(string(committed), generated))
 	}
 
 	if err := os.WriteFile(path, []byte(generated), 0644); err != nil {
@@ -91,16 +91,17 @@ func compareParityTable(ctx *CheckContext, path string, generated string) (Check
 	return result, nil
 }
 
-// parityTableDiff names the first few lines where the committed file and the freshly generated
-// table disagree, quoted so trailing whitespace and empty lines are unambiguous.
-func parityTableDiff(committed, generated string) string {
+// generatedFileDiff names the first few lines where a committed generated file and a freshly
+// generated one disagree, quoted so trailing whitespace and empty lines are unambiguous. Shared
+// with the Windows installer check, which regenerates its NSIS include the same way.
+func generatedFileDiff(committed, generated string) string {
 	committedLines := strings.Split(committed, "\n")
 	generatedLines := strings.Split(generated, "\n")
 
 	var sb strings.Builder
 	shown := 0
 	for i := range max(len(committedLines), len(generatedLines)) {
-		before, after := parityLineAt(committedLines, i), parityLineAt(generatedLines, i)
+		before, after := generatedLineAt(committedLines, i), generatedLineAt(generatedLines, i)
 		if before == after {
 			continue
 		}
@@ -114,8 +115,8 @@ func parityTableDiff(committed, generated string) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// parityLineAt quotes one line, or says the file ended before it.
-func parityLineAt(lines []string, i int) string {
+// generatedLineAt quotes one line, or says the file ended before it.
+func generatedLineAt(lines []string, i int) string {
 	if i >= len(lines) {
 		return "(end of file)"
 	}

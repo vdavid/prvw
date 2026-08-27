@@ -2,6 +2,10 @@
 
 How to release a new version of Prvw. Use the `/release` command to start.
 
+**macOS is the only platform that ships automatically.** Everything from "Prerequisites" to the end of the
+troubleshooting section is the macOS story. The Windows installer builds on demand from a Mac and isn't wired into the
+release workflow yet: [Windows](#windows) says what exists and what's left.
+
 ## Prerequisites
 
 - GitHub secrets configured (same Apple Developer account as Cmdr):
@@ -62,6 +66,69 @@ launchctl list | grep prvw   # PID > 0, last exit 0
 The workflow still carries its self-hosted-specific guards (the stale-`/Volumes/Prvw` detach, the keychain search-list
 restore), so nothing else has to change. Restore the `caffeinate` discipline in `/release` too, or sleep will keep
 killing builds.
+
+## Windows
+
+The Windows installer is `PrvwSetup-<version>-x64.exe`, built by NSIS. `makensis` runs natively on macOS, so the whole
+artifact comes off the same Mac that cross-compiles the exe, with no Windows machine involved.
+
+### Build one
+
+```bash
+brew install makensis                     # once; apt install nsis on Linux
+./scripts/check.sh --check windows-cross  # once, to create target/cross-check-bin/llvm-lib
+./scripts/build-windows-installer.sh
+```
+
+That cross-builds `prvw.exe` with `cargo-xwin`, regenerates the file-type registration, and writes
+`target/windows-installer/PrvwSetup-<version>-x64.exe`. About 17 MB from a 36 MB executable, and a couple of minutes
+cold. Pass `--exe <path>` to package a binary someone else built, which is what a Windows release runner would do.
+
+The version comes from `apps/desktop/Cargo.toml` and nowhere else: the script reads it, the exe's own version info comes
+from the same field through `build.rs`, and `./scripts/check.sh --check installer` fails if `prvw.nsi` ever spells a
+version out.
+
+### What the installer does
+
+- Installs per user into `$LOCALAPPDATA\Programs\Prvw`, so there's no UAC prompt at any point.
+- Adds a `Prvw` shortcut to the Start menu and an entry to Apps & features, both under `HKCU`.
+- Registers Prvw's file types: a ProgID, `OpenWithProgids` on every extension the decoder handles, and a `Capabilities`
+  block that gives Prvw its own page under Settings → Apps → Default apps. It can't _set_ the default, and nothing can:
+  Windows 10 20H2 took that away from apps. The user picks.
+- Refuses to install over a running Prvw, with a retry.
+- Uninstalls cleanly, including taking the file types back out.
+
+`apps/desktop/installer/windows/CLAUDE.md` has the decisions and the gotchas.
+
+### Signing, which isn't wired up yet
+
+Azure Trusted Signing is the plan (M1 step 16 in `docs/specs/cross-platform-plan.md`), and the account is David's to set
+up. The hook is already there: `scripts/build-windows-installer.sh` runs `$PRVW_WINDOWS_SIGN_CMD <file>` if that
+variable is set, once for `prvw.exe` before packaging and once for the finished installer.
+
+```bash
+PRVW_WINDOWS_SIGN_CMD=/path/to/sign-one-file.sh ./scripts/build-windows-installer.sh
+```
+
+The command has to sign in place and exit non-zero on failure. Two things to know when the account exists:
+
+- **Signing needs a Windows host.** `signtool` and the Trusted Signing dispatcher are Windows binaries, so the signed
+  build belongs on a `windows-latest` runner even though the unsigned one doesn't.
+- **The uninstaller stays unsigned** with a single pass. NSIS generates `Uninstall Prvw.exe` by running the installer at
+  build time, so signing it means building twice: build once, run the installer with `/S` into a scratch directory to
+  extract the uninstaller, sign that, then build again with the signed copy included as a plain `File`. Worth doing
+  before the first paid release; not worth doing before there's a certificate.
+
+Expect SmartScreen warnings for the first few hundred downloads whatever the certificate says. EV certificates lost
+their reputation bypass in 2024.
+
+### What's left before Windows can ship
+
+1. A `windows-latest` build leg in `.github/workflows/release.yml`, running the same script with `--exe`.
+2. Trusted Signing in that leg, the way the Apple certificate import already works.
+3. `latest.json` extended to carry per-platform artifacts, and the Windows updater that reads it (M7 step 4).
+4. One pass through the installer on a real Windows box. Nothing in it has ever run; the list of what to watch is at the
+   bottom of `apps/desktop/installer/windows/CLAUDE.md`.
 
 ## Troubleshooting
 

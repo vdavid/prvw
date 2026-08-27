@@ -102,6 +102,11 @@ jobs:
       - name: Check the parity table
         run: ./scripts/check/check --check parity --ci
 
+      # Same reasoning, over the Windows installer's generated registry include. It needs no
+      # makensis: the check compares text and reads two facts out of `prvw.nsi`.
+      - name: Check the Windows installer's sources
+        run: ./scripts/check/check --check installer --ci
+
       # `tests/e2e_shared.rs` compiles here but skips itself: the runner has no `DISPLAY`, so
       # the app can't open the window every test needs. Give this job a session (`xvfb-run`)
       # and the 41 tests start running with no change on the Rust side.

@@ -77,6 +77,7 @@ These are general principles for the whole project. We live these:
 This is a monorepo:
 
 - `apps/desktop/` - The Rust desktop app (`winit` + `wgpu` + `muda`)
+  - `installer/windows/` - The NSIS installer, built from macOS by `scripts/build-windows-installer.sh`
 - `apps/website/` - getprvw.com marketing website (Astro + Tailwind v4)
 - `xtask/` - Dependency-free repo tasks that read the app's registries without building it (`cargo xtask parity`)
 - `scripts/check/` - Go-based unified check runner

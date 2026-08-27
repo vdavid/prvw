@@ -81,6 +81,16 @@ var AllChecks = []CheckDefinition{
 		DependsOn:   nil,
 		Run:         RunParityTable,
 	},
+	{
+		ID:          "desktop-windows-installer",
+		Nickname:    "installer",
+		DisplayName: "Windows installer",
+		App:         AppDesktop,
+		Tech:        "🦀 Rust",
+		// Both generators share `target/xtask`, and cargo takes a lock on it.
+		DependsOn: []string{"desktop-rust-parity-table"},
+		Run:       RunWindowsInstaller,
+	},
 
 	// Website - Astro checks
 	{

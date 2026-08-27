@@ -444,9 +444,12 @@ Onboarding includes Microsoft's identity validation of the company, which is cal
 the account during M1** rather than M7, so validation runs in parallel with the work. Budget for reputation-building on
 top: the first few hundred downloads will see SmartScreen warnings whatever we sign with.
 
-**Installer:** a bare `.exe` runs, but a paid product wants an installer for file-type registration, Start menu entry,
-uninstall, and update handoff. WiX (MSI), Inno Setup, or NSIS. MSIX is the modern option and gives clean install and
-uninstall, but its sandbox complicates both the auto-updater and the QA server's localhost port.
+**Installer:** NSIS, and it cross-builds. `makensis` runs natively on macOS and ships the Windows stubs and plugins
+prebuilt, so `./scripts/build-windows-installer.sh` emits a real `PrvwSetup-<version>-x64.exe` from the same Mac that
+cross-compiles the exe. That's the whole reason it beat the alternatives: WiX v4+ is a .NET tool that still needs
+Windows components outside .NET (the usual Linux recipe runs it under Wine), Inno Setup's compiler is Windows-only, and
+MSIX needs the Windows SDK to pack, on top of a sandbox that would complicate both the auto-updater and the QA server's
+localhost port.
 
 ## Decisions
 
@@ -1175,12 +1178,17 @@ the dark-mode ordinals, and the `SysLink` colours all want eyes on real hardware
 The Azure Trusted Signing account should already be validated if M1 step 16 happened. If not, this milestone stalls on
 Microsoft rather than on us.
 
-1. **Installer.** WiX/MSI, Inno Setup, or MSIX. Recommend Inno or WiX over MSIX for v1: MSIX's sandbox complicates both
-   the auto-updater and the QA server's localhost port.
+1. **Installer: done, NSIS.** `apps/desktop/installer/windows/prvw.nsi`, built from a Mac by
+   `./scripts/build-windows-installer.sh`. NSIS won on the one criterion that mattered: `makensis` compiles a Windows
+   installer on macOS, and none of the others do (WiX v4+ is a .NET tool but still wants Windows components outside
+   .NET, Inno's compiler is Windows-only, MSIX needs the Windows SDK to pack). Per-user into
+   `$LOCALAPPDATA\Programs\Prvw`, so no UAC prompt anywhere. Nothing in it has run on Windows yet.
 2. **Signing.** Wire Trusted Signing into the release workflow the way the Apple certificate import already is. Expect
    SmartScreen warnings for the first stretch regardless.
-3. **File-type registration** in the installer: ProgIDs, `OpenWithProgids`, `RegisteredApplications`, icons. Plus the
-   in-app "make Prvw your default" flow that opens Windows Settings.
+3. **File-type registration: done.** ProgID, `OpenWithProgids`, `RegisteredApplications`, `Capabilities`, and icons, all
+   rendered from `settings::windows::file_types` by `cargo xtask installer-registry` so the installer and the in-app
+   repair button write one list. The "make Prvw your default" flow was already there: the File associations page
+   deep-links to `ms-settings:defaultapps`, which is as far as any app can go since 10 20H2.
 4. **Auto-updater.** Rewrite for Windows: the rename-running-exe swap plus restart, or hand off to the installer. Reuse
    the `latest.json` manifest and version-comparison logic (portable); replace everything below it. This is where a
    Windows TLS story becomes necessary again, and Schannel via `native-tls` is the C-free choice.

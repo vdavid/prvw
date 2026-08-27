@@ -71,6 +71,10 @@ every platform.
 `window.rs` loads the icon back out of the running executable (`RT_GROUP_ICON` 1) for the title bar and taskbar, so
 resource id 1 is shared between the build script and the window code.
 
+`installer/windows/` wraps that exe in `PrvwSetup-<version>-x64.exe`. NSIS, because `makensis` is the one installer
+toolchain that compiles a Windows installer on a Mac; `scripts/build-windows-installer.sh` is the whole command, and
+`installer/windows/CLAUDE.md` has the decisions.
+
 ## Per-feature state
 
 `App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`, `browser: browser::State`, and
