@@ -192,6 +192,16 @@ pub fn title(key: MenuItemKey, label: &str) -> String {
     text
 }
 
+/// The same, for an item that shouldn't advertise its key right now. The **mnemonic stays** —
+/// Alt+N then I has to keep working in both of a flipping item's states — and only the shortcut
+/// column goes.
+pub fn title_without_hint(key: MenuItemKey, label: &str) -> String {
+    let Some(decoration) = decoration(key) else {
+        return label.to_string();
+    };
+    with_mnemonic(decoration.label.unwrap_or(label), decoration.mnemonic)
+}
+
 /// A top-level menu's own title, with its mnemonic. Alt+F then O is how a lot of Windows users
 /// drive a menu bar, and a bar without mnemonics is one of the clearest tells that an app was
 /// ported rather than written for Windows.

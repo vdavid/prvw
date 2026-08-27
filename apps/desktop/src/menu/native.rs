@@ -266,7 +266,9 @@ fn set_enabled(item: &Option<CheckMenuItem>, enabled: bool) {
 fn browse_toggle_title(browsing: bool) -> String {
     let key = MenuItemKey::BrowseToggle;
     if browsing {
-        "Image view".to_string()
+        // No hint, but the mnemonic stays: on Windows, Alt+N then I has to keep working in both
+        // of the item's states, and only the shortcut column is a claim about a key.
+        chrome::title_without_hint(key, "Image view")
     } else {
         chrome::title(key, key.label())
     }
@@ -829,6 +831,24 @@ mod tests {
     /// what brings the item back rather than an edit to this file. Print left the list in M3
     /// along with its context-menu twin, About left it in M6, and Settings in M4: the mechanism
     /// working four times.
+    /// The Navigate menu's first item flips its label with the mode, and on Windows an item's
+    /// mnemonic has to survive the flip: Alt+N then I means the same thing in both states. The
+    /// shortcut column doesn't survive it, and shouldn't — once you're in the browser the
+    /// focused pane owns Enter, so advertising it would be a claim about a key that doesn't act.
+    #[test]
+    fn the_browse_item_keeps_its_mnemonic_when_it_flips() {
+        let viewing = browse_toggle_title(false);
+        let browsing = browse_toggle_title(true);
+        assert!(viewing.contains("Image browser"), "{viewing:?}");
+        assert!(browsing.contains("Image view"), "{browsing:?}");
+        if cfg!(target_os = "windows") {
+            assert!(viewing.contains('&'), "{viewing:?}");
+            assert!(browsing.contains('&'), "{browsing:?}");
+            assert!(viewing.contains("Enter"), "{viewing:?}");
+            assert!(!browsing.contains("Enter"), "{browsing:?}");
+        }
+    }
+
     #[test]
     fn platforms_without_the_feature_dont_offer_the_item() {
         assert_eq!(

@@ -18,6 +18,12 @@ pub fn title(key: MenuItemKey, label: &str) -> String {
     format!("{label}{}", key.hint())
 }
 
+/// The same, for an item that shouldn't advertise its key right now. macOS puts the hint in the
+/// label itself, so dropping it is just leaving it off.
+pub fn title_without_hint(_key: MenuItemKey, label: &str) -> String {
+    label.to_string()
+}
+
 /// A top-level menu's own title. macOS wants it plain.
 pub fn menu_title(title: &'static str) -> String {
     title.to_string()
