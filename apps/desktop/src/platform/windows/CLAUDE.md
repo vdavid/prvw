@@ -4,14 +4,14 @@ Windows-specific glue. Mirrors `platform/macos/`: `windows.rs` beside this direc
 warrant a file (console attach, installed RAM, the wheel and double-click preferences, the system UI font name, the
 monitor work area), and anything with real substance gets its own module here.
 
-| File                | Purpose                                                                                                          |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `clipboard.rs`      | Copy the current image to the clipboard as the original file plus sRGB pixels (Edit → Copy, Ctrl+C, right-click) |
-| `dark_mode.rs`      | Dark chrome for our Win32 windows: the `uxtheme` ordinals, and the pure decision about when to use them          |
+| File                | Purpose                                                                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clipboard.rs`      | Copy the current image to the clipboard as the original file plus sRGB pixels (Edit → Copy, Ctrl+C, right-click)                              |
+| `dark_mode.rs`      | Dark chrome for our Win32 windows: the `uxtheme` ordinals, and the pure decision about when to use them                                       |
 | `msg_hook.rs`       | The one hook in winit's message pump: display changes, menu accelerators, and the seam the About box and the settings dialog register through |
-| `print.rs`          | File → Print: `PrintDlgW` on a worker thread, then the image drawn onto one page with GDI                        |
-| `ui_common.rs`      | The sRGB re-decode Copy and Print share                                                                          |
-| `window_capture.rs` | Debug-only window photograph for the QA server's `screenshot_window` tool                                        |
+| `print.rs`          | File → Print: `PrintDlgW` on a worker thread, then the image drawn onto one page with GDI                                                     |
+| `ui_common.rs`      | The sRGB re-decode Copy and Print share                                                                                                       |
+| `window_capture.rs` | Debug-only window photograph for the QA server's `screenshot_window` tool                                                                     |
 
 Everything here is behind `#[cfg(target_os = "windows")]` at the `platform` import site, so a Mac never compiles it.
 `./scripts/check.sh --check windows-cross` is what gives it a feedback loop.
