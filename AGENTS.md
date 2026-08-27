@@ -116,11 +116,16 @@ Always use the checker script for compilation, linting, formatting, and tests. I
 Windows machine, so Windows-only code gets a real feedback loop. It's marked slow, so a plain `./scripts/check.sh`
 leaves it out.
 
-One-time setup:
+Setup:
 
 - `cargo install cargo-xwin --locked`
 - `rustup target add x86_64-pc-windows-msvc`
 - `rustup component add llvm-tools`
+
+The `rustup` lines are per-toolchain: `rust-toolchain.toml` pins an exact version, so a Renovate bump lands a toolchain
+that carries neither the target nor the component and the check says so by name. Run them again after a bump. They stay
+out of `[toolchain]` on purpose, since listing them would make all five CI jobs download two extra standard libraries
+for a check that only runs on a developer's Mac.
 
 The first run downloads the MSVC CRT and Windows SDK headers into `~/Library/Caches/cargo-xwin/`, which takes about a
 minute; later runs are incremental and finish in seconds. The check links rustup's `llvm-ar` into
@@ -150,10 +155,10 @@ llvm-readobj --file-headers --coff-resources target/x86_64-pc-windows-msvc/debug
 what a good build looks like.
 
 `./scripts/check.sh --check linux-cross` is the Linux twin: the same clippy run against `x86_64-unknown-linux-gnu`, also
-slow-marked. One-time setup is `rustup target add x86_64-unknown-linux-gnu` and `mise install zig@latest`. zig supplies
-the Linux C toolchain that `zstd-sys` needs, since Apple's command line tools cross-compile to nothing. The check writes
-its own `cc` and `ar` wrappers into `target/cross-check-bin/`; they exist because cc-rs passes the Rust triple as
-`--target=x86_64-unknown-linux-gnu`, which zig can't parse.
+slow-marked. Setup is `rustup target add x86_64-unknown-linux-gnu` (again, per-toolchain) and `mise install zig@latest`.
+zig supplies the Linux C toolchain that `zstd-sys` needs, since Apple's command line tools cross-compile to nothing. The
+check writes its own `cc` and `ar` wrappers into `target/cross-check-bin/`; they exist because cc-rs passes the Rust
+triple as `--target=x86_64-unknown-linux-gnu`, which zig can't parse.
 
 zig is deliberately **not** in `.mise.toml`: pinning it would make all five CI jobs download it for a check that only
 runs on a developer's Mac. The check finds it through `mise where zig` instead.
