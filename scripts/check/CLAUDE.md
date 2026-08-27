@@ -134,6 +134,10 @@ are load-bearing:
 The Rust checks all run workspace-wide (`cargo fmt --all`, `cargo clippy --workspace`, `cargo nextest run --workspace`),
 so the `xtask` crate is linted, formatted, cross-checked, and tested by the same runs as the app.
 
+The runner captures nextest's output and prints it when the check finishes, so a run that never finishes prints nothing
+at all. `.config/nextest.toml` therefore sets `slow-timeout` with `terminate-after`: a stuck test is killed and named
+rather than taking the whole CI leg to its job timeout and leaving no evidence.
+
 `PRVW_TEST_NO_FAIL_FAST=1` adds `--no-fail-fast` to the nextest run (`nextestArgs`). nextest cancels the whole run on
 the first test failure, which is what you want day to day and the opposite of what you want on a platform with no track
 record: one cycle reports one defect and leaves the other 900 unexecuted. CI's Windows job sets it and the other two

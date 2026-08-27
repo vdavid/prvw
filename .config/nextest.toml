@@ -8,6 +8,16 @@
 # (thread count stays at the default, one per core).
 retries = 2
 
+# Kill a test that stops making progress, and name it. No test here should take a minute: the E2E
+# ones spawn the real binary and wait on barriers of at most ten seconds, and the rest are pure, so
+# the whole suite ran in about two minutes when it was healthy. A test past three 60-second periods
+# is not slow, it is stuck.
+#
+# Without this one hung test takes the entire CI leg to its 60-minute job timeout, and because the
+# check runner buffers nextest's output, the log then says nothing at all about which test it was —
+# an hour spent to learn nothing. `terminate-after` turns that into a named TIMEOUT line.
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # macOS fullscreen is a Space transition, and several running at once crawl: with the
 # suite at full parallelism the transitions took over 45 s and the fullscreen tests timed
 # out. Retries don't help — the next attempt is just as loaded. Run them one at a time
