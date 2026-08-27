@@ -1,0 +1,129 @@
+# Browse mode on Windows
+
+Explorer's shape and ACDSee's: a `SysTreeView32` folder tree, a virtual `SysListView32` thumbnail grid, a splitter the
+container draws itself, and a status bar along the bottom. The macOS twin is `browser/` (an `NSOutlineView` plus an
+`NSCollectionView`); this is deliberately **not** a port of it. Full design:
+[`docs/specs/windows-ui-design.md`](../../../../docs/specs/windows-ui-design.md) → "Browse mode".
+
+| File                | Purpose                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `roots.rs`          | What the tree shows at its top level: known folders, drive letters, their labels, hidden-entry policy. Pure  |
+| `layout.rs`         | Where the four children go, in device pixels at the monitor's DPI, plus the grid's visible-range maths. Pure |
+| `status.rs`         | What the status bar's three panes say. Pure                                                                  |
+| `keys.rs`           | The three keys the panes take, and the many they leave to the controls. Pure                                 |
+| `thumbnail.rs`      | Preview pixels → the square, top-down BGRA canvas an image list slot takes. Pure                             |
+| `selection_meta.rs` | One worker measuring the selected image's pixel size, for the status bar                                     |
+| `shell_roots.rs`    | The Win32 half of `roots`: `SHGetKnownFolderPath`, `GetLogicalDrives`, `GetVolumeInformationW`               |
+| `ui/mod.rs`         | The container window, its procedure, the layout, the status bar, the splitter, the panes' key subclass       |
+| `ui/tree.rs`        | The treeview: rows, lazy children, selection, the reveal walk                                                |
+| `ui/grid.rs`        | The listview: virtual items, the image list, thumbnails, selection                                           |
+
+**The split.** Everything but `shell_roots` and `ui` compiles on every platform and is tested on a Mac. The Win32 layer
+decides as little as it can, which is the split that made the settings dialog land in one pass. Nothing in `ui/` has
+ever executed on Windows.
+
+## The swap, and why it's safe
+
+Image mode is a wgpu surface on winit's HWND; browse mode is a **single container child window** covering the whole
+client area. They never overlap: one is shown and the other hidden.
+
+macOS needs this because a transparent Metal pixel occludes what's behind it. Windows needs it for a different reason:
+wgpu's DX12 backend uses a **flip-model swapchain**, which composes as its own DWM visual rather than respecting GDI's
+child-window clipping, so a control "in front of" it is not reliably in front of it. One window to show and hide is safe
+by construction either way.
+
+**Decision: stop presenting while the browser is up.** **Why:** `App::enter_view_mode` clears the image, paints one
+frame, and then stops asking for redraws, so no `Present` happens while browse mode is visible and there is nothing to
+paint over the controls. It also lets the GPU go idle, which is what `AGENTS.md`'s "respect resources" asks for. The
+container repaints itself opaquely in `WM_ERASEBKGND` and owns the client area.
+
+## Where the state lives
+
+**Decision: one thread-local `RefCell<Option<Ui>>`, not a struct the caller holds.** **Why:** a window procedure has to
+reach the models — `LVN_GETDISPINFO` asks for a cell's text while `WM_NOTIFY` is on the stack — and it has no way to
+borrow through whatever `browser::State` is holding. `settings::windows::dialog` does the same, for the same reason.
+`BrowseUi` is therefore an empty handle; everything real is in `UI`.
+
+**Gotcha: never hold the borrow across a call into Win32.** **Why:** `SendMessageW` dispatches to a window procedure
+synchronously, and that procedure reaches back in here. A `RefCell` already borrowed panics. `with_ui` / `with_ui_mut`
+take the borrow, do the work, and drop it; anything that needs both a read and a Win32 call reads first, then calls.
+
+## The tree
+
+- **`SetWindowTheme(tree, "Explorer")` is the single highest-value line here.** Without it the treeview draws Windows 95
+  plus-and-minus boxes; with it, Explorer's chevrons and hot-tracking. It comes through
+  `platform::windows::dark_mode::apply_to_window`, which picks `DarkMode_Explorer` when the system is dark, so light and
+  dark are one call site.
+- **A row's path lives in an arena, and its index in the row's `lParam`.** `HTREEITEM` is an opaque handle with nowhere
+  to hang a `PathBuf`, and boxing one per row would leak on `TVM_DELETEITEM`.
+- **Rows are looked up case-insensitively**, through `PathPolicy::windows().display().to_lowercase()`. NTFS is
+  case-insensitive and one folder reaches the tree spelled three ways: what the user typed, what `canonicalize`
+  returned, and what a drive enumeration produced.
+- **Children never load on the main thread.** A node claims one child so a chevron shows, the first expand starts a
+  `TreeScanner` scan, and `BrowseTreeChildrenLoaded` fills the rows and corrects the claim. Same `ChildCache` state
+  machine macOS uses.
+- **The reveal walk is asynchronous for the same reason**: expanding an unscanned node would find no children. It
+  expands one level, waits for the delivery, and steps on.
+
+**Decision: one generic folder icon for every row.** **Why:** per-row shell icons mean `SHGetFileInfoW` without
+`SHGFI_USEFILEATTRIBUTES`, which Microsoft's own docs say should not be called from a UI thread, and which blocks for
+tens of seconds on a disconnected mapped drive. We ask once, with the attributes flag, and every row wears that answer.
+The visible cost is that a drive row shows a folder rather than a disk.
+
+**Gotcha: `GetVolumeInformationW` blocks on a disconnected network drive.** **Why:** it waits out the SMB timeout, on
+the event loop's thread. `shell_roots` never asks a `DRIVE_REMOTE` letter for its label; it gets its drive-type name
+instead.
+
+**Gotcha: touching an empty optical drive puts up a system dialog.** **Why:** Windows shows "There is no disk in the
+drive", which runs its own message loop. `SetThreadErrorMode(SEM_FAILCRITICALERRORS)` around the enumeration is what
+Explorer sets to suppress it.
+
+## The grid
+
+- **`LVS_OWNERDATA` makes it virtual.** A 5,000-image folder costs one `LVM_SETITEMCOUNT`; the listview asks for a
+  cell's text and image as it draws.
+- **Thumbnails come from `previews::generator`**, which on Windows reads Explorer's own `thumbcache_*.db` through
+  `IShellItemImageFactory`. A folder Explorer has visited paints from cache rather than from a decode.
+
+**Decision: a fixed pool of image list slots, recycled by hand.** **Why:** an `HIMAGELIST` can't remove an image without
+renumbering every image after it, and eviction is the whole point of the byte-budget cache. The list is created at a
+fixed count, a slot is claimed on arrival and returned on eviction, and `ImageList_Replace` writes into a slot that
+keeps its number. The cache's budget is computed from the same count, so eviction can never fail for want of a slot.
+
+**Decision: the visible range is arithmetic, not a message.** **Why:** `LVM_GETTOPINDEX` and `LVM_GETCOUNTPERPAGE` are
+documented for report and list view only, and in icon view the second answers with the whole folder.
+`layout::visible_range` computes it from `LVM_GETORIGIN` and the icon spacing we set ourselves — and being arithmetic,
+it is asserted from a Mac. `LVN_ODCACHEHINT` widens it on scroll.
+
+**Gotcha: a `LVN_GETDISPINFO` text pointer has to outlive the notification.** **Why:** the listview reads `pszText`
+after the handler returns. The buffer lives in `GridState::label`; one cell is asked about at a time, so one buffer is
+enough.
+
+**Gotcha: image list bitmaps are BGRA and top-down.** **Why:** a DIB stores blue first, and the DIB section is created
+with a negative `biHeight`. `thumbnail::compose_slot` does both conversions in the pass that letterboxes, and its tests
+pin the row order — getting it backwards shows every thumbnail upside down.
+
+## Keyboard
+
+The panes hold the focus, so winit delivers no keyboard input in browse mode and `input::browse_key_to_command` never
+fires here. A `SetWindowSubclass` on each pane takes Tab, Enter, and Esc (`keys::browse_keydown_command`) and lets
+everything else through, which is what keeps arrow selection, page keys, Home, End, and type-select native. Backspace
+goes to the parent folder in the tree, as a native move rather than a command.
+
+**Gotcha: a bare-key menu accelerator fires inside the panes.** **Why:** `platform::windows::msg_hook` translates
+accelerators against the **main** window whatever has focus, which is right for Ctrl+O and wrong for Home. So `Home` and
+`End` are hints on Windows rather than real accelerators, and `input::key_to_command` maps them in image mode, where
+winit delivers them. Any future bare-key accelerator has the same problem.
+
+## The status bar
+
+Windows-only by decision (`docs/specs/windows-ui-design.md` → "The browse-mode status bar"). Three panes: how many
+images the folder holds, which one is selected, and how big it is. The size comes from `selection_meta`, a worker of its
+own — reading a JPEG header is microseconds locally and a round trip on a NAS, and nothing in browse mode touches the
+disk on the main thread.
+
+## What still needs a Windows box
+
+All of `ui/` and `shell_roots`. Every call is against documented behaviour and the API shapes are checked by
+`./scripts/check.sh --check windows-cross`, but none of it has run. The shared E2E suite (`tests/e2e_shared.rs`, gated
+on `BrowseMode` / `BrowseFocus` / `BrowseOpenSelected`) is what will say so first.

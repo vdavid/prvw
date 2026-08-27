@@ -6,18 +6,19 @@ Prvw is a fast, minimal image viewer for macOS written in Rust (`winit` + `wgpu`
 pic, see it instantly, zoom/pan, arrow keys for next/prev (preloaded in background), ESC to close. Free forever for
 personal use (BSL license). Website at [getprvw.com](https://getprvw.com).
 
-**Supported platforms.** macOS is the shipping target and the only one with the full feature set: the browse-mode AppKit
-UI, onboarding, QuickLook previews, and the updater are all macOS-only. Windows has a native menu bar with working
-accelerators, its own About box under Help, its own Win32 settings dialog (`src/settings/windows/`), printing, preview
-placeholders of its own (`src/previews/generator.rs`, reading the shell thumbnail cache), display-profile matching (the
-differentiator: images transformed into the calibrated monitor's own ICC profile, re-read when the window crosses
-screens), and the cross-platform core (decode, RAW pipeline, color transform, settings, navigation, and the header-only
-dimension read that sizes the window before the first pixel paints). Linux has the core, no menu bar, no settings
-window, and no display profile. Windows deliberately gets no onboarding window, and the launch empty state is the whole
-of it there (`apps/desktop/src/onboarding/CLAUDE.md` says why). Neither ships a release yet, and `docs/parity.md` is the
-honest per-item picture. Anything you write has to at least compile for all three: check Windows and Linux from this Mac
-with `./scripts/check.sh --check windows-cross --check linux-cross` (see below), and prefer a cross-platform
-implementation over a `#[cfg]` fence when the cost is comparable.
+**Supported platforms.** macOS is the shipping target. Onboarding, QuickLook previews, and the updater are macOS-only.
+Windows has a native menu bar with working accelerators, its own About box under Help, its own Win32 settings dialog
+(`src/settings/windows/`), its own Win32 browse mode (`src/browser/windows/`), printing, preview placeholders of its own
+(`src/previews/generator.rs`, reading the shell thumbnail cache), display-profile matching (the differentiator: images
+transformed into the calibrated monitor's own ICC profile, re-read when the window crosses screens), and the
+cross-platform core (decode, RAW pipeline, color transform, settings, navigation, and the header-only dimension read
+that sizes the window before the first pixel paints). That is the whole parity table: 111 of 117 done, six not
+applicable, nothing missing. Linux has the core, no menu bar, no settings window, no browser, and no display profile.
+Windows deliberately gets no onboarding window, and the launch empty state is the whole of it there
+(`apps/desktop/src/onboarding/CLAUDE.md` says why). Neither ships a release yet, and `docs/parity.md` is the honest
+per-item picture. Anything you write has to at least compile for all three: check Windows and Linux from this Mac with
+`./scripts/check.sh --check windows-cross --check linux-cross` (see below), and prefer a cross-platform implementation
+over a `#[cfg]` fence when the cost is comparable.
 
 **Never compare paths with `==` or `Path::starts_with`.** Both are byte-wise, and on Windows the same folder arrives
 spelled three ways: `canonicalize` returns `\\?\C:\...`, argv returns whatever the user typed, and a drive enumeration
@@ -25,11 +26,13 @@ uppercases. `src/paths.rs` owns the rule, holds each platform's policy as data s
 where a verbatim prefix may be stripped (display and shell APIs) and where it must not (filesystem I/O, or deep
 libraries stop opening).
 
-The main window has two top-level screens that swap: **image mode** (the wgpu viewer) and **browse mode** (a macOS-only
-native AppKit folder tree + thumbnail grid; `src/browser/`). Enter (in image mode) enters browse; `f`/`F11` keep
-toggling fullscreen (Enter no longer does). A directory CLI argument boots into browse at that folder. Off macOS neither
-exists yet (M5): Enter does nothing there, the menu doesn't offer the browser, and a directory argument opens the
-folder's images in image mode instead. See `docs/specs/image-browser.md` and `src/browser/CLAUDE.md`.
+The main window has two top-level screens that swap: **image mode** (the wgpu viewer) and **browse mode** (a native
+folder tree + thumbnail grid; `src/browser/`). Enter (in image mode) enters browse; `f`/`F11` keep toggling fullscreen
+(Enter no longer does). A directory CLI argument boots into browse at that folder. macOS builds the browser out of
+AppKit and Windows out of Win32 common controls; the two look deliberately different and share every model underneath.
+Linux has no browser: Enter does nothing there, the menu doesn't offer it, and a directory argument opens the folder's
+images in image mode instead. See `docs/specs/image-browser.md`, `src/browser/CLAUDE.md`, and
+`src/browser/windows/CLAUDE.md`.
 
 **How a file reaches the app.** A path on the command line, a Finder double-click (macOS, through an Apple Event),
 **File → Open…** (Cmd+O on macOS, Ctrl+O elsewhere, every platform, `src/open_dialog.rs`), or a **drop onto the window**

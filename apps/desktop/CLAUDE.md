@@ -28,7 +28,7 @@ src/
 │
 │   Features:
 ├── about.rs                 About window
-├── browser/                 macOS-only: browse mode — native AppKit folder tree + thumbnail grid that swaps with the wgpu viewer + browser::State
+├── browser/                 Browse mode: a native folder tree + thumbnail grid that swaps with the wgpu viewer + browser::State (AppKit here, Win32 in browser/windows/)
 ├── color/                   ICC transform + display profile (macOS) + Color settings panel + color::State
 ├── decoding/                Image format decoders (JPEG via zune-jpeg, RAW via rawler, generic via `image`) + `RawPipelineFlags` per-stage toggle struct + `ExifMetadata` extraction
 ├── diagnostics.rs           Performance observability (cache/nav/RSS formatter)

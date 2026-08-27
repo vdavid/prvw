@@ -32,25 +32,25 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 
 **Features:**
 
-| Path                 | Owns                                                                                                        |
-| -------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `about/`             | About window: shared copy in `content.rs`, an AppKit window on macOS, a Win32 popup on Windows              |
-| `browser/`           | macOS browse mode: native AppKit folder tree + thumbnail grid that swaps with the viewer + `browser::State` |
-| `color/`             | ICC transform + display-profile detection (macOS, Windows) + Color settings panel + `color::State`          |
-| `decoding/`          | Image format decoders (JPEG via zune-jpeg; camera RAW via rawler; PNG/GIF/WebP/BMP/TIFF via `image`)        |
-| `diagnostics.rs`     | Performance observability: `NavigationRecord` + `build_text`                                                |
-| `exif_overlay/`      | EXIF info overlay (`Settings::exif_visible` toggle, View → Exif info, bare `E` key)                         |
-| `file_associations/` | LaunchServices FFI + File associations settings panel                                                       |
-| `histogram/`         | 256-bin RGB histogram overlay (toggle via View → Histogram or `H` key) + `histogram::State`                 |
-| `navigation/`        | Directory scan + background preloader + LRU cache + `navigation::State`                                     |
-| `onboarding/`        | Onboarding window (macOS launch without a file) + defaults-sentence generator + checkmark renderer          |
-| `open_dialog.rs`     | The native "Open an image" picker behind File → Open, run off the event-loop thread through `rfd`           |
-| `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                         |
-| `settings/`          | JSON persistence + the AppKit settings window (shell + General panel) + the Win32 one (`settings/windows/`) |
-| `slideshow/`         | Timer-driven auto-advance (`S`) + crossfade + Slideshow settings panel + `slideshow::State`                 |
-| `updater.rs`         | Auto-update check (GitHub releases)                                                                         |
-| `window.rs`          | Main viewer window: create, fullscreen, auto-fit, title-bar vibrancy                                        |
-| `zoom/`              | `ViewState` + zoom/pan math + Zoom settings panel + `zoom::State`                                           |
+| Path                 | Owns                                                                                                                                                            |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `about/`             | About window: shared copy in `content.rs`, an AppKit window on macOS, a Win32 popup on Windows                                                                  |
+| `browser/`           | Browse mode: a native folder tree + thumbnail grid that swaps with the viewer + `browser::State`. AppKit on macOS, Win32 in `browser/windows/`, absent on Linux |
+| `color/`             | ICC transform + display-profile detection (macOS, Windows) + Color settings panel + `color::State`                                                              |
+| `decoding/`          | Image format decoders (JPEG via zune-jpeg; camera RAW via rawler; PNG/GIF/WebP/BMP/TIFF via `image`)                                                            |
+| `diagnostics.rs`     | Performance observability: `NavigationRecord` + `build_text`                                                                                                    |
+| `exif_overlay/`      | EXIF info overlay (`Settings::exif_visible` toggle, View → Exif info, bare `E` key)                                                                             |
+| `file_associations/` | LaunchServices FFI + File associations settings panel                                                                                                           |
+| `histogram/`         | 256-bin RGB histogram overlay (toggle via View → Histogram or `H` key) + `histogram::State`                                                                     |
+| `navigation/`        | Directory scan + background preloader + LRU cache + `navigation::State`                                                                                         |
+| `onboarding/`        | Onboarding window (macOS launch without a file) + defaults-sentence generator + checkmark renderer                                                              |
+| `open_dialog.rs`     | The native "Open an image" picker behind File → Open, run off the event-loop thread through `rfd`                                                               |
+| `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                                                                             |
+| `settings/`          | JSON persistence + the AppKit settings window (shell + General panel) + the Win32 one (`settings/windows/`)                                                     |
+| `slideshow/`         | Timer-driven auto-advance (`S`) + crossfade + Slideshow settings panel + `slideshow::State`                                                                     |
+| `updater.rs`         | Auto-update check (GitHub releases)                                                                                                                             |
+| `window.rs`          | Main viewer window: create, fullscreen, auto-fit, title-bar vibrancy                                                                                            |
+| `zoom/`              | `ViewState` + zoom/pan math + Zoom settings panel + `zoom::State`                                                                                               |
 
 ### Top-level principles
 

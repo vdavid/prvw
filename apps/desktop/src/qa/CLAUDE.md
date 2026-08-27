@@ -126,7 +126,8 @@ acknowledge the command, which is the whole point: a box that opened a message l
 the endpoint answering at all is the assertion. `about_opens_without_holding_up_the_app` in `tests/e2e_shared.rs` is the
 caller.
 
-All three are macOS-only (browse mode is); off macOS they return 400. Each returns the post-command `/state` snapshot.
+All three run wherever browse mode has a UI, which is macOS and Windows; elsewhere they return 400. Each returns the
+post-command `/state` snapshot.
 
 `POST /drop` (body = one absolute path per line) is the fourth of the same kind, and it runs everywhere: a real drop is
 an OS drag session no HTTP request can synthesise, so this hands the app the path list winit would deliver one

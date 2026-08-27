@@ -9,9 +9,9 @@ M2 moved no entries on its own, because reading the display's profile is a capab
 command, and layer 1 has nowhere to put it (see `src/parity/CLAUDE.md`). That gap has now been hit three times, and a
 fourth registry for capabilities behind the chrome is the open question it raises.
 
-What's left: **M5** (browse mode, the whole remainder of the table), **M7** (distribution), plus two things outside the
-code: **M1 step 13** (run the shared E2E suite on Windows), blocked on hardware rather than on work, and **M1 step 16**
-(Azure Trusted Signing), which is David's to start.
+What's left: **M7** (distribution), plus two things outside the code: **M1 step 13** (run the shared E2E suite on
+Windows), blocked on hardware rather than on work, and **M1 step 16** (Azure Trusted Signing), which is David's to
+start.
 
 Everything Windows and Linux here is **compile-verified only**:
 `./scripts/check.sh --check windows-cross --check linux-cross` type-checks and lints all three targets from one Mac, and
@@ -84,9 +84,10 @@ portable code with macOS branches threaded through:
 Then `src/commands.rs` (12), `src/main.rs` (7), `src/menu/` (6), `src/browser/tree_model.rs` (6), `src/platform.rs` (5),
 `src/settings/mod.rs` (4), and a long tail.
 
-Most of those gates are browse-mode-shaped and land in M5. But an agent reading only the "macOS-only files" list would
-have no idea `app.rs` is involved at all, which is why this section exists. It's also where the launch and input defects
-in M1 live.
+Most of those gates were browse-mode-shaped and landed in M5, where they became
+`any(target_os = "macos", target_os = "windows")` — "where browse mode has a UI". But an agent reading only the
+"macOS-only files" list would have no idea `app.rs` is involved at all, which is why this section exists. It's also
+where the launch and input defects in M1 live.
 
 ### Four findings that change the shape of the work
 
@@ -748,10 +749,9 @@ two sit near the end only because they're smaller.
    no image and no error. Explorer's "Open with" on a folder and folder drag-and-drop both reach this, and step 12 adds
    drag-and-drop. Pick one: list the folder's images in image mode and open the first, or reject the argument with a
    message.
-3. **Suppress browse mode on Windows until M5.** `menu/native.rs:448` builds the "Image browser" item unconditionally,
-   and off macOS `App::set_view_mode` (`app.rs:1917`) calls `browser.toggle_mode()` and then stops requesting redraws.
-   So pressing Enter flips the app into `ViewMode::Browse` with no visible change, changed key routing, a changed menu
-   label, and `SharedAppState` reporting Browse to the QA server. Hide the menu item and make Enter a no-op off macOS.
+3. **Suppress browse mode on Windows until M5.** **Done, and then undone by M5**, which built the browser: the menu item
+   is offered on Windows again and Enter opens it. The suppression stands on Linux, where there is still nothing to
+   show.
 4. **Give `previews::metadata` a Windows tier, and fix the catch-all arm.** **Done.** The tier is pure Rust on every
    platform, and every format it sizes now goes through the same crate that decodes it, so the number it returns is the
    number that paints:
@@ -763,7 +763,7 @@ two sit near the end only because they're smaller.
      instead of matching extensions by hand.
    - The ImageIO block is gone, which is what let `mod previews;` come off its `#[cfg]`. Three of the four
      `apply_preview_auto_fit` call sites are un-gated; the fourth lives in `display_open_target`, which is browse mode
-     and macOS-only until M5.
+     and so exists on macOS and Windows.
    - The dispatcher runs under `catch_unwind`: header parsers assert on geometry a corrupt file can lie about, and this
      runs on the launch path and on 16 prefetch threads.
 5. **Fix the four mouse and trackpad defects.** All in `app.rs:3443-3486`, none of which are compile errors:
@@ -831,7 +831,7 @@ two sit near the end only because they're smaller.
       on Windows.
     - **UNC and network paths deserve naming, because the target user keeps photo libraries on a NAS.** `canonicalize`
       on a UNC path yields `\\?\UNC\server\share\...`, so `starts_with` against a `\\server\share` root fails and feeds
-      straight into M5's `reveal_path_chain`. `GetLogicalDrives` (M5) misses disconnected mapped drives.
+      straight into `reveal_path_chain`, which M5 finished. `GetLogicalDrives` misses disconnected mapped drives.
       `ReadDirectoryChangesW` over SMB is best-effort with no delivery guarantee.
     - **Performance, same code:** `navigation/directory.rs:36-38` calls `canonicalize()` on **every file in the folder**
       to find the current index. On APFS that's a cheap `realpath`. On Windows it's `CreateFileW` plus
@@ -1115,9 +1115,34 @@ Roughly 3,400 lines of AppKit to mirror: `settings/window.rs` (863), `widgets.rs
 
 **Docs:** `src/settings/CLAUDE.md` gets the Windows half of the recipe.
 
-### M5: browse mode on Windows (three to six weeks)
+### M5: browse mode on Windows — done
 
-**Intent:** The largest remaining feature. Native Win32, per the option (a) decision, and **blocked on M0.5**.
+Landed as [windows-ui-design.md](windows-ui-design.md)'s "Browse mode" argued it. Windows parity moved from 111 to 117
+of 117: the last four `Missing` entries in the whole table (`MenuItemKey::BrowseToggle`, `CommandKey::BrowseMode`,
+`CommandKey::BrowseFocus`, `CommandKey::BrowseOpenSelected`) are all `Present`, and no registry has a `Missing` Windows
+entry left.
+
+The code is `apps/desktop/src/browser/windows/`, and its `CLAUDE.md` records what the implementation decided on top of
+the design. The shape is what the design asked for: a `SysTreeView32` themed as Explorer's navigation pane, a virtual
+`SysListView32` in icon mode, a splitter the container draws itself, and a status bar. The four pure cores came along
+untouched, and `TreeScanner` moved out of the macOS-only `outline.rs` into `tree_model` so one scanner serves both.
+
+Three things that were open, settled:
+
+- **`reveal_path_chain`'s ancestor walk** is on the path policy now, through `PathPolicy::ancestors` and
+  `PathPolicy::component_count`. Drive roots, `\\?\` spellings, NAS shares, and NTFS casing are all asserted from a Mac.
+- **`Home` and `End` stopped being accelerators on Windows.** An accelerator translates against the main window whatever
+  has focus, so a real one fired "go to first image" inside a list where the key means "first row". Any future bare-key
+  accelerator has the same problem.
+- **The wheel no longer reaches image navigation in browse mode**, on any platform.
+
+**What still needs a Windows box:** every line of `browser/windows/ui/` and `shell_roots.rs`. It type-checks and lints
+through `--check windows-cross` and has never run. Fourteen browse E2E tests moved into `tests/e2e_shared.rs`, gated on
+the three browse commands, so Windows CI exercises the mode switch, the folder flow, the browse-open round trip, and
+live folder sync the first time it runs them.
+
+**Intent, for the record:** The largest remaining feature. Native Win32, per the option (a) decision, and **blocked on
+M0.5**.
 
 `SysTreeView32` for the tree and an owner-drawn `ListView` (or a custom control) for the thumbnail grid. The pure cores
 come along unchanged: `grid_model`, `grid_scheduler`, `thumbnail_cache`, and `tree_model` are already platform-neutral
@@ -1222,7 +1247,7 @@ dropped out of scope.
 - **M2**, color management including Windows 10: one to two weeks. Cumulative: six to 10 weeks.
 - **M3**, previews: three to five days. Cumulative: seven to 11 weeks.
 - **M4**, the Windows settings window: four weeks. Cumulative: 11 to 15 weeks.
-- **M5**, browse mode: three to six weeks. Cumulative: 14 to 21 weeks.
+- **M5**, browse mode: **done**. Budgeted three to six weeks. Cumulative: 14 to 21 weeks.
 - **M6**, onboarding and about: one to two weeks. Cumulative: 15 to 23 weeks.
 - **M7**, distribution: one to two weeks. Cumulative: 16 to 25 weeks.
 - **M8**, Linux: out of scope, zero. Keeping the Linux CI job green is a constraint on every milestone above rather than
