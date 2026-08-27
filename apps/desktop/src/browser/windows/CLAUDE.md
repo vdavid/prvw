@@ -83,6 +83,11 @@ site is breaking the rule above.
   dark are one call site.
 - **A row's path lives in an arena, and its index in the row's `lParam`.** `HTREEITEM` is an opaque handle with nowhere
   to hang a `PathBuf`, and boxing one per row would leak on `TVM_DELETEITEM`.
+- **The top-level rows lead with Pictures, Desktop, and Downloads, then Home, then the drives.** Home is the user's
+  profile, read from `%USERPROFILE%` (falling back to `FOLDERID_Profile`), the way macOS reads `$HOME`. It earns its
+  place on the reveal walk: a chain reveals under the longest-matching root, so a folder in the profile is two or three
+  levels from Home rather than six from `C:\` — and the walk lists every level it passes, one of which would otherwise
+  be the machine's temp directory, which on a busy machine holds thousands of entries.
 - **Rows are looked up through `PathPolicy::windows().key()`**, never on the `PathBuf`. NTFS is case-insensitive and one
   folder reaches the tree spelled three ways: what the user typed, what `canonicalize` returned, and what a drive
   enumeration produced.
@@ -105,11 +110,13 @@ it waits for a delivery that already happened — forever, with the tree sitting
 `browse_reveal_pending` stuck true. `ChildCache` keys through `PathPolicy::key` for exactly this. The clue in a log is
 `Browse: selected folder C:\` and nothing after it.
 
-**Gotcha: the walk gives up rather than waiting forever.** **Why:** a missing row usually means the parent's scan is
-still running and the delivery resumes us, but if the parent has already landed, nothing more is coming (a folder
-scanned before the walk existed never got the hidden step named). `advance_reveal` re-scans that parent once, naming the
-step, and then ends the walk. A reveal that never ends is worse than one that stops: `reveal_pending` is what QA and the
-E2E barrier wait on.
+**Decision: every decision the walk makes lives in `tree_model::RevealWalk`, and this module only carries them out.**
+**Why:** the walk is driven by events from three sources — a scan it asked for, a scan somebody else asked for, and a
+live re-scan that deletes the rows underneath it — which is exactly the shape where "it obviously terminates" stops
+being true. Kept here it was a `loop` in a window procedure that nothing on a Mac could execute, let alone test. Moved
+there it is a state machine with the termination argument written on it (`RevealWalk` → "why it terminates"), a hard
+step budget as a backstop, and a driver in its tests that runs the whole walk against a fake tree from any host,
+including one that keeps wiping its rows. `advance_reveal` is now a `match` with no decisions of its own.
 
 **Gotcha: a treeview picks its own first row the moment it takes focus.** **Why:** `SetFocus` on a treeview with no
 selection selects the first visible row, and deleting the selected row makes it pick a neighbour. Both arrive as

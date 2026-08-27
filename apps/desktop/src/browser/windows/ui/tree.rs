@@ -86,23 +86,14 @@ pub(super) struct TreeState {
     /// The row for a path, keyed through [`PathPolicy`] because NTFS is case-insensitive and the
     /// same folder can arrive spelled three ways (argv, `canonicalize`, a drive enumeration).
     rows: HashMap<std::ffi::OsString, HTREEITEM>,
-    /// The reveal walk in flight, if any: the root-to-target chain and how far along it we are.
-    reveal: Option<Reveal>,
+    /// The reveal walk in flight, if any. All of its decisions live in `tree_model`, which is
+    /// where its termination is argued and asserted; this module only carries them out.
+    reveal: Option<tree_model::RevealWalk>,
     /// True only while [`select`] is inside its own `TVM_SELECTITEM`. See [`selection_changed`]:
     /// it is how a selection Prvw asked for is told from one the control made up.
     selecting: bool,
     /// The row image every node wears. See the module's icon decision.
     icon: i32,
-}
-
-/// A browse-open reveal in progress. The chain comes from `tree_model::reveal_path_chain`, and
-/// each step waits for that folder's children to arrive before expanding the next.
-struct Reveal {
-    chain: Vec<PathBuf>,
-    position: usize,
-    /// The position whose missing row we've already re-scanned for, so a folder that genuinely
-    /// isn't there ends the walk instead of re-scanning its parent forever.
-    retried_at: Option<usize>,
 }
 
 /// Build the treeview and its state. The rows go on in [`populate_roots`], which runs once the
@@ -361,11 +352,7 @@ fn request_children(item: HTREEITEM) {
 
 /// The step after `folder` on the reveal walk in flight, if that walk is sitting on `folder`.
 fn reveal_child_of(ui: &Ui, folder: &Path) -> Option<PathBuf> {
-    let reveal = ui.tree_state.reveal.as_ref()?;
-    let here = reveal.chain.get(reveal.position)?;
-    crate::paths::same_path(here, folder)
-        .then(|| reveal.chain.get(reveal.position + 1).cloned())
-        .flatten()
+    ui.tree_state.reveal.as_ref()?.child_after(folder)
 }
 
 /// A row was selected: tell the app, so the grid lists that folder.
@@ -484,11 +471,7 @@ pub(super) fn reveal(folder: &Path) {
         return;
     };
     with_ui_mut(|ui| {
-        ui.tree_state.reveal = Some(Reveal {
-            chain,
-            position: 0,
-            retried_at: None,
-        });
+        ui.tree_state.reveal = Some(tree_model::RevealWalk::new(chain));
     });
     advance_reveal();
 }
@@ -498,93 +481,73 @@ pub(super) fn reveal_pending(ui: &Ui) -> bool {
     ui.tree_state.reveal.is_some()
 }
 
-/// Take the walk as far as the rows that exist allow: expand each ancestor whose children are
-/// already loaded, and stop at the first that isn't (its scan is in flight, and the delivery
-/// calls back here). At the target, select it — which fires `BrowseSelectFolder` and lists the
-/// folder for the grid.
+/// Carry out the walk's decisions until one of them says to stop. Every decision is
+/// [`tree_model::RevealWalk::next`]'s; nothing here chooses anything, which is what keeps the
+/// termination argument in one testable place (see that type's "why it terminates").
 fn advance_reveal() {
     loop {
-        let step = with_ui(|ui| {
-            let reveal = ui.tree_state.reveal.as_ref()?;
-            let path = reveal.chain.get(reveal.position)?.clone();
-            let last = reveal.position + 1 == reveal.chain.len();
-            let row = ui.tree_state.rows.get(&row_key(&path)).copied();
-            let loaded = ui.tree_state.children.loaded(&path).is_some();
-            // The step before this one, and whether its children have already landed.
-            let parent = reveal
-                .position
-                .checked_sub(1)
-                .and_then(|above| reveal.chain.get(above).cloned())
-                .filter(|above| ui.tree_state.children.loaded(above).is_some());
-            Some((path, row, last, loaded, parent))
-        });
-        let Some(Some((path, row, last, loaded, settled_parent))) = step else {
-            // There is no walk in flight.
+        // One borrow per decision: the walk reads the rows and the child cache in the same breath,
+        // so it can never see a half-changed tree, and no Win32 call happens under the borrow.
+        let Some(Some((step, row))) = with_ui_mut(|ui| {
+            let state = &mut ui.tree_state;
+            let walk = state.reveal.as_ref()?;
+            let path = walk.target()?.to_path_buf();
+            let parent = walk.parent().map(Path::to_path_buf);
+            let row = state.rows.get(&row_key(&path)).copied();
+            let facts = tree_model::StepFacts {
+                has_row: row.is_some(),
+                children_loaded: state.children.loaded(&path).is_some(),
+                parent_children_loaded: parent
+                    .as_deref()
+                    .is_some_and(|above| state.children.loaded(above).is_some()),
+            };
+            state.reveal.as_mut().map(|walk| (walk.next(facts), row))
+        }) else {
+            // No walk in flight, or the state was busy — a later delivery asks again.
             return;
         };
-        let Some(item) = row else {
-            // No row for this step. Normally its parent's scan is simply still running, and the
-            // delivery brings us back here — so waiting is the answer whenever the parent hasn't
-            // landed. A parent that HAS landed means nothing more is coming: that folder was
-            // scanned before this walk existed, and `scan_revealing` names the step to keep only
-            // on a folder's first scan, so a hidden one got filtered out. Ask once more, naming
-            // it; if even that doesn't produce a row, end the walk rather than leave it pending
-            // for the life of the window.
-            if let Some(parent) = settled_parent {
-                retry_missing_row(&parent, &path);
-            }
-            return;
-        };
-        if last {
-            with_ui_mut(|ui| ui.tree_state.reveal = None);
-            select(item);
-            log::debug!("Browse tree revealed {}", path.display());
-            return;
-        }
-        expand(item);
-        if !loaded {
-            // `expand` asked for the scan through `TVN_ITEMEXPANDING`; the delivery resumes us.
-            return;
-        }
-        with_ui_mut(|ui| {
-            if let Some(reveal) = ui.tree_state.reveal.as_mut() {
-                reveal.position += 1;
-            }
-        });
-    }
-}
 
-/// Re-scan `parent` for the reveal step that has no row, or give up if we already tried.
-fn retry_missing_row(parent: &Path, wanted: &Path) {
-    let first_try = with_ui_mut(|ui| {
-        let Some(reveal) = ui.tree_state.reveal.as_mut() else {
-            return false;
-        };
-        let first = reveal.retried_at != Some(reveal.position);
-        reveal.retried_at = Some(reveal.position);
-        first
-    }) == Some(true);
-    if !first_try {
-        log::warn!(
-            "Browse tree: gave up revealing {} — {} lists no such folder",
-            wanted.display(),
-            parent.display()
-        );
-        with_ui_mut(|ui| ui.tree_state.reveal = None);
-        super::refresh_status_bar();
-        return;
+        match step {
+            // The children are already here, so carry straight on to the next level.
+            tree_model::RevealStep::Expand(_) => {
+                if let Some(item) = row {
+                    expand(item);
+                }
+            }
+            // Expanding is what starts the scan; `children_loaded` resumes the walk.
+            tree_model::RevealStep::ExpandAndWait(_) => {
+                if let Some(item) = row {
+                    expand(item);
+                }
+                return;
+            }
+            tree_model::RevealStep::Select(path) => {
+                with_ui_mut(|ui| ui.tree_state.reveal = None);
+                if let Some(item) = row {
+                    select(item);
+                }
+                log::debug!("Browse tree revealed {}", path.display());
+                return;
+            }
+            tree_model::RevealStep::Rescan { parent, child } => {
+                log::debug!(
+                    "Browse tree: no row for {} — re-scanning {} for it",
+                    child.display(),
+                    parent.display()
+                );
+                with_ui_mut(|ui| ui.tree_state.children.invalidate(&parent));
+                with_ui(|ui| ui.tree_state.scanner.scan_revealing(parent, child));
+                return;
+            }
+            tree_model::RevealStep::Wait => return,
+            tree_model::RevealStep::GiveUp { path, why } => {
+                log::warn!("Browse tree: gave up revealing {} — {why}", path.display());
+                with_ui_mut(|ui| ui.tree_state.reveal = None);
+                super::refresh_status_bar();
+                return;
+            }
+        }
     }
-    log::debug!(
-        "Browse tree: no row for {} — re-scanning {} for it",
-        wanted.display(),
-        parent.display()
-    );
-    with_ui_mut(|ui| ui.tree_state.children.invalidate(parent));
-    with_ui(|ui| {
-        ui.tree_state
-            .scanner
-            .scan_revealing(parent.to_path_buf(), wanted.to_path_buf())
-    });
 }
 
 fn expand(item: HTREEITEM) {

@@ -308,6 +308,199 @@ pub fn reveal_path_chain_under(
     Some(chain)
 }
 
+// ── The reveal walk ──────────────────────────────────────────────────────────────────────────
+
+/// A browse-open reveal in progress: the root-to-target chain, how far along it is, and the
+/// budget that makes it finite.
+///
+/// The walk can't run synchronously, because expanding a node the tree hasn't scanned would find
+/// no children. So it expands one level, stops, and the scan's delivery asks it for the next step.
+/// That makes it a state machine driven by events from three sources — a scan the walk asked for,
+/// a scan somebody else asked for, and a live re-scan that can delete the rows underneath it —
+/// which is exactly the shape where "it obviously terminates" stops being obvious. So the walk
+/// lives here, pure, and the Win32 side does nothing but carry out one [`RevealStep`] at a time.
+///
+/// ## Why it terminates
+///
+/// **Every call to [`next`](Self::next) spends one unit of `budget`, and `budget` is set once from
+/// the chain's length and never replenished.** When it runs out the walk answers
+/// [`RevealStep::GiveUp`] and keeps answering it. So the number of decisions one walk can ever
+/// make is bounded by a constant, whatever the tree answers and however many events arrive — a
+/// hostile or merely confused tree can make the walk end early, never make it run forever.
+///
+/// Two finer guarantees hold inside that bound, and they are what make the budget a backstop
+/// rather than the mechanism:
+///
+/// - The caller's own loop only continues on [`RevealStep::Expand`], which strictly increases
+///   `position`; every other step ends the loop. So one delivery costs at most `chain.len()`
+///   decisions.
+/// - A step whose row is missing is re-scanned at most once, because `retried_at` records the
+///   position and a second miss there gives up.
+///
+/// The budget is generous enough that ordinary use never reaches it: a full walk down an
+/// eight-deep chain spends about twenty-five decisions of a hundred.
+/// Only the Windows tree drives this today; the macOS outline view still has a reveal walk of its
+/// own inside `outline.rs`. Bringing that one here is worth doing and isn't this change.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug)]
+pub struct RevealWalk {
+    chain: Vec<PathBuf>,
+    position: usize,
+    /// The position whose missing row has already been re-scanned for, so a folder that genuinely
+    /// isn't there ends the walk instead of re-scanning its parent forever.
+    retried_at: Option<usize>,
+    budget: u32,
+}
+
+/// What the tree can answer about the step a walk is on. Gathered in one read so a walk never
+/// sees a half-changed tree, and so the Win32 side takes its state borrow exactly once per step.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepFacts {
+    /// Does the tree have a row for this step's folder?
+    pub has_row: bool,
+    /// Has this folder's own child scan landed?
+    pub children_loaded: bool,
+    /// Has the scan of the step above this one landed? `false` when there is no step above.
+    pub parent_children_loaded: bool,
+}
+
+/// What the tree should do next for a walk. Each one is a single Win32 act, so the caller stays a
+/// `match` with no decisions of its own.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevealStep {
+    /// Expand this row, then ask again — its children are known, so the walk carries straight on.
+    Expand(PathBuf),
+    /// Expand this row and stop. Expanding is what starts its scan, and the delivery asks again.
+    ExpandAndWait(PathBuf),
+    /// Select this row. The walk is over; the caller drops it.
+    Select(PathBuf),
+    /// Re-scan `parent`, naming `child`, because `child` has no row though `parent`'s scan landed.
+    /// A folder scanned before this walk existed never got the walk's step named, so a hidden one
+    /// was filtered out; naming it is the one thing that can still produce the row.
+    Rescan { parent: PathBuf, child: PathBuf },
+    /// Nothing to do until a delivery arrives.
+    Wait,
+    /// The walk can't finish. The caller drops it, so `reveal_pending` goes false and whatever is
+    /// waiting on it stops waiting.
+    GiveUp { path: PathBuf, why: &'static str },
+}
+
+/// How many decisions a walk gets per chain entry, plus a fixed allowance. Ordinary use spends
+/// about three per entry (advance, wait for the delivery, and the odd re-scan).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const BUDGET_PER_STEP: u32 = 8;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const BUDGET_ALLOWANCE: u32 = 32;
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+impl RevealWalk {
+    /// Start a walk down `chain`, which runs from the containing root to the target folder.
+    #[must_use]
+    pub fn new(chain: Vec<PathBuf>) -> Self {
+        let budget = u32::try_from(chain.len())
+            .unwrap_or(u32::MAX / BUDGET_PER_STEP)
+            .saturating_mul(BUDGET_PER_STEP)
+            .saturating_add(BUDGET_ALLOWANCE);
+        Self {
+            chain,
+            position: 0,
+            retried_at: None,
+            budget,
+        }
+    }
+
+    /// The folder this step is about, which is what the caller reads the tree for.
+    #[must_use]
+    pub fn target(&self) -> Option<&Path> {
+        self.chain.get(self.position).map(PathBuf::as_path)
+    }
+
+    /// The step above this one, whose scan is what produces this step's row.
+    #[must_use]
+    pub fn parent(&self) -> Option<&Path> {
+        self.position
+            .checked_sub(1)
+            .and_then(|above| self.chain.get(above))
+            .map(PathBuf::as_path)
+    }
+
+    /// The step after `folder`, when the walk is sitting on `folder`. A scan of `folder` has to
+    /// list that one child however hidden it is (see [`TreeScanner::scan_revealing`]), or the walk
+    /// is stranded with no row to expand.
+    #[must_use]
+    pub fn child_after(&self, folder: &Path) -> Option<PathBuf> {
+        self.child_after_under(crate::paths::PathPolicy::HOST, folder)
+    }
+
+    /// [`child_after`](Self::child_after) under a named policy, so a Mac can assert the Windows
+    /// answer.
+    #[must_use]
+    pub fn child_after_under(
+        &self,
+        policy: crate::paths::PathPolicy,
+        folder: &Path,
+    ) -> Option<PathBuf> {
+        let here = self.target()?;
+        policy
+            .same_path(here, folder)
+            .then(|| self.chain.get(self.position + 1).cloned())
+            .flatten()
+    }
+
+    /// Decide the next thing to do. See the type's termination note: this spends budget on every
+    /// call, including the ones that answer `Wait`.
+    pub fn next(&mut self, facts: StepFacts) -> RevealStep {
+        let path = self.target().unwrap_or(Path::new("")).to_path_buf();
+        if self.budget == 0 {
+            return RevealStep::GiveUp {
+                path,
+                why: "the walk ran out of steps",
+            };
+        }
+        self.budget -= 1;
+        if self.position >= self.chain.len() {
+            return RevealStep::GiveUp {
+                path,
+                why: "the walk ran off the end of its chain",
+            };
+        }
+
+        if !facts.has_row {
+            let Some(parent) = self.parent().map(Path::to_path_buf) else {
+                // The root's own row isn't on yet; the roots are still being put on.
+                return RevealStep::Wait;
+            };
+            if !facts.parent_children_loaded {
+                // The scan that will produce this row is still running.
+                return RevealStep::Wait;
+            }
+            if self.retried_at == Some(self.position) {
+                return RevealStep::GiveUp {
+                    path,
+                    why: "its parent lists no such folder",
+                };
+            }
+            self.retried_at = Some(self.position);
+            return RevealStep::Rescan {
+                parent,
+                child: path,
+            };
+        }
+
+        if self.position + 1 == self.chain.len() {
+            return RevealStep::Select(path);
+        }
+        if facts.children_loaded {
+            self.position += 1;
+            RevealStep::Expand(path)
+        } else {
+            RevealStep::ExpandAndWait(path)
+        }
+    }
+}
+
 /// List the immediate child directories of `dir`, ready to show as tree rows.
 ///
 /// Keeps only directories (no files), skips dot-folders (`.git`, `.Trash`, …) and entries we
@@ -841,6 +1034,255 @@ mod tests {
         let roots = build_roots(None, volumes);
         assert_eq!(roots.len(), 1);
         assert_eq!(roots[0].name, "Macintosh HD");
+    }
+
+    // ── The reveal walk ──
+
+    /// A stand-in for the Win32 treeview, so the whole walk runs from a Mac: which folders have
+    /// rows, whose scans have landed, and the queue of scans the walk has asked for.
+    ///
+    /// `hidden` is the Windows filter this walk exists to work around — `AppData` carries the
+    /// hidden attribute and every temp folder is a dot-folder — so a hidden entry appears only in
+    /// a scan that names it, exactly as `child_directories` treats `reveal_child`.
+    struct FakeTree {
+        disk: HashMap<PathBuf, Vec<PathBuf>>,
+        hidden: std::collections::HashSet<PathBuf>,
+        rows: std::collections::HashSet<PathBuf>,
+        loaded: std::collections::HashSet<PathBuf>,
+        scans: std::collections::VecDeque<(PathBuf, Option<PathBuf>)>,
+    }
+
+    impl FakeTree {
+        /// A tree of `parent → children`, with `roots` already on as rows.
+        fn new(disk: &[(&str, &[&str])], roots: &[&str]) -> Self {
+            Self {
+                disk: disk
+                    .iter()
+                    .map(|(dir, kids)| {
+                        (
+                            PathBuf::from(dir),
+                            kids.iter().map(PathBuf::from).collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect(),
+                hidden: std::collections::HashSet::new(),
+                rows: roots.iter().map(PathBuf::from).collect(),
+                loaded: std::collections::HashSet::new(),
+                scans: std::collections::VecDeque::new(),
+            }
+        }
+
+        fn hiding(mut self, hidden: &[&str]) -> Self {
+            self.hidden = hidden.iter().map(PathBuf::from).collect();
+            self
+        }
+
+        fn facts(&self, walk: &RevealWalk) -> StepFacts {
+            let path = walk.target().unwrap_or(Path::new("")).to_path_buf();
+            StepFacts {
+                has_row: self.rows.contains(&path),
+                children_loaded: self.loaded.contains(&path),
+                parent_children_loaded: walk
+                    .parent()
+                    .is_some_and(|above| self.loaded.contains(above)),
+            }
+        }
+
+        /// Expanding a node whose scan hasn't landed asks for one, naming the walk's next step —
+        /// the Win32 side does this from `TVN_ITEMEXPANDING`.
+        fn expand(&mut self, path: &Path, walk: &RevealWalk) {
+            if !self.loaded.contains(path) {
+                self.scans
+                    .push_back((path.to_path_buf(), walk.child_after(path)));
+            }
+        }
+
+        /// One scan delivery: the folder's children become rows (its old ones go first, as
+        /// `remove_children` does), and the folder counts as loaded.
+        fn deliver(&mut self) -> bool {
+            let Some((dir, named)) = self.scans.pop_front() else {
+                return false;
+            };
+            let children: Vec<PathBuf> = self
+                .disk
+                .get(&dir)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|child| {
+                    !self.hidden.contains(child) || named.as_deref() == Some(child.as_path())
+                })
+                .collect();
+            let stale: Vec<PathBuf> = self
+                .rows
+                .iter()
+                .filter(|row| row.parent() == Some(dir.as_path()))
+                .cloned()
+                .collect();
+            for row in stale {
+                self.rows.remove(&row);
+            }
+            self.rows.extend(children);
+            self.loaded.insert(dir);
+            true
+        }
+    }
+
+    /// Drive a walk the way `browser::windows::ui::tree::advance_reveal` drives it, delivering one
+    /// scan per round, and answer with how it ended.
+    ///
+    /// The round cap is the test's own safety net: a walk that doesn't finish must fail the test,
+    /// never hang the suite.
+    fn drive(walk: &mut RevealWalk, tree: &mut FakeTree) -> RevealStep {
+        for _ in 0..500 {
+            // The caller's loop: carry on only while the walk says `Expand`.
+            let outcome = loop {
+                match walk.next(tree.facts(walk)) {
+                    RevealStep::Expand(path) => tree.expand(&path, walk),
+                    RevealStep::ExpandAndWait(path) => {
+                        tree.expand(&path, walk);
+                        break None;
+                    }
+                    RevealStep::Rescan { parent, child } => {
+                        tree.loaded.remove(&parent);
+                        tree.scans.push_back((parent, Some(child)));
+                        break None;
+                    }
+                    RevealStep::Wait => break None,
+                    done => break Some(done),
+                }
+            };
+            if let Some(done) = outcome {
+                return done;
+            }
+            if !tree.deliver() {
+                panic!("the walk is waiting on a scan nobody asked for");
+            }
+        }
+        panic!("the walk never finished");
+    }
+
+    fn chain(paths: &[&str]) -> Vec<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
+    }
+
+    /// The ordinary case, and the one the Windows browse tests exercise: a chain through a hidden
+    /// ancestor and a dot-folder, both of which only a scan that names them will list.
+    #[test]
+    fn a_reveal_walk_reaches_its_target_through_hidden_ancestors() {
+        let mut tree = FakeTree::new(
+            &[
+                (r"C:\", &[r"C:\Users"]),
+                (r"C:\Users", &[r"C:\Users\dave"]),
+                (r"C:\Users\dave", &[r"C:\Users\dave\AppData"]),
+                (r"C:\Users\dave\AppData", &[r"C:\Users\dave\AppData\.tmp"]),
+                (
+                    r"C:\Users\dave\AppData\.tmp",
+                    &[r"C:\Users\dave\AppData\.tmp\pics"],
+                ),
+            ],
+            &[r"C:\"],
+        )
+        .hiding(&[r"C:\Users\dave\AppData", r"C:\Users\dave\AppData\.tmp"]);
+        let mut walk = RevealWalk::new(chain(&[
+            r"C:\",
+            r"C:\Users",
+            r"C:\Users\dave",
+            r"C:\Users\dave\AppData",
+            r"C:\Users\dave\AppData\.tmp",
+            r"C:\Users\dave\AppData\.tmp\pics",
+        ]));
+        assert_eq!(
+            drive(&mut walk, &mut tree),
+            RevealStep::Select(PathBuf::from(r"C:\Users\dave\AppData\.tmp\pics")),
+        );
+    }
+
+    /// A single-entry chain: the target is a root, so there is nothing to expand.
+    #[test]
+    fn a_reveal_walk_onto_a_root_selects_it_at_once() {
+        let mut tree = FakeTree::new(&[], &[r"C:\"]);
+        let mut walk = RevealWalk::new(chain(&[r"C:\"]));
+        assert_eq!(
+            drive(&mut walk, &mut tree),
+            RevealStep::Select(PathBuf::from(r"C:\")),
+        );
+    }
+
+    /// The folder isn't there any more. The walk asks its parent once more, naming it, and then
+    /// ends — it must not keep re-scanning, and it must not stay pending for the window's life.
+    #[test]
+    fn a_reveal_walk_gives_up_on_a_folder_its_parent_never_lists() {
+        let mut tree = FakeTree::new(&[(r"C:\", &[r"C:\Users"])], &[r"C:\"]);
+        let mut walk = RevealWalk::new(chain(&[r"C:\", r"C:\gone", r"C:\gone\pics"]));
+        assert!(matches!(
+            drive(&mut walk, &mut tree),
+            RevealStep::GiveUp { .. }
+        ));
+    }
+
+    /// A live re-scan of an ancestor deletes every row under it, including the ones the walk has
+    /// already passed. The walk has to cope, and above all it has to stop.
+    #[test]
+    fn a_reveal_walk_ends_even_when_a_re_scan_keeps_wiping_its_rows() {
+        let mut tree = FakeTree::new(
+            &[(r"C:\", &[r"C:\Users"]), (r"C:\Users", &[r"C:\Users\pics"])],
+            &[r"C:\"],
+        );
+        let mut walk = RevealWalk::new(chain(&[r"C:\", r"C:\Users", r"C:\Users\pics"]));
+        // Every round, something else re-scans `C:\` and the subtree goes away again.
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
+            assert!(rounds < 500, "the walk never finished");
+            tree.rows.retain(|row| row == Path::new(r"C:\"));
+            tree.loaded.clear();
+            match walk.next(tree.facts(&walk)) {
+                RevealStep::Expand(path) | RevealStep::ExpandAndWait(path) => {
+                    tree.expand(&path, &walk);
+                    tree.deliver();
+                }
+                RevealStep::Rescan { parent, child } => {
+                    tree.loaded.remove(&parent);
+                    tree.scans.push_back((parent, Some(child)));
+                    tree.deliver();
+                }
+                RevealStep::Wait => {
+                    tree.deliver();
+                }
+                RevealStep::Select(_) | RevealStep::GiveUp { .. } => break,
+            }
+        }
+    }
+
+    /// The backstop, stated as a property rather than a scenario: whatever the tree answers, and
+    /// however many times it is asked, a walk runs out of budget and then stays given up. This is
+    /// the test that would have caught a walk that never terminates.
+    #[test]
+    fn a_reveal_walk_runs_out_of_steps_however_it_is_answered() {
+        let steps = chain(&[r"C:\", r"C:\a", r"C:\a\b", r"C:\a\b\c"]);
+        // Every shape of answer the tree can give, including the incoherent ones.
+        for bits in 0..8u8 {
+            let facts = StepFacts {
+                has_row: bits & 1 != 0,
+                children_loaded: bits & 2 != 0,
+                parent_children_loaded: bits & 4 != 0,
+            };
+            let mut walk = RevealWalk::new(steps.clone());
+            let mut gave_up = None;
+            for call in 0..1_000 {
+                if let RevealStep::GiveUp { .. } = walk.next(facts) {
+                    gave_up = Some(call);
+                    break;
+                }
+            }
+            let at = gave_up.unwrap_or_else(|| panic!("{facts:?} never ran out of budget"));
+            // And it stays given up rather than starting over.
+            assert!(
+                matches!(walk.next(facts), RevealStep::GiveUp { .. }),
+                "{facts:?} un-gave-up after step {at}"
+            );
+        }
     }
 
     // ── ChildCache state machine ──
