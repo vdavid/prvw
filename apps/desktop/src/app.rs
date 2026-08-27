@@ -10,7 +10,6 @@ mod shared_state;
 
 pub(crate) use shared_state::SharedAppState;
 
-#[cfg(target_os = "macos")]
 use crate::color::display_profile;
 use crate::commands::{self, AppCommand};
 use crate::diagnostics::NavigationRecord;
@@ -429,14 +428,11 @@ impl App {
         if !self.color.icc_enabled {
             return Vec::new(); // No ICC transforms
         }
-        #[cfg(target_os = "macos")]
         if self.color.match_display
-            && let Some(icc) = display_profile::get_display_icc(window)
+            && let Some(icc) = display_profile::display_icc(window)
         {
             return icc;
         }
-        // Suppress unused variable warning on non-macOS
-        let _ = window;
         color::srgb_icc_bytes().to_vec()
     }
 
@@ -3121,6 +3117,26 @@ impl App {
         }
     }
 
+    /// Re-read the display profile when a move put the window on a different monitor, and do
+    /// nothing at all when it didn't.
+    ///
+    /// `apply_icc_settings` is the expensive half: it flushes the decoded-image cache and
+    /// re-decodes, so it must not run because someone nudged the window two pixels. It has its own
+    /// byte-equality guard, but that guard costs a profile read, which is a file read here.
+    fn refresh_display_profile_after_move(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Some(monitor) = display_profile::current_monitor(window) else {
+            return;
+        };
+        if !self.color.monitors.moved_to(monitor) {
+            return;
+        }
+        log::debug!("The window is on a different display, so its colour profile is re-read");
+        self.apply_icc_settings();
+    }
+
     /// Single source of truth for "should the wgpu surface run in EDR mode
     /// right now?" All three inputs must hold: the user hasn't opted out,
     /// the display advertises EDR headroom, and the currently-displayed
@@ -3173,9 +3189,18 @@ impl App {
     /// current image if either changed. EDR headroom moves with display
     /// switches and with macOS brightness changes, so we refresh it here on
     /// every `DisplayChanged` event.
-    #[cfg(target_os = "macos")]
+    ///
+    /// The two platforms reach this from opposite directions. macOS is told
+    /// the window changed screens (`NSWindowDidChangeScreenNotification`).
+    /// Windows gets here from `WM_DISPLAYCHANGE`, which is the display
+    /// *configuration* changing: a monitor arriving or leaving, a resolution
+    /// change, or a profile re-associated in place. Any of those can leave the
+    /// same `HMONITOR` meaning something else, so what the tracker knows is
+    /// worth nothing afterwards and gets dropped.
     fn handle_display_changed(&mut self) {
         log::debug!("Display changed, re-evaluating ICC + EDR");
+        self.color.monitors.forget();
+        #[cfg(target_os = "macos")]
         if let Some(win) = &self.window {
             let new_headroom = display_profile::current_edr_headroom(win);
             if (new_headroom - self.edr_headroom).abs() > 1e-3 {
@@ -3539,6 +3564,13 @@ impl ApplicationHandler<AppCommand> for App {
                 }
                 event_loop.exit();
             }
+
+            // The only signal Windows gives that the window may have crossed onto another
+            // monitor, and it arrives for every pixel of a title-bar drag. `refresh_display_
+            // profile_after_move` keeps the cheap question (which monitor is this?) on that path
+            // and the expensive one (read and parse its ICC profile) off it. macOS is told
+            // instead, through `AppCommand::DisplayChanged`, so this costs it nothing.
+            WindowEvent::Moved(_) => self.refresh_display_profile_after_move(),
 
             WindowEvent::Resized(size) => {
                 log::debug!("Window resized to {}x{}", size.width, size.height);

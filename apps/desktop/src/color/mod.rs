@@ -16,7 +16,6 @@ mod transform;
 pub use profiles::linear_rec2020_profile;
 pub use transform::{profiles_match, srgb_icc_bytes, transform_f32_with_profile, transform_icc};
 
-#[cfg(target_os = "macos")]
 pub mod display_profile;
 #[cfg(target_os = "macos")]
 pub mod settings_panel;
@@ -34,6 +33,10 @@ pub struct State {
     /// ICC bytes for the target display. Defaults to sRGB; updated when the display
     /// is detected or the window moves.
     pub display_icc: Vec<u8>,
+    /// Which display `display_icc` was read for, so a window drag doesn't re-read a profile per
+    /// mouse move. Only the platforms that learn about a screen change from the move itself
+    /// consult it; see [`display_profile::MonitorTracker`].
+    pub monitors: display_profile::MonitorTracker,
 }
 
 impl State {
@@ -43,6 +46,7 @@ impl State {
             match_display: settings.color_match_display,
             relative_col: settings.use_relative_colorimetric,
             display_icc: srgb_icc_bytes().to_vec(),
+            monitors: display_profile::MonitorTracker::new(),
         }
     }
 }

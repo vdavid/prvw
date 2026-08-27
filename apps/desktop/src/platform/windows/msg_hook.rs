@@ -5,10 +5,14 @@
 //! Two Win32 things have to happen between taking a message off the queue and dispatching it,
 //! and neither winit nor muda does them:
 //!
-//! 1. **`IsDialogMessageW`**, for a modeless dialog. Without it Tab, the arrow keys, Enter, Esc,
+//! 1. **`WM_DISPLAYCHANGE`**, for colour management. winit doesn't handle the message and so
+//!    reports nothing when a monitor arrives or leaves, a resolution changes, or a profile is
+//!    re-associated with a display. Any of those can change which ICC profile the image on screen
+//!    should be transformed into, and `color::display_profile` has no other way to hear about it.
+//! 2. **`IsDialogMessageW`**, for a modeless dialog. Without it Tab, the arrow keys, Enter, Esc,
 //!    and mnemonics all stop working inside the dialog. `about::windows` is the first caller and
 //!    M4's settings window is the next.
-//! 2. **`TranslateAcceleratorW`**, for the menu bar's accelerators. muda's own docs say so:
+//! 3. **`TranslateAcceleratorW`**, for the menu bar's accelerators. muda's own docs say so:
 //!    "On Windows, accelerators don't work unless the win32 message loop calls
 //!    `TranslateAcceleratorW`". Without it Ctrl+O, Ctrl+= and Ctrl+-, F11, and F5 silently do
 //!    nothing.
@@ -20,13 +24,17 @@
 //!
 //! ## The order, and why it is this way
 //!
-//! Dialogs first. A message `IsDialogMessage` handles must not also reach accelerator
-//! translation, which is why stage 1 returns rather than falling through.
+//! Display changes first, and they are the one stage that only *watches*: it posts a command and
+//! falls through, so winit and every window procedure still see the message. A stage that consumed
+//! `WM_DISPLAYCHANGE` would take it away from whoever needs it next.
+//!
+//! Dialogs second. A message `IsDialogMessage` handles must not also reach accelerator
+//! translation, which is why that stage returns rather than falling through.
 //!
 //! Then accelerators, **against the main window's HWND rather than `msg.hwnd`**. muda's own
 //! winit example passes `(*msg).hwnd`, which translates accelerators against whatever window has
 //! focus: typing a comma into a settings text field would open Settings. Passing the main window
-//! means an accelerator always means the same thing, and stage 1 has already taken the dialogs'
+//! means an accelerator always means the same thing, and stage 2 has already taken the dialogs'
 //! own messages off the table.
 //!
 //! ## The rule this module exists to keep
@@ -46,7 +54,7 @@ use std::cell::RefCell;
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    HACCEL, IsChild, IsDialogMessageW, MSG, TranslateAcceleratorW,
+    HACCEL, IsChild, IsDialogMessageW, MSG, TranslateAcceleratorW, WM_DISPLAYCHANGE,
 };
 use winit::event_loop::EventLoopBuilder;
 use winit::platform::windows::EventLoopBuilderExtWindows;
@@ -94,8 +102,16 @@ pub fn install(builder: &mut EventLoopBuilder<AppCommand>) {
 fn handle(msg: *const MSG) -> bool {
     // SAFETY: winit guarantees a live `MSG` for the duration of the hook.
     let target = unsafe { (*msg).hwnd };
+    // SAFETY: same live `MSG`.
+    let message = unsafe { (*msg).message };
 
-    // 1. Modeless dialogs. `IsDialogMessage` respects a control that claims a key with
+    // 1. Display configuration changes. Watched, never consumed (see the module docs).
+    if message == WM_DISPLAYCHANGE {
+        log::debug!("WM_DISPLAYCHANGE: the display configuration changed");
+        crate::commands::send_command(AppCommand::DisplayChanged);
+    }
+
+    // 2. Modeless dialogs. `IsDialogMessage` respects a control that claims a key with
     //    `DLGC_WANTALLKEYS`, which is most of why it beats hand-rolled Tab handling.
     for dialog in dialogs() {
         // SAFETY: both handles are windows this thread owns; a stale one answers false.
@@ -105,7 +121,7 @@ fn handle(msg: *const MSG) -> bool {
         }
     }
 
-    // 2. Menu accelerators, against the main window (see the module docs).
+    // 3. Menu accelerators, against the main window (see the module docs).
     let Some(accelerators) = accelerator_target() else {
         return false;
     };
@@ -125,13 +141,13 @@ fn accelerator_target() -> Option<AcceleratorTarget> {
     source()
 }
 
-/// Point stage 2 at the menu bar's accelerator table. `menu::windows::attach` calls this once
+/// Point stage 3 at the menu bar's accelerator table. `menu::windows::attach` calls this once
 /// the bar is on the window.
 pub fn set_accelerator_source(source: fn() -> Option<AcceleratorTarget>) {
     STAGES.with_borrow_mut(|stages| stages.accelerators = Some(source));
 }
 
-/// Add a modeless dialog to stage 1, so its keyboard navigation works.
+/// Add a modeless dialog to stage 2, so its keyboard navigation works.
 ///
 /// `about::windows` is the first caller, and M4's settings window is the next. Its order against
 /// accelerator translation is the part that's easy to get wrong once there are two callers and
@@ -144,7 +160,7 @@ pub fn register_dialog(hwnd: HWND) {
     });
 }
 
-/// Take a dialog back out of stage 1, when it closes. Every caller does this from `WM_DESTROY`.
+/// Take a dialog back out of stage 2, when it closes. Every caller does this from `WM_DESTROY`.
 pub fn unregister_dialog(hwnd: HWND) {
     STAGES.with_borrow_mut(|stages| stages.dialogs.retain(|open| *open != hwnd));
 }

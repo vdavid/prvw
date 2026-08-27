@@ -499,7 +499,6 @@ impl App {
                 self.armed_watch_folders = folders;
                 self.update_shared_state();
             }
-            #[cfg(target_os = "macos")]
             AppCommand::DisplayChanged => {
                 self.handle_display_changed();
             }

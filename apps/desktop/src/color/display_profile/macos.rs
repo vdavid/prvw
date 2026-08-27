@@ -1,7 +1,9 @@
-//! macOS display color profile detection and CAMetalLayer colorspace management.
+//! macOS display colour profile detection and CAMetalLayer colorspace management.
 //!
 //! Uses CoreGraphics FFI to query the active display's ICC profile and set the
-//! Metal layer's colorspace so the compositor applies the correct color management.
+//! Metal layer's colorspace so the compositor applies the correct colour management.
+//! The shared half of this feature, and what every platform owes it, is in
+//! [`super`].
 
 use objc2::msg_send;
 use objc2::runtime::AnyObject;
@@ -117,7 +119,7 @@ pub fn current_edr_headroom(window: &Window) -> f32 {
 
 /// Get the ICC profile bytes for the display the window is currently on.
 /// Returns `None` if the display profile can't be queried (headless, SSH, etc.).
-pub fn get_display_icc(window: &Window) -> Option<Vec<u8>> {
+pub fn display_icc(window: &Window) -> Option<Vec<u8>> {
     // Get the display ID from the window's current monitor.
     // winit's MonitorHandle doesn't expose the CGDirectDisplayID directly,
     // so we use the main display as the default and try to match by position.
@@ -145,11 +147,9 @@ pub fn get_display_icc(window: &Window) -> Option<Vec<u8>> {
 
         log::info!(
             "Display ICC profile: {len} bytes from display {display_id}{}",
-            describe_icc(&bytes)
-                .map(|d| format!(" ({d})"))
-                .unwrap_or_default()
+            super::describe_for_log(&bytes)
         );
-        Some(bytes)
+        super::usable_profile(bytes)
     }
 }
 
@@ -409,7 +409,7 @@ unsafe fn set_colorspace_on_layer(layer: *const AnyObject, icc_bytes: &[u8]) {
 
         log::info!(
             "Set CAMetalLayer colorspace{}",
-            describe_icc(icc_bytes)
+            super::describe_icc(icc_bytes)
                 .map(|d| format!(" to {d}"))
                 .unwrap_or_default()
         );
@@ -461,48 +461,6 @@ fn display_id_for_window(window: &Window) -> CGDirectDisplayID {
         let display_id: u32 = msg_send![screen_number, unsignedIntValue];
         display_id
     }
-}
-
-/// Extract a human-readable description from raw ICC bytes, for logging.
-fn describe_icc(icc: &[u8]) -> Option<String> {
-    // Find the 'desc' tag in the ICC tag table and extract the ASCII description.
-    if icc.len() < 132 {
-        return None;
-    }
-    let tag_count = u32::from_be_bytes([icc[128], icc[129], icc[130], icc[131]]) as usize;
-    for t in 0..tag_count.min(30) {
-        let base = 132 + t * 12;
-        if base + 12 > icc.len() {
-            break;
-        }
-        if &icc[base..base + 4] == b"desc" {
-            let offset =
-                u32::from_be_bytes([icc[base + 4], icc[base + 5], icc[base + 6], icc[base + 7]])
-                    as usize;
-            let size =
-                u32::from_be_bytes([icc[base + 8], icc[base + 9], icc[base + 10], icc[base + 11]])
-                    as usize;
-            if offset + size > icc.len() || size < 13 {
-                return None;
-            }
-            // 'desc' type: 4 bytes sig + 4 reserved + 4 length + ASCII string
-            let type_sig = &icc[offset..offset + 4];
-            if type_sig == b"desc" {
-                let str_len = u32::from_be_bytes([
-                    icc[offset + 8],
-                    icc[offset + 9],
-                    icc[offset + 10],
-                    icc[offset + 11],
-                ]) as usize;
-                let str_start = offset + 12;
-                let str_end = (str_start + str_len).min(offset + size).min(icc.len());
-                return String::from_utf8(icc[str_start..str_end].to_vec())
-                    .ok()
-                    .map(|s| s.trim_end_matches('\0').to_string());
-            }
-        }
-    }
-    None
 }
 
 /// Register an NSNotificationCenter observer for `NSWindowDidChangeScreenNotification`.

@@ -27,7 +27,10 @@ pub fn set_event_loop_proxy(proxy: EventLoopProxy<AppCommand>) {
 
 /// Send a command through the global event loop proxy. Returns false if the proxy
 /// hasn't been set or the event loop is closed.
-#[cfg(target_os = "macos")] // Called from native_ui (macOS-only Settings delegate)
+///
+/// For the code that runs outside `App`'s reach: macOS's native Settings delegate and its
+/// screen-change observer, and the Windows message hook.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn send_command(command: AppCommand) -> bool {
     EVENT_LOOP_PROXY
         .get()
@@ -131,7 +134,6 @@ impl AppCommand {
             | AppCommand::TakeScreenshot(_)
             | AppCommand::Sync(_)
             | AppCommand::PreloaderProgress => Internal,
-            #[cfg(target_os = "macos")]
             AppCommand::DisplayChanged => Internal,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::PreviewsAvailable => Internal,
@@ -383,8 +385,10 @@ pub enum AppCommand {
     WatchedFoldersChanged { folders: Vec<PathBuf> },
 
     // ── Color management ─────────────────────────────────────────────
-    /// The window moved to a different display — re-query the display ICC profile.
-    #[cfg(target_os = "macos")]
+    /// The display the window is on may now want a different ICC profile. macOS sends it when the
+    /// window changes screen (`NSWindowDidChangeScreenNotification`); Windows sends it on
+    /// `WM_DISPLAYCHANGE`, which is a monitor arriving or leaving, a resolution change, or a
+    /// profile re-associated in place.
     DisplayChanged,
 
     /// Files were dropped on the window (or handed over by the QA server's `/drop`). The
