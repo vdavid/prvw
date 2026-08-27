@@ -1,4 +1,6 @@
 ---
+import { windowsUrl } from '../lib/download'
+
 interface Props {
     title: string
     description?: string
@@ -13,7 +15,9 @@ const {
 ---
 
 <!doctype html>
-<html lang="en">
+<!-- `data-has-windows-build` tells the OS-detection script below whether this release actually
+     shipped an installer. Without it, a Windows visitor would land on a button with no label. -->
+<html lang="en" data-has-windows-build={windowsUrl ? '' : undefined}>
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -56,6 +60,30 @@ const {
                 sameAs: ['https://github.com/vdavid/prvw'],
             })}
         />
+
+        {/* Stamp the visitor's OS before first paint, so the download button never flashes the
+            macOS wording at a Windows or Linux visitor. Leaving the attribute off means "macOS",
+            which is where no-JS visitors and anyone we can't identify land. */}
+        <script is:inline>
+            ;(function () {
+                var root = document.documentElement
+                var uaData = navigator.userAgentData
+                var ua = navigator.userAgent || ''
+                var platform = (uaData && uaData.platform) || navigator.platform || ''
+
+                // Phones and tablets run none of the builds, so they keep the macOS default.
+                if ((uaData && uaData.mobile) || /Android|iPhone|iPad|iPod/i.test(ua)) return
+
+                if (/Win/i.test(platform) || /Windows/i.test(ua)) {
+                    // A release without an installer has no Windows label to show.
+                    if (root.hasAttribute('data-has-windows-build')) root.dataset.os = 'windows'
+                } else if (/Mac/i.test(platform) || /Mac OS X/i.test(ua)) {
+                    root.dataset.os = 'macos'
+                } else if (/Linux|X11|CrOS/i.test(platform) || /Linux|X11|CrOS/i.test(ua)) {
+                    root.dataset.os = 'linux'
+                }
+            })()
+        </script>
 
         {/* Apply persisted theme choice before first paint to prevent FOUC */}
         <script is:inline>
@@ -110,6 +138,36 @@ const {
 
         <script is:inline>
             ;(function () {
+                var os = document.documentElement.dataset.os || 'macos'
+
+                // Point the button at the Windows installer. The CSS in `DownloadButton.astro`
+                // already swapped the label; this is the href and the analytics props.
+                function applyWindows() {
+                    document.querySelectorAll('a[data-download-link]').forEach(function (el) {
+                        if (!el.dataset.winUrl) return
+                        el.href = el.dataset.winUrl
+                        el.setAttribute('data-umami-event-platform', 'windows')
+                        el.setAttribute('data-umami-event-arch', 'x86_64')
+                    })
+
+                    document.querySelectorAll('[data-download-dropdown] [data-platform="windows"]').forEach(function (el) {
+                        el.dataset.recommended = 'true'
+                    })
+                }
+
+                // There's no Linux build, so the button opens the repo instead of a download that
+                // doesn't exist. The dropdown still offers the macOS and Windows builds.
+                function applyLinux() {
+                    document.querySelectorAll('a[data-download-link]').forEach(function (el) {
+                        if (el.dataset.sourceUrl) el.href = el.dataset.sourceUrl
+                        el.setAttribute('target', '_blank')
+                        el.setAttribute('rel', 'noopener noreferrer')
+                        el.setAttribute('data-umami-event', 'build-from-source')
+                        el.setAttribute('data-umami-event-platform', 'linux')
+                        el.removeAttribute('data-umami-event-arch')
+                    })
+                }
+
                 function applyArch(arch) {
                     var label = arch === 'aarch64' ? 'Apple Silicon' : 'Intel'
 
@@ -153,6 +211,18 @@ const {
                     return null
                 }
 
+                if (os === 'windows') {
+                    applyWindows()
+                    return
+                }
+                if (os === 'linux') {
+                    applyLinux()
+                    return
+                }
+
+                // Everything below is macOS only. The WebGL renderer string reads "Intel" or "AMD"
+                // on a Windows PC too, so running it off-macOS would recommend an arch nobody asked
+                // for and quietly overwrite the href we just set.
                 var syncArch = detectArchSync()
                 if (!syncArch) {
                     try {

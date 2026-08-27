@@ -1,5 +1,5 @@
 ---
-import { version, dmgUrls, dmgSizes } from '../lib/download'
+import { version, dmgUrls, dmgSizes, windowsUrl, windowsSize, sourceUrl } from '../lib/download'
 
 interface Props {
     variant: 'hero' | 'pricing'
@@ -7,6 +7,11 @@ interface Props {
 }
 
 const { variant, class: className = '' } = Astro.props
+
+// The server-rendered state is macOS, which is also where anyone whose OS we can't read stays.
+// `Layout.astro` stamps `data-os` on <html> before first paint and the CSS below swaps the label,
+// so a Windows or Linux visitor never sees the macOS wording flash first.
+const isHero = variant === 'hero'
 ---
 
 <div class:list={['download-split-btn', `download-split-btn--${variant}`, className]} data-download-split-btn>
@@ -17,25 +22,43 @@ const { variant, class: className = '' } = Astro.props
         data-dmg-intel={dmgUrls.x86_64}
         data-size-arm={dmgSizes?.aarch64}
         data-size-intel={dmgSizes?.x86_64}
+        data-win-url={windowsUrl ?? undefined}
+        data-source-url={sourceUrl}
         data-umami-event="download"
+        data-umami-event-platform="macos"
         data-umami-event-arch="universal"
         data-umami-event-version={version}
         data-umami-event-source={variant}
         class:list={[
             'download-split-btn__main',
-            { glow: variant === 'hero' },
+            { glow: isHero },
         ]}
     >
         <svg class="download-split-btn__icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
         </svg>
         <span class="download-split-btn__stack">
-            <span class="download-split-btn__label" data-download-label>
-                {variant === 'hero' ? `Download v${version} for macOS` : `Download`}
+            <span class="download-split-btn__label" data-os-label="macos">
+                {isHero ? `Download v${version} for macOS` : `Download`}
                 {dmgSizes && <span data-download-size> · {dmgSizes.universal}</span>}
             </span>
-            {variant === 'hero' && (
-                <span class="download-split-btn__sub" data-download-arch-hint></span>
+            {windowsUrl && (
+                <span class="download-split-btn__label" data-os-label="windows">
+                    {isHero ? `Download v${version} for Windows` : `Download`}
+                    {windowsSize && <span> · {windowsSize}</span>}
+                </span>
+            )}
+            <span class="download-split-btn__label" data-os-label="linux">
+                {isHero ? `Build it from source` : `Build from source`}
+            </span>
+            {isHero && (
+                <>
+                    <span class="download-split-btn__sub" data-os-sub="macos" data-download-arch-hint></span>
+                    {windowsUrl && (
+                        <span class="download-split-btn__sub" data-os-sub="windows">Windows 10 and 11, 64-bit</span>
+                    )}
+                    <span class="download-split-btn__sub" data-os-sub="linux">There's no Linux build yet</span>
+                </>
             )}
         </span>
     </a>
@@ -45,8 +68,8 @@ const { variant, class: className = '' } = Astro.props
         class="download-split-btn__chevron"
         aria-haspopup="true"
         aria-expanded="false"
-        aria-label="Other architecture options"
-        title="Other architecture options"
+        aria-label="Other download options"
+        title="Other download options"
         data-download-chevron
     >
         <svg class="download-split-btn__chevron-svg" viewBox="0 0 10 10" fill="none" aria-hidden="true">
@@ -60,35 +83,45 @@ const { variant, class: className = '' } = Astro.props
     </button>
 
     <div class="download-split-btn__dropdown" role="menu" hidden data-download-dropdown>
-        <a href={dmgUrls.aarch64} role="menuitem" tabindex="-1" data-arch="aarch64" class="download-split-btn__option" data-umami-event="download" data-umami-event-arch="aarch64" data-umami-event-version={version} data-umami-event-source="dropdown">
+        <a href={dmgUrls.aarch64} role="menuitem" tabindex="-1" data-arch="aarch64" class="download-split-btn__option" data-umami-event="download" data-umami-event-platform="macos" data-umami-event-arch="aarch64" data-umami-event-version={version} data-umami-event-source="dropdown">
             <svg class="download-split-btn__option-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
             </svg>
-            <span class="download-split-btn__option-name">Apple Silicon</span>
+            <span class="download-split-btn__option-name">macOS, Apple Silicon</span>
             {dmgSizes && <span class="download-split-btn__option-size">{dmgSizes.aarch64}</span>}
         </a>
-        <a href={dmgUrls.x86_64} role="menuitem" tabindex="-1" data-arch="x86_64" class="download-split-btn__option" data-umami-event="download" data-umami-event-arch="x86_64" data-umami-event-version={version} data-umami-event-source="dropdown">
+        <a href={dmgUrls.x86_64} role="menuitem" tabindex="-1" data-arch="x86_64" class="download-split-btn__option" data-umami-event="download" data-umami-event-platform="macos" data-umami-event-arch="x86_64" data-umami-event-version={version} data-umami-event-source="dropdown">
             <svg class="download-split-btn__option-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
             </svg>
-            <span class="download-split-btn__option-name">Intel</span>
+            <span class="download-split-btn__option-name">macOS, Intel</span>
             {dmgSizes && <span class="download-split-btn__option-size">{dmgSizes.x86_64}</span>}
         </a>
-        <a href={dmgUrls.universal} role="menuitem" tabindex="-1" data-arch="universal" class="download-split-btn__option" data-umami-event="download" data-umami-event-arch="universal" data-umami-event-version={version} data-umami-event-source="dropdown">
+        <a href={dmgUrls.universal} role="menuitem" tabindex="-1" data-arch="universal" class="download-split-btn__option" data-umami-event="download" data-umami-event-platform="macos" data-umami-event-arch="universal" data-umami-event-version={version} data-umami-event-source="dropdown">
             <svg class="download-split-btn__option-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
             </svg>
-            <span class="download-split-btn__option-name">Universal</span>
+            <span class="download-split-btn__option-name">macOS, universal</span>
             {dmgSizes && <span class="download-split-btn__option-size">{dmgSizes.universal}</span>}
         </a>
+        {windowsUrl && (
+            <a href={windowsUrl} role="menuitem" tabindex="-1" data-platform="windows" class="download-split-btn__option download-split-btn__option--divided" data-umami-event="download" data-umami-event-platform="windows" data-umami-event-arch="x86_64" data-umami-event-version={version} data-umami-event-source="dropdown">
+                <svg class="download-split-btn__option-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
+                </svg>
+                <span class="download-split-btn__option-name">Windows installer</span>
+                {windowsSize && <span class="download-split-btn__option-size">{windowsSize}</span>}
+            </a>
+        )}
     </div>
 
-    <!-- No-JS fallback: show all three links -->
+    <!-- No-JS fallback: show every build we have -->
     <noscript>
         <div class="download-split-btn__noscript">
-            <a href={dmgUrls.aarch64}>Apple Silicon</a>
-            <a href={dmgUrls.x86_64}>Intel</a>
-            <a href={dmgUrls.universal}>Universal</a>
+            <a href={dmgUrls.aarch64}>macOS, Apple Silicon</a>
+            <a href={dmgUrls.x86_64}>macOS, Intel</a>
+            <a href={dmgUrls.universal}>macOS, universal</a>
+            {windowsUrl && <a href={windowsUrl}>Windows installer</a>}
         </div>
     </noscript>
 </div>
@@ -242,6 +275,49 @@ const { variant, class: className = '' } = Astro.props
         opacity: 0.8;
     }
 
+    /* Per-OS label swap. The markup carries one label and one hint per platform and CSS shows the
+       one matching <html data-os>, which `Layout.astro` stamps in <head> before first paint. macOS
+       is the default, so a no-JS visitor and anyone we can't identify get the macOS wording.
+       `:global()` is required: Astro would otherwise scope `html` to this component and match
+       nothing. */
+    .download-split-btn__label[data-os-label] {
+        display: none;
+    }
+
+    .download-split-btn__sub[data-os-sub] {
+        display: none;
+    }
+
+    .download-split-btn__label[data-os-label='macos'],
+    .download-split-btn__sub[data-os-sub='macos'] {
+        display: block;
+    }
+
+    :global(html[data-os='windows']) .download-split-btn__label[data-os-label='macos'],
+    :global(html[data-os='windows']) .download-split-btn__sub[data-os-sub='macos'] {
+        display: none;
+    }
+
+    :global(html[data-os='windows']) .download-split-btn__label[data-os-label='windows'],
+    :global(html[data-os='windows']) .download-split-btn__sub[data-os-sub='windows'] {
+        display: block;
+    }
+
+    :global(html[data-os='linux']) .download-split-btn__label[data-os-label='macos'],
+    :global(html[data-os='linux']) .download-split-btn__sub[data-os-sub='macos'] {
+        display: none;
+    }
+
+    :global(html[data-os='linux']) .download-split-btn__label[data-os-label='linux'],
+    :global(html[data-os='linux']) .download-split-btn__sub[data-os-sub='linux'] {
+        display: block;
+    }
+
+    /* The Linux button opens the repo, so the download arrow would promise the wrong thing */
+    :global(html[data-os='linux']) .download-split-btn__icon {
+        display: none;
+    }
+
     /* Dropdown */
     .download-split-btn__dropdown {
         position: absolute;
@@ -298,6 +374,14 @@ const { variant, class: className = '' } = Astro.props
     .download-split-btn__option-size {
         color: var(--color-text-secondary);
         font-size: 0.8125rem;
+    }
+
+    /* The Windows entry sits below a hairline so the three macOS builds read as one group */
+    .download-split-btn__option--divided {
+        margin-top: 4px;
+        border-top: 1px solid var(--color-border);
+        padding-top: 0.625rem;
+        border-radius: 0 0 0.375rem 0.375rem;
     }
 
     /* Recommended indicator (set by arch detection script) */

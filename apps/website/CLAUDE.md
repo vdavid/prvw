@@ -131,12 +131,43 @@ artifact is an NSIS installer. New platforms carry their size inside their own `
 **`windows-x86_64` is absent from the committed file, and it stays absent.** The release workflow writes it, and the
 first tagged release that publishes a Windows installer is what puts it there. Don't hand-write it in: this file is a
 build-time static import, so a URL here is a download button on the live site, and the only URL anyone could write by
-hand today points at a release asset that doesn't exist. Code that reads the key handles its absence.
+hand today points at a release asset that doesn't exist.
 
-**Adding a key here is safe by construction.** The macOS updater (`apps/desktop/src/updater.rs`) deserializes
-`platforms` into a `HashMap<String, PlatformEntry>` and looks up `darwin-<arch>`, so entries it doesn't know about never
-reach it, and serde drops fields `PlatformEntry` doesn't declare. `download.ts` names the three `darwin-*` keys
-outright. Removing or renaming a key is what would break them.
+**Every read tolerates the key being gone, and a URL alone doesn't count as released.** `download.ts` exports it as
+`windowsUrl` / `windowsSize`, both `null` unless the entry carries a real byte size, which CI can only know once it has
+an installer in hand. That second half is the guard against a placeholder becoming a live 404 button; it's the same
+convention `dmgSizes` uses. The size comes from `platforms["windows-x86_64"].size`, or a top-level
+`installerSizes.x86_64`, whichever CI writes. A release without the key renders exactly the macOS-only page we had
+before: no Windows label, no Windows dropdown entry, no SmartScreen note, and no `data-has-windows-build` on `<html>`,
+so a Windows visitor falls back to the macOS default rather than to a button with no label.
+
+**Adding a key here is safe by construction.** The macOS updater (`apps/desktop/src/updater/`) deserializes
+`platforms` into a `HashMap<String, PlatformEntry>` and looks up its own `<os>-<arch>` key, so entries it doesn't know
+about never reach it, and serde drops fields `PlatformEntry` doesn't declare. `download.ts` names the three `darwin-*`
+keys outright. Removing or renaming a key is what would break them.
+
+## OS detection and the download button
+
+The site is a static build, so there's no request-time server to sniff a user agent. Detection is client-side, in two
+halves:
+
+- **`Layout.astro`, `<head>`, before first paint**: stamps `data-os="windows" | "macos" | "linux"` on `<html>` from
+  `navigator.userAgentData.platform`, falling back to `navigator.platform` and then the user agent string. Phones and
+  tablets are skipped, and so is Windows when the release carries no installer. Leaving the attribute off means macOS,
+  which is also where a no-JS visitor and anyone we can't identify land.
+- **`DownloadButton.astro`**: renders one label and one hint per platform and lets CSS show the one matching
+  `html[data-os]`. Those selectors need `:global(html[...])`, or Astro scopes `html` to the component and the rule
+  matches nothing. Because the swap is CSS, a Windows visitor never sees the macOS wording flash first.
+
+The body script in `Layout.astro` then fixes up the `href` and the umami props, and the macOS arch detection runs
+**only** on macOS: the WebGL renderer string reads "Intel" or "AMD" on a Windows PC too, so letting it run everywhere
+would recommend an arch nobody asked for and overwrite the Windows href.
+
+Linux has no build at all, so its button opens the repo (`build-from-source` in umami) and says so. Every visitor
+reaches the other platforms through the split button's dropdown, which always lists every artifact that exists.
+
+Umami events stay per-platform: the download links carry `data-umami-event-platform` (`macos` / `windows`) alongside the
+existing `arch`, `version`, and `source` props.
 
 ## Analytics
 
