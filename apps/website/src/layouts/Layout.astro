@@ -61,27 +61,31 @@ const {
             })}
         />
 
-        {/* Stamp the visitor's OS before first paint, so the download button never flashes the
-            macOS wording at a Windows or Linux visitor. Leaving the attribute off means "macOS",
-            which is where no-JS visitors and anyone we can't identify land. */}
+        {/* Work out what to offer this visitor before first paint, so the download button never
+            flashes the macOS wording at someone on another OS. Leaving the attribute off means
+            "macOS", which is where no-JS visitors and anyone we can't identify land. */}
         <script is:inline>
             ;(function () {
                 var root = document.documentElement
                 var uaData = navigator.userAgentData
                 var ua = navigator.userAgent || ''
                 var platform = (uaData && uaData.platform) || navigator.platform || ''
+                var offer = null
 
                 // Phones and tablets run none of the builds, so they keep the macOS default.
                 if ((uaData && uaData.mobile) || /Android|iPhone|iPad|iPod/i.test(ua)) return
 
                 if (/Win/i.test(platform) || /Windows/i.test(ua)) {
-                    // A release without an installer has no Windows label to show.
-                    if (root.hasAttribute('data-has-windows-build')) root.dataset.os = 'windows'
+                    // `data-has-windows-build` is server-rendered from `latest.json`. Until a release
+                    // ships an installer, Windows visitors get the "coming soon" wording.
+                    offer = root.hasAttribute('data-has-windows-build') ? 'windows' : 'windows-soon'
                 } else if (/Mac/i.test(platform) || /Mac OS X/i.test(ua)) {
-                    root.dataset.os = 'macos'
+                    offer = 'macos'
                 } else if (/Linux|X11|CrOS/i.test(platform) || /Linux|X11|CrOS/i.test(ua)) {
-                    root.dataset.os = 'linux'
+                    offer = 'linux'
                 }
+
+                if (offer) root.dataset.offer = offer
             })()
         </script>
 
@@ -138,7 +142,7 @@ const {
 
         <script is:inline>
             ;(function () {
-                var os = document.documentElement.dataset.os || 'macos'
+                var offer = document.documentElement.dataset.offer || 'macos'
 
                 // Point the button at the Windows installer. The CSS in `DownloadButton.astro`
                 // already swapped the label; this is the href and the analytics props.
@@ -155,15 +159,17 @@ const {
                     })
                 }
 
-                // There's no Linux build, so the button opens the repo instead of a download that
-                // doesn't exist. The dropdown still offers the macOS and Windows builds.
-                function applyLinux() {
+                // No build for this visitor's OS, so the button opens the repo instead of a download
+                // that doesn't exist. The dropdown still offers everything we did build. The two
+                // events stay apart because "how many Windows visitors are waiting" is worth knowing
+                // on its own.
+                function applyRepoLink(event, platform) {
                     document.querySelectorAll('a[data-download-link]').forEach(function (el) {
                         if (el.dataset.sourceUrl) el.href = el.dataset.sourceUrl
                         el.setAttribute('target', '_blank')
                         el.setAttribute('rel', 'noopener noreferrer')
-                        el.setAttribute('data-umami-event', 'build-from-source')
-                        el.setAttribute('data-umami-event-platform', 'linux')
+                        el.setAttribute('data-umami-event', event)
+                        el.setAttribute('data-umami-event-platform', platform)
                         el.removeAttribute('data-umami-event-arch')
                     })
                 }
@@ -211,12 +217,16 @@ const {
                     return null
                 }
 
-                if (os === 'windows') {
+                if (offer === 'windows') {
                     applyWindows()
                     return
                 }
-                if (os === 'linux') {
-                    applyLinux()
+                if (offer === 'windows-soon') {
+                    applyRepoLink('watch-for-release', 'windows')
+                    return
+                }
+                if (offer === 'linux') {
+                    applyRepoLink('build-from-source', 'linux')
                     return
                 }
 

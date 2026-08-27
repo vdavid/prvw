@@ -129,45 +129,55 @@ artifact is an NSIS installer. New platforms carry their size inside their own `
 `windows-x86_64` does.
 
 **`windows-x86_64` is absent from the committed file, and it stays absent.** The release workflow writes it, and the
-first tagged release that publishes a Windows installer is what puts it there. Don't hand-write it in: this file is a
-build-time static import, so a URL here is a download button on the live site, and the only URL anyone could write by
-hand today points at a release asset that doesn't exist.
+first tagged release that publishes a Windows installer is what puts it there. Don't hand-write it in: the only URL
+anyone could write by hand today points at a release asset that doesn't exist.
 
-**Every read tolerates the key being gone, and a URL alone doesn't count as released.** `download.ts` exports it as
-`windowsUrl` / `windowsSize`, both `null` unless the entry carries a real byte size, which CI can only know once it has
-an installer in hand. That second half is the guard against a placeholder becoming a live 404 button; it's the same
-convention `dmgSizes` uses. The size comes from `platforms["windows-x86_64"].size`, or a top-level
-`installerSizes.x86_64`, whichever CI writes. A release without the key renders exactly the macOS-only page we had
-before: no Windows label, no Windows dropdown entry, no SmartScreen note, and no `data-has-windows-build` on `<html>`,
-so a Windows visitor falls back to the macOS default rather than to a button with no label.
+**It's optional, and a URL alone doesn't count as released.** It points at `PrvwSetup-<version>-x64.exe`, and
+`download.ts` exports it as `windowsUrl` / `windowsSize`. Both stay `null` unless the entry carries a **real byte size**
+in `platforms["windows-x86_64"].size` (not in `dmgSizes`, which is DMG-specific). Same convention as `dmgSizes`, for a
+sharper reason: this file is a **build-time static import**, so a placeholder entry doesn't sit inert, it gets baked into
+the deployed site as a live button pointing at a 404. CI can only know the size once it has an installer in hand, so
+"has a size" is the honest test for "shipped". A missing or zero size falls back exactly as an absent key does, and the
+URL never reaches `dist/` at all.
 
-**Adding a key here is safe by construction.** The macOS updater (`apps/desktop/src/updater/`) deserializes
-`platforms` into a `HashMap<String, PlatformEntry>` and looks up its own `<os>-<arch>` key, so entries it doesn't know
-about never reach it, and serde drops fields `PlatformEntry` doesn't declare. `download.ts` names the three `darwin-*`
-keys outright. Removing or renaming a key is what would break them.
+**Adding a key here is safe by construction.** The macOS updater (`apps/desktop/src/updater/`) deserializes `platforms`
+into a `HashMap<String, PlatformEntry>` and looks up its own `<os>-<arch>` key, so entries it doesn't know about never
+reach it, and serde drops fields `PlatformEntry` doesn't declare. `download.ts` names the three `darwin-*` keys
+outright. Removing or renaming a key is what would break them.
 
-## OS detection and the download button
+## What the button offers, and how it decides
 
-The site is a static build, so there's no request-time server to sniff a user agent. Detection is client-side, in two
-halves:
+The site is a static build, so there's no request-time server to sniff a user agent. The decision is client-side, and
+it's the visitor's OS crossed with what that release actually built. Four outcomes, named by the `data-offer` values:
 
-- **`Layout.astro`, `<head>`, before first paint**: stamps `data-os="windows" | "macos" | "linux"` on `<html>` from
+- `macos`: the DMG, with the Apple Silicon vs Intel detection below.
+- `windows`: the installer. Only reachable when `windowsUrl` is non-null.
+- `windows-soon`: **today's production path.** Windows is a supported platform with no release yet, so the button says
+  so and opens the repo instead of handing a Windows visitor a `.dmg`.
+- `linux`: no build and none close, so the button opens the repo to build from source.
+
+Two halves make it work:
+
+- **`Layout.astro`, `<head>`, before first paint**: stamps `data-offer` on `<html>` from
   `navigator.userAgentData.platform`, falling back to `navigator.platform` and then the user agent string. Phones and
-  tablets are skipped, and so is Windows when the release carries no installer. Leaving the attribute off means macOS,
-  which is also where a no-JS visitor and anyone we can't identify land.
-- **`DownloadButton.astro`**: renders one label and one hint per platform and lets CSS show the one matching
-  `html[data-os]`. Those selectors need `:global(html[...])`, or Astro scopes `html` to the component and the rule
-  matches nothing. Because the swap is CSS, a Windows visitor never sees the macOS wording flash first.
+  tablets are skipped. Windows splits on `data-has-windows-build`, a server-rendered attribute that's present only when
+  `windowsUrl` is. Leaving `data-offer` off means macOS, which is where a no-JS visitor and anyone we can't identify
+  land.
+- **`DownloadButton.astro`**: renders one label and one hint per offer and lets CSS show the matching pair. Those
+  selectors need `:global(html[...])`, or Astro scopes `html` to the component and the rule matches nothing. Because the
+  swap is CSS on an attribute set in `<head>`, nobody sees the macOS wording flash first.
 
 The body script in `Layout.astro` then fixes up the `href` and the umami props, and the macOS arch detection runs
 **only** on macOS: the WebGL renderer string reads "Intel" or "AMD" on a Windows PC too, so letting it run everywhere
-would recommend an arch nobody asked for and overwrite the Windows href.
+would recommend an arch nobody asked for and overwrite the href we just set.
 
-Linux has no build at all, so its button opens the repo (`build-from-source` in umami) and says so. Every visitor
-reaches the other platforms through the split button's dropdown, which always lists every artifact that exists.
+Every visitor reaches the other platforms through the split button's dropdown, which always lists every artifact that
+exists and marks the one matching the visitor.
 
-Umami events stay per-platform: the download links carry `data-umami-event-platform` (`macos` / `windows`) alongside the
-existing `arch`, `version`, and `source` props.
+Umami keeps downloads measurable per platform: the links carry `data-umami-event-platform` (`macos` / `windows`)
+alongside the existing `arch`, `version`, and `source` props. The two repo-link states fire their own events instead of
+`download`, and they're deliberately separate: `watch-for-release` (`windows-soon`) answers "how many Windows visitors
+are waiting", `build-from-source` (`linux`) answers a different question.
 
 ## Analytics
 

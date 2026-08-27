@@ -8,9 +8,11 @@ interface Props {
 
 const { variant, class: className = '' } = Astro.props
 
-// The server-rendered state is macOS, which is also where anyone whose OS we can't read stays.
-// `Layout.astro` stamps `data-os` on <html> before first paint and the CSS below swaps the label,
-// so a Windows or Linux visitor never sees the macOS wording flash first.
+// What the button offers, which is the visitor's OS crossed with what that release actually built:
+// `macos`, `windows` (an installer exists), `windows-soon` (it doesn't yet), or `linux`. The server
+// renders `macos`, which is also where anyone whose OS we can't read stays. `Layout.astro` stamps
+// `data-offer` on <html> before first paint and the CSS below swaps the label, so nobody sees the
+// macOS wording flash first.
 const isHero = variant === 'hero'
 ---
 
@@ -38,26 +40,34 @@ const isHero = variant === 'hero'
             <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
         </svg>
         <span class="download-split-btn__stack">
-            <span class="download-split-btn__label" data-os-label="macos">
+            <span class="download-split-btn__label" data-offer-label="macos">
                 {isHero ? `Download v${version} for macOS` : `Download`}
                 {dmgSizes && <span data-download-size> · {dmgSizes.universal}</span>}
             </span>
-            {windowsUrl && (
-                <span class="download-split-btn__label" data-os-label="windows">
+            {windowsUrl ? (
+                <span class="download-split-btn__label" data-offer-label="windows">
                     {isHero ? `Download v${version} for Windows` : `Download`}
                     {windowsSize && <span> · {windowsSize}</span>}
                 </span>
+            ) : (
+                <span class="download-split-btn__label" data-offer-label="windows-soon">
+                    {isHero ? `The Windows build is coming soon` : `Windows build coming soon`}
+                </span>
             )}
-            <span class="download-split-btn__label" data-os-label="linux">
+            <span class="download-split-btn__label" data-offer-label="linux">
                 {isHero ? `Build it from source` : `Build from source`}
             </span>
             {isHero && (
                 <>
-                    <span class="download-split-btn__sub" data-os-sub="macos" data-download-arch-hint></span>
-                    {windowsUrl && (
-                        <span class="download-split-btn__sub" data-os-sub="windows">Windows 10 and 11, 64-bit</span>
+                    <span class="download-split-btn__sub" data-offer-sub="macos" data-download-arch-hint></span>
+                    {windowsUrl ? (
+                        <span class="download-split-btn__sub" data-offer-sub="windows">Windows 10 and 11, 64-bit</span>
+                    ) : (
+                        <span class="download-split-btn__sub" data-offer-sub="windows-soon">
+                            Watch the repo to hear when it lands
+                        </span>
                     )}
-                    <span class="download-split-btn__sub" data-os-sub="linux">There's no Linux build yet</span>
+                    <span class="download-split-btn__sub" data-offer-sub="linux">There's no Linux build yet</span>
                 </>
             )}
         </span>
@@ -275,46 +285,51 @@ const isHero = variant === 'hero'
         opacity: 0.8;
     }
 
-    /* Per-OS label swap. The markup carries one label and one hint per platform and CSS shows the
-       one matching <html data-os>, which `Layout.astro` stamps in <head> before first paint. macOS
-       is the default, so a no-JS visitor and anyone we can't identify get the macOS wording.
-       `:global()` is required: Astro would otherwise scope `html` to this component and match
-       nothing. */
-    .download-split-btn__label[data-os-label] {
+    /* Label swap. The markup carries one label and one hint per offer and CSS shows the one matching
+       <html data-offer>, which `Layout.astro` stamps in <head> before first paint. macOS is the
+       default, so a no-JS visitor and anyone we can't identify get the macOS wording. `:global()` is
+       required: Astro would otherwise scope `html` to this component and match nothing. */
+    .download-split-btn__label[data-offer-label] {
         display: none;
     }
 
-    .download-split-btn__sub[data-os-sub] {
+    .download-split-btn__sub[data-offer-sub] {
         display: none;
     }
 
-    .download-split-btn__label[data-os-label='macos'],
-    .download-split-btn__sub[data-os-sub='macos'] {
+    .download-split-btn__label[data-offer-label='macos'],
+    .download-split-btn__sub[data-offer-sub='macos'] {
         display: block;
     }
 
-    :global(html[data-os='windows']) .download-split-btn__label[data-os-label='macos'],
-    :global(html[data-os='windows']) .download-split-btn__sub[data-os-sub='macos'] {
+    :global(html[data-offer]) .download-split-btn__label[data-offer-label='macos'],
+    :global(html[data-offer]) .download-split-btn__sub[data-offer-sub='macos'] {
         display: none;
     }
 
-    :global(html[data-os='windows']) .download-split-btn__label[data-os-label='windows'],
-    :global(html[data-os='windows']) .download-split-btn__sub[data-os-sub='windows'] {
+    :global(html[data-offer='macos']) .download-split-btn__label[data-offer-label='macos'],
+    :global(html[data-offer='macos']) .download-split-btn__sub[data-offer-sub='macos'] {
         display: block;
     }
 
-    :global(html[data-os='linux']) .download-split-btn__label[data-os-label='macos'],
-    :global(html[data-os='linux']) .download-split-btn__sub[data-os-sub='macos'] {
-        display: none;
-    }
-
-    :global(html[data-os='linux']) .download-split-btn__label[data-os-label='linux'],
-    :global(html[data-os='linux']) .download-split-btn__sub[data-os-sub='linux'] {
+    :global(html[data-offer='windows']) .download-split-btn__label[data-offer-label='windows'],
+    :global(html[data-offer='windows']) .download-split-btn__sub[data-offer-sub='windows'] {
         display: block;
     }
 
-    /* The Linux button opens the repo, so the download arrow would promise the wrong thing */
-    :global(html[data-os='linux']) .download-split-btn__icon {
+    :global(html[data-offer='windows-soon']) .download-split-btn__label[data-offer-label='windows-soon'],
+    :global(html[data-offer='windows-soon']) .download-split-btn__sub[data-offer-sub='windows-soon'] {
+        display: block;
+    }
+
+    :global(html[data-offer='linux']) .download-split-btn__label[data-offer-label='linux'],
+    :global(html[data-offer='linux']) .download-split-btn__sub[data-offer-sub='linux'] {
+        display: block;
+    }
+
+    /* These two buttons open the repo, so the download arrow would promise the wrong thing */
+    :global(html[data-offer='windows-soon']) .download-split-btn__icon,
+    :global(html[data-offer='linux']) .download-split-btn__icon {
         display: none;
     }
 
