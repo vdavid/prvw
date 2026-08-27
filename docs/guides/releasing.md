@@ -164,8 +164,8 @@ their reputation bypass in 2024.
 
 1. Trusted Signing in the build leg, through the `PRVW_WINDOWS_SIGN_CMD` variable above. Until then every download meets
    SmartScreen with no publisher behind it.
-2. The Windows updater that reads `latest.json` (M7 step 4). The manifest already carries `windows-x86_64`; nothing on
-   Windows reads it.
+2. The Windows updater that reads `latest.json` (M7 step 4). The release workflow writes a `windows-x86_64` entry into
+   the manifest, and the committed copy won't carry one until the first Windows release generates it.
 3. One pass through the installer on a real Windows box. Nothing in it has ever run; the list of what to watch is at the
    bottom of `apps/desktop/installer/windows/CLAUDE.md`.
 4. A Windows download on getprvw.com. `src/lib/download.ts` names the three `darwin-*` keys and stops there.

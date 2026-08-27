@@ -126,8 +126,12 @@ universal size by default and the arch-detection script in `Layout.astro` swaps 
 
 **Two shapes for one idea, and both stay.** `dmgSizes` holds macOS sizes and only those: it's a DMG map, and the Windows
 artifact is an NSIS installer. New platforms carry their size inside their own `platforms` entry instead, which is what
-`windows-x86_64` does. A `size` of 0 means no artifact has been published for that version yet, the same "hide the size"
-signal `dmgSizes` uses.
+`windows-x86_64` does.
+
+**`windows-x86_64` is absent from the committed file, and it stays absent.** The release workflow writes it, and the
+first tagged release that publishes a Windows installer is what puts it there. Don't hand-write it in: this file is a
+build-time static import, so a URL here is a download button on the live site, and the only URL anyone could write by
+hand today points at a release asset that doesn't exist. Code that reads the key handles its absence.
 
 **Adding a key here is safe by construction.** The macOS updater (`apps/desktop/src/updater.rs`) deserializes
 `platforms` into a `HashMap<String, PlatformEntry>` and looks up `darwin-<arch>`, so entries it doesn't know about never
