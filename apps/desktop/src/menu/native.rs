@@ -824,16 +824,16 @@ mod tests {
         }
     }
 
-    /// What each platform drops, and why. Windows' list is what M1 leaves behind: the print
-    /// sheet, the settings window, the about box, and browse mode, each suppressed because
+    /// What each platform drops, and why. Windows' list is what's still to build: the print
+    /// sheet, the settings window, and browse mode, each suppressed because
     /// `parity::command_keys` says `Missing`, so building the feature is what brings the item
-    /// back rather than an edit to this file.
+    /// back rather than an edit to this file. About left this list when M6 built the box, which
+    /// is the mechanism working.
     #[test]
     fn platforms_without_the_feature_dont_offer_the_item() {
         assert_eq!(
             dropped_by(Platform::Windows),
             vec![
-                "About",
                 "Settings",
                 "Hide",
                 "HideOthers",

@@ -1,7 +1,12 @@
-//! # About window
+//! # About Prvw, on macOS
 //!
 //! App icon, version, author credit, website + product links, Close button. Non-modal
-//! NSWindow. Opened via the app menu or Cmd+Shift+A.
+//! NSWindow. Opened via the app menu or Cmd+Shift+A. The strings come from
+//! [`crate::about::content`]; this file is only how they're laid out.
+//!
+//! It shows no licence line, unlike the Windows box. That's a deliberate difference waiting on
+//! David's review rather than an oversight: `content` carries the line for every platform, so
+//! adding it here is one `make_label` away.
 //!
 //! Dedup guard (`is_window_already_open` from `platform::macos::ui_common`) prevents
 //! duplicate windows if the user clicks the menu item twice.
@@ -10,6 +15,7 @@
 //! `settings::window`. Acceptable because these windows close rarely and live for the
 //! app's lifetime in most usage.
 
+use crate::about::content::AboutContent;
 use crate::platform::macos::ui_common::{
     add_vibrancy_background, as_view, center_window, is_window_already_open, load_app_icon,
     make_bold_label, make_close_button, make_escape_button, make_label, make_link,
@@ -32,13 +38,14 @@ use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 /// # Safety
 /// `parent_ns_window` must be a valid NSWindow pointer or null.
 pub fn show_window(parent_ns_window: *const NSWindow) {
-    if is_window_already_open("About Prvw") {
+    let content = AboutContent::host();
+
+    if is_window_already_open(content.window_title) {
         return;
     }
 
     // SAFETY: we're on the main thread (called from winit event handler)
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let version = env!("CARGO_PKG_VERSION");
 
     // ── Create the window ──────────────────────────────────────────────
 
@@ -57,7 +64,7 @@ pub fn show_window(parent_ns_window: *const NSWindow) {
             false,
         );
 
-        window.setTitle(&NSString::from_str("About Prvw"));
+        window.setTitle(&NSString::from_str(content.window_title));
         let _: () = msg_send![&*window, setTitlebarAppearsTransparent: true];
         let _: () = msg_send![&*window, setMovableByWindowBackground: true];
 
@@ -113,10 +120,10 @@ pub fn show_window(parent_ns_window: *const NSWindow) {
         icon_view
     };
 
-    let title_label = make_bold_label("Prvw", 20.0, mtm);
-    let version_label = make_label(&format!("Version {version}"), 13.0, mtm);
-    let subtitle_label = make_label("A fast image viewer for macOS.", 13.0, mtm);
-    let author_label = make_label("By David Veszelovszki", 13.0, mtm);
+    let title_label = make_bold_label(content.name, 20.0, mtm);
+    let version_label = make_label(content.version, 13.0, mtm);
+    let subtitle_label = make_label(content.tagline, 13.0, mtm);
+    let author_label = make_label(content.author, 13.0, mtm);
 
     // Dim secondary text
     let secondary_color = NSColor::secondaryLabelColor();
@@ -125,14 +132,14 @@ pub fn show_window(parent_ns_window: *const NSWindow) {
     author_label.setTextColor(Some(&secondary_color));
 
     let link_website = make_link(
-        "veszelovszki.com",
-        "https://veszelovszki.com",
+        content.author_site.label,
+        content.author_site.url,
         mtm,
         &mut retained_views,
     );
     let link_product = make_link(
-        "getprvw.com",
-        "https://getprvw.com",
+        content.website.label,
+        content.website.url,
         mtm,
         &mut retained_views,
     );

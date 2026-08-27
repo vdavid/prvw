@@ -12,14 +12,14 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 ## Summary
 
 - macOS: 117 of 117 done, 0 not applicable, 0 missing
-- Windows: 65 of 117 done, 6 not applicable, 46 missing
+- Windows: 67 of 117 done, 6 not applicable, 44 missing
 - Linux: 32 of 117 done, 5 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
 - Settings (40 entries): macOS 40 / 0 / 0, Windows 4 / 1 / 35, Linux 0 / 1 / 39
-- Menu items (37 entries): macOS 37 / 0 / 0, Windows 28 / 4 / 5, Linux 0 / 3 / 34
-- Commands (40 entries): macOS 40 / 0 / 0, Windows 33 / 1 / 6, Linux 32 / 1 / 7
+- Menu items (37 entries): macOS 37 / 0 / 0, Windows 29 / 4 / 4, Linux 0 / 3 / 34
+- Commands (40 entries): macOS 40 / 0 / 0, Windows 34 / 1 / 5, Linux 32 / 1 / 7
 
 ## What each platform still owes
 
@@ -29,7 +29,7 @@ Nothing missing.
 
 ### Windows
 
-46 missing:
+44 missing:
 
 - Setting, General: `AutoUpdate`, `ScrollToZoom`, `PreloadNeighbors`
 - Setting, Zoom: `AutoFitWindow`, `EnlargeSmallImages`
@@ -37,12 +37,12 @@ Nothing missing.
 - Setting, RAW: `RawDngOpcodeList1`, `RawDngOpcodeList2`, `RawDngOpcodeList3`, `RawBaselineExposure`, `RawBaselineExposureOffset`, `RawDcpHueSatMap`, `RawDcpLookTable`, `RawSaturationBoost`, `RawSaturationAmount`, `RawHighlightRecovery`, `RawDefaultToneCurve`, `RawToneMidtoneAnchor`, `RawDcpToneCurve`, `RawClarity`, `RawClarityRadius`, `RawClarityAmount`, `RawCaptureSharpening`, `RawSharpenAmount`, `RawChromaDenoise`, `RawLensCorrection`, `RawHdrOutput`, `RawHdrGain`, `CustomDcpDir`
 - Setting, Slideshow: `SlideshowSeconds`, `SlideshowCrossfade`, `SlideshowLoop`
 - Setting, File associations: `FileAssociations`
-- Menu item, Prvw: `About`, `Settings`
+- Menu item, Prvw: `Settings`
 - Menu item, File: `Print`
 - Menu item, Navigate: `BrowseToggle`
 - Menu item, Context menu: `ContextPrint`
 - Command, Browse mode: `BrowseMode`, `BrowseFocus`, `BrowseOpenSelected`
-- Command, App: `Print`, `About`, `Settings`
+- Command, App: `Print`, `Settings`
 
 ### Linux
 
@@ -131,7 +131,7 @@ Nothing missing.
 
 ### Menu items
 
-- `About` "About Prvw" (menu item, Prvw menu): macOS done, Windows missing, Linux missing
+- `About` "About Prvw" (menu item, Prvw menu): macOS done, Windows done, Linux missing
 - `Settings` "Settings…" (menu item, Prvw menu): macOS done, Windows missing, Linux missing
 - `Hide` "Hide Prvw" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
 - `HideOthers` "Hide others" (menu item, Prvw menu): macOS done, Windows not applicable, Linux not applicable
@@ -208,6 +208,6 @@ Nothing missing.
 - `CustomDcpDir` "Custom DCP directory" (command, RAW): macOS done, Windows done, Linux done
 - `CopyImage` "Copy image" (command, App): macOS done, Windows done, Linux missing
 - `Print` "Print" (command, App): macOS done, Windows missing, Linux missing
-- `About` "About Prvw" (command, App): macOS done, Windows missing, Linux missing
+- `About` "About Prvw" (command, App): macOS done, Windows done, Linux missing
 - `Settings` "Settings window" (command, App): macOS done, Windows missing, Linux missing
 - `Exit` "Exit" (command, App): macOS done, Windows done, Linux done

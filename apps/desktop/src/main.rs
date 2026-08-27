@@ -33,7 +33,12 @@ mod render;
 mod scroll;
 
 // Features
-#[cfg(target_os = "macos")]
+// What the About box says lives in `about::content`, which compiles everywhere: a Mac's test run
+// checks all three platforms' copy and the `SysLink` markup Windows renders it with. Only the
+// Windows build consumes all of it. macOS lays the same strings out in AppKit and shows no licence
+// line, and Linux has no About window to open at all (`menu/absent.rs`), so on those two the
+// module is partly its own tests' subject.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod about;
 mod browser;
 mod color;

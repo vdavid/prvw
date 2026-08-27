@@ -3309,7 +3309,12 @@ impl App {
         }
     }
 
+    /// Open the About box. Each platform builds its own (`about/CLAUDE.md`); all this does is
+    /// hand it the main window to sit on top of and be centered on.
     fn show_about_dialog(&self) {
+        #[cfg(target_os = "windows")]
+        crate::about::windows::show_window(self.window.as_deref());
+
         #[cfg(target_os = "macos")]
         {
             use objc2::msg_send;
@@ -3327,7 +3332,7 @@ impl App {
                 }
             }
 
-            crate::about::show_window(parent_ptr);
+            crate::about::macos::show_window(parent_ptr);
         }
     }
 

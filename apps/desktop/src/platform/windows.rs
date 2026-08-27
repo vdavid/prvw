@@ -2,6 +2,8 @@
 //! beside this file, and the small queries that don't warrant one stay here.
 
 pub mod clipboard;
+/// Dark chrome for the Win32 windows, which Windows still has no public API for.
+pub mod dark_mode;
 pub mod msg_hook;
 /// Debug-only window photograph, served by the QA server's `screenshot_window` tool.
 #[cfg(debug_assertions)]

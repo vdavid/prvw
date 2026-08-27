@@ -55,21 +55,32 @@ muda = { version = "0.19.3", default-features = false }
 # `Win32_Storage_Xps` comes in: `PrintWindow` lives in that namespace), and the clipboard
 # (`platform::windows::clipboard`: the clipboard calls themselves, the memory blocks they
 # take ownership of, and the `CF_DIB` / `CF_DIBV5` / `CF_HDROP` format ids, which live in
-# the OLE namespace). MIT OR Apache-2.0. The crate is feature-gated per namespace, so each
-# entry is one Win32 area we actually call into.
+# the OLE namespace). The About box (`about::windows`) brings the rest: `Controls` for the
+# `SysLink` and `SetWindowTheme`, `HiDpi` for the per-monitor font and layout, `Shell` for
+# handing a URL to the browser, `Dwm` for the dark caption bar, and `Registry` plus
+# `LibraryLoader` and `Accessibility` for the dark-mode decision
+# (`platform::windows::dark_mode`). MIT OR Apache-2.0. The crate is feature-gated per
+# namespace, so each entry is one Win32 area we actually call into.
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_Storage_FileSystem",
   "Win32_Storage_Xps",
   "Win32_System_Console",
   "Win32_System_DataExchange",
+  "Win32_System_LibraryLoader",
   "Win32_System_Memory",
   "Win32_System_Ole",
   "Win32_System_ProcessStatus",
+  "Win32_System_Registry",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
+  "Win32_UI_Accessibility",
+  "Win32_UI_Controls",
+  "Win32_UI_HiDpi",
   "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
 

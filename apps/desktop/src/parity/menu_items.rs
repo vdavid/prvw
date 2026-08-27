@@ -262,13 +262,13 @@ impl MenuItemKey {
             | MenuItemKey::SlideshowIncreaseSpeed
             | MenuItemKey::SlideshowDecreaseSpeed
             | MenuItemKey::Copy
+            | MenuItemKey::About
             | MenuItemKey::ContextCopy => Coverage::Present,
             // Each of these waits on its own action: the print sheet (M3), the settings window
-            // (M4), the about box (M6), and browse mode (M5). Copy's two items are no longer
-            // among them: the clipboard is built (M1 step 12), and a right-click over the
-            // image pops the same context menu macOS shows.
-            MenuItemKey::About
-            | MenuItemKey::Settings
+            // (M4), and browse mode (M5). Two are no longer among them: the clipboard is built
+            // (M1 step 12), so a right-click over the image pops the same context menu macOS
+            // shows, and About is Help's only item now (M6).
+            MenuItemKey::Settings
             | MenuItemKey::Print
             | MenuItemKey::BrowseToggle
             | MenuItemKey::ContextPrint => Coverage::Missing,
