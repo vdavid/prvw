@@ -5,6 +5,16 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Windows has an installer.** `PrvwSetup-<version>-x64.exe` installs Prvw per user, so there's no UAC prompt: a Start
+  menu shortcut, an Apps & features entry, and Prvw offered in Explorer's "Open with" list and on a page of its own
+  under Settings. It's built by NSIS from the same Mac that cross-compiles the exe, and the file types it registers are
+  generated from the app's own `file_types` module, so the installer and the in-app repair button can't drift
+  ([436e3d5a](https://github.com/vdavid/prvw/commit/436e3d5a))
+
 ## [0.15.1] - 2026-08-19
 
 Window-chrome fixes for macOS 26: the traffic lights click where you see them, and the window comes back whole after a
