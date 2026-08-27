@@ -1,10 +1,12 @@
 # Prvw: cross-platform plan (Windows first, Linux second)
 
-Status: M0, M0.5, and M1 steps 1 to 12, 14, and 15 have landed (M0 on 2026-08-23, the rest by 2026-08-27). Windows sits
-at 61 of 117 parity entries, up from 0. What's left in M1 is **step 13** (run the shared E2E suite on Windows), which
-needs a Windows machine or a CI push and so is blocked on hardware rather than on work, and **step 16** (Azure Trusted
-Signing), which is David's to start. **M3 has landed too** (previews, thumbnails, and printing on Windows), taking the
-count to 68; read its own section for what the plan got wrong there. M2 and M4 onward are still proposals.
+Status: M0, M0.5, M2, M3, M6, and M1 steps 1 to 12, 14, and 15 have landed (M0 on 2026-08-23, the rest by 2026-08-27).
+Windows sits at 70 of 117 parity entries, up from 0. M2 moved none of them on its own, because reading the display's
+profile is a capability behind a command rather than a command, and layer 1 has nowhere to put it (see
+`src/parity/CLAUDE.md`). What's left is **M4** (the settings window, which owns 35 of the remaining entries), **M5**
+(browse mode), **M7** (distribution), plus two things outside the code: **M1 step 13** (run the shared E2E suite on
+Windows), blocked on hardware rather than on work, and **M1 step 16** (Azure Trusted Signing), which is David's to
+start.
 
 Everything Windows and Linux here is **compile-verified only**:
 `./scripts/check.sh --check windows-cross --check linux-cross` type-checks and lints all three targets from one Mac, and
@@ -903,6 +905,51 @@ constants, and the path-comparison helper.
 ### M2: color management on Windows (one to two weeks)
 
 **Intent:** The differentiator. Don't ship Windows without it.
+
+**Status: landed, and provisional exactly as this plan said it would have to be.** All four steps are done, and none of
+it has run on Windows or on an HDR display. Everything below the "What landed" note is the original proposal, kept
+because its research still holds; four of its premises did not survive contact and are corrected in place.
+
+**What landed.**
+
+- `color/display_profile/{mod,macos,windows}.rs`, with the shared seam pure and tested from any host: `display_icc`,
+  `current_monitor`, `usable_profile`, `MonitorTracker`, `until_nul`, `describe_icc`.
+- Windows reads the profile through `MonitorFromWindow` → `GetMonitorInfoW` → `CreateDCW` → `GetICMProfileW`, on a DC
+  for the named monitor rather than the window's own.
+- `WindowEvent::Moved` gated by `MonitorTracker`, plus `WM_DISPLAYCHANGE` through `platform::windows::msg_hook`.
+- wgpu 29 → 30 and glyphon off its git pin onto 0.12, `SurfaceColorSpace::ExtendedSrgbLinear` on the HDR surface, and
+  `Surface::display_hdr_info` as the one EDR-headroom query for every platform.
+- `tests/color_management.rs` off its `#![cfg(target_os = "macos")]`, with a byte-exact reference table.
+
+**Four things this plan got wrong, all found while executing it.**
+
+1. **`ColorProfileGetDisplayDefault` cannot be reached with "a runtime version check with a `GetICMProfileW` fallback"**
+   (step 1). The `windows` crate declares its imports with `raw-dylib`, so _calling_ it puts
+   `mscms.dll!ColorProfileGetDisplayDefault` in the executable's import table and Windows 10 (19045, below the 20348 the
+   export arrived in) fails to **load the process** — for every user, whether or not they ever open an image. A runtime
+   check runs far too late. Reaching it means `LoadLibraryW` plus `GetProcAddress` plus a hand-written signature, on top
+   of the `QueryDisplayConfig` plumbing for the adapter LUID and source id. Deferred, with the reasoning written out in
+   `display_profile/windows.rs`.
+2. **The HDR path's primaries are not portable, and step 3 didn't notice.** `decoding::raw` applied one hard-coded
+   Rec.2020 → linear **Display P3** matrix, because a `CAMetalLayer` can be told `kCGColorSpaceExtendedLinearDisplayP3`.
+   A DXGI swapchain cannot: it presents an `Rgba16Float` surface as scRGB (`DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`,
+   linear BT.709) and there is no Display P3 swapchain colour space at all. Turning on `ExtendedSrgbLinear` without
+   changing the matrix would have oversaturated every colour on Windows. `color::profiles::HdrDisplaySpace` is the fix.
+3. **The wgpu 30 bump is a macOS colour regression unless you catch it**, which is a sharper version of step 3's "Bonus
+   to check". wgpu 30's Metal backend writes `CAMetalLayer.colorspace` itself on **every** `Surface::configure`, from
+   `SurfaceConfiguration::color_space` — and that field can only name standard colour spaces, while both of Prvw's
+   answers sit outside that vocabulary. Left alone, the first window resize turns display matching off. Every configure
+   now goes through `Renderer::configure_surface`, which writes ours back. So the answer to the bonus question is the
+   opposite of the one it expected: wgpu owning the surface colour space makes the CG plumbing _more_ load-bearing, not
+   redundant.
+4. **`Surface::display_hdr_info` makes step 3's "check whether wgpu 30 gives us the query" a clear yes, and better than
+   asked.** Its Metal backend reads the same `NSScreen` property the hand-rolled objc2 did (verified live:
+   `NSScreen 1.0000 vs wgpu 1.0000`), so it replaced `current_edr_headroom` outright rather than sitting beside it, and
+   one query now serves every platform. `IDXGIOutput6` through `as_hal` was not needed.
+
+**What still needs a real machine**, and what the plan already said about it stands: a Windows box with a calibrated
+monitor for the profile read, an HDR display for the scRGB round trip, and Auto Color Management on and off on a
+wide-gamut panel.
 
 **Windows 10 is a full-fidelity target here, and it turns out to be nearly free.** Checked against the API requirements:
 

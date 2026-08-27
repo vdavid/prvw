@@ -35,7 +35,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | -------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `about/`             | About window: shared copy in `content.rs`, an AppKit window on macOS, a Win32 popup on Windows              |
 | `browser/`           | macOS browse mode: native AppKit folder tree + thumbnail grid that swaps with the viewer + `browser::State` |
-| `color/`             | ICC transform + display-profile detection (macOS) + Color settings panel + `color::State`                   |
+| `color/`             | ICC transform + display-profile detection (macOS, Windows) + Color settings panel + `color::State`          |
 | `decoding/`          | Image format decoders (JPEG via zune-jpeg; camera RAW via rawler; PNG/GIF/WebP/BMP/TIFF via `image`)        |
 | `diagnostics.rs`     | Performance observability: `NavigationRecord` + `build_text`                                                |
 | `exif_overlay/`      | EXIF info overlay (`Settings::exif_visible` toggle, View → Exif info, bare `E` key)                         |

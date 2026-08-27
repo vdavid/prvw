@@ -76,6 +76,12 @@ Worth knowing before leaning on the table as if it were the whole picture:
   isn't any of those has nowhere to live. The pre-paint window fit is the case in point: `CommandKey::AutoFitWindow`
   reads `done` on all three platforms and always did, because it names the toggle, while sizing the window from the
   file's header before the first pixel paints was macOS-only until M1 step 4 and the table couldn't say so.
+  - **Display-profile matching is the same shape, and it's the product's differentiator.**
+    `CommandKey::ColorMatchDisplay` reads `done` everywhere, because the command runs everywhere. Whether it can
+    actually reach the monitor's profile is `color::display_profile`'s question, and the answer is yes on macOS and
+    Windows and no on Linux, where `display_icc` returns `None` and the toggle re-decodes to the same sRGB it already
+    had. So the table currently overstates Linux, and understated Windows until M2 landed. Worth an entry kind that can
+    say "this platform has the capability behind the command", rather than flipping the command's arm.
 - **The inverse of a gate.** `SharedApp::start` can say "this test needs X", never "this test needs the platforms
   without X". A behaviour that is a fallback for the platforms missing a feature (image mode standing in for browse mode
   on a folder argument) therefore can't be expressed as a shared test, and lands as unit coverage instead.

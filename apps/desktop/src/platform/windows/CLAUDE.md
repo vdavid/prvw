@@ -8,13 +8,22 @@ monitor work area), and anything with real substance gets its own module here.
 | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `clipboard.rs`      | Copy the current image to the clipboard as the original file plus sRGB pixels (Edit → Copy, Ctrl+C, right-click) |
 | `dark_mode.rs`      | Dark chrome for our Win32 windows: the `uxtheme` ordinals, and the pure decision about when to use them          |
-| `msg_hook.rs`       | The one hook in winit's message pump: menu accelerators, and the seam a modeless dialog registers through        |
+| `msg_hook.rs`       | The one hook in winit's message pump: display changes, menu accelerators, and the seam a modeless dialog uses    |
 | `print.rs`          | File → Print: `PrintDlgW` on a worker thread, then the image drawn onto one page with GDI                        |
 | `ui_common.rs`      | The sRGB re-decode Copy and Print share                                                                          |
 | `window_capture.rs` | Debug-only window photograph for the QA server's `screenshot_window` tool                                        |
 
 Everything here is behind `#[cfg(target_os = "windows")]` at the `platform` import site, so a Mac never compiles it.
 `./scripts/check.sh --check windows-cross` is what gives it a feedback loop.
+
+## `WM_DISPLAYCHANGE` reaches the app through the hook, and only through the hook
+
+winit doesn't handle the message, so nothing else in the app hears a monitor arriving or leaving, a resolution change,
+or an ICC profile re-associated with a display in place. Any of those changes which profile the image on screen should
+be transformed into, so `msg_hook` posts `AppCommand::DisplayChanged` and falls through without consuming the message.
+
+That stage runs before the dialog and accelerator stages because it is the only one that just watches. See
+`color::display_profile` for what the app does with it, and the module docs in `msg_hook.rs` for the ordering rule.
 
 ## Copy loads the file, not the buffer on screen
 

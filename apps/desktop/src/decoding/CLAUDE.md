@@ -134,22 +134,25 @@ the renderer.
    tables.
 7. **Color conversion, branching on HDR.** SDR path (`hdr_active == false`): `color::transform_f32_with_profile` hands
    the buffer to moxcms for the linear-Rec.2020 → user's display-ICC conversion in f32. Clamp to [0, 1] on the way out
-   to RGBA8. HDR path (`hdr_active == true`): `color::profiles::rec2020_to_linear_display_p3_inplace` applies a direct
-   3×3 matrix Rec.2020 → linear Display P3 with **no clipping** (Phase 5.2: moxcms clips at 1.0 which eats HDR headroom,
-   and the `CAMetalLayer` is pinned to `extendedLinearDisplayP3` on EDR anyway so a direct matrix to that target is the
-   natural fit). HDR brightness gain (`flags.hdr_gain`, default 2.0) multiplies the buffer before the matrix to push
-   scene-white content into the EDR headroom. Without it, HDR output reads timidly SDR-bright rather than "HDR-bright"
-   against Preview. 7b. **Phase 5: HDR branch.** If the caller's `edr_headroom > 1.0` and `flags.hdr_output == true`,
-   skip the `[0, 1]` clamp and quantise the f32 buffer into `PixelBuffer::Rgba16F` (half-floats via the `half` crate),
-   preserving values above 1.0 for the EDR-capable compositor. Sharpening still fires on this branch via
-   `color::sharpen::sharpen_rgba16f_inplace` (same luminance-only unsharp mask as the 8-bit path, computed in f32 with
-   no `[0, 1]` clamp so above-white highlights survive). Otherwise the SDR path below fires. 7c. **Phase 6.2: clarity
-   (local contrast).** `color::clarity::apply_clarity_rgba8_inplace_with` runs a larger- radius (`σ ≈ 10 px`)
-   separable-Gaussian unsharp mask on **luminance only**, lifting midtone features (shape silhouettes, textures) that
-   survive display downscaling so the image reads crisper at every zoom level. Same math as capture sharpening,
-   different defaults. Runs before step 8 so the order is midtone lift → fine-edge sharpening. The HDR branch at 7b
-   calls `apply_clarity_rgba16f_inplace_with` on the half-float buffer with the same semantics. Toggleable via
-   `flags.clarity` (default `true`).
+   to RGBA8. HDR path (`hdr_active == true`): `color::profiles::rec2020_to_hdr_display_inplace` applies a direct 3×3
+   matrix with **no clipping** (moxcms clips at 1.0, which eats the HDR headroom the whole path exists for). **Which
+   matrix is the platform's call**, because the compositor has to be told what the numbers mean and the two platforms
+   accept different answers: linear Display P3 on macOS, matching the `CAMetalLayer`'s `extendedLinearDisplayP3`, and
+   linear BT.709 (scRGB) on Windows, which is the only colour space DXGI presents an `Rgba16Float` swapchain as.
+   `color::profiles::HdrDisplaySpace` owns that decision and `color/CLAUDE.md` argues it. HDR brightness gain
+   (`flags.hdr_gain`, default 2.0) multiplies the buffer before the matrix to push scene-white content into the EDR
+   headroom. Without it, HDR output reads timidly SDR-bright rather than "HDR-bright" against Preview. 7b. **Phase 5:
+   HDR branch.** If the caller's `edr_headroom > 1.0` and `flags.hdr_output == true`, skip the `[0, 1]` clamp and
+   quantise the f32 buffer into `PixelBuffer::Rgba16F` (half-floats via the `half` crate), preserving values above 1.0
+   for the EDR-capable compositor. Sharpening still fires on this branch via `color::sharpen::sharpen_rgba16f_inplace`
+   (same luminance-only unsharp mask as the 8-bit path, computed in f32 with no `[0, 1]` clamp so above-white highlights
+   survive). Otherwise the SDR path below fires. 7c. **Phase 6.2: clarity (local contrast).**
+   `color::clarity::apply_clarity_rgba8_inplace_with` runs a larger- radius (`σ ≈ 10 px`) separable-Gaussian unsharp
+   mask on **luminance only**, lifting midtone features (shape silhouettes, textures) that survive display downscaling
+   so the image reads crisper at every zoom level. Same math as capture sharpening, different defaults. Runs before step
+   8 so the order is midtone lift → fine-edge sharpening. The HDR branch at 7b calls
+   `apply_clarity_rgba16f_inplace_with` on the half-float buffer with the same semantics. Toggleable via `flags.clarity`
+   (default `true`).
 8. `color::sharpen::sharpen_rgba8_inplace` runs a mild unsharp mask on **luminance only** (Rec.709 weights) of the
    display-space RGBA8 buffer: separable Gaussian blur (σ = 0.8 px, 7 taps) on Y in f32, unsharp-mask formula on Y, then
    rescale RGB by `Y_out / Y_in`. Post-ICC rather than pre-ICC so we match the perceptual response of the gamma-encoded
@@ -166,15 +169,16 @@ Whether a given decode lands in HDR or SDR is decided once, up front, in `raw::d
 hdr_active = flags.hdr_output && edr_headroom > 1.0
 ```
 
-`edr_headroom` is threaded in from `app.rs` (queried via `color::display_profile::current_edr_headroom` on `NSScreen`).
-`App` also tracks `current_image_is_hdr` so the window's `CAMetalLayer` can be flipped between SDR and EDR modes
-per-decode. `edr_should_be_active` fuses all three inputs (flag, headroom, image-is-HDR).
+`edr_headroom` is threaded in from `app.rs`, which gets it from `render::renderer::Renderer::display_hdr_headroom`:
+`NSScreen`'s EDR multiplier on macOS, DXGI's panel-peak-over-SDR-white ratio on Windows, `1.0` (no headroom) anywhere
+the display isn't in an HDR mode. `App` also tracks `current_image_is_hdr` so the window's `CAMetalLayer` can be flipped
+between SDR and EDR modes per-decode. `edr_should_be_active` fuses all three inputs (flag, headroom, image-is-HDR).
 
 Once inside `raw::decode`, `hdr_active` gates four different behaviors:
 
 1. **Tone-curve peak.** `DEFAULT_PEAK_HDR` (4.0) vs `DEFAULT_PEAK_SDR` (1.0) picks the filmic shoulder's asymptote. HDR
    lets above-1.0 content live; SDR clips at display-white.
-2. **Color conversion** (see step 7 in the pipeline list above). Direct Rec.2020 → linear Display P3 matrix for HDR;
+2. **Color conversion** (see step 7 in the pipeline list above). A direct Rec.2020 → platform-HDR-space matrix for HDR;
    moxcms → user's display ICC for SDR.
 3. **HDR brightness gain.** `flags.hdr_gain` (default 2.0) multiplies the post-tone-curve buffer before the matrix,
    pushing scene-white into EDR headroom. SDR path ignores the knob. See `docs/notes/raw-support-phase5.md` Phase 5.2
@@ -230,7 +234,7 @@ restarting. The preloader otherwise warms caches and decode-time drops.
 | `tone`          |     7.7 | Filmic shoulder curve on luminance                        |
 | `hdr_diag_pre`  |     2.6 | Info-level diagnostic (0.1 ms when info off)              |
 | `saturation`    |     2.4 | Global chroma scale                                       |
-| `color_conv`    |     6.2 | Rec.2020 → linear Display P3 matrix (HDR) or moxcms (SDR) |
+| `color_conv`    |     6.2 | Rec.2020 → the platform's HDR space (HDR) or moxcms (SDR) |
 | `hdr_diag_post` |     2.2 | Info-level diagnostic (0.1 ms when info off)              |
 | `to_rgba16f`    |     4.7 | f32 → half-float quantize                                 |
 | `clarity`       |    14.0 | σ=10 downsample fast path (6.4; was 144 ms pre-6.4)       |

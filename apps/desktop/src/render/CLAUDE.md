@@ -3,13 +3,14 @@
 Not a feature. This is the GPU rendering scaffolding. Features like `zoom` (which owns `ViewState`) plug transforms into
 the renderer's uniform buffer via `crate::zoom::view::TransformUniform`.
 
-| File           | Purpose                                                                                       |
-| -------------- | --------------------------------------------------------------------------------------------- |
-| `gpu.rs`       | Which backend and which adapter this platform asks wgpu for, as a pure policy                 |
-| `renderer.rs`  | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback |
-| `text.rs`      | `glyphon`-based text layout and rendering for the overlay pill                                |
-| `shader.wgsl`  | Image-quad vertex/fragment shader with a 2D affine transform                                  |
-| `overlay.wgsl` | Rounded-rect pill shader for the title overlay                                                |
+| File           | Purpose                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| `gpu.rs`       | Which backend and which adapter this platform asks wgpu for, as a pure policy                    |
+| `renderer.rs`  | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback    |
+| _(HDR)_        | `display_hdr_headroom` and `configure_surface` live in `renderer.rs`; see the two sections below |
+| `text.rs`      | `glyphon`-based text layout and rendering for the overlay pill                                   |
+| `shader.wgsl`  | Image-quad vertex/fragment shader with a 2D affine transform                                     |
+| `overlay.wgsl` | Rounded-rect pill shader for the title overlay                                                   |
 
 ## Decision: the backend is pinned per platform, with a wider fallback
 
@@ -36,6 +37,39 @@ the primary display.
 
 Confirmed by David on 2026-08-27, on the reading of principle 2 in `AGENTS.md`: the app runs for a short time and should
 be fast for all of it, so waking the right GPU beats saving power on a viewer that's about to close.
+
+## Decision: every `Surface::configure` goes through `Renderer::configure_surface`
+
+**Why:** since wgpu 30, that call also writes the platform's own colour space onto the surface, from
+`SurfaceConfiguration::color_space`. On macOS that means `CAMetalLayer.colorspace`, and wgpu can only name standard
+colour spaces. Both of Prvw's answers sit outside that vocabulary: SDR names the _display's ICC profile_ (the pixels
+have already been transformed into it, so anything else double-transforms), and EDR names _linear_ Display P3, which
+wgpu has no name for. So `configure_surface` writes ours back through `display_profile::restore_layer_colorspace`, and
+the renderer holds an `Arc<Window>` and a copy of the display ICC bytes to do it with.
+
+Four call sites would otherwise each have to remember: init, `resize`, `reconfigure_surface_format`, and the
+`Lost`/`Outdated` arm inside `render`. That last one is why the app can't do this from outside. A launch reconfigures
+three times before the first image is on screen, so forgetting is not a subtle failure, it's the normal one.
+
+## HDR output: what the surface is told, and what the decoder has to write
+
+Three things have to agree, and only one of them is a compile error if it doesn't:
+
+- **The surface format** is `Rgba16Float`, flipped by `reconfigure_surface_format` when `App::want_edr_surface` says so.
+- **The colour space** is `SurfaceColorSpace::ExtendedSrgbLinear` (scRGB), named rather than left to `Auto`. On DX12
+  that is the only colour space an `Rgba16Float` swapchain presents; on Metal `restore_layer_colorspace` overwrites it
+  with linear Display P3.
+- **The pixels** come from `color::profiles::HdrDisplaySpace::for_host()`, which picks linear Display P3 on macOS and
+  linear BT.709 elsewhere to match. That decision lives with the colour maths, and `color/CLAUDE.md` argues it.
+
+`hdr_surface_supported` asks for the format _and_ the colour space together, because a surface offering one without the
+other would take the configure and then clamp everything at display white.
+
+`Renderer::display_hdr_headroom` is the one query for "how much brighter than SDR white can this display go", on every
+platform, through `Surface::display_hdr_info`. macOS reports a live multiplier (`NSScreen`'s
+`maximumExtendedDynamicRangeColorComponentValue`); Windows reports absolute nits through DXGI and the multiplier is the
+panel peak over the OS's SDR white level, which is exactly `1.0` when the user hasn't switched that display into HDR
+mode. On macOS the headroom is ours to use; on Windows it is ours to respect.
 
 ## Key patterns
 
@@ -105,6 +139,9 @@ with the same faces, or a layout pass disagrees with what gets drawn.
   `docs/notes/raw-support-phase5.md`.
 - **`CAMetalLayer` is a sublayer, not the NSView's direct layer.** Walk `[ns_view layer].sublayers`. See
   `crate::color::display_profile::set_layer_colorspace`.
-- **wgpu 29 API quirks.** `Instance::new()` takes a value. `get_current_texture()` returns an enum.
+- **wgpu 30 API quirks.** `Instance::new()` takes a value. `get_current_texture()` returns an enum. Presenting is
+  `Queue::present(texture)`, not `SurfaceTexture::present()`. `Buffer::get_mapped_range` returns a `Result`.
   `PipelineLayoutDescriptor` uses `immediate_size`. `RenderPassColorAttachment` requires `depth_slice`.
+- **`Surface::display_hdr_info` is main-thread-only on Metal.** It reads `NSScreen` through the hosting `NSWindow`, and
+  answers "nothing known" off the main thread rather than failing. Call it from the event loop.
 - **Shaders are `include_str!`'d** relative to `renderer.rs`. Keep them colocated.
