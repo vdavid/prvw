@@ -61,8 +61,24 @@ makes no difference to what the person sees, because the unified dialog replaces
 
 **Why:** that's the **printable** area in device pixels. `PHYSICALWIDTH` / `PHYSICALHEIGHT` are the whole sheet
 including the hardware margins, so laying the photo out against those puts its edges where the printer can't put ink.
-The fit inside it is `crate::printing::aspect_fit`, shared with macOS and tested from any host; the enlargement it does
+The fit inside it is `crate::printing::fit_to_page`, shared with macOS and tested from any host; the enlargement it does
 for a small image is deliberate, since "print this photo" means fill the paper.
+
+## Decision: the auto-rotate turns the pixels, because GDI won't turn a blit
+
+**Decision:** when `printing::fit_to_page` says the photo prints bigger turned, `draw_one_page` transposes the decoded
+buffer with `printing::rotate_quarter_turn_clockwise`, swaps `width` and `height`, and blits that. macOS turns the
+page's coordinate system instead.
+
+**Why:** `StretchDIBits` scales and does nothing else, and the alternative — `SetGraphicsMode(GM_ADVANCED)` plus
+`SetWorldTransform` — is honoured on a printer DC entirely at the driver's discretion, so a rotation could silently not
+happen on somebody's printer. A transpose always happens. It costs one extra pass over a buffer that's about to be
+copied to the spooler anyway, on the `prvw-print` worker, and it stays top-down so the negative `biHeight` still holds.
+
+The turn is decided on the dimensions `decode_srgb` returns, which are post-EXIF-orientation: `decoding::load_image`
+rotates the buffer and reports the rotated size. Deciding on the file's stored size would print upright photos sideways.
+
+Clockwise, matching EXIF orientation 6, so the app only ever turns a photo one way.
 
 ## Gotcha: Windows 11 says we don't support print preview, and it says that to every GDI app
 
@@ -95,7 +111,8 @@ sentence does.
 
 **The consequence that does bite:** the unified dialog drops settings the app pre-loads into `hDevMode`, orientation
 being the reported one. So "print this landscape photo on landscape paper" can't be done by seeding the DEVMODE before
-the dialog. It has to rotate the image onto whatever page the DC comes back describing.
+the dialog. It has to rotate the image onto whatever page the DC comes back describing, which is what the decision below
+does.
 
 ## Decision: the page is drawn with the `HALFTONE` stretch mode
 

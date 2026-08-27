@@ -35,6 +35,12 @@
 //! `GetDeviceCaps(HORZRES/VERTRES)` is the printable area in device pixels, and the image is
 //! aspect-fitted into it. Not `PHYSICALWIDTH`, which is the whole sheet including the margins
 //! the hardware can't reach: drawing there puts part of the photo where no ink goes.
+//!
+//! A landscape photo on a portrait sheet is turned a quarter turn first, which is `printing`'s
+//! decision and macOS's too. Here the pixels do the turning: `StretchDIBits` scales and nothing
+//! else, and `SetWorldTransform` on a printer DC is up to the driver, so the buffer is
+//! transposed before the blit. It's already being copied to the spooler, and this runs on the
+//! print worker.
 
 use std::path::Path;
 use std::time::Instant;
@@ -150,8 +156,11 @@ fn draw_one_page(
     relative_colorimetric: bool,
 ) -> Result<(), String> {
     let start = Instant::now();
-    let (width, height, mut pixels) = decode_srgb(path, raw_flags, relative_colorimetric)
-        .ok_or_else(|| "the file wouldn't decode".to_string())?;
+    // `decode_srgb` runs the whole decoder, so `width` and `height` are already the EXIF-rotated
+    // dimensions a person sees. That's what the turn below has to be decided against.
+    let (mut width, mut height, mut pixels) =
+        decode_srgb(path, raw_flags, relative_colorimetric)
+            .ok_or_else(|| "the file wouldn't decode".to_string())?;
     printing::flatten_onto_white_bgra(&mut pixels);
 
     let page = Rect::new(
@@ -160,8 +169,15 @@ fn draw_one_page(
         f64::from(caps(dc, HORZRES)),
         f64::from(caps(dc, VERTRES)),
     );
-    let placement = printing::aspect_fit(page, f64::from(width), f64::from(height))
+    let placement = printing::fit_to_page(page, f64::from(width), f64::from(height))
         .ok_or_else(|| "the page or the image has no area to draw in".to_string())?;
+    if placement.auto_rotated {
+        // Channel order doesn't matter to a transpose, so this is as happy after the flatten as
+        // before it. Still top-down afterwards, which is what the negative `biHeight` declares.
+        pixels = printing::rotate_quarter_turn_clockwise(&pixels, width, height)
+            .ok_or_else(|| "the decoded image isn't the size it says it is".to_string())?;
+        (width, height) = (height, width);
+    }
 
     // A negative height means a top-down DIB, which is the row order the decoder produces.
     let info = BITMAPINFO {
@@ -215,10 +231,10 @@ fn draw_one_page(
     let drawn = unsafe {
         StretchDIBits(
             dc,
-            placement.x.round() as i32,
-            placement.y.round() as i32,
-            placement.width.round() as i32,
-            placement.height.round() as i32,
+            placement.rect.x.round() as i32,
+            placement.rect.y.round() as i32,
+            placement.rect.width.round() as i32,
+            placement.rect.height.round() as i32,
             0,
             0,
             width as i32,
@@ -239,9 +255,14 @@ fn draw_one_page(
         return Err("the printer rejected the page".to_string());
     }
     log::debug!(
-        "Print: {width}x{height} laid out at {}x{} in {} ms",
-        placement.width.round(),
-        placement.height.round(),
+        "Print: {width}x{height}{} laid out at {}x{} in {} ms",
+        if placement.auto_rotated {
+            " (turned to fit)"
+        } else {
+            ""
+        },
+        placement.rect.width.round(),
+        placement.rect.height.round(),
         start.elapsed().as_millis()
     );
     Ok(())

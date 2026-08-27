@@ -30,9 +30,29 @@ viewer window), not the app-modal `runOperation`.
 winit's event loop (Print is dispatched from a menu event, i.e. a winit callback). The sheet is driven by the existing
 run loop instead. The sheet returns immediately, so `App._active_print` holds the `NSPrintOperation` alive (replaced on
 the next print) for the sheet's duration. The print view is sized to one page's printable area and draws the image
-aspect-fit. The fit itself is `crate::printing::aspect_fit`, shared with the Windows print path and tested from any
-host; `aspect_fit_rect` here is only the `NSRect` adapter over it. That sharing is safe because the fit is **centred**,
+aspect-fit. The fit itself is `crate::printing::fit_to_page`, shared with the Windows print path and tested from any
+host; `fit_to_page_rect` here is only the `NSRect` adapter over it. That sharing is safe because the fit is **centred**,
 so AppKit's bottom-left page origin and GDI's top-left one produce the same numbers.
+
+## Decision: the auto-rotate turns the page's coordinates, not the image's pixels
+
+**Decision:** when `printing::fit_to_page` says a photo prints bigger turned, `drawRect:` concats an `NSAffineTransform`
+(translate to the placement's centre, `rotateByDegrees(-90.0)`) and draws the image into a rect with the sides swapped.
+Windows transposes the pixel buffer instead.
+
+**Why:** AppKit composites through the CTM, so the printer resamples once at its own resolution rather than twice.
+Windows can't take this route — GDI won't rotate a blit — which is the one place the two print paths genuinely differ;
+the decision above them is shared. The page is y-up (the view is deliberately non-flipped), so a **negative** angle
+turns the image clockwise and matches `printing::rotate_quarter_turn_clockwise`. Wrapped in
+`NSGraphicsContext::saveGraphicsState_class` / `restoreGraphicsState_class` so anything drawn after it isn't turned too.
+
+## Gotcha: `NSImage` reports an EXIF-corrected size, and the print layout depends on it
+
+**Gotcha:** the turn has to be decided on the size a person sees, not the size stored in the file.
+`load_image_from_path` goes through ImageIO, which applies the file's EXIF orientation, so `NSImage.size` on a 90x60
+JPEG tagged orientation 6 is 60x90 — and `drawInRect:` draws to match. Deciding on raw stored pixels would print upright
+photos sideways. `print.rs`'s `nsimage_reports_the_exif_corrected_size` pins this against the `orientation6_90x60.jpg`
+fixture, because it's an ImageIO behaviour we rely on rather than one we control.
 
 ## Gotchas (cross-cutting)
 

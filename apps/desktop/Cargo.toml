@@ -108,6 +108,7 @@ reqwest = { version = "0.13.2", default-features = false, features = ["blocking"
 libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = [
+  "NSAffineTransform",
   "NSApplication",
   "NSBezierPath",
   "NSBitmapImageRep",
@@ -126,6 +127,7 @@ objc2-app-kit = { version = "0.3", features = [
   "NSGestureRecognizer",
   "NSGlassEffectView",
   "NSGraphics",
+  "NSGraphicsContext",
   "NSImage",
   "NSImageRep",
   "NSImageView",
@@ -157,6 +159,7 @@ objc2-app-kit = { version = "0.3", features = [
   "objc2-core-foundation",
 ] }
 objc2-foundation = { version = "0.3", features = [
+  "NSAffineTransform",
   "NSAppleEventDescriptor",
   "NSAppleEventManager",
   "NSArray",
