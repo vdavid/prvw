@@ -379,7 +379,7 @@ impl App {
                     images.len()
                 );
                 if let Some(win) = self.window.clone() {
-                    self.browser.grid_folder_listed(images, &win);
+                    self.browser.grid_folder_listed(&folder, images, &win);
                 }
                 // The listing seeds a selection (index 0); warm it + neighbors so the likely-opened
                 // image is ready. Doesn't touch the displayed image.

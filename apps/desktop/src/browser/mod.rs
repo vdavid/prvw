@@ -222,16 +222,48 @@ pub fn resolve_reveal_index(
 /// This is the browse-open round-trip invariant: entering browse from an image preselects that
 /// exact image in the grid, so Esc/Enter right after open reveals the same image you came from
 /// (the grid selection drives the image-mode current via `resolve_reveal_index`). Pure
-/// (headless-tested). Compares by path equality; callers pass concrete paths (the displayed
-/// image's path and the freshly-listed folder paths share the same canonical parent), so no disk
-/// access happens here.
+/// (headless-tested), and no disk access: both sides are concrete paths already.
+///
+/// **Matched under the host's path policy, never with `==`.** The two sides reach here spelled
+/// differently on Windows: the displayed image carries the canonical `\\?\C:\…` its launch
+/// produced, while the grid's images come from a listing of the folder the browse tree selected,
+/// which is spelled the way a drive enumeration and `read_dir` produced it. A byte comparison
+/// finds nothing and the grid quietly preselects the first image instead of the one you came from.
 #[must_use]
 pub fn grid_preselect_index(
     images: &[std::path::PathBuf],
     current_image: Option<&std::path::Path>,
 ) -> Option<usize> {
+    grid_preselect_index_under(crate::paths::PathPolicy::HOST, images, current_image)
+}
+
+/// [`grid_preselect_index`] under a named path policy, so a Mac can assert what Windows will do.
+#[must_use]
+pub fn grid_preselect_index_under(
+    policy: crate::paths::PathPolicy,
+    images: &[std::path::PathBuf],
+    current_image: Option<&std::path::Path>,
+) -> Option<usize> {
     let current = current_image?;
-    images.iter().position(|p| p == current)
+    images.iter().position(|p| policy.same_path(p, current))
+}
+
+/// Is the folder listing that just landed the one a browse-open reveal was waiting for?
+///
+/// The browse-open state (`pending_grid_preselect`, `pending_browse_open_focus`) is one-shot, and
+/// it belongs to the folder the reveal walk is heading for. Any other listing that lands first
+/// would spend it: on Windows a treeview picks its own first row the moment it takes focus, which
+/// listed the drive root before the walk had gone anywhere, and the grid then neither preselected
+/// the came-from image nor took the focus. `None` (no reveal in flight) matches everything, which
+/// is a plain folder click and behaves as it always has. Pure, so a Mac asserts the Windows
+/// spellings. See [`crate::paths`] for why this can't be `==`.
+#[must_use]
+pub fn reveal_landing_matches(
+    policy: crate::paths::PathPolicy,
+    pending_reveal: Option<&std::path::Path>,
+    listed: &std::path::Path,
+) -> bool {
+    pending_reveal.is_none_or(|target| policy.same_path(target, listed))
 }
 
 /// The browse-entry anchor target for a current image: the folder to reveal/select (the image's
@@ -324,6 +356,10 @@ pub struct State {
     /// Separate from `pending_grid_preselect` because a dir-arg launch focuses the grid yet has no
     /// came-from image to preselect.
     pending_browse_open_focus: bool,
+    /// The folder a browse-open reveal is walking towards, while one is in flight. It gates the
+    /// two `pending_*` fields above: a listing for any other folder must not spend them. See
+    /// [`reveal_landing_matches`].
+    pending_reveal_folder: Option<std::path::PathBuf>,
     /// The native split view + its panes, built once on first entry to browse mode and kept
     /// alive for the window's lifetime thereafter. `None` until first built.
     #[cfg(target_os = "macos")]
@@ -352,6 +388,7 @@ impl State {
             sort_by: crate::navigation::SortBy::default(),
             pending_grid_preselect: None,
             pending_browse_open_focus: false,
+            pending_reveal_folder: None,
             #[cfg(target_os = "macos")]
             split_view: None,
             #[cfg(target_os = "windows")]
@@ -429,6 +466,32 @@ impl State {
         }
     }
 
+    /// Take the one-shot browse-open state — the image to preselect and whether the grid should
+    /// take focus — for a listing of `folder`, or leave it alone when this listing isn't the
+    /// reveal's. See [`reveal_landing_matches`] for why a listing can arrive for the wrong folder.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn take_browse_open_state(
+        &mut self,
+        folder: &std::path::Path,
+    ) -> (Option<std::path::PathBuf>, bool) {
+        if !reveal_landing_matches(
+            crate::paths::PathPolicy::HOST,
+            self.pending_reveal_folder.as_deref(),
+            folder,
+        ) {
+            log::debug!(
+                "Browse: {} listed while revealing elsewhere — keeping the browse-open state",
+                crate::paths::for_display(folder)
+            );
+            return (None, false);
+        }
+        self.pending_reveal_folder = None;
+        (
+            self.pending_grid_preselect.take(),
+            std::mem::take(&mut self.pending_browse_open_focus),
+        )
+    }
+
     /// Apply a completed background folder listing to the grid: populate the model, reload the
     /// collection view, toggle the empty overlay, and start thumbnail generation. Updates the
     /// tracked grid selection, then `sync_native`s — the listing changes the grid's
@@ -438,15 +501,11 @@ impl State {
     #[cfg(target_os = "macos")]
     pub fn grid_folder_listed(
         &mut self,
+        folder: &std::path::Path,
         images: Vec<std::path::PathBuf>,
         window: &winit::window::Window,
     ) {
-        // Consume any pending browse-open preselect: only honor it when the listing is for the
-        // folder we revealed into (the reveal's tree selection set `selected_folder` to it). A
-        // later, unrelated folder selection (e.g. the user clicks elsewhere while a stale listing
-        // is in flight) must not pull the preselect — so take it unconditionally; it's a one-shot.
-        let preselect = self.pending_grid_preselect.take();
-        let was_browse_open = std::mem::take(&mut self.pending_browse_open_focus);
+        let (preselect, was_browse_open) = self.take_browse_open_state(folder);
         if let Some(split) = &self.split_view {
             split.grid().folder_listed(images, preselect.as_deref());
             self.grid_selected = split.grid().selected_index();
@@ -475,6 +534,7 @@ impl State {
     ) {
         self.pending_grid_preselect = current_image;
         self.pending_browse_open_focus = true;
+        self.pending_reveal_folder = Some(folder.to_path_buf());
         if let Some(split) = &self.split_view {
             split.reveal_folder_in_tree(folder);
         }
@@ -670,6 +730,7 @@ impl State {
     ) {
         self.pending_grid_preselect = current_image;
         self.pending_browse_open_focus = true;
+        self.pending_reveal_folder = Some(folder.to_path_buf());
         if let Some(ui) = &self.browse_ui {
             ui.reveal_folder_in_tree(folder);
         }
@@ -687,11 +748,11 @@ impl State {
     #[cfg(target_os = "windows")]
     pub fn grid_folder_listed(
         &mut self,
+        folder: &std::path::Path,
         images: Vec<std::path::PathBuf>,
         window: &winit::window::Window,
     ) {
-        let preselect = self.pending_grid_preselect.take();
-        let was_browse_open = std::mem::take(&mut self.pending_browse_open_focus);
+        let (preselect, was_browse_open) = self.take_browse_open_state(folder);
         if let Some(ui) = &self.browse_ui {
             ui.folder_listed(images, preselect.as_deref());
             self.grid_selected = ui.selected_index();
@@ -1244,6 +1305,75 @@ mod tests {
             grid_preselect_index(&[], Some(std::path::Path::new("a.jpg"))),
             None
         );
+    }
+
+    /// Entering browse from an image on Windows: the displayed image carries the canonical
+    /// `\\?\C:\…` spelling from its launch, while the grid lists the folder the tree selected,
+    /// spelled the way `read_dir` produced it. Byte-matching finds nothing, so the grid preselects
+    /// image 0 and Esc right after open lands somewhere you never were.
+    #[test]
+    fn grid_preselect_index_matches_a_came_from_image_in_any_windows_spelling() {
+        use std::path::{Path, PathBuf};
+        let listed: Vec<PathBuf> = [
+            r"C:\Users\dave\pics\a.jpg",
+            r"C:\Users\dave\pics\b.jpg",
+            r"C:\Users\dave\pics\c.jpg",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        let windows = crate::paths::PathPolicy::windows();
+        assert_eq!(
+            grid_preselect_index_under(
+                windows,
+                &listed,
+                Some(Path::new(r"\\?\C:\Users\dave\pics\b.jpg")),
+            ),
+            Some(1)
+        );
+        // A different file is still a different file, however it's spelled.
+        assert_eq!(
+            grid_preselect_index_under(
+                windows,
+                &listed,
+                Some(Path::new(r"\\?\C:\Users\dave\pics\zzz.jpg")),
+            ),
+            None
+        );
+        // And macOS keeps case apart: two names differing only in case are two files there.
+        assert_eq!(
+            grid_preselect_index_under(
+                crate::paths::PathPolicy::macos(),
+                &[PathBuf::from("/pics/B.jpg")],
+                Some(Path::new("/pics/b.jpg")),
+            ),
+            None
+        );
+    }
+
+    /// A Windows treeview picks its own first row the moment it takes focus, so the drive root
+    /// lists before the reveal walk has gone anywhere. That listing must not spend the browse-open
+    /// state, or the grid neither preselects the came-from image nor takes the focus.
+    #[test]
+    fn only_the_revealed_folders_listing_spends_the_browse_open_state() {
+        use std::path::Path;
+        let windows = crate::paths::PathPolicy::windows();
+        let target = Path::new(r"\\?\C:\Users\dave\pics");
+
+        // The drive root the control selected on its own: not ours, leave the state alone.
+        assert!(!reveal_landing_matches(
+            windows,
+            Some(target),
+            Path::new(r"C:\")
+        ));
+        // The reveal's own landing, spelled the way the tree row spells it.
+        assert!(reveal_landing_matches(
+            windows,
+            Some(target),
+            Path::new(r"C:\Users\dave\pics")
+        ));
+        // No reveal in flight — a plain folder click, which behaves as it always has.
+        assert!(reveal_landing_matches(windows, None, Path::new(r"C:\any")));
     }
 
     #[test]

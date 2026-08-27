@@ -115,7 +115,11 @@ path" can't expand synchronously — there'd be no children yet. Instead it's a 
 
 **Grid preselect + grid focus on browse-open.** `browser::State` holds a one-shot
 `pending_grid_preselect: Option<PathBuf>` (the came-from image) and `pending_browse_open_focus: bool`, both set by
-`State::reveal_to_folder` and consumed by `grid_folder_listed`. When the revealed folder's images land,
+`State::reveal_to_folder` and consumed by `grid_folder_listed` — but **only for a listing of the folder the reveal is
+walking towards**, which `pending_reveal_folder` remembers and `reveal_landing_matches` (pure/tested) decides. A listing
+for any other folder can land first: on Windows a treeview selects its own first row the moment it takes focus, so the
+drive root listed before the walk had gone anywhere, and spending the one-shot state there left the grid preselecting
+image 0 with the focus still on the tree. When the revealed folder's images land,
 `BrowseGrid::folder_listed(images, preselect)` selects the preselect image's index (`browser::grid_preselect_index`,
 pure/tested — maps the came-from path to its slot in the SORTED list) and scrolls it into view, else index 0; and
 `grid_folder_listed` moves focus to the grid (the reveal's tree selection had focused the tree, since the grid was empty
@@ -202,7 +206,9 @@ The data source's child enumeration is **fully async**. Reading a directory inli
 event loop (the whole app) whenever the filesystem is slow — a stale SMB mount blocks for ~10 s. So:
 
 - The data source serves children **only from an in-memory cache** (`tree_model::ChildCache`, a
-  `NotLoaded → InFlight → Loaded` state machine). It never calls `read_dir` itself.
+  `NotLoaded → InFlight → Loaded` state machine). It never calls `read_dir` itself. The cache is keyed through
+  `paths::PathPolicy::key`, not on the `PathBuf`: a scan is requested under the tree row's spelling of a folder while a
+  reveal walk asks about the canonicalized one, and a byte-keyed map answers "not loaded" to a folder it has.
 - On a cache miss (`numberOfChildrenOfItem:` for a not-yet-scanned path), `loaded_or_request` marks the path `InFlight`,
   enqueues a scan on the background `TreeScanner` thread (`std::thread` + `mpsc`, mirroring `navigation::preloader` — no
   tokio), and reports **0 children** for now. `begin_scan` returns `false` for an already-in-flight/loaded path, so the
