@@ -266,11 +266,8 @@ impl MenuItemKey {
             | MenuItemKey::Settings
             | MenuItemKey::ContextCopy
             | MenuItemKey::Print
+            | MenuItemKey::BrowseToggle
             | MenuItemKey::ContextPrint => Coverage::Present,
-            // Browse mode (M5) is the only one left waiting on its own action. Copy's, Print's,
-            // About's, and Settings' items are all built (M1 step 12, M3, M6, and M4), and a
-            // right-click over the image pops the same context menu macOS shows.
-            MenuItemKey::BrowseToggle => Coverage::Missing,
         }
     }
 

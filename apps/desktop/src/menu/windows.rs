@@ -144,8 +144,12 @@ pub fn decoration(key: MenuItemKey) -> Option<Decoration> {
         MenuItemKey::BrowseToggle => Decoration::new(Navigate, 'i').hint("Enter"),
         MenuItemKey::Previous => Decoration::new(Navigate, 'p').hint("Left"),
         MenuItemKey::Next => Decoration::new(Navigate, 'n').hint("Right"),
-        MenuItemKey::GoToFirst => Decoration::new(Navigate, 'f').accel(None, Code::Home),
-        MenuItemKey::GoToLast => Decoration::new(Navigate, 'l').accel(None, Code::End),
+        // Hints rather than accelerators, unlike F11 and F5. An accelerator translates against
+        // the main window whatever has focus, so a real one would fire "go to first image" when
+        // Home is pressed inside the browse tree or grid, where it means "first row".
+        // `input::key_to_command` maps them in image mode, which is where winit delivers them.
+        MenuItemKey::GoToFirst => Decoration::new(Navigate, 'f').hint("Home"),
+        MenuItemKey::GoToLast => Decoration::new(Navigate, 'l').hint("End"),
         MenuItemKey::LoopNavigation => Decoration::new(Navigate, 'o').hint("L"),
 
         // ── Slideshow ─────────────────────────────────────────────────────

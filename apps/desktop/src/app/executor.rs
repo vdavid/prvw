@@ -335,9 +335,9 @@ impl App {
                 // reveals the browse-selected image exactly like Esc/Enter (black-not-stale);
                 // image→browse goes through the normal mode switch.
                 if self.browser.is_browse() {
-                    #[cfg(target_os = "macos")]
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
                     self.reveal_selected_image();
-                    #[cfg(not(target_os = "macos"))]
+                    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
                     self.set_view_mode(crate::browser::ViewMode::Image);
                 } else {
                     self.set_view_mode(crate::browser::ViewMode::Browse);
@@ -346,20 +346,20 @@ impl App {
             AppCommand::EnterImageMode => {
                 // Esc in browse == Enter: reveal the browse-selected image (black-not-stale, no
                 // stale flash). Off macOS (no native browse UI) just switch the tracked mode.
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 self.reveal_selected_image();
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
                 self.set_view_mode(crate::browser::ViewMode::Image);
             }
             AppCommand::ToggleBrowseFocus =>
             {
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 if let Some(win) = self.window.clone() {
                     self.browser.toggle_focus(&win);
                     self.update_shared_state();
                 }
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseSelectFolder(folder) => {
                 log::info!("Browse: selected folder {}", folder.display());
                 // Selecting in the tree focuses the tree pane (single source of truth) and renders;
@@ -371,7 +371,7 @@ impl App {
                 self.browser.set_selected_folder(folder);
                 self.update_shared_state();
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseFolderListed { folder, images } => {
                 log::info!(
                     "Browse: folder listed {} ({} image(s))",
@@ -389,13 +389,16 @@ impl App {
                 self.retarget_active_folder_watch();
                 self.update_shared_state();
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseThumbnailsAvailable => {
+                #[cfg(target_os = "macos")]
                 if let Some(mtm) = objc2::MainThreadMarker::new() {
                     self.browser.grid_thumbnails_available(mtm);
                 }
+                #[cfg(target_os = "windows")]
+                self.browser.grid_thumbnails_available();
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseGridSelected(index) => {
                 if let Some(win) = self.window.clone() {
                     self.browser.set_grid_selected(index, &win);
@@ -406,7 +409,7 @@ impl App {
                 self.warm_browse_selection();
                 self.update_shared_state();
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseQaSelectGrid(index) => {
                 // QA/test-only: drive a grid selection by index the way a native click would
                 // (updates the grid model so the open path reads it). Mirrors `BrowseGridSelected`'s
@@ -417,26 +420,35 @@ impl App {
                 self.warm_browse_selection();
                 self.update_shared_state();
             }
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            AppCommand::BrowseSelectionMeasured { path, dimensions } => {
+                // A background header read landed. Only Windows has somewhere to put it (the
+                // status bar's size pane), and only Windows ever asks for one.
+                #[cfg(target_os = "windows")]
+                crate::browser::windows::selection_measured(&path, dimensions);
+                #[cfg(target_os = "macos")]
+                let _ = (path, dimensions);
+            }
             AppCommand::BrowseOpenSelected => {
                 // Enter in browse (grid focused) / double-click — reveal the selected image. Esc
                 // (`EnterImageMode`) routes to the same place: Esc == Enter == reveal.
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 self.reveal_selected_image();
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseTreeChildrenLoaded { path, children } => {
                 // A background tree scan finished. Store its children and reload the node so the
                 // outline view shows them (the data source never reads directories on the main
                 // thread — see `browser::outline`). Refreshing the overlay happens inside.
                 self.browser.tree_children_loaded(&path, children);
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseTreeFolderExpanded(path) => {
                 // Live folder sync (Part B): a tree node expanded — watch its folder for subdir
                 // changes so new/removed subfolders reload the node.
                 self.watch_tree_folder(path);
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseTreeFolderCollapsed(path) => {
                 // Live folder sync (Part B): a tree node collapsed — stop watching it (roots stay
                 // watched; the helper skips them).
@@ -869,12 +881,12 @@ impl App {
                 self.show_image_list(Some(list), &first);
             }
             crate::launch::OpenRequest::Folder(folder) => {
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
                 {
                     log::info!("Dropped the folder {}", folder.display());
                     self.browse_folder(&folder);
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
                 {
                     let images = crate::launch::images_in(&folder);
                     log::info!(

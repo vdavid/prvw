@@ -52,7 +52,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::Instant;
 
 use objc2::rc::Retained;
@@ -64,7 +63,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSNotification, NSRect, NSString};
 
-use super::tree_model::{self, ChildCache};
+use super::tree_model::{self, ChildCache, TreeScanner};
 
 // ─── Sidebar styling constants (tweak for a Finder-like feel) ───────────────
 // All in logical points.
@@ -120,53 +119,6 @@ impl BrowseOutlineView {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = mtm.alloc().set_ivars(());
         unsafe { msg_send![super(this), init] }
-    }
-}
-
-// ─── Background scanner: directory I/O off the main thread ─────────────────
-
-/// A background directory scanner. Owns a single `std::thread` (the same pattern as
-/// `navigation::preloader`: an OS thread + an `mpsc` channel, no tokio) that reads directories so
-/// the main thread never blocks on a slow filesystem. Each request is a path; the worker computes
-/// its child directories and posts them back to the main thread via the global `EventLoopProxy`
-/// as `AppCommand::BrowseTreeChildrenLoaded`.
-struct TreeScanner {
-    request_tx: mpsc::Sender<PathBuf>,
-}
-
-impl TreeScanner {
-    /// Spawn the scanner worker. It runs until the `Sender` (held by the data source, alive for
-    /// the window's life) drops, closing the channel and ending the loop.
-    fn start() -> Self {
-        let (request_tx, request_rx) = mpsc::channel::<PathBuf>();
-        std::thread::Builder::new()
-            .name("prvw-tree-scan".into())
-            .spawn(move || {
-                while let Ok(path) = request_rx.recv() {
-                    let children = tree_model::child_directories(&path);
-                    log::debug!(
-                        "Tree scan done: {} ({} subdir(s))",
-                        path.display(),
-                        children.len()
-                    );
-                    // Post back to the main thread. `send_command` uses the global proxy set in
-                    // `resumed()`; if it's gone the app is shutting down and we just drop the work.
-                    crate::commands::send_command(
-                        crate::commands::AppCommand::BrowseTreeChildrenLoaded { path, children },
-                    );
-                }
-                log::debug!("Tree scanner worker exiting");
-            })
-            .expect("Failed to spawn tree scanner worker thread");
-        log::info!("Tree scanner started (dedicated OS thread)");
-        TreeScanner { request_tx }
-    }
-
-    /// Enqueue a directory scan. Fire-and-forget; the result comes back as an `AppCommand`.
-    fn scan(&self, path: PathBuf) {
-        if self.request_tx.send(path).is_err() {
-            log::warn!("Tree scanner worker is gone — dropping scan request");
-        }
     }
 }
 

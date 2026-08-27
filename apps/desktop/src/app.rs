@@ -233,8 +233,8 @@ pub(crate) struct App {
     /// what's visible — never the whole disk. A folder is added on expand / at root setup and
     /// removed on collapse (`watch_tree_folder` / `unwatch_tree_folder`). A `FolderChanged` for one
     /// of these reloads that tree node's children. Distinct from `watched_folder` (the image-list
-    /// watch); a folder can be in both. macOS-only — there's no native tree elsewhere.
-    #[cfg(target_os = "macos")]
+    /// watch); a folder can be in both. Only where there's a native tree.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) watched_tree_folders: Vec<PathBuf>,
 
     // ── Preview placeholder tracking ─────────────────────────────
@@ -315,7 +315,7 @@ impl App {
             empty_state: None,
             rescan_lister: None,
             pending_modified: Vec::new(),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             watched_tree_folders: Vec::new(),
             placeholder_active: false,
             app_start: Instant::now(),
@@ -867,8 +867,9 @@ impl App {
     /// warming arbitrary paths is safe) and deliberately does NOT display the image or auto-fit the
     /// window while browsing — doing so would resize the window behind the browse UI. A moved
     /// selection cancels the now-stale warms (`warm_paths` cancels paths that drop out of the new
-    /// set). No-op off macOS, when neighbor preloading is disabled, or with no selection.
-    #[cfg(target_os = "macos")]
+    /// set). No-op where there's no browser, when neighbor preloading is disabled, or with no
+    /// selection.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn warm_browse_selection(&mut self) {
         if !self.navigation.preload_neighbors {
             return;
@@ -901,8 +902,8 @@ impl App {
     /// after open reveals the same image. When the folder is already the selected one,
     /// `select_and_scroll_to` still drives a re-list so the grid re-anchors (see its docs). No
     /// current image (nothing opened) → nothing to reveal; browse falls back to the last folder /
-    /// home. No-op off macOS.
-    #[cfg(target_os = "macos")]
+    /// home. No-op where there's no browser.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn reveal_current_image_in_browse(&mut self) {
         let current = self
             .navigation
@@ -1006,13 +1007,13 @@ impl App {
         // Don't unwatch the old active folder if it's still a watched tree node (a folder can be
         // both the listed folder and an expanded tree node / root). Only the role that owned it for
         // the image-list watch is ending; the tree watch must persist.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         let old_still_tree_watched = self.watched_folder.as_ref().is_some_and(|old| {
             self.watched_tree_folders
                 .iter()
                 .any(|p| crate::paths::same_path(p, old))
         });
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let old_still_tree_watched = false;
 
         if let Some(watcher) = &self.folder_watcher {
@@ -1030,9 +1031,9 @@ impl App {
 
     /// Watch the browse-tree roots for subdirectory changes (live folder sync, Part B). Roots stay
     /// watched for the window's life (they never collapse out of watching), so this is called once,
-    /// when the split view is first built (browse entry / dir-arg launch). Idempotent: a root
-    /// already in the set is skipped. No-op off macOS or before the tree exists.
-    #[cfg(target_os = "macos")]
+    /// when the browser is first built (browse entry / dir-arg launch). Idempotent: a root
+    /// already in the set is skipped. No-op where there's no browser or before the tree exists.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn watch_tree_roots(&mut self) {
         for root in self.browser.tree_root_paths() {
             self.watch_tree_folder(root);
@@ -1043,7 +1044,7 @@ impl App {
     /// (live folder sync, Part B). Called on a node expand and for each root at setup. Idempotent —
     /// a folder already watched is skipped (so a root re-added at a later browse entry is harmless,
     /// and `notify` re-watch is a no-op anyway). No-op off the watcher.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn watch_tree_folder(&mut self, folder: PathBuf) {
         if self.watched_tree_folders.contains(&folder) {
             return;
@@ -1059,7 +1060,7 @@ impl App {
     /// (roots stay watched for the window's life) or it's still the **active image-list folder**
     /// (that watch is owned separately by `watched_folder` — don't pull it out from under the grid
     /// / image sequence). Removes it from the tree-watch set. No-op off the watcher.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn unwatch_tree_folder(&mut self, folder: &Path) {
         let Some(pos) = self
             .watched_tree_folders
@@ -1120,7 +1121,7 @@ impl App {
             .is_some_and(|watched| crate::paths::same_path(watched, folder));
 
         // ── Tree-structure watch: an expanded tree node changed → reload its subdirectories. ──
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         if self
             .watched_tree_folders
             .iter()
@@ -1196,7 +1197,7 @@ impl App {
         // Update the grid first, off the same re-scan. The grid preserves its selection by path,
         // inserts/removes at the sorted position, and refreshes thumbnails for the change. A
         // changed selection re-warms the prospective current image.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             let is_grid_folder = self
                 .browser
@@ -1840,10 +1841,10 @@ impl App {
     /// **No selection** (empty folder, or the tree is focused with no grid pick): degrade
     /// gracefully — reveal image mode still showing the last valid image (whatever `dir_list`
     /// currently holds), or a clean empty canvas if nothing was ever opened. Never a blank/stale
-    /// flash, never a crash. No-op off macOS or when already in image mode.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS browse exits call this
+    /// flash, never a crash. No-op where there's no browser, or when already in image mode.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))] // only the browse exits call this
     pub(crate) fn reveal_selected_image(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             if !self.browser.is_browse() {
                 return;
@@ -1921,8 +1922,13 @@ impl App {
 
             // Re-assert the title/zoom labels against the title-bar / fullscreen state (browse hid
             // them) before the synchronous paint, so the first visible frame has the right chrome.
-            let offset = self.content_offset_y();
-            window::set_titlebar_vibrancy_visible(&win, offset.0 > 0.0);
+            // macOS only: Windows draws its title in the frame, so there is no strip to reserve
+            // and `CommandKey::TitleBar` is `NotApplicable` there.
+            #[cfg(target_os = "macos")]
+            {
+                let offset = self.content_offset_y();
+                window::set_titlebar_vibrancy_visible(&win, offset.0 > 0.0);
+            }
 
             // Paint the now-visible drawable: a cache hit lands the correct image in this one frame
             // (black → image), a miss lands a correct-aspect placeholder or clean black.
@@ -1942,9 +1948,9 @@ impl App {
     /// placeholder or a metadata-only auto-fit, "Loading…" title, and `prioritize_target` so the
     /// preloader decodes in the background). NEVER blocks the main thread on a full decode — that's
     /// the whole point of Fix #14. Mirrors the cache-hit / cache-miss branches of
-    /// `after_position_change` (direction unknown). macOS-only — it reads the QuickLook `previews`
-    /// state for the placeholder; the open path is macOS-only anyway.
-    #[cfg(target_os = "macos")]
+    /// `after_position_change` (direction unknown). Browser-only, and the preview state it reads
+    /// for the placeholder exists on both platforms that have one.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn display_open_target(&mut self) {
         let Some((path, index, total)) = self
             .navigation
@@ -2013,7 +2019,7 @@ impl App {
     /// what this is for: it names where to go, so the "reveal where you already are" step
     /// [`Self::set_view_mode`] runs would be a walk to the wrong place, and two reveals racing
     /// each other for the tree selection.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn browse_folder(&mut self, folder: &Path) {
         self.enter_view_mode(crate::browser::ViewMode::Browse, Some(folder));
     }
@@ -2024,18 +2030,18 @@ impl App {
         if self.browser.mode() == target {
             // Already there, so there's no mode to switch — but a named folder still has to be
             // shown, or dropping one onto the browser would do nothing.
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             if let Some(folder) = reveal {
                 self.browser.reveal_to_folder(folder, None);
                 self.update_shared_state();
             }
             return;
         }
-        // Only the macOS branch below has a tree to reveal anything in.
-        #[cfg(not(target_os = "macos"))]
+        // Only the branch below has a tree to reveal anything in.
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let _ = reveal;
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         match self.window.clone() {
             // `enter_browse`/`enter_image` set `mode` + `focused_pane` then `sync_native` the result
             // (the single render-from-state choke-point) — no separate `toggle_mode` here.
@@ -2048,13 +2054,17 @@ impl App {
                     // visible), that last frame is opaque black — so the worst a reveal can show
                     // is black, never the stale stretched previous image. The split view covers
                     // the canvas immediately on `enter_browse`, so this black frame isn't seen.
+                    //
+                    // Windows doesn't need the trick — a swapchain isn't presented while the
+                    // browser is up, so its last frame is simply whatever was there — but it
+                    // costs one frame and it keeps the two platforms on one path.
                     if let Some(renderer) = &mut self.renderer {
                         renderer.clear_image();
                     }
                     self.render_frame();
                     self.browser.enter_browse(&win);
-                    // Live folder sync (Part B): the split view (and tree) are now built — watch the
-                    // roots (idempotent, so re-entering browse is harmless).
+                    // Live folder sync (Part B): the browser (and its tree) are now built — watch
+                    // the roots (idempotent, so re-entering browse is harmless).
                     self.watch_tree_roots();
                     // Browse-open positioning: reveal + select the folder in the tree (async
                     // walk) and preselect an image in the grid, so browse opens already showing
@@ -2072,8 +2082,9 @@ impl App {
                 self.browser.toggle_mode();
             }
         }
-        // Off macOS there's no native browse UI; just track the mode so the rest of the app agrees.
-        #[cfg(not(target_os = "macos"))]
+        // With no native browser there's nothing to show; just track the mode so the rest of the
+        // app agrees.
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         self.browser.toggle_mode();
 
         self.set_browse_menu_label();
@@ -3640,6 +3651,11 @@ impl ApplicationHandler<AppCommand> for App {
 
             WindowEvent::Resized(size) => {
                 log::debug!("Window resized to {}x{}", size.width, size.height);
+                // The Windows browser is a child window covering the client area, so winit's own
+                // resize doesn't reach it: it's told here. macOS pins its split view to the
+                // content view's edges, so it follows on its own.
+                #[cfg(target_os = "windows")]
+                self.browser.relayout();
                 // Re-apply content offset (may change on fullscreen transitions)
                 let offset = self.content_offset_y();
                 self.zoom.view.set_content_offset_y(offset);
@@ -3743,6 +3759,13 @@ impl ApplicationHandler<AppCommand> for App {
             // held) or move through the folder. `crate::scroll` owns every per-platform
             // decision in that sentence.
             WindowEvent::MouseWheel { delta, .. } => {
+                // In browse mode the wheel belongs to whatever is under it — the thumbnail grid
+                // or the folder tree — and must never zoom the hidden image or step through the
+                // folder. The native panes scroll themselves; this is the guard for a wheel that
+                // reaches winit anyway (over a pane's own gap, or before a pane has focus).
+                if self.browser.is_browse() {
+                    return;
+                }
                 match self.scroll.interpret(
                     delta,
                     self.scale_factor,
@@ -3891,6 +3914,10 @@ impl ApplicationHandler<AppCommand> for App {
                 if let Some(renderer) = &self.renderer {
                     renderer.update_transform(&self.zoom.view.transform());
                 }
+                // Every measurement the Windows browser holds is in device pixels at one
+                // monitor's DPI: the fonts, the pane widths, and the image list's slot size.
+                #[cfg(target_os = "windows")]
+                self.browser.rescale();
                 self.request_redraw();
                 self.update_shared_state();
                 log::debug!("Scale factor changed to {new_scale}");

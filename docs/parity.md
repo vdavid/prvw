@@ -12,14 +12,14 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 ## Summary
 
 - macOS: 117 of 117 done, 0 not applicable, 0 missing
-- Windows: 107 of 117 done, 6 not applicable, 4 missing
+- Windows: 111 of 117 done, 6 not applicable, 0 missing
 - Linux: 32 of 117 done, 5 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
 - Settings (40 entries): macOS 40 / 0 / 0, Windows 39 / 1 / 0, Linux 0 / 1 / 39
-- Menu items (37 entries): macOS 37 / 0 / 0, Windows 32 / 4 / 1, Linux 0 / 3 / 34
-- Commands (40 entries): macOS 40 / 0 / 0, Windows 36 / 1 / 3, Linux 32 / 1 / 7
+- Menu items (37 entries): macOS 37 / 0 / 0, Windows 33 / 4 / 0, Linux 0 / 3 / 34
+- Commands (40 entries): macOS 40 / 0 / 0, Windows 39 / 1 / 0, Linux 32 / 1 / 7
 
 ## What each platform still owes
 
@@ -29,10 +29,7 @@ Nothing missing.
 
 ### Windows
 
-4 missing:
-
-- Menu item, Navigate: `BrowseToggle`
-- Command, Browse mode: `BrowseMode`, `BrowseFocus`, `BrowseOpenSelected`
+Nothing missing.
 
 ### Linux
 
@@ -147,7 +144,7 @@ Nothing missing.
 - `SortByFileType` "File type" (menu item, View menu): macOS done, Windows done, Linux missing
 - `Fullscreen` "Fullscreen" (menu item, View menu): macOS done, Windows done, Linux missing
 - `Refresh` "Refresh" (menu item, View menu): macOS done, Windows done, Linux missing
-- `BrowseToggle` "Image browser" (menu item, Navigate menu): macOS done, Windows missing, Linux missing
+- `BrowseToggle` "Image browser" (menu item, Navigate menu): macOS done, Windows done, Linux missing
 - `Previous` "Previous" (menu item, Navigate menu): macOS done, Windows done, Linux missing
 - `Next` "Next" (menu item, Navigate menu): macOS done, Windows done, Linux missing
 - `GoToFirst` "Go to first" (menu item, Navigate menu): macOS done, Windows done, Linux missing
@@ -186,9 +183,9 @@ Nothing missing.
 - `TitleBar` "Title bar" (command, View): macOS done, Windows not applicable, Linux not applicable
 - `Histogram` "Histogram" (command, View): macOS done, Windows done, Linux done
 - `ExifInfo` "Exif info" (command, View): macOS done, Windows done, Linux done
-- `BrowseMode` "Image browser and image view" (command, Browse mode): macOS done, Windows missing, Linux missing
-- `BrowseFocus` "Move focus between tree and grid" (command, Browse mode): macOS done, Windows missing, Linux missing
-- `BrowseOpenSelected` "Open the selected image" (command, Browse mode): macOS done, Windows missing, Linux missing
+- `BrowseMode` "Image browser and image view" (command, Browse mode): macOS done, Windows done, Linux missing
+- `BrowseFocus` "Move focus between tree and grid" (command, Browse mode): macOS done, Windows done, Linux missing
+- `BrowseOpenSelected` "Open the selected image" (command, Browse mode): macOS done, Windows done, Linux missing
 - `Slideshow` "Start / stop slideshow" (command, Slideshow): macOS done, Windows done, Linux done
 - `SlideshowSeconds` "Time per image" (command, Slideshow): macOS done, Windows done, Linux done
 - `SlideshowCrossfade` "Crossfade" (command, Slideshow): macOS done, Windows done, Linux done

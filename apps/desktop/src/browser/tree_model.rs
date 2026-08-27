@@ -125,6 +125,62 @@ pub fn scan_overdue(earliest: Option<Instant>, now: Instant) -> bool {
     earliest.is_some_and(|start| now.duration_since(start) >= LOADING_OVERLAY_DELAY)
 }
 
+/// A background directory scanner. Owns a single `std::thread` (the same pattern as
+/// `navigation::preloader`: an OS thread + an `mpsc` channel, no tokio) that reads directories so
+/// the main thread never blocks on a slow filesystem. Each request is a path; the worker computes
+/// its child directories and posts them back to the main thread via the global `EventLoopProxy`
+/// as `AppCommand::BrowseTreeChildrenLoaded`.
+///
+/// Requests are served in order and never coalesced: expanding three nodes in a row has to fill
+/// three of them, and the newest is not the only one anybody is waiting on. That's the one
+/// difference from `grid_listing::FolderLister`, which coalesces because only the folder the
+/// user settled on is worth listing.
+///
+/// Only where there's a tree to fill: it posts an `AppCommand`, and the platforms with no
+/// browser have no such command to post.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub struct TreeScanner {
+    request_tx: std::sync::mpsc::Sender<PathBuf>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl TreeScanner {
+    /// Spawn the scanner worker. It runs until the `Sender` (held by the tree, alive for the
+    /// window's life) drops, closing the channel and ending the loop.
+    #[must_use]
+    pub fn start() -> Self {
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<PathBuf>();
+        std::thread::Builder::new()
+            .name("prvw-tree-scan".into())
+            .spawn(move || {
+                while let Ok(path) = request_rx.recv() {
+                    let children = child_directories(&path);
+                    log::debug!(
+                        "Tree scan done: {} ({} subdir(s))",
+                        path.display(),
+                        children.len()
+                    );
+                    // Post back to the main thread. `send_command` uses the global proxy set in
+                    // `resumed()`; if it's gone the app is shutting down and we just drop the work.
+                    crate::commands::send_command(
+                        crate::commands::AppCommand::BrowseTreeChildrenLoaded { path, children },
+                    );
+                }
+                log::debug!("Tree scanner worker exiting");
+            })
+            .expect("Failed to spawn tree scanner worker thread");
+        log::info!("Tree scanner started (dedicated OS thread)");
+        TreeScanner { request_tx }
+    }
+
+    /// Enqueue a directory scan. Fire-and-forget; the result comes back as an `AppCommand`.
+    pub fn scan(&self, path: PathBuf) {
+        if self.request_tx.send(path).is_err() {
+            log::warn!("Tree scanner worker is gone — dropping scan request");
+        }
+    }
+}
+
 /// A source-list root: the home folder or a mounted volume. `name` is the row's display label
 /// (the volume's localized name, or "Home" for the home folder); `path` is what gets listed
 /// and expanded.
@@ -213,8 +269,7 @@ pub fn child_directories(dir: &Path) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let path = entry.path();
-            // Skip dot-folders: clutter the sidebar and are rarely what a person browses.
-            if file_name_str(&path).is_some_and(|n| n.starts_with('.')) {
+            if is_hidden_entry(&entry, &path) {
                 return None;
             }
             // Directories only. `is_dir` resolves symlinks, so dir aliases still count.
@@ -226,6 +281,33 @@ pub fn child_directories(dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// Whether a directory entry is too hidden to show in the tree.
+///
+/// A leading dot everywhere, because `.git` and `.Trash` are clutter on every platform. On
+/// Windows that isn't the convention, so the file attributes decide as well: hidden and system
+/// alike, which is what keeps `AppData` and `System Volume Information` out of a photo browser.
+/// We deliberately don't read Explorer's "show hidden files" setting — skipping unconditionally
+/// matches both Explorer's default and the macOS behaviour.
+fn is_hidden_entry(entry: &std::fs::DirEntry, path: &Path) -> bool {
+    if file_name_str(path).is_some_and(|name| name.starts_with('.')) {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        // `entry.metadata()` doesn't follow the link, which is right here: a hidden symlink is
+        // hidden however ordinary its target is.
+        entry.metadata().is_ok_and(|metadata| {
+            crate::browser::windows::roots::hidden_by_attributes(metadata.file_attributes())
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = entry;
+        false
+    }
+}
+
 /// Assemble the source-list roots from a home directory and the enumerated volumes.
 ///
 /// Pure so it's unit-testable without AppKit: the macOS volume enumeration (`NSFileManager`)
@@ -233,6 +315,10 @@ pub fn child_directories(dir: &Path) -> Vec<PathBuf> {
 /// first (the favorite), then volumes in the order given. A volume whose path equals the home
 /// path is dropped (home is already its own row), and the home row is only added when `home`
 /// is `Some` (it always is in practice, but a missing home dir shouldn't panic the tree).
+///
+/// macOS's own root assembly. Windows leads with known folders and drive letters instead, which
+/// is `windows::roots::build_windows_roots`. Compiled everywhere so its tests run on every host.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[must_use]
 pub fn build_roots(home: Option<PathBuf>, volumes: Vec<Root>) -> Vec<Root> {
     let mut roots = Vec::with_capacity(volumes.len() + 1);

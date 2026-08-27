@@ -833,13 +833,7 @@ mod tests {
     fn platforms_without_the_feature_dont_offer_the_item() {
         assert_eq!(
             dropped_by(Platform::Windows),
-            vec![
-                "Hide",
-                "HideOthers",
-                "ShowAll",
-                "CloseWindow",
-                "BrowseToggle",
-            ]
+            vec!["Hide", "HideOthers", "ShowAll", "CloseWindow"]
         );
         // Linux has no bar at all, so nothing here reaches anyone there. Close window is the
         // one difference from Windows: it stays `Missing` rather than `NotApplicable`, because

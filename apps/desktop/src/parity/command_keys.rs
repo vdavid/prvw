@@ -194,11 +194,10 @@ impl CommandKey {
         }
     }
 
-    /// Windows runs the whole platform-neutral half of `execute_command` already. What's
-    /// missing is what the arms gate behind `#[cfg(target_os = "macos")]`: browse mode, and
-    /// nothing else. The clipboard, the print dialog, the About box, and the settings dialog are
-    /// all Windows' own now (`platform::windows::clipboard`, `platform::windows::print`,
-    /// `about::windows`, `settings::windows`).
+    /// Windows runs every arm of `execute_command`. Each feature that needed a native surface
+    /// has one of its own: the clipboard, the print dialog, the About box, the settings dialog,
+    /// and browse mode (`platform::windows::clipboard`, `platform::windows::print`,
+    /// `about::windows`, `settings::windows`, `browser::windows`).
     const fn windows_coverage(self) -> Coverage {
         match self {
             CommandKey::TitleBar => Coverage::NotApplicable {
@@ -240,10 +239,10 @@ impl CommandKey {
             | CommandKey::About
             | CommandKey::Print
             | CommandKey::Settings
+            | CommandKey::BrowseMode
+            | CommandKey::BrowseFocus
+            | CommandKey::BrowseOpenSelected
             | CommandKey::Exit => Coverage::Present,
-            CommandKey::BrowseMode | CommandKey::BrowseFocus | CommandKey::BrowseOpenSelected => {
-                Coverage::Missing
-            }
         }
     }
 
@@ -316,18 +315,15 @@ mod tests {
         }
     }
 
-    /// Browse mode is the whole Windows gap in `execute_command` now. If that list shrinks,
-    /// this test is where it gets noticed.
+    /// Windows has no `Missing` command left. If one appears, it is a regression rather than a
+    /// milestone, and this test is where it gets noticed.
     #[test]
-    fn windows_gap_is_browse_mode() {
+    fn windows_runs_every_command() {
         let missing: Vec<&str> = CommandKey::ALL
             .iter()
             .filter(|key| key.coverage(Platform::Windows) == Coverage::Missing)
             .map(|key| key.name())
             .collect();
-        assert_eq!(
-            missing,
-            vec!["BrowseMode", "BrowseFocus", "BrowseOpenSelected"]
-        );
+        assert_eq!(missing, Vec::<&str>::new());
     }
 }

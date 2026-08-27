@@ -26,17 +26,19 @@
 //!   Tab/Enter/Esc (routed via `AppCommand`); everything else falls through to `super` for native
 //!   selection/scroll. See `docs/specs/image-browser.md`.
 
-// Browse mode is a macOS-only feature: the native AppKit submodules are `#[cfg(target_os =
-// "macos")]`-gated, and the cross-platform pure logic (`grid_model`, `tree_model`, the pane/reveal/
-// warm helpers below) is consumed only by that gated native code. So on non-macOS every one of
-// these is unused. Keep them compiled cross-platform (their unit tests still run on every host) but
-// silence the unused warnings the non-macOS build would otherwise raise under `-D warnings`.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+// Browse mode has a native UI on macOS and Windows, and the pure logic here (`grid_model`,
+// `tree_model`, the pane/reveal/warm helpers below) is consumed only by that native code. So on a
+// platform with neither, every one of these is unused. Keep them compiled everywhere — their unit
+// tests run on every host — but silence the warnings that build would otherwise raise under
+// `-D warnings`. Deliberately NOT silenced on Windows: dead code in `browser::windows` is
+// something to hear about rather than hide.
+#![cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 
 #[cfg(target_os = "macos")]
 mod grid;
-#[cfg(target_os = "macos")]
-mod grid_listing;
+// The background folder lister is shared: the Windows grid drives the same worker.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) mod grid_listing;
 pub(crate) mod grid_model;
 #[cfg(target_os = "macos")]
 mod outline;
@@ -277,6 +279,21 @@ pub fn classify_launch_target(is_file: bool, is_dir: bool) -> LaunchTarget {
     }
 }
 
+/// The winit window's `HWND`, or `None` before it exists.
+#[cfg(target_os = "windows")]
+fn window_hwnd(window: &winit::window::Window) -> Option<::windows::Win32::Foundation::HWND> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    // `::windows` rather than `windows`: this module has a submodule by that name, and the
+    // crate is the one meant here.
+    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
+        return None;
+    };
+    Some(::windows::Win32::Foundation::HWND(
+        handle.hwnd.get() as *mut std::ffi::c_void
+    ))
+}
+
 /// Per-feature browse-mode state (sibling of `zoom::State`, `navigation::State`, …). Holds the
 /// current `ViewMode` and, on macOS, the native split-view handles built lazily on first entry.
 pub struct State {
@@ -311,6 +328,11 @@ pub struct State {
     /// alive for the window's lifetime thereafter. `None` until first built.
     #[cfg(target_os = "macos")]
     split_view: Option<split_view::BrowseSplitView>,
+    /// The native Win32 browser — a container child window holding the tree, the grid, and the
+    /// status bar. Built once on first entry to browse mode and kept for the window's lifetime,
+    /// exactly as the macOS split view is. `None` until first built.
+    #[cfg(target_os = "windows")]
+    browse_ui: Option<windows::BrowseUi>,
 }
 
 impl Default for State {
@@ -332,6 +354,8 @@ impl State {
             pending_browse_open_focus: false,
             #[cfg(target_os = "macos")]
             split_view: None,
+            #[cfg(target_os = "windows")]
+            browse_ui: None,
         }
     }
 
@@ -350,6 +374,7 @@ impl State {
     /// How many images the grid currently lists (the selected folder's supported-image count). `0`
     /// when the grid is empty or the split view isn't built. Exposed in the QA snapshot so tests can
     /// assert a folder listing landed without a screenshot. Off macOS the grid doesn't exist → `0`.
+    #[cfg(not(target_os = "windows"))]
     #[must_use]
     pub fn grid_count(&self) -> usize {
         #[cfg(target_os = "macos")]
@@ -368,6 +393,7 @@ impl State {
     /// ancestors toward the target folder). `false` when idle or the split view isn't built. Lets
     /// QA/tests poll for the reveal to settle before asserting the landed folder/grid. Off macOS
     /// there's no native tree → always `false`.
+    #[cfg(not(target_os = "windows"))]
     #[must_use]
     pub fn reveal_pending(&self) -> bool {
         #[cfg(target_os = "macos")]
@@ -396,6 +422,10 @@ impl State {
         #[cfg(target_os = "macos")]
         if let Some(split) = &self.split_view {
             split.grid().list_folder(folder);
+        }
+        #[cfg(target_os = "windows")]
+        if self.browse_ui.is_some() {
+            windows::list_folder(folder);
         }
     }
 
@@ -485,7 +515,8 @@ impl State {
     }
 
     /// Feed the grid's current visible range to its scheduler/cache and pump generation. Called on
-    /// scroll. No-op if the split view isn't built or the grid is empty.
+    /// scroll. No-op if the split view isn't built or the grid is empty. macOS only: the Windows
+    /// listview says when it needs items (`LVN_ODCACHEHINT`), so nothing has to poll it.
     #[cfg(target_os = "macos")]
     pub fn grid_pump_visible_range(&self) {
         if let Some(split) = &self.split_view {
@@ -555,6 +586,230 @@ impl State {
         let grid = self.split_view.as_ref()?.grid();
         let selected = grid.selected_index()?;
         Some((grid.images(), selected))
+    }
+
+    // ── The Windows half ─────────────────────────────────────────────────────────────────
+    //
+    // Every method below is the Win32 twin of a macOS one a few lines up, and each is thin for
+    // the same reason: the pure transitions they wrap (`enter_browse_state`, `toggle_focus_state`,
+    // `focus_grid_state`) are shared, already tested, and platform-free. What differs is only the
+    // native call at the end.
+
+    /// Build the browser on first entry, then set state (`mode = Browse`, focus the grid when it
+    /// has images else the tree) and render it.
+    #[cfg(target_os = "windows")]
+    pub fn enter_browse(&mut self, window: &winit::window::Window) {
+        if self.browse_ui.is_none() {
+            let Some(owner) = window_hwnd(window) else {
+                return;
+            };
+            self.browse_ui = windows::BrowseUi::create(owner, self.sort_by);
+        }
+        crate::window::grow_to_browse_minimum(window);
+        self.enter_browse_state(self.grid_is_empty());
+        self.sync_native(window);
+        log::info!("Entered browse mode, focused {:?}", self.focused_pane);
+    }
+
+    /// Leave browse mode for image mode.
+    #[cfg(target_os = "windows")]
+    pub fn enter_image(&mut self, window: &winit::window::Window) {
+        self.enter_image_state();
+        self.sync_native(window);
+        log::info!("Entered image mode");
+    }
+
+    /// Switch to image mode for a browse→image reveal. Windows has no equivalent of the macOS
+    /// hidden-layer trap (a swapchain isn't presented while the browser is up, so its last frame
+    /// is whatever was there before), so this is the plain transition and the caller's paint
+    /// lands on an uncovered surface.
+    #[cfg(target_os = "windows")]
+    pub fn reveal_image_canvas(&mut self, window: &winit::window::Window) {
+        self.enter_image_state();
+        self.sync_native(window);
+    }
+
+    /// Render every derived piece of the native browser from `State` — the one choke-point, the
+    /// same as macOS's. Idempotent.
+    #[cfg(target_os = "windows")]
+    pub fn sync_native(&self, window: &winit::window::Window) {
+        let _ = window;
+        let Some(ui) = &self.browse_ui else {
+            return;
+        };
+        ui.set_hidden(!self.mode.is_browse());
+        if let Some(focused) = self.focused_pane {
+            ui.apply_focus(focused);
+        }
+        windows::refresh_status_bar();
+    }
+
+    /// Re-fit the browser to the window's client area. Called on every resize, because the
+    /// container is a child window and winit's own `WM_SIZE` doesn't reach it.
+    #[cfg(target_os = "windows")]
+    pub fn relayout(&self) {
+        if let Some(ui) = &self.browse_ui {
+            ui.relayout();
+        }
+    }
+
+    /// Follow the monitor's scale factor to a new value.
+    #[cfg(target_os = "windows")]
+    pub fn rescale(&self) {
+        if let Some(ui) = &self.browse_ui {
+            ui.rescale();
+        }
+    }
+
+    /// Reveal `folder` in the tree and preselect `current_image` in the grid once it lists.
+    #[cfg(target_os = "windows")]
+    pub fn reveal_to_folder(
+        &mut self,
+        folder: &std::path::Path,
+        current_image: Option<std::path::PathBuf>,
+    ) {
+        self.pending_grid_preselect = current_image;
+        self.pending_browse_open_focus = true;
+        if let Some(ui) = &self.browse_ui {
+            ui.reveal_folder_in_tree(folder);
+        }
+    }
+
+    /// Store a finished tree scan and put its children on the row.
+    #[cfg(target_os = "windows")]
+    pub fn tree_children_loaded(&self, path: &std::path::Path, children: Vec<std::path::PathBuf>) {
+        if let Some(ui) = &self.browse_ui {
+            ui.tree_children_loaded(path, children);
+        }
+    }
+
+    /// Apply a completed background folder listing to the grid.
+    #[cfg(target_os = "windows")]
+    pub fn grid_folder_listed(
+        &mut self,
+        images: Vec<std::path::PathBuf>,
+        window: &winit::window::Window,
+    ) {
+        let preselect = self.pending_grid_preselect.take();
+        let was_browse_open = std::mem::take(&mut self.pending_browse_open_focus);
+        if let Some(ui) = &self.browse_ui {
+            ui.folder_listed(images, preselect.as_deref());
+            self.grid_selected = ui.selected_index();
+        }
+        // Browse-open positioning focuses the GRID once its images land; a plain folder click
+        // keeps the tree focused. Same rule as macOS.
+        if was_browse_open && !self.grid_is_empty() {
+            self.focused_pane = Some(PaneSide::Grid);
+        }
+        self.sync_native(window);
+    }
+
+    /// Drain queued thumbnail completions into the grid's image list.
+    #[cfg(target_os = "windows")]
+    pub fn grid_thumbnails_available(&self) {
+        if self.browse_ui.is_some() {
+            windows::thumbnails_available();
+        }
+    }
+
+    /// Apply a live folder re-scan to the grid: keep the selection on the same file, refresh
+    /// what changed, and re-sync. Returns `true` when the selected image changed identity, so
+    /// the executor can re-warm it.
+    #[cfg(target_os = "windows")]
+    pub fn apply_grid_rescan(
+        &mut self,
+        images: Vec<std::path::PathBuf>,
+        modified: &[std::path::PathBuf],
+        window: &winit::window::Window,
+    ) -> bool {
+        let changed = self
+            .browse_ui
+            .as_ref()
+            .is_some_and(|ui| ui.apply_rescan(images, modified));
+        self.grid_selected = self
+            .browse_ui
+            .as_ref()
+            .and_then(windows::BrowseUi::selected_index);
+        self.sync_native(window);
+        changed
+    }
+
+    /// Record a grid selection and move keyboard focus to the grid.
+    #[cfg(target_os = "windows")]
+    pub fn set_grid_selected(&mut self, index: usize, window: &winit::window::Window) {
+        self.focus_grid_state(index);
+        self.sync_native(window);
+    }
+
+    /// Select grid item `index` the way a click would, for the QA server.
+    #[cfg(target_os = "windows")]
+    pub fn qa_select_grid_index(&mut self, index: usize, window: &winit::window::Window) {
+        if let Some(ui) = &self.browse_ui {
+            ui.select_index(index, /* scroll */ true);
+        }
+        self.set_grid_selected(index, window);
+    }
+
+    /// Record a click in the tree pane.
+    #[cfg(target_os = "windows")]
+    pub fn set_tree_focused(&mut self, window: &winit::window::Window) {
+        self.focused_pane = Some(PaneSide::Tree);
+        self.sync_native(window);
+    }
+
+    /// The grid's selected image, the folder's full list, and the index, for opening into image
+    /// mode.
+    #[cfg(target_os = "windows")]
+    #[must_use]
+    pub fn grid_open_target(&self) -> Option<(std::path::PathBuf, Vec<std::path::PathBuf>, usize)> {
+        let ui = self.browse_ui.as_ref()?;
+        let selected = ui.selected_index()?;
+        let path = ui.selected_path()?;
+        Some((path, ui.images(), selected))
+    }
+
+    /// The folder's images and the selected index, for warming the prospective current image.
+    #[cfg(target_os = "windows")]
+    #[must_use]
+    pub fn grid_warm_target(&self) -> Option<(Vec<std::path::PathBuf>, usize)> {
+        let ui = self.browse_ui.as_ref()?;
+        Some((ui.images(), ui.selected_index()?))
+    }
+
+    /// The tree's root paths, for the live-folder-sync watch.
+    #[cfg(target_os = "windows")]
+    #[must_use]
+    pub fn tree_root_paths(&self) -> Vec<std::path::PathBuf> {
+        self.browse_ui
+            .as_ref()
+            .map(windows::BrowseUi::tree_root_paths)
+            .unwrap_or_default()
+    }
+
+    /// Re-scan a watched tree folder after it changed on disk.
+    #[cfg(target_os = "windows")]
+    pub fn reload_tree_node(&self, folder: &std::path::Path) {
+        if let Some(ui) = &self.browse_ui {
+            ui.reload_tree_node(folder);
+        }
+    }
+
+    /// True while the tree's reveal walk is still in flight, so QA can wait for it to settle.
+    #[cfg(target_os = "windows")]
+    #[must_use]
+    pub fn reveal_pending(&self) -> bool {
+        self.browse_ui
+            .as_ref()
+            .is_some_and(windows::BrowseUi::reveal_pending)
+    }
+
+    /// How many images the grid lists.
+    #[cfg(target_os = "windows")]
+    #[must_use]
+    pub fn grid_count(&self) -> usize {
+        self.browse_ui
+            .as_ref()
+            .map_or(0, windows::BrowseUi::image_count)
     }
 
     /// The current top-level screen.
@@ -658,8 +913,8 @@ impl State {
         }
     }
 
-    /// No-op off macOS (no native views to render).
-    #[cfg(not(target_os = "macos"))]
+    /// No-op where there's no native browser to render.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     pub fn sync_native(&self, _window: &winit::window::Window) {}
 
     /// Whether the grid currently has no images (so it can't receive focus). Treated as empty when
@@ -670,7 +925,13 @@ impl State {
         {
             self.split_view.as_ref().is_none_or(|s| s.grid().is_empty())
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "windows")]
+        {
+            self.browse_ui
+                .as_ref()
+                .is_none_or(windows::BrowseUi::grid_is_empty)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
             true
         }

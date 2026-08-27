@@ -86,8 +86,9 @@
 //!   window drags where the title/zoom text sits.
 
 use crate::pixels::{Logical, from_physical_size, to_logical_pos, to_logical_size};
-// Only `grow_to_browse_minimum` reads a logical size back, and browse mode is macOS-only (M5).
-#[cfg(target_os = "macos")]
+// Only `grow_to_browse_minimum` reads a logical size back, and only the platforms with a
+// browser call it.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::pixels::from_logical_size;
 // Brought to module scope for the `ClickThroughLabel` `define_class!` below, whose macro
 // arms require the superclass and protocol as bare identifiers (not paths).
@@ -112,10 +113,10 @@ pub const MIN_WINDOW_DIM: f64 = 200.0;
 /// Minimum browse-mode content width (logical px): the 240pt sidebar plus a few grid columns.
 /// Image mode's fit-to-window may have shrunk the window for a small image; browse grows it to at
 /// least this so the gallery isn't cramped. Only enforced on browse entry, never in image mode.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // browse (the only consumer) is macOS-only
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))] // browse, its only consumer, has no UI elsewhere yet
 const BROWSE_MIN_WIDTH: f64 = 860.0;
 /// Minimum browse-mode content height (logical px): a few grid rows tall.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // browse (the only consumer) is macOS-only
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))] // browse, its only consumer, has no UI elsewhere yet
 const BROWSE_MIN_HEIGHT: f64 = 560.0;
 
 /// Maximum fraction of the monitor's work area to use when auto-fitting.
@@ -1686,7 +1687,7 @@ pub fn clamp_to_screen(
 /// centered on the current monitor (matching `resize_to_fit_image`'s centering). A no-op when the
 /// window already meets the minimum, in fullscreen, or larger on both axes — so it never shrinks a
 /// comfortably-sized window. Called on browse entry only; image-mode fit-to-window is untouched.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn grow_to_browse_minimum(window: &Window) {
     if is_fullscreen(window) {
         return;

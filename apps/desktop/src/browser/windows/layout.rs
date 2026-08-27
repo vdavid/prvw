@@ -26,10 +26,15 @@ pub struct Rect {
 }
 
 impl Rect {
+    /// The pixel past the right edge, and the one past the bottom. Both exist for the tiling
+    /// assertions below, which is the only thing that ever needs an edge rather than an origin
+    /// and a size — `SetWindowPos` takes the latter.
+    #[cfg(test)]
     pub const fn right(&self) -> i32 {
         self.x + self.width
     }
 
+    #[cfg(test)]
     pub const fn bottom(&self) -> i32 {
         self.y + self.height
     }
@@ -185,6 +190,53 @@ pub fn tree_width_for_drag(
     clamp_tree_width(pointer_x - grab_offset, client_width, metrics)
 }
 
+/// One grid cell's size in device pixels at `dpi`: the thumbnail's square plus the room under it
+/// for a filename. This is what `LVM_SETICONSPACING` is told, so the listview's own arithmetic
+/// and ours agree about where an item is.
+#[must_use]
+pub fn cell_size(dpi: u32) -> (i32, i32) {
+    (
+        scale(CELL_WIDTH, dpi),
+        scale(CELL_THUMBNAIL + CELL_LABEL_HEIGHT, dpi),
+    )
+}
+
+/// Which grid indices are on screen, given how far the listview has scrolled.
+///
+/// A virtual listview in icon view can't be asked this: `LVM_GETTOPINDEX` and
+/// `LVM_GETCOUNTPERPAGE` are both documented for report and list view only, and in icon view the
+/// second one answers with the whole folder. So it's arithmetic, and being arithmetic it's
+/// testable — which matters, because this range is what decides which thumbnails get generated.
+/// Too narrow and scrolling shows placeholders; too wide and a 5,000-image folder generates
+/// thumbnails nobody will look at.
+///
+/// One row of margin each side, so a small scroll reveals cells that are already drawn. The
+/// scheduler widens it again by its own prefetch margin.
+#[must_use]
+pub fn visible_range(
+    scroll_y: i32,
+    client_width: i32,
+    client_height: i32,
+    cell: (i32, i32),
+    len: usize,
+) -> std::ops::Range<usize> {
+    let (cell_width, cell_height) = cell;
+    if len == 0 || cell_width <= 0 || cell_height <= 0 || client_width <= 0 || client_height <= 0 {
+        return 0..0;
+    }
+    let columns = (client_width / cell_width).max(1) as usize;
+    let first_row = (scroll_y.max(0) / cell_height) as usize;
+    // The partly visible row at the top and the one at the bottom both count, plus a row of
+    // margin each side.
+    let rows_on_screen = (client_height / cell_height) as usize + 2;
+    let first = first_row.saturating_sub(1) * columns;
+    let last = first_row
+        .saturating_add(rows_on_screen)
+        .saturating_mul(columns)
+        .min(len);
+    first.min(len)..last
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +379,45 @@ mod tests {
         let l = layout(1024, 700, tree, m);
         assert_eq!(tree, TREE_PANE_DEFAULT);
         assert!(l.grid.width > l.tree.width);
+    }
+
+    /// A cell is the thumbnail plus its caption, and the listview is told the same number, so a
+    /// disagreement here shows up as thumbnails overlapping their own labels.
+    #[test]
+    fn a_cell_is_the_thumbnail_plus_its_caption() {
+        assert_eq!(cell_size(96), (160, 162));
+        assert_eq!(cell_size(192), (320, 324));
+    }
+
+    #[test]
+    fn the_visible_range_is_the_rows_on_screen_plus_a_margin() {
+        // 800 wide at a 160-wide cell is five columns; 500 tall at a 162-tall cell is three full
+        // rows, so five rows are asked for (three on screen, one partly, one of margin).
+        let cell = (160, 162);
+        assert_eq!(visible_range(0, 800, 500, cell, 1000), 0..25);
+        // Scrolled to the fourth row: one row of margin above, five below.
+        assert_eq!(visible_range(162 * 3, 800, 500, cell, 1000), 10..40);
+    }
+
+    /// The last screen of a folder must not ask for indices past its end, which a virtual
+    /// listview would answer with an out-of-range item.
+    #[test]
+    fn the_visible_range_stops_at_the_end_of_the_folder() {
+        let cell = (160, 162);
+        let range = visible_range(162 * 100, 800, 500, cell, 12);
+        assert!(range.end <= 12, "{range:?}");
+        assert!(range.start <= range.end, "{range:?}");
+    }
+
+    /// The degenerate shapes a resize animation and an empty folder both pass through.
+    #[test]
+    fn a_grid_with_no_room_or_no_images_has_nothing_visible() {
+        let cell = (160, 162);
+        assert_eq!(visible_range(0, 800, 500, cell, 0), 0..0);
+        assert_eq!(visible_range(0, 0, 500, cell, 100), 0..0);
+        assert_eq!(visible_range(0, 800, 0, cell, 100), 0..0);
+        assert_eq!(visible_range(0, 800, 500, (0, 0), 100), 0..0);
+        // A pane narrower than one cell still shows one column rather than dividing by zero.
+        assert_eq!(visible_range(0, 40, 500, cell, 100).end, 5);
     }
 }

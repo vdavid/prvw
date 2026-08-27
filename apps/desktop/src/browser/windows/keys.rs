@@ -24,19 +24,6 @@ pub mod vk {
     pub const RETURN: u32 = 0x0D;
     /// `VK_ESCAPE`.
     pub const ESCAPE: u32 = 0x1B;
-    /// `VK_LEFT`, `VK_UP`, `VK_RIGHT`, `VK_DOWN`.
-    pub const LEFT: u32 = 0x25;
-    pub const UP: u32 = 0x26;
-    pub const RIGHT: u32 = 0x27;
-    pub const DOWN: u32 = 0x28;
-    /// `VK_PRIOR` / `VK_NEXT` — Page Up and Page Down.
-    pub const PRIOR: u32 = 0x21;
-    pub const NEXT: u32 = 0x22;
-    /// `VK_HOME` / `VK_END`.
-    pub const HOME: u32 = 0x24;
-    pub const END: u32 = 0x23;
-    /// `VK_F5`, which the menu bar's accelerator table owns.
-    pub const F5: u32 = 0x74;
 }
 
 /// The command a browse pane's `WM_KEYDOWN` should route, or `None` to leave the key to the
@@ -75,20 +62,31 @@ mod tests {
 
     /// The keys that make the browser feel like Explorer are the ones we don't touch. Taking any
     /// of these would replace a native behaviour with a worse one: arrow selection, page scroll,
-    /// jump to first and last, and type-select all come free from the controls.
+    /// jump to first and last, and type-select all come free from the controls. They're spelled
+    /// out here rather than in `vk` because being untaken is the whole of what they are.
     #[test]
     fn navigation_keys_fall_through_to_the_control() {
+        const LEFT: u32 = 0x25;
+        const UP: u32 = 0x26;
+        const RIGHT: u32 = 0x27;
+        const DOWN: u32 = 0x28;
+        const PAGE_UP: u32 = 0x21;
+        const PAGE_DOWN: u32 = 0x22;
+        const HOME: u32 = 0x24;
+        const END: u32 = 0x23;
+        const F5: u32 = 0x74;
+
         for key in [
-            vk::LEFT,
-            vk::UP,
-            vk::RIGHT,
-            vk::DOWN,
-            vk::PRIOR,
-            vk::NEXT,
-            vk::HOME,
-            vk::END,
+            LEFT,
+            UP,
+            RIGHT,
+            DOWN,
+            PAGE_UP,
+            PAGE_DOWN,
+            HOME,
+            END,
             vk::BACK,
-            vk::F5,
+            F5,
         ] {
             assert!(
                 browse_keydown_command(key).is_none(),

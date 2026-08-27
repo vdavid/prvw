@@ -39,11 +39,11 @@ pub fn send_command(command: AppCommand) -> bool {
         .is_some()
 }
 
-/// Clone of the global event loop proxy. Used by the browse grid's QL submission path
-/// (`browser::grid`), which has no `App` reference to borrow the proxy from. Panics if called
-/// before `resumed()` set the proxy — the grid only submits after the window exists, so the proxy
-/// is always present by then.
-#[cfg(target_os = "macos")]
+/// Clone of the global event loop proxy. Used by the browse grid's thumbnail submission path
+/// (`browser::grid` on macOS, `browser::windows::ui::grid` on Windows), which has no `App`
+/// reference to borrow the proxy from. Panics if called before `resumed()` set the proxy — the
+/// grid only submits after the window exists, so the proxy is always present by then.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn event_loop_proxy() -> EventLoopProxy<AppCommand> {
     EVENT_LOOP_PROXY
         .get()
@@ -141,7 +141,7 @@ impl AppCommand {
             // The browse screen's own event wiring: tree and grid callbacks, background
             // listing results, and the QA hook that stands in for a native click. Browse mode
             // as a feature is `CommandKey::BrowseMode`.
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseSelectFolder(_)
             | AppCommand::BrowseTreeChildrenLoaded { .. }
             | AppCommand::BrowseTreeFolderExpanded(_)
@@ -149,7 +149,8 @@ impl AppCommand {
             | AppCommand::BrowseFolderListed { .. }
             | AppCommand::BrowseThumbnailsAvailable
             | AppCommand::BrowseGridSelected(_)
-            | AppCommand::BrowseQaSelectGrid(_) => Internal,
+            | AppCommand::BrowseQaSelectGrid(_)
+            | AppCommand::BrowseSelectionMeasured { .. } => Internal,
             #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
             AppCommand::GetNativeWindowId(_) => Internal,
             #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -281,14 +282,14 @@ pub enum AppCommand {
     /// A folder was selected in the browse-mode tree. Records it in `browser::State` and logs
     /// how many supported images it holds. Fired by the `NSOutlineView` selection delegate.
     /// (Listing the folder's images in the grid is a later phase.)
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseSelectFolder(PathBuf),
     /// A background scan of `path`'s child directories finished. The data source NEVER reads a
     /// directory on the main thread (a slow SMB share would freeze the whole app), so children
     /// arrive here: the executor stores them in the tree's child cache and tells the outline view
     /// to re-query that node (`reloadItem:reloadChildren:`). Posted by the tree scanner thread via
     /// the global `EventLoopProxy`. `children` is already filtered to subdirectories and sorted.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseTreeChildrenLoaded {
         path: PathBuf,
         children: Vec<PathBuf>,
@@ -298,18 +299,18 @@ pub enum AppCommand {
     /// node's children load. The executor adds the folder to the tree-watch set so a
     /// `FolderChanged` for it reloads the node's subdirectories. Roots are watched at browse setup,
     /// not via this. Browse-mode only.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseTreeFolderExpanded(PathBuf),
     /// A tree node was collapsed — stop watching its folder (live folder sync, Part B). Fired by
     /// `outlineViewItemDidCollapse:`. Keeps the tree-watch set bounded to what's expanded; roots
     /// stay watched. Browse-mode only.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseTreeFolderCollapsed(PathBuf),
     /// A background folder listing finished. The grid NEVER reads a directory on the main thread (a
     /// slow SMB share would freeze the app), so the selected folder's images arrive here: the
     /// executor populates the grid model + reloads the collection view. Posted by the grid lister
     /// thread via the global `EventLoopProxy`. `images` is unsorted (the grid model sorts).
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseFolderListed {
         folder: PathBuf,
         images: Vec<PathBuf>,
@@ -318,18 +319,30 @@ pub enum AppCommand {
     /// Fired only when the queue was empty (see `quicklook::push_delivery`) so a burst of N
     /// completions sends 1–2 events, not N. The executor drains them, builds `NSImage`s, and
     /// reloads the affected cells.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseThumbnailsAvailable,
     /// The grid selection changed to `index` (native click or programmatic). Records it in the grid
     /// model + `browser::State` for QA/tests. Browse-mode only.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseGridSelected(usize),
     /// Select grid item `index` programmatically, the way a native click would (updates the grid
     /// model's selection so the open path reads the right image, focuses the grid, warms the
     /// selection). QA/test-only: the QA server can't synthesize a native collection-view click, so
     /// this is how integration tests drive grid selection. Browse-mode only.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseQaSelectGrid(usize),
+    /// A background header read finished for a browse-mode grid selection: `dimensions` is the
+    /// image's pixel size, or `None` for a file whose header we can't read. Feeds the Windows
+    /// status bar's size pane. A delivery for a file that is no longer selected is dropped — a
+    /// fast arrow through a folder fires one measurement per cell, and a late answer would show
+    /// the wrong size beside the right name. Browse-mode only.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    BrowseSelectionMeasured {
+        /// The file that was measured.
+        path: PathBuf,
+        /// Its pixel size, orientation applied.
+        dimensions: Option<(u32, u32)>,
+    },
     /// Open the grid's selected image in image mode (double-click on a grid item, or Enter while
     /// the grid pane is focused). Sets up `navigation` for the selected folder at the chosen index,
     /// displays that image, and switches to image mode so arrow-key nav works afterward.
