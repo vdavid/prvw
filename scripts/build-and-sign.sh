@@ -13,6 +13,7 @@ SIGNING_IDENTITY="Developer ID Application: Rymdskottkarra AB (83H6YAQMNP)"
 ENTITLEMENTS="$DESKTOP_DIR/Entitlements.plist"
 INFO_PLIST="$DESKTOP_DIR/Info.plist"
 ICON_PATH="$DESKTOP_DIR/resources/AppIcon.icns"
+LICENSE_PATH="$PROJECT_ROOT/LICENSE"
 
 # Extract version from Cargo.toml
 VERSION=$(grep '^version' "$DESKTOP_DIR/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
@@ -42,6 +43,11 @@ chmod +x "$APP_BUNDLE/Contents/MacOS/prvw"
 sed "s/__VERSION__/$VERSION/g" "$INFO_PLIST" > "$APP_BUNDLE/Contents/Info.plist"
 
 cp "$ICON_PATH" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+
+# BUSL-1.1 asks that the licence travel with every copy of the app, and `Resources/` is where a
+# bundle keeps one. `codesign` runs after this, so the file is sealed into `CodeResources` like
+# any other resource; the Windows installer drops the same text beside the exe.
+cp "$LICENSE_PATH" "$APP_BUNDLE/Contents/Resources/LICENSE.txt"
 
 echo "Signing .app bundle with hardened runtime..."
 codesign \
