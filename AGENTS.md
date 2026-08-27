@@ -7,6 +7,7 @@ pic, see it instantly, zoom/pan, arrow keys for next/prev (preloaded in backgrou
 personal use (BSL license). Website at [getprvw.com](https://getprvw.com).
 
 **Supported platforms.** macOS is the shipping target and the only one with the full feature set: the browse-mode AppKit
+<<<<<<< HEAD
 UI, the settings window, onboarding, QuickLook previews, and the updater are all macOS-only. Windows has a native menu
 bar with working accelerators, its own About box under Help, printing, preview placeholders of its own
 (`src/previews/generator.rs`, reading the shell thumbnail cache), display-profile matching (the differentiator: images
@@ -14,6 +15,14 @@ transformed into the calibrated monitor's own ICC profile, re-read when the wind
 cross-platform core (decode, RAW pipeline, color transform, settings, navigation, and the header-only dimension read
 that sizes the window before the first pixel paints). Linux has the core, no menu bar, and no display profile. Windows
 deliberately gets no onboarding window, and the launch empty state is the whole of it there
+=======
+UI, onboarding, display-profile matching, QuickLook previews, and the updater are all macOS-only. Windows has a native
+menu bar with working accelerators, its own About box under Help, its own Win32 settings dialog
+(`src/settings/windows/`), printing, preview placeholders of its own (`src/previews/generator.rs`, reading the shell
+thumbnail cache), and the cross-platform core (decode, RAW pipeline, color transform, settings, navigation, and the
+header-only dimension read that sizes the window before the first pixel paints); Linux has the core, no menu bar, and no
+settings window. Windows deliberately gets no onboarding window, and the launch empty state is the whole of it there
+>>>>>>> 8d35f72 (A scale change rebuilds the settings dialog, and the docs say how)
 (`apps/desktop/src/onboarding/CLAUDE.md` says why). Neither ships a release yet, and `docs/parity.md` is the honest
 per-item picture. Anything you write has to at least compile for all three: check Windows and Linux from this Mac with
 `./scripts/check.sh --check windows-cross --check linux-cross` (see below), and prefer a cross-platform implementation

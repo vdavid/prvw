@@ -28,34 +28,9 @@ use std::time::Duration;
 use e2e::app::TestApp;
 use e2e::fixtures::write_png;
 
-// ── Settings window ──────────────────────────────────────────────────────────────────────────
-
-#[test]
-fn settings_opens_and_closes() {
-    let app = TestApp::start();
-    app.post("/show-settings", "");
-    std::thread::sleep(Duration::from_millis(200));
-    // Settings window is non-modal, app should still respond
-    let state = app.get_state();
-    assert!(
-        state["file"].as_str().is_some(),
-        "app should still be responsive with settings open"
-    );
-    app.post("/close-settings", "");
-}
-
-#[test]
-fn settings_section_switch() {
-    let app = TestApp::start();
-    app.post("/show-settings", "file_associations");
-    std::thread::sleep(Duration::from_millis(200));
-    // Verify the app doesn't crash
-    let state = app.get_state();
-    assert!(state["file"].as_str().is_some());
-    app.post("/show-settings", "general");
-    std::thread::sleep(Duration::from_millis(200));
-    app.post("/close-settings", "");
-}
+// The settings window's own tests live in `e2e_shared.rs`: both platforms build one now, and
+// everything worth asserting about it (that it opens, that it switches sections, and that it
+// leaves the app running) is observable through the QA server rather than through a widget.
 
 // ── Fullscreen, the way AppKit drives it ─────────────────────────────────────────────────────
 

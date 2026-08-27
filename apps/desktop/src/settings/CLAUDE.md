@@ -1,8 +1,13 @@
 # Settings
 
-Settings persistence plus the Settings window UI shell. Per-feature panels live with their feature; this module owns the
-window chrome, the cross-feature `SettingsDelegate`, and the "General" panel (which mixes toggles from several
-features).
+Settings persistence plus one settings window per platform. `persistence.rs` is the same everywhere; the UI over it
+forks (decision 1b in `docs/specs/cross-platform-plan.md`).
+
+- **macOS** is `window.rs` + `widgets.rs` + `panels/`, an AppKit window with a sidebar. Per-feature panels live with
+  their feature; this module owns the window chrome, the cross-feature `SettingsDelegate`, and the "General" panel.
+- **Windows** is `windows/`, a Win32 tabbed dialog built from data. It has its own [CLAUDE.md](windows/CLAUDE.md), and
+  its model, layout, and file-type registration compile everywhere so a Mac can test them.
+- **Linux** has neither, and its `SettingKey` coverage says so.
 
 | File                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -10,6 +15,7 @@ features).
 | `window.rs`         | Window creation, `SettingsDelegate`, sidebar, assembles panels from all features                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `widgets.rs`        | `make_setting_row` and `make_wrapping_label` (shared AppKit widget factories)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `panels/general.rs` | General panel: Auto-update + Scroll-to-zoom + Preload next/prev images + Title bar (cross-feature toggles)                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `windows/`          | The whole Windows dialog: `model.rs` (what it holds), `layout.rs` (where controls go), `dialog.rs` (the Win32 layer), plus `file_types.rs`, `ids.rs`, `template.rs`, and `theme.rs`. See its own `CLAUDE.md`                                                                                                                                                                                                                                                                                                                                                                            |
 | `panels/raw.rs`     | RAW panel (Phase 3.7 + 5.2 + 6.0 + 6.1 + 6.2): 15 per-stage `RawPipelineFlags` toggles (chroma denoise under its "Denoise" section, the Phase 6.2 "Clarity (local contrast)" row atop the "Detail" section) + 7 NSSliders co-located under their matching toggles (baseline exposure offset under baseline exposure, saturation amount under saturation boost, midtone anchor under default tone curve, sharpening amount under capture sharpening, clarity radius + amount under clarity, Phase 5.2 HDR brightness gain under HDR / EDR output) + custom DCP dir picker + Reset button |
 
 ## Key patterns
@@ -48,11 +54,15 @@ of the data model in the registry, and no settings row anywhere that isn't named
    menu mirrors it, call `self.update_shared_state()`.
 7. Menu item (optional): add a `MenuItemKey`, build it in `menu/native.rs` through `MenuBuilder`, and add the
    `sync_from_settings` line that drives its checkmark.
-8. Settings row: call `make_setting_row(audit, SettingKey::Yours, description, ...)` from the relevant panel. The title
+8. macOS row: call `make_setting_row(audit, SettingKey::Yours, description, ...)` from the relevant panel. The title
    comes from the key; the description stays an argument, because that copy talks about the platform's own hardware and
    conventions ("wide-gamut (P3) screens like MacBooks"). If the delegate needs to mutate the widget (cross-dependency),
    add a field to the panel's output struct and plumb the pointer into `SettingsDelegateIvars` in `window.rs`. Wire
-   `setTarget`/`setAction` there too.
+   `setTarget`/`setAction` there too. 8b. Windows row: add a `Row` to the right page's table in `windows/model.rs`, and
+   an arm to `value_of` and `apply`. That's the whole UI change — `dialog.rs` reads the table. Write the description in
+   Windows terms (monitors, Ctrl), not a translation of the macOS one. `every_windows_setting_has_a_row` fails until the
+   row exists, and `a_row_writes_its_own_field_and_nothing_else` fails if `apply` writes the wrong field. Both run on a
+   Mac.
 9. QA/MCP: `qa/http.rs` + `qa/mcp.rs`.
 10. E2E test: `tests/e2e_shared.rs` if the setting's behaviour is observable through `/state` on any platform (name the
     `CommandKey` in `SharedApp::start` and let the registry decide who runs it), `tests/e2e_macos.rs` if asserting it

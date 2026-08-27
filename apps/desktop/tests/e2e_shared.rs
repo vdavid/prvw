@@ -1103,6 +1103,100 @@ fn slideshow_s_starts_and_stops_it() {
     );
 }
 
+// ── The settings window ──────────────────────────────────────────────────────────────────────
+//
+// Two platforms build one, out of two different toolkits: an AppKit window with a sidebar on
+// macOS (`settings::window`) and a Win32 tabbed dialog on Windows (`settings::windows`). None of
+// what's asserted here is about either, which is the point: opening it, switching to a section,
+// and closing it are the same three things everywhere.
+//
+// Opening it is also where each platform's own parity audit runs, comparing what the window
+// built against what `parity::setting_keys` declares. A `Present` nobody built fails the debug
+// assertion inside `check_parity`, and the app dies with it, so these tests are what surface a
+// settings surface that doesn't match its declaration.
+
+#[test]
+fn settings_opens_and_closes() {
+    let Some(app) = SharedApp::start(&["Settings"]) else {
+        return;
+    };
+    app.post("/show-settings", "");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        app.get_state()["file"].as_str().is_some(),
+        "the app still answers with the settings window open"
+    );
+    app.post("/close-settings", "");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        app.get_state()["file"].as_str().is_some(),
+        "and it still answers after closing it"
+    );
+}
+
+#[test]
+fn settings_switches_between_sections() {
+    let Some(app) = SharedApp::start(&["Settings"]) else {
+        return;
+    };
+    // Both ends of the list, so a platform that only ever shows its first panel is caught.
+    for section in ["file_associations", "raw", "general"] {
+        app.post("/show-settings", section);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            app.get_state()["file"].as_str().is_some(),
+            "the app survived switching to {section}"
+        );
+    }
+    app.post("/close-settings", "");
+}
+
+/// The settings window is modeless on both platforms, and this is what that has to mean.
+///
+/// It's the assertion the whole Windows settings design turns on. A Win32 modal dialog doesn't
+/// crash the way an AppKit modal does; it starves winit's message pump, so `about_to_wait` stops
+/// running and every `ControlFlow::WaitUntil` timer stops with it. The slideshow's timer is the
+/// visible one, so a slideshow that keeps advancing with the window open is the proof that no
+/// nested message loop was opened. macOS has the same rule for a different reason
+/// (`AGENTS.md`), so the test belongs to both.
+#[test]
+fn the_settings_window_doesnt_stop_the_slideshow() {
+    // Long enough for the default four-second interval to fire at least twice.
+    const WATCH: Duration = Duration::from_secs(10);
+
+    let (_dir, first) = create_multi_image_dir(6);
+    let Some(app) = SharedApp::start_with_image(&["Settings", "Slideshow"], &first) else {
+        return;
+    };
+
+    app.post("/key", "s");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        app.get_state()["slideshow_running"].as_bool(),
+        Some(true),
+        "the slideshow is running before the window opens"
+    );
+    let started_at = app.get_state()["index"].as_u64().unwrap();
+
+    app.post("/show-settings", "");
+
+    let deadline = std::time::Instant::now() + WATCH;
+    let mut advanced = false;
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(250));
+        if app.get_state()["index"].as_u64().unwrap() != started_at {
+            advanced = true;
+            break;
+        }
+    }
+    app.post("/close-settings", "");
+    assert!(
+        advanced,
+        "the slideshow stopped advancing while the settings window was open, which is what a \
+         nested message loop looks like"
+    );
+}
+
 // ── Live folder sync (image mode) ────────────────────────────────────────────────────────────
 //
 // These drive the real filesystem watcher: open an image, then mutate its folder from the

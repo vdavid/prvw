@@ -1071,6 +1071,17 @@ system cache behind it, which is M8's call.
 
 **Intent:** Build the Win32 counterpart of the AppKit settings window, registered through M0.5 so it can't drift.
 
+**Status: landed.** `apps/desktop/src/settings/windows/` is the dialog, and its `CLAUDE.md` carries the decisions.
+Settings parity on Windows went from `0 done / 1 not applicable / 39 missing` to `39 / 1 / 0`, and
+`MenuItemKey::Settings` and `CommandKey::Settings` are `Present` with it. Two things to know before building on it:
+
+- **None of the Win32 layer has ever run.** It is compile-verified through `--check windows-cross` and nothing else. The
+  list of what most needs a real box is at the end of `settings/windows/CLAUDE.md`.
+- **The settings E2E tests are shared now.** `settings_opens_and_closes`, `settings_switches_between_sections`, and
+  `the_settings_window_doesnt_stop_the_slideshow` moved from `e2e_macos.rs` to `e2e_shared.rs`, gated on
+  `CommandKey::Settings`. The third is the one that matters: a slideshow that keeps advancing with the dialog open is
+  the proof that nothing opened a nested message loop.
+
 **Blocked on M0.5.** Starting this before the registries exist means retrofitting them into finished code.
 
 Roughly 3,400 lines of AppKit to mirror: `settings/window.rs` (863), `widgets.rs` (87), `panels/general.rs` (133),

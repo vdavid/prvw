@@ -8,7 +8,7 @@ monitor work area), and anything with real substance gets its own module here.
 | ------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `clipboard.rs`      | Copy the current image to the clipboard as the original file plus sRGB pixels (Edit → Copy, Ctrl+C, right-click) |
 | `dark_mode.rs`      | Dark chrome for our Win32 windows: the `uxtheme` ordinals, and the pure decision about when to use them          |
-| `msg_hook.rs`       | The one hook in winit's message pump: display changes, menu accelerators, and the seam a modeless dialog uses    |
+| `msg_hook.rs`       | The one hook in winit's message pump: display changes, menu accelerators, and the seam the About box and the settings dialog register through |
 | `print.rs`          | File → Print: `PrintDlgW` on a worker thread, then the image drawn onto one page with GDI                        |
 | `ui_common.rs`      | The sRGB re-decode Copy and Print share                                                                          |
 | `window_capture.rs` | Debug-only window photograph for the QA server's `screenshot_window` tool                                        |

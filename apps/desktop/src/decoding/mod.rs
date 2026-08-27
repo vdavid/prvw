@@ -51,9 +51,8 @@ use orientation::{apply_orientation_bytes, parse_exif_orientation};
 
 pub use exif_metadata::{ExifMetadata, parse_exif_metadata, parse_raw_exif};
 pub use raw_flags::RawPipelineFlags;
-// Range constants are re-exported for the Settings → RAW panel, which is
-// currently macOS-only. Silence the Linux unused-import warning.
-#[cfg_attr(not(target_os = "macos"), allow(unused_imports))]
+// Range constants are re-exported for both Settings → RAW panels: the AppKit
+// sliders on macOS, and the trackbar ranges the Windows dialog's model holds.
 pub use raw_flags::{
     BASELINE_EXPOSURE_OFFSET_RANGE, CLARITY_AMOUNT_RANGE, CLARITY_RADIUS_RANGE, HDR_GAIN_RANGE,
     MIDTONE_ANCHOR_RANGE, SATURATION_BOOST_RANGE, SHARPEN_AMOUNT_RANGE,

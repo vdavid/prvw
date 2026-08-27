@@ -52,16 +52,16 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON,
     CreateDialogIndirectParamW, CreateWindowExW, DLGTEMPLATE, DestroyWindow, ES_AUTOHSCROLL,
-    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GetDlgCtrlID, GetScrollInfo, GetWindowRect, HMENU,
-    IDCANCEL, IDOK, NONCLIENTMETRICSW, SB_BOTTOM, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP,
-    SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SB_VERT, SCROLLINFO, SIF_ALL, SPI_GETNONCLIENTMETRICS,
-    SW_ERASE, SW_HIDE, SW_INVALIDATE, SW_SCROLLCHILDREN, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-    ScrollWindowEx, SendMessageW, SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORDLG,
-    WM_CTLCOLORSTATIC, WM_HSCROLL, WM_NCDESTROY, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT,
-    WM_SETTINGCHANGE, WM_VSCROLL, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
-    WS_CLIPSIBLINGS, WS_EX_CONTROLPARENT, WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
-    WS_VSCROLL,
+    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GW_OWNER, GetDlgCtrlID, GetScrollInfo, GetWindow,
+    GetWindowRect, HMENU, IDCANCEL, IDOK, NONCLIENTMETRICSW, PostMessageW, SB_BOTTOM, SB_LINEDOWN,
+    SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SB_VERT,
+    SCROLLINFO, SIF_ALL, SPI_GETNONCLIENTMETRICS, SW_ERASE, SW_HIDE, SW_INVALIDATE,
+    SW_SCROLLCHILDREN, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER, ScrollWindowEx, SendMessageW,
+    SetForegroundWindow, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORDLG, WM_CTLCOLORSTATIC, WM_DPICHANGED,
+    WM_HSCROLL, WM_NCDESTROY, WM_NEXTDLGCTL, WM_NOTIFY, WM_SETFONT, WM_SETTINGCHANGE, WM_VSCROLL,
+    WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_CONTROLPARENT,
+    WS_GROUP, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use windows::core::{PCWSTR, w};
 
@@ -95,6 +95,14 @@ const ETDT_ENABLETAB: u32 = 0x0000_0006;
 
 /// The dialog's caption.
 const TITLE: &str = "Settings";
+
+/// Our own message, posted to ourselves when the monitor's scale changes.
+///
+/// `WM_DPICHANGED` can't rebuild the dialog where it arrives: Windows keeps using the window
+/// after the handler returns, and every control's font, size, and position is wrong by then.
+/// Posting means the rebuild happens on a later turn of the pump, with nothing above it on the
+/// stack.
+const WM_REBUILD_FOR_DPI: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -1002,6 +1010,18 @@ unsafe extern "system" fn dialog_proc(
             0
         }
         WM_CTLCOLORDLG | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => paint_control(wparam, lparam),
+        // The monitor's scale changed, or the dialog was dragged to one at a different scale.
+        // Everything on it was sized for the old DPI, and it's all built from data, so the
+        // honest answer is to build it again rather than to walk it resizing controls.
+        WM_DPICHANGED => {
+            // SAFETY: a live window of ours; a failed post just leaves the dialog as it is.
+            let _ = unsafe { PostMessageW(Some(hwnd), WM_REBUILD_FOR_DPI, WPARAM(0), LPARAM(0)) };
+            0
+        }
+        WM_REBUILD_FOR_DPI => {
+            rebuild_for_dpi(hwnd);
+            1
+        }
         WM_SETTINGCHANGE => {
             // `lParam` names what changed. `"ImmersiveColorSet"` is the theme; everything else
             // arriving here belongs to somebody else.
@@ -1403,6 +1423,36 @@ fn refresh_controls(settings: &Settings) {
             }
             _ => {}
         }
+    }
+}
+
+/// Close the dialog and open it again at the monitor's new scale, on the same tab.
+///
+/// It's cheap: six pages of controls, built from tables. And it's the one way to be sure every
+/// font, rect, and group box is right, rather than the subset a hand-written resize remembers.
+fn rebuild_for_dpi(hwnd: HWND) {
+    // SAFETY: a live window of ours. A modeless dialog's owner is the window it was created
+    // with, which is winit's.
+    let owner = unsafe { GetWindow(hwnd, GW_OWNER) };
+    let Ok(owner) = owner else {
+        log::debug!("The settings dialog has no owner to reopen against");
+        return;
+    };
+    let section = with_dialog(|dialog| {
+        dialog
+            .pages
+            .get(dialog.current)
+            .map(|page| page.tab.title().to_string())
+    })
+    .flatten();
+
+    // `DestroyWindow` runs `WM_NCDESTROY` inline, which clears `DIALOG`, so the reopen below
+    // builds a new one rather than bringing this one forward.
+    // SAFETY: a live window of ours, and nothing here touches it afterwards.
+    let _ = unsafe { DestroyWindow(hwnd) };
+    show_settings_window(owner);
+    if let Some(section) = section {
+        switch_settings_section(&section);
     }
 }
 

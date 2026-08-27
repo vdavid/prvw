@@ -45,7 +45,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `onboarding/`        | Onboarding window (macOS launch without a file) + defaults-sentence generator + checkmark renderer          |
 | `open_dialog.rs`     | The native "Open an image" picker behind File → Open, run off the event-loop thread through `rfd`           |
 | `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                         |
-| `settings/`          | JSON persistence + Settings window shell + General panel                                                    |
+| `settings/`          | JSON persistence + the AppKit settings window (shell + General panel) + the Win32 one (`settings/windows/`) |
 | `slideshow/`         | Timer-driven auto-advance (`S`) + crossfade + Slideshow settings panel + `slideshow::State`                 |
 | `updater.rs`         | Auto-update check (GitHub releases)                                                                         |
 | `window.rs`          | Main viewer window: create, fullscreen, auto-fit, title-bar vibrancy                                        |
