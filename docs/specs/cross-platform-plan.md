@@ -1,17 +1,17 @@
 # Prvw: cross-platform plan (Windows first, Linux second)
 
-Status: M0, M0.5, M2, M3, M4, M6, and M1 steps 1 to 12, 14, and 15 have landed (M0 on 2026-08-23, the rest by
-2026-08-27). Windows sits at **107 of 117** parity entries, up from 0. The 4 that remain are all browse mode:
-`BrowseToggle`, `BrowseMode`, `BrowseFocus`, and `BrowseOpenSelected`. Six more are `NotApplicable` on purpose, each
-with a written reason.
+Status: **every milestone except M8 has landed** (M0 on 2026-08-23, the rest by 2026-08-27), plus an installer from M7.
+Windows sits at **111 of 117** parity entries done, 6 not applicable, and **0 missing**: the table is complete.
 
-M2 moved no entries on its own, because reading the display's profile is a capability behind a command rather than a
-command, and layer 1 has nowhere to put it (see `src/parity/CLAUDE.md`). That gap has now been hit three times, and a
-fourth registry for capabilities behind the chrome is the open question it raises.
+Prvw ran on Windows for the first time on 2026-08-27, from a cross-compiled binary on a real laptop. Almost everything
+worked. Three defects came back and all three are fixed: the settings dialog painted labels and fields with the wrong
+brush (`WM_CTLCOLOR*` was keyed on the message, and a read-only edit sends `WM_CTLCOLORSTATIC`), photo prints were
+degraded by GDI's default downscale, and the Exif panel drew nothing at all for an image without Exif rather than saying
+so. The "this app doesn't support print preview" message is Windows' own unified print dialog and every GDI app gets it.
 
-What's left: **M7** (distribution), plus two things outside the code: **M1 step 13** (run the shared E2E suite on
-Windows), blocked on hardware rather than on work, and **M1 step 16** (Azure Trusted Signing), which is David's to
-start.
+What's left: **M8** (Linux gets its own spec), the rest of **M7** (a release workflow, and Trusted Signing once the
+certificate exists), and **M1 step 13** — the shared E2E suite has still never run on Windows through CI, because CI has
+never seen this work. `origin/main` carries no `desktop-rust-windows` job at all and local `main` is far ahead of it.
 
 Everything Windows and Linux here is **compile-verified only**:
 `./scripts/check.sh --check windows-cross --check linux-cross` type-checks and lints all three targets from one Mac, and
