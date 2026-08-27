@@ -622,6 +622,11 @@ impl App {
         if let Some(renderer) = &mut self.renderer {
             renderer.set_display_icc(self.color.display_icc.clone());
         }
+        // Record which display that profile came from, so the first nudge of the window doesn't
+        // read as a screen change and flush the cache for nothing.
+        if let Some(monitor) = display_profile::current_monitor(&win) {
+            self.color.monitors.moved_to(monitor);
+        }
 
         // Query the display's EDR headroom. 1.0 on SDR displays (so the
         // RAW decoder stays on the Phase 4 RGBA8 path, bit-identical).
