@@ -73,7 +73,8 @@ use super::grid_model::{self, GridModel};
 use super::grid_scheduler::Scheduler;
 use super::thumbnail_cache::{self, GRID_THUMBNAIL_PX, ThumbnailCache};
 use crate::navigation::SortBy;
-use crate::previews::quicklook::{self, RequestTable, SubmitRequest};
+use crate::previews::quicklook::{self, RequestTable};
+use crate::previews::request::SubmitRequest;
 
 // ─── Styling constants (tweak these for the gallery look) ───────────────────
 // All in logical points. The cell-size slider is a later phase; these tune the
@@ -815,10 +816,6 @@ impl BrowseGrid {
     /// folder generation so stale completions are dropped.
     fn pump(&self) {
         let generation = self.data_source.ivars().model.borrow().generation();
-        let size = objc2_core_foundation::CGSize {
-            width: f64::from(GRID_THUMBNAIL_PX),
-            height: f64::from(GRID_THUMBNAIL_PX),
-        };
         loop {
             let next = self.data_source.ivars().scheduler.borrow_mut().poll_next();
             let Some((index, request_id)) = next else {
@@ -844,7 +841,7 @@ impl BrowseGrid {
                 index,
                 folder_generation: generation,
                 path: &path,
-                size,
+                size_pt: f64::from(GRID_THUMBNAIL_PX),
                 scale: self.scale,
                 proxy: crate::commands::event_loop_proxy(),
             });

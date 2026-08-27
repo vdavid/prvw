@@ -4,23 +4,28 @@ Two halves that share a folder list, with different reach:
 
 - **Dimensions, everywhere.** Read `(width, height)` from a file's header without decoding it, so the window can
   auto-fit to the final image size before the first pixel paints. Runs on macOS, Windows, and Linux.
-- **Preview pixels, macOS only.** Background-generate previews for every file in the current folder so navigating to an
-  image outside the full-decode preload window shows a blurry placeholder instantly instead of a blank screen. Relies on
-  macOS's system-wide QuickLook preview cache (`quicklookd`), shared with Finder, Preview, and every other Mac app — no
-  disk storage of our own. Windows gets its own generator in M3 (`docs/specs/cross-platform-plan.md`).
+- **Preview pixels, macOS and Windows.** Background-generate previews for every file in the current folder so navigating
+  to an image outside the full-decode preload window shows a blurry placeholder instantly instead of a blank screen.
+  macOS submits to the system-wide QuickLook cache (`quicklookd`), shared with Finder, Preview, and every other Mac app.
+  Windows runs `generator.rs`, a worker pool that reads the shell's thumbnail cache where it can and decodes where it
+  can't. Linux has no generator, so its cache stays empty and every caller falls through to the dimension half.
 
-| File              | Purpose                                                                                                          | Platforms |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------- | --------- |
-| `mod.rs`          | `State { scheduler, cache, dim_prefetcher, paths, current, requests }` + API + RAM-scaled byte budget + eviction | all       |
-| `metadata.rs`     | Four-tier dim+orientation reader (rawler / image / image+nom-exif)                                               | all       |
-| `dim_prefetch.rs` | 16-thread parallel pool that pre-warms `(width, height)` for window indices                                      | all       |
-| `scheduler.rs`    | Pure state machine: priority-ordered queue, windowing, parallelism cap, pause/resume                             | macOS     |
-| `quicklook.rs`    | QL submission worker thread + `Retained<...>` lifecycle + `CGImage → RGBA8` blit                                 | macOS     |
+| File              | Purpose                                                                                                          | Platforms      |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- | -------------- |
+| `mod.rs`          | `State { scheduler, cache, dim_prefetcher, paths, current, requests }` + API + RAM-scaled byte budget + eviction | all            |
+| `metadata.rs`     | Four-tier dim+orientation reader (rawler / image / image+nom-exif)                                               | all            |
+| `dim_prefetch.rs` | 16-thread parallel pool that pre-warms `(width, height)` for window indices                                      | all            |
+| `scheduler.rs`    | Pure state machine: priority-ordered queue, windowing, parallelism cap, pause/resume                             | macOS, Windows |
+| `request.rs`      | What a request carries and what comes back: `SubmitRequest`, `Delivery`, the pending queue and its wake rule     | all            |
+| `generator.rs`    | Prvw's own generator: route decision, worker pool, downscaling, the DIB fixup                                    | all (compiled) |
+| `quicklook.rs`    | QL submission worker thread + `Retained<...>` lifecycle + `CGImage → RGBA8` blit                                 | macOS          |
+| `shell.rs`        | `IShellItemImageFactory` + the COM apartment + `HBITMAP → RGBA8`                                                 | Windows        |
 
-Only `quicklook.rs` is `#[cfg]`ed out off macOS. The scheduler compiles everywhere and its queue is seeded everywhere,
-but nothing drains it without a preview generator, so `mod previews;` in `main.rs` carries a module-level dead-code
-allow off macOS — the same shape `mod parity;` uses, and for the same reason. macOS stays the build that catches a
-member nothing reads any more.
+`previews::RequestTable` is whichever of the two a platform has, so everything above it — `State`, `App`'s pump, the
+`PreviewsAvailable` arm of `execute_command` — is one code path. `generator.rs` compiles on every host on purpose: its
+routing, sizing, and pixel-layout decisions are Windows behaviour that a Mac can assert, which is the only way any of it
+gets checked before meeting a Windows box. Off Windows it carries a module-level dead-code allow, the same shape
+`mod parity;` uses, and `mod previews;` in `main.rs` carries one for Linux.
 
 ## Flow
 
@@ -28,21 +33,20 @@ member nothing reads any more.
 2. The scheduler enqueues every folder index, ordered centered-outward but with indices inside the full-decode preload
    window (`|i − current| ≤ 2`) pushed last — the full-decode preloader will cover those anyway, so they're the
    lowest-value previews to fetch.
-3. `App::pump_preview_requests` drains the scheduler up to `max_parallel` (`available_parallelism() / 2`, min 1) and
-   submits each to `QLThumbnailGenerator`.
-4. `quicklookd` generates (or cache-hits) a 512 × scale preview and calls our completion block on its internal queue.
-5. The block converts the `CGImage` to RGBA8 and fires `AppCommand::PreviewReady { index, rgba, width, height }` via
-   `EventLoopProxy`, which `winit` delivers as a `user_event` on the main thread.
-6. `App::execute_command` stores the preview in the cache and — if this preview is for `pending_current` — uploads it
-   into the image texture as a placeholder. The full decode later replaces it.
+3. `App::pump_preview_requests` drains the scheduler up to `previews::max_parallel()` (`available_parallelism() / 2`,
+   min 1) and submits each to the platform's `RequestTable`.
+4. The generator produces a 512 pt × scale preview: `quicklookd` on macOS, a pool worker on Windows.
+5. The result is pushed onto the shared pending queue, which fires `AppCommand::PreviewsAvailable` via `EventLoopProxy`
+   **only when the queue was empty**, so a burst of completions costs one or two `user_event`s rather than one each.
+6. `App::execute_command` drains the queue, stores each preview in the cache and — if one is for `pending_current` —
+   uploads it into the image texture as a placeholder. The full decode later replaces it.
 
 ## Key patterns
 
-- **No dedicated thread.** `QLThumbnailGenerator` is async inside the system (`quicklookd` runs out-of-process). Main
-  thread submits; completion blocks forward results as winit user events. Wrapping this in a worker thread would just
-  proxy through an already-async API.
-- **System cache, not ours.** `quicklookd` maintains an on-disk cache keyed by file URL + mtime. Modified files
-  auto-invalidate, which means we never check staleness ourselves. Disk cost: zero; cache hygiene: OS-managed.
+- **System cache where there is one, ours where there isn't.** `quicklookd` keeps an on-disk cache keyed by file URL +
+  mtime, and Windows' shell keeps `thumbcache_*.db`; modified files auto-invalidate in both, which means we never check
+  staleness ourselves. Disk cost: zero; cache hygiene: OS-managed. What Windows can't get that way (RAW, and any path
+  with no legal shell spelling) it decodes, and nothing is cached to disk for those.
 - **Raw FFI for CF / CG / ImageIO.** `objc2-*` 0.3 ships bindings for a lot but not `CGBitmapContextCreate` (only the
   new adaptive variant). The few calls we need are declared in `extern "C"` blocks locally, matching the pattern in
   `color::display_profile`.
@@ -94,7 +98,7 @@ The pure math (`budget_for_ram`, `generation_radius_for_budget`) and the distanc
 in `mod.rs`. `State::memory_bytes()` exposes the resident total for the diagnostics overlay (`process_memory` line
 breaks out image cache vs. previews so the gap to RSS — GPU texture, decode buffers, allocator retention — is visible).
 
-## QL submission threading (option A)
+## QL submission threading (macOS)
 
 **Shared with the browse grid.** `RequestTable::new(wake, thread_name)` is parameterized on the wake `AppCommand`
 constructor and worker-thread name, so the browse grid (`browser::grid`) owns a **second** `RequestTable` — a second
@@ -119,6 +123,65 @@ pump cycle on the main thread blocked rendering and froze the UI for seconds.
 
 Why the worker owns `entries`: `Retained<QLThumbnailGenerationRequest>` isn't `Send`-friendly. Keeping the map on the
 worker side means we never need to share retained ObjC pointers across threads.
+
+## The Windows generator
+
+`generator.rs` picks one of three routes per file (`route_for`, pure and unit-tested from any host), then runs it on a
+`previews::max_parallel()`-thread pool. `shell.rs` is the only Windows-only file; everything else in the generator is
+portable Rust.
+
+| Route         | Files                                                         | How                                                                     |
+| ------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `EmbeddedRaw` | every camera RAW                                              | `decoding::decode_raw_preview` — the camera's embedded JPEG, no develop |
+| `System`      | everything else with a legal shell path (`paths::shell_path`) | `IShellItemImageFactory::GetImage`, the cache Explorer fills            |
+| `Decode`      | everything else                                               | `decoding::load_image` + a box-filter downscale                         |
+
+**Decision: RAW never goes to the shell.** **Why:** the shell only renders a RAW when Microsoft's Raw Image Extension is
+installed, so without it every RAW in the folder is a blank screen; and with it, Microsoft's develop isn't Prvw's, so
+the placeholder would visibly shift colour when the real develop landed. `decode_raw_preview` is the same call
+`navigation::preloader` already makes on a RAW cache-miss, so the preview and the quick preview that follows it are the
+same pixels rather than two guesses. Cheap, too: an embedded-JPEG decode, no develop.
+
+**Decision: a path the shell can't take falls back to decoding, not to nothing.** **Why:** `shell_path` answers `None`
+for a path that would be mangled once de-verbatimed (over `MAX_PATH`, a volume-GUID path, a reserved DOS device name),
+and deep libraries on a NAS are exactly the users Prvw is built for. Losing previews for them would be the wrong way to
+save the work.
+
+**Decision: previews are sRGB on every route and every platform.** **Why:** the shell hands back sRGB-ish pixels with no
+way to ask for anything else, and quicklookd is no more display-managed. Colour-managing only the RAW route would leave
+one route disagreeing with the other two on a wide-gamut display. The colour-managed full decode replaces the
+placeholder within a second either way.
+
+**Decision: a pool, where macOS has one thread.** **Why:** `quicklookd` is out-of-process and asynchronous, so one
+submitting thread is enough there; every route here is synchronous and occupies the thread running it. The pool is
+`max_parallel()` threads, the same number the scheduler will let be in flight, so a queued job always has a worker. Note
+the cap's _reason_ differs per platform even though the number doesn't: on macOS it's I/O and system courtesy, on
+Windows it's leaving cores for the full decode of the image the user is actually looking at.
+
+**Cancellation** is an epoch counter rather than a protocol: `cancel_all` bumps it, and a worker drops any job whose
+stamp no longer matches, before the file is touched and again after. A job already running finishes — a decode has no
+checkpoint and a shell call is someone else's to abort — and its delivery is dropped by `execute_command` for carrying a
+stale `folder_generation`.
+
+### Windows gotchas
+
+- **`SIIGBF_THUMBNAILONLY`, never the icon.** Same trap as the QuickLook `RepresentationTypes` gotcha below: without it
+  the shell returns the file type's generic icon for anything it can't render, and the app would blow that up to fill
+  the window.
+- **Never `SIIGBF_SCALEUP`.** The requested `SIZE` is a box the thumbnail is fitted into with its aspect kept; `SCALEUP`
+  turns that into "always fill the box" and pads with transparent margins. The placeholder is drawn against source
+  dimensions read from the file's header, so padding would show as an off-centre, wrongly-scaled image.
+- **The alpha byte is only meaningful when it's non-zero somewhere.** A thumbnail composited by a GDI path that predates
+  alpha comes back with every alpha byte zero, which uploads as a fully transparent placeholder. `dib_to_rgba8` reads an
+  all-zero alpha channel as "no alpha here" and forces it opaque, and takes any non-zero byte at face value.
+- **Every worker enters a single-threaded apartment.** Shell thumbnail providers are registered apartment-threaded; an
+  MTA caller has COM marshal each call into one host STA and serialise the whole pool behind it. A synchronous outbound
+  COM call from an STA runs a modal message loop inside the call, which is exactly why this can only happen on a worker
+  — that loop on the event-loop thread is `AGENTS.md`'s starved-pump failure. `RPC_E_CHANGED_MODE` means someone got
+  there first, and then the guard must not call `CoUninitialize`.
+
+**Never executed on Windows.** Every line above is compile-verified only (`--check windows-cross`), like the rest of the
+Windows port.
 
 ## Dimension prefetcher (16-thread pool)
 
@@ -199,9 +262,12 @@ Swapping made the warm-up window for "the most likely nav target" go from ~5 s t
 
 ## Preview size
 
-`CGSize { 512, 512 }` at `NSScreen.backingScaleFactor` (2.0 Retina → 1024 effective pixels). This matches QuickLook's
-gallery cache bucket, so folders the user has browsed in Finder's gallery view hit the cache instantly. Above 1024
-effective, `quicklookd` renders from source every time — falls off the cache entirely.
+512 points on the longest edge, at the window's scale factor (2.0 Retina → 1024 effective pixels). A request carries the
+point size and the scale **separately**, because `QLThumbnailGenerationRequest` keys quicklookd's cache on the pair: 512
+pt at scale 2 hits the gallery bucket Finder fills, and 1024 pt at scale 1 misses it entirely and re-renders from source
+every time. `generator::request_pixels` multiplies them for the platforms that ask in pixels. Windows has no bucketing
+to match, and 512 pt is a good number there too: enough to fill a 4K window softly, few enough that the byte budget
+holds a useful neighbourhood.
 
 ## MCP
 
@@ -248,9 +314,9 @@ The FSEvents watcher (`crate::folder_watch`) feeds previews two ways:
 - **Add/remove (re-scan).** `apply_folder_rescan` calls `State::set_folder` again with the updated list — the scheduler
   cancels orphaned requests and enqueues new ones. `set_folder` is the single entry point for the path list.
 - **Modify.** `State::forget_path(path)` drops the cached preview + scheduler `cached` entry + dim cache for that path
-  so a later request regenerates it. quicklookd keys its own on-disk cache on file content/mtime, so a fresh request
-  after the edit yields fresh pixels — we only need to evict OUR in-memory copy. Called from
-  `App::handle_folder_changed` for each `Modify`-flagged path.
+  so a later request regenerates it. quicklookd and the Windows shell both key their on-disk caches on file
+  content/mtime, so a fresh request after the edit yields fresh pixels — we only need to evict OUR in-memory copy.
+  Called from `App::handle_folder_changed` for each `Modify`-flagged path.
 
 ## Future work
 

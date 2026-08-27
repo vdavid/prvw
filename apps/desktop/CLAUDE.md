@@ -39,7 +39,7 @@ src/
 ├── qa/                      Embedded HTTP + MCP server
 ├── settings/                JSON persistence + Settings window shell + widgets + General panel + RAW panel (Phase 3.7)
 ├── slideshow/               Timer-driven auto-advance + crossfade + Slideshow settings panel + slideshow::State
-├── previews/                Header-only dimensions (all platforms) + QuickLook preview preload (macOS)
+├── previews/                Header-only dimensions (all platforms) + preview preload (QuickLook on macOS, our own pool on Windows)
 ├── updater.rs               Auto-update
 ├── window.rs                Main viewer window: create, fullscreen, auto-fit, vibrancy
 └── zoom/                    ViewState + zoom/pan math + Zoom settings panel + zoom::State

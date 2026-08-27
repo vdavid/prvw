@@ -62,6 +62,7 @@
 //! folder browse.
 
 use crate::commands::AppCommand;
+use crate::previews::request::{self, Delivery, Pending, PreviewPixels, SubmitRequest};
 use crate::previews::scheduler::RequestId;
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -73,39 +74,12 @@ use objc2_quick_look_thumbnailing::{
     QLThumbnailGenerationRequest, QLThumbnailGenerationRequestRepresentationTypes,
     QLThumbnailGenerator, QLThumbnailRepresentation,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ffi::c_void;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
+use std::path::PathBuf;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use winit::event_loop::EventLoopProxy;
-
-/// A ready preview: raw RGBA8, row-packed (no padding).
-pub struct PreviewPixels {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
-
-/// One result slot delivered to the main thread by a QL completion block.
-/// `Ok(pixels)` for a generated preview, `Err` for a failed request.
-pub struct Delivery {
-    pub index: usize,
-    pub request_id: RequestId,
-    pub folder_generation: u64,
-    pub result: Result<PreviewPixels, ()>,
-}
-
-/// Arguments for [`RequestTable::submit`].
-pub struct SubmitRequest<'a> {
-    pub request_id: RequestId,
-    pub index: usize,
-    pub folder_generation: u64,
-    pub path: &'a Path,
-    pub size: CGSize,
-    pub scale: f64,
-    pub proxy: EventLoopProxy<AppCommand>,
-}
 
 /// Messages sent from the main thread to the worker thread that owns
 /// `entries` and the `QLThumbnailGenerator`.
@@ -115,7 +89,7 @@ enum WorkerMsg {
         index: usize,
         folder_generation: u64,
         path: PathBuf,
-        size: CGSize,
+        size_pt: f64,
         scale: f64,
         proxy: EventLoopProxy<AppCommand>,
     },
@@ -139,7 +113,7 @@ enum WorkerMsg {
 /// `NSImage` via [`nsimage_from_rgba8`]).
 pub struct RequestTable {
     submit_tx: mpsc::Sender<WorkerMsg>,
-    pending: Arc<Mutex<VecDeque<Delivery>>>,
+    pending: Pending,
     _worker: thread::JoinHandle<()>,
 }
 
@@ -152,7 +126,7 @@ impl RequestTable {
     /// names the OS worker thread for logs.
     pub fn new(wake: fn() -> AppCommand, thread_name: &'static str) -> Self {
         let (submit_tx, submit_rx) = mpsc::channel();
-        let pending = Arc::new(Mutex::new(VecDeque::new()));
+        let pending = request::new_pending();
         let pending_for_worker = Arc::clone(&pending);
         let forget_tx = submit_tx.clone();
         let worker = thread::Builder::new()
@@ -174,7 +148,7 @@ impl RequestTable {
             index: req.index,
             folder_generation: req.folder_generation,
             path: req.path.to_path_buf(),
-            size: req.size,
+            size_pt: req.size_pt,
             scale: req.scale,
             proxy: req.proxy,
         });
@@ -188,17 +162,13 @@ impl RequestTable {
     /// Drain all queued deliveries. Called from the main-thread handler
     /// for `AppCommand::PreviewsAvailable`.
     pub fn drain_pending(&self) -> Vec<Delivery> {
-        if let Ok(mut q) = self.pending.lock() {
-            q.drain(..).collect()
-        } else {
-            Vec::new()
-        }
+        request::drain(&self.pending)
     }
 }
 
 fn worker_loop(
     rx: mpsc::Receiver<WorkerMsg>,
-    pending: Arc<Mutex<VecDeque<Delivery>>>,
+    pending: Pending,
     forget_tx: mpsc::Sender<WorkerMsg>,
     wake: fn() -> AppCommand,
 ) {
@@ -215,7 +185,7 @@ fn worker_loop(
                 index,
                 folder_generation,
                 path,
-                size,
+                size_pt,
                 scale,
                 proxy,
             } => {
@@ -228,7 +198,7 @@ fn worker_loop(
                     index,
                     folder_generation,
                     path,
-                    size,
+                    size_pt,
                     scale,
                     proxy,
                     wake,
@@ -257,19 +227,19 @@ fn worker_loop(
 fn worker_submit(
     generator: &Retained<QLThumbnailGenerator>,
     entries: &mut HashMap<RequestId, Retained<QLThumbnailGenerationRequest>>,
-    pending: &Arc<Mutex<VecDeque<Delivery>>>,
+    pending: &Pending,
     forget_tx: &mpsc::Sender<WorkerMsg>,
     request_id: RequestId,
     index: usize,
     folder_generation: u64,
     path: PathBuf,
-    size: CGSize,
+    size_pt: f64,
     scale: f64,
     proxy: EventLoopProxy<AppCommand>,
     wake: fn() -> AppCommand,
 ) {
     let Some(path_str) = path.to_str() else {
-        push_delivery(
+        request::push_delivery(
             pending,
             Delivery {
                 index,
@@ -281,6 +251,10 @@ fn worker_submit(
             wake,
         );
         return;
+    };
+    let size = CGSize {
+        width: size_pt,
+        height: size_pt,
     };
     unsafe {
         let ns_path = NSString::from_str(path_str);
@@ -333,7 +307,7 @@ fn worker_submit(
                     let rep = &*rep;
                     cg_image_to_rgba8(rep).ok_or(())
                 };
-                push_delivery(
+                request::push_delivery(
                     &pending_for_block,
                     Delivery {
                         index,
@@ -352,29 +326,6 @@ fn worker_submit(
         );
 
         generator.generateBestRepresentationForRequest_completionHandler(&request, &block);
-    }
-}
-
-/// Push a delivery onto the shared queue and wake the main thread
-/// **only if the queue was previously empty**. A burst of N completions
-/// produces 1–2 user events, not N — so winit's window-event flow
-/// (keyboard, redraw) doesn't get starved.
-fn push_delivery(
-    pending: &Arc<Mutex<VecDeque<Delivery>>>,
-    delivery: Delivery,
-    proxy: &EventLoopProxy<AppCommand>,
-    wake: fn() -> AppCommand,
-) {
-    let was_empty = match pending.lock() {
-        Ok(mut q) => {
-            let empty = q.is_empty();
-            q.push_back(delivery);
-            empty
-        }
-        Err(_) => return,
-    };
-    if was_empty {
-        let _ = proxy.send_event(wake());
     }
 }
 

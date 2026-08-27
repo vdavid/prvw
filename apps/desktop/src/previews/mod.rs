@@ -4,11 +4,14 @@
 //!
 //! ## Overview
 //!
-//! Uses macOS's system-wide QuickLook preview cache (shared with Finder,
-//! Preview, and every other Mac app) rather than maintaining our own
-//! on-disk store. `quicklookd` handles generation and caching; we just
-//! submit requests. The cache key includes the file's mtime, so modified
-//! files invalidate automatically.
+//! Two generators, one contract ([`request`]). macOS submits to the
+//! system-wide QuickLook cache (shared with Finder, Preview, and every
+//! other Mac app) rather than keeping a store of its own; `quicklookd`
+//! handles generation and caching, and its cache key includes the file's
+//! mtime, so modified files invalidate automatically. Windows has no
+//! service that answers for every format Prvw opens, so [`generator`]
+//! makes previews on a worker pool, reading the shell's thumbnail cache
+//! where it can and decoding where it can't.
 //!
 //! ## Flow
 //!
@@ -16,12 +19,12 @@
 //! 2. A [`scheduler::Scheduler`] orders indices centered-outward, with
 //!    indices outside the full-decode preload window (`|i − current| > 2`)
 //!    prioritized first.
-//! 3. The app loop drains the scheduler via [`State::drain_ready_to_submit`]
-//!    each tick and fires QL requests via [`quicklook::RequestTable`].
-//! 4. `quicklookd` completions arrive on our main thread as
-//!    `AppCommand::PreviewReady` / `PreviewFailed` events (via
+//! 3. The app loop drains the scheduler each tick and submits each index
+//!    to the platform's `RequestTable`.
+//! 4. Completions arrive on our main thread as an
+//!    `AppCommand::PreviewsAvailable` event (via
 //!    `EventLoopProxy::send_event`, which `winit` routes through
-//!    `user_event`).
+//!    `user_event`), which drains the deliveries.
 //! 5. `App` stores the RGBA8 preview in the cache and calls back into
 //!    [`State::mark_ready`] so the scheduler moves on.
 //!
@@ -33,12 +36,28 @@
 //! isn't directly at risk, but the courtesy still matters.
 
 pub mod dim_prefetch;
+/// Prvw's own generator. Compiled on every platform, so a Mac runs its routing, sizing, and
+/// pixel-layout tests for Windows; instantiated only where [`RequestTable`] points at it, which
+/// is what the dead-code allow is for — the same shape `mod parity;` uses, for the same reason.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub mod generator;
 pub mod metadata;
 #[cfg(target_os = "macos")]
 pub mod quicklook;
+pub mod request;
 pub mod scheduler;
+#[cfg(target_os = "windows")]
+pub mod shell;
 
 pub use scheduler::{RequestId, Status};
+
+#[cfg(target_os = "windows")]
+pub use generator::RequestTable;
+/// The generator this platform has. Linux has neither: it would take [`generator`]'s decode
+/// route for every file, with no system cache behind it, and whether that trade is worth making
+/// belongs to M8's Linux spec rather than here. Flipping it on is this `cfg` and nothing else.
+#[cfg(target_os = "macos")]
+pub use quicklook::RequestTable;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -76,6 +95,20 @@ fn budget_for_ram(ram_bytes: usize) -> usize {
 /// 128 MB budget (~16 GB machine) it's ~16; at the 64 MB floor it's ~8.
 pub fn generation_radius() -> usize {
     generation_radius_for_budget(preview_budget_bytes())
+}
+
+/// How many previews may be in flight at once: half the cores, floor 1, and the size of
+/// [`generator`]'s worker pool so a queued job always has a worker waiting.
+///
+/// The number is the same on both platforms and the reason isn't. On macOS the real work is
+/// out-of-process in `quicklookd`, so the cap is about I/O and system courtesy. On Windows it's
+/// our own threads decoding and reading the shell cache, so it's about leaving cores for the
+/// full decode of the image the user is actually looking at, which matters more than any
+/// placeholder.
+pub fn max_parallel() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| (n.get() / 2).max(1))
+        .unwrap_or(4)
 }
 
 /// Pure generation-radius math, split out for testing.
@@ -116,27 +149,22 @@ pub struct State {
     /// whose generation no longer matches, so a preview for a stale folder
     /// can never be inserted into the new folder's cache at a wrong index.
     pub folder_generation: u64,
-    #[cfg(target_os = "macos")]
-    pub requests: quicklook::RequestTable,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub requests: RequestTable,
 }
 
 impl State {
     pub fn new() -> Self {
-        // Half the cores, floor 1. Out-of-process quicklookd does the
-        // real work, so this cap is about I/O + system courtesy.
-        let max_parallel = std::thread::available_parallelism()
-            .map(|n| (n.get() / 2).max(1))
-            .unwrap_or(4);
         Self {
-            scheduler: scheduler::Scheduler::new(max_parallel)
+            scheduler: scheduler::Scheduler::new(max_parallel())
                 .with_window_radius(generation_radius()),
             cache: HashMap::new(),
             dim_prefetcher: dim_prefetch::DimPrefetcher::new(),
             paths: Vec::new(),
             current: 0,
             folder_generation: 0,
-            #[cfg(target_os = "macos")]
-            requests: quicklook::RequestTable::new(
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            requests: RequestTable::new(
                 || crate::commands::AppCommand::PreviewsAvailable,
                 "prvw-previewgen",
             ),
@@ -152,7 +180,7 @@ impl State {
     /// still-pending completions fire with a stale generation and get
     /// dropped by the executor.
     pub fn set_folder(&mut self, paths: Vec<PathBuf>, current: usize) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.requests.cancel_all();
         self.cache.clear();
         self.dim_prefetcher.reset();

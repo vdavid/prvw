@@ -4,16 +4,14 @@
 //! the previews module is platform code and shouldn't know about App.
 //!
 //! Most of this is portable: the scheduler, the dimension cache, and the
-//! window auto-fit that reads it all run everywhere. Only the submission of
-//! QuickLook requests is macOS's, and it's fenced below. On the platforms
-//! without it the preview cache simply stays empty, so
-//! `display_preview_placeholder` reports "nothing to show" and every caller
-//! falls through to `apply_preview_auto_fit`.
+//! window auto-fit that reads it all run everywhere. Only the submission
+//! itself is fenced, to the platforms that have a preview generator
+//! (`previews::RequestTable`). Where there is none the preview cache simply
+//! stays empty, so `display_preview_placeholder` reports "nothing to show"
+//! and every caller falls through to `apply_preview_auto_fit`.
 
 use super::App;
 use super::shared_state::PreviewEvent;
-#[cfg(target_os = "macos")]
-use objc2_core_foundation::CGSize;
 
 /// Cap of the event ring buffer. 64 is plenty for humans eyeballing a
 /// short navigation session.
@@ -39,23 +37,22 @@ impl App {
     }
 }
 
-/// 512 logical pixels is QuickLook's gallery cache bucket, so folders the
-/// user has browsed in Finder's gallery view hit the cache instantly. Going
-/// above 1024 effective pixels falls off the cache entirely (quicklookd
-/// renders from source each time), so 512 × Retina is the sweet spot.
-#[cfg(target_os = "macos")]
-const PREVIEW_SIZE: CGSize = CGSize {
-    width: 512.0,
-    height: 512.0,
-};
+/// Longest edge of a preview, in points; the display scale turns it into pixels.
+///
+/// 512 is QuickLook's gallery cache bucket, so folders the user has browsed in Finder's gallery
+/// view hit the cache instantly. Going above 1024 effective pixels falls off that cache entirely
+/// (quicklookd renders from source each time), so 512 × Retina is the sweet spot. Windows has no
+/// bucketing to match, and the number is a good one there too: enough pixels to fill a 4K window
+/// softly, few enough that the byte budget holds a useful neighbourhood of them.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const PREVIEW_SIZE_PT: f64 = 512.0;
 
 impl App {
-    /// Drain the preview scheduler up to its parallelism cap, submitting
-    /// QL requests for each index it hands back. Called after every event
-    /// that could free a slot: completion arrival, pause/resume, folder
-    /// change, navigation. macOS-only: `quicklookd` is the only preview
-    /// generator Prvw has.
-    #[cfg(target_os = "macos")]
+    /// Drain the preview scheduler up to its parallelism cap, submitting a request for each
+    /// index it hands back. Called after every event that could free a slot: completion arrival,
+    /// pause/resume, folder change, navigation. Only where there's a generator to submit to
+    /// (`previews::RequestTable`).
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn pump_preview_requests(&mut self) {
         let scale = self
             .window
@@ -71,12 +68,12 @@ impl App {
             };
             self.previews
                 .requests
-                .submit(crate::previews::quicklook::SubmitRequest {
+                .submit(crate::previews::request::SubmitRequest {
                     request_id,
                     index,
                     folder_generation: generation,
                     path: &path,
-                    size: PREVIEW_SIZE,
+                    size_pt: PREVIEW_SIZE_PT,
                     scale,
                     proxy: proxy.clone(),
                 });
@@ -93,7 +90,7 @@ impl App {
     /// Called when a primary decode completes (success or failure).
     pub(crate) fn on_primary_decode_settled(&mut self) {
         self.previews.resume();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.pump_preview_requests();
     }
 
@@ -102,7 +99,7 @@ impl App {
     /// first.
     pub(crate) fn on_preview_current_changed(&mut self, current: usize) {
         self.previews.set_current(current);
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.pump_preview_requests();
     }
 
@@ -127,9 +124,9 @@ impl App {
         };
         // Source dims are read lazily here — only for the index we're
         // about to display, never for all cached previews. On a network
-        // share each ImageIO read costs ~200 ms, so this is the
+        // share each header read costs ~200 ms, so this is the
         // difference between a snappy display and a 10 s stall.
-        // Falls back to the preview's own dims if ImageIO fails (rare;
+        // Falls back to the preview's own dims if the read fails (rare;
         // means the file is unreadable, in which case the full decode
         // will fail too and the user will see an error title).
         let (sw, sh) = self

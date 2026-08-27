@@ -133,7 +133,7 @@ impl AppCommand {
             | AppCommand::PreloaderProgress => Internal,
             #[cfg(target_os = "macos")]
             AppCommand::DisplayChanged => Internal,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::PreviewsAvailable => Internal,
             // The browse screen's own event wiring: tree and grid callbacks, background
             // listing results, and the QA hook that stands in for a native click. Browse mode
@@ -469,14 +469,13 @@ pub enum AppCommand {
     /// stares at the placeholder.
     PreloaderProgress,
 
-    // ── Previews (macOS-only; QuickLook-backed) ────────────────────
-    /// One or more QL preview completions are sitting in the
-    /// `previews::State::pending` queue waiting for the main thread to
-    /// drain them. The completion block pushes deliveries onto the queue
-    /// and fires this command **only when the queue was previously empty** —
-    /// so a burst of 38 completions sends 1–2 user events, not 38, and
-    /// keyboard / window events don't get starved by a high-frequency
-    /// EventLoopProxy flood.
-    #[cfg(target_os = "macos")]
+    // ── Previews (the platforms with a generator) ──────────────────
+    /// One or more preview completions are sitting in the generator's
+    /// pending queue waiting for the main thread to drain them. The
+    /// generator pushes deliveries onto the queue and fires this command
+    /// **only when the queue was previously empty** — so a burst of 38
+    /// completions sends 1–2 user events, not 38, and keyboard / window
+    /// events don't get starved by a high-frequency EventLoopProxy flood.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     PreviewsAvailable,
 }

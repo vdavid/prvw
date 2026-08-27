@@ -722,12 +722,12 @@ impl App {
                 // when the user is idle (no key, no mouse).
             }
 
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::PreviewsAvailable => {
                 // Drain every queued completion in one go. The
-                // completion blocks fire this command **only when the
-                // queue was previously empty** (see
-                // `quicklook::push_delivery`), so a burst of N preview
+                // generator fires this command **only when the queue
+                // was previously empty** (see
+                // `previews::request::push_delivery`), so a burst of N
                 // completions sends 1–2 user events instead of N. Each
                 // user event is a winit dispatch; per-event cost adds
                 // up enough that 38 events were starving keyboard input
