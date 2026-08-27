@@ -57,6 +57,36 @@ impl SharedApp {
         Self::gate(TestApp::start_with_images(images), commands)
     }
 
+    /// Start on a directory (a dir-arg launch, which boots into browse mode), with the home
+    /// directory overridden so the tree's roots contain it and the reveal walk is short. Returns
+    /// `None` when the host doesn't apply.
+    pub fn start_browse_dir(
+        commands: &[&str],
+        dir: &std::path::Path,
+        home: &std::path::Path,
+    ) -> Option<Self> {
+        if !display_available() {
+            return None;
+        }
+        Self::gate(TestApp::start_browse_dir(dir, home), commands)
+    }
+
+    /// Start on one image with the home directory overridden, or `None` when the host doesn't
+    /// apply. The home override is what keeps a browse reveal from that image short.
+    pub fn start_with_image_and_home(
+        commands: &[&str],
+        image: &std::path::Path,
+        home: &std::path::Path,
+    ) -> Option<Self> {
+        if !display_available() {
+            return None;
+        }
+        Self::gate(
+            TestApp::start_with_arg_and_home(image, Some(home)),
+            commands,
+        )
+    }
+
     fn gate(app: TestApp, commands: &[&str]) -> Option<Self> {
         let table = app.get_parity();
         for command in commands {

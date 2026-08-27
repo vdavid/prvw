@@ -666,14 +666,14 @@ impl App {
         self.browser.set_sort_by(initial_sort_by);
         let launch_directory = self.launch_directory.take();
         self.navigation.dir_list = if let Some(dir) = &launch_directory {
-            // A folder argument. macOS boots into browse mode at it (handled at the end of this
-            // function), so there's no list and no initial image — the user opens one from the
-            // grid. No other platform has a browser yet (M5), and a window with no image and no
-            // way to get one is the defect M1 step 1 exists to fix, so the folder becomes an
-            // image-mode playlist instead: its images in the user's sort order, starting at the
-            // first. A folder with no images lands in the "(No images)" empty state below, and
-            // Cmd/Ctrl+O is the way out of it.
-            if cfg!(target_os = "macos") {
+            // A folder argument. A platform with a browser boots into browse mode at it
+            // (handled at the end of this function), so there's no list and no initial image —
+            // the user opens one from the grid. Linux has no browser, and a window with no image
+            // and no way to get one is the defect M1 step 1 exists to fix, so there the folder
+            // becomes an image-mode playlist instead: its images in the user's sort order,
+            // starting at the first. A folder with no images lands in the "(No images)" empty
+            // state below, and Ctrl+O is the way out of it.
+            if cfg!(any(target_os = "macos", target_os = "windows")) {
                 None
             } else {
                 let images = crate::launch::images_in(dir);
@@ -802,7 +802,7 @@ impl App {
         // listing then focuses the grid (or the tree for an empty folder, per `grid_folder_listed`
         // / `enter_browse`). Done after the window/renderer/menu/preloader are up so the swap and
         // the eventual image reveal have everything they need.
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         if let Some(dir) = launch_directory {
             log::info!("Directory launch: opening browse mode at {}", dir.display());
             self.browser.enter_browse(&win);
@@ -810,7 +810,7 @@ impl App {
             // image (`reveal_to_folder` with `None` → the grid picks index 0).
             self.browser.reveal_to_folder(&dir, None);
             self.set_browse_menu_label();
-            // Live folder sync (Part B): the split view (and tree) now exist — watch the roots.
+            // Live folder sync (Part B): the browser (and its tree) now exist — watch the roots.
             self.watch_tree_roots();
         }
 

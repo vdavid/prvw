@@ -531,7 +531,7 @@ pub(super) fn handle_post_show_settings(
 /// Select a folder in the browse-mode tree by absolute path (the same effect as clicking the row).
 /// Lists that folder's images into the grid on the background worker. Test-only driving hook:
 /// integration tests can't synthesize a native outline-view click, so they drive tree selection
-/// here. macOS-only (`BrowseSelectFolder` doesn't exist off macOS); a no-op stub elsewhere.
+/// here. Only where browse mode has a UI; a 400 elsewhere.
 pub(super) fn handle_post_browse_select_folder(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
@@ -548,21 +548,27 @@ pub(super) fn handle_post_browse_select_folder(
             &[],
         );
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         let folder = PathBuf::from(path_str);
         send_and_wait_http(stream, proxy, AppCommand::BrowseSelectFolder(folder), state)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (proxy, state);
-        write_response(stream, 400, "text/plain", b"Browse mode is macOS-only", &[])
+        write_response(
+            stream,
+            400,
+            "text/plain",
+            b"Browse mode has no UI on this platform",
+            &[],
+        )
     }
 }
 
 /// Select a grid item by index, the way a native click would (updates the grid model so the open
 /// path reads it, focuses the grid, warms the selection). Test-only driving hook: the QA server
-/// can't synthesize a native collection-view click. macOS-only; a no-op stub elsewhere.
+/// can't synthesize a native click on a grid cell. Only where browse mode has a UI.
 pub(super) fn handle_post_browse_select_grid(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,
@@ -575,14 +581,20 @@ pub(super) fn handle_post_browse_select_grid(
             return write_response(stream, 400, "text/plain", b"Body must be a grid index", &[]);
         }
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         send_and_wait_http(stream, proxy, AppCommand::BrowseQaSelectGrid(index), state)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (index, proxy, state);
-        write_response(stream, 400, "text/plain", b"Browse mode is macOS-only", &[])
+        write_response(
+            stream,
+            400,
+            "text/plain",
+            b"Browse mode has no UI on this platform",
+            &[],
+        )
     }
 }
 
