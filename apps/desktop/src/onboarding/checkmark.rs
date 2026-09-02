@@ -13,8 +13,10 @@
 //!
 //! Math notes: elliptical arcs use the endpoint→center conversion from the SVG
 //! 1.1 implementation notes (appendix F.6), then approximate each arc with cubic
-//! Béziers per segment (capped at 90°). Cubic/quadratic curves translate directly;
-//! the `s` shorthand reflects the previous cubic's second control point.
+//! Béziers per segment (capped at 90°). Cubics translate directly; quadratics get
+//! degree-elevated to cubics, because AppKit's quadratic operator is macOS 14+ and
+//! we support older releases. The `s` shorthand reflects the previous cubic's
+//! second control point.
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
@@ -148,9 +150,11 @@ fn build_bezier_path(image_side: f64) -> Retained<NSBezierPath> {
             PathCmd::QuadraticRel { ctrl, end } => {
                 let ctrl_abs = (cursor.0 + ctrl.0, cursor.1 + ctrl.1);
                 let end_abs = (cursor.0 + end.0, cursor.1 + end.1);
-                path.curveToPoint_controlPoint(
+                let (c1, c2) = quadratic_to_cubic(cursor, ctrl_abs, end_abs);
+                path.curveToPoint_controlPoint1_controlPoint2(
                     project(end_abs.0, end_abs.1),
-                    project(ctrl_abs.0, ctrl_abs.1),
+                    project(c1.0, c1.1),
+                    project(c2.0, c2.1),
                 );
                 cursor = end_abs;
                 last_cubic_c2 = None;
@@ -200,6 +204,28 @@ fn build_bezier_path(image_side: f64) -> Retained<NSBezierPath> {
     path.closePath();
 
     path
+}
+
+/// Raise a quadratic Bezier to the cubic that traces the exact same curve.
+///
+/// AppKit's own quadratic operator (`curveToPoint:controlPoint:`) is macOS 14+,
+/// so calling it aborts the process on anything older. Degree elevation is exact
+/// (not an approximation) and only needs the 10.0-era cubic operator.
+fn quadratic_to_cubic(
+    start: (f64, f64),
+    ctrl: (f64, f64),
+    end: (f64, f64),
+) -> ((f64, f64), (f64, f64)) {
+    const TWO_THIRDS: f64 = 2.0 / 3.0;
+    let c1 = (
+        start.0 + TWO_THIRDS * (ctrl.0 - start.0),
+        start.1 + TWO_THIRDS * (ctrl.1 - start.1),
+    );
+    let c2 = (
+        end.0 + TWO_THIRDS * (ctrl.0 - end.0),
+        end.1 + TWO_THIRDS * (ctrl.1 - end.1),
+    );
+    (c1, c2)
 }
 
 #[derive(Debug, Clone)]
@@ -638,6 +664,39 @@ mod tests {
             assert!((c1.1 + 0.4).abs() < 1e-9);
         } else {
             panic!("expected cubic, got {:?}", cmds[1]);
+        }
+    }
+
+    #[test]
+    fn quadratic_elevates_to_an_equivalent_cubic() {
+        // Degree elevation must trace the exact same curve. Sample the quadratic
+        // and the elevated cubic at the same parameters and compare.
+        let p0 = (10.0, 20.0);
+        let q = (40.0, 90.0);
+        let p2 = (70.0, 30.0);
+        let (c1, c2) = quadratic_to_cubic(p0, q, p2);
+
+        for step in 0..=20 {
+            let t = f64::from(step) / 20.0;
+            let mt = 1.0 - t;
+            let quad = (
+                mt * mt * p0.0 + 2.0 * mt * t * q.0 + t * t * p2.0,
+                mt * mt * p0.1 + 2.0 * mt * t * q.1 + t * t * p2.1,
+            );
+            let cubic = (
+                mt * mt * mt * p0.0
+                    + 3.0 * mt * mt * t * c1.0
+                    + 3.0 * mt * t * t * c2.0
+                    + t * t * t * p2.0,
+                mt * mt * mt * p0.1
+                    + 3.0 * mt * mt * t * c1.1
+                    + 3.0 * mt * t * t * c2.1
+                    + t * t * t * p2.1,
+            );
+            assert!(
+                (quad.0 - cubic.0).abs() < 1e-9 && (quad.1 - cubic.1).abs() < 1e-9,
+                "t={t}: quadratic {quad:?} != cubic {cubic:?}"
+            );
         }
     }
 
