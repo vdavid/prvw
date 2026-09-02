@@ -98,6 +98,17 @@ The installer then rides to the release job as the `windows-installer` artifact,
 alongside the DMGs, and lands in `latest.json` as `platforms["windows-x86_64"]` with a `url` and a `size` in bytes. The
 macOS updater ignores that key: it deserializes `platforms` into a map and asks for `darwin-<arch>`.
 
+### Proving it before you tag
+
+`.github/workflows/windows-installer.yml` runs the same two steps on `windows-latest` outside a release: a release build
+of `prvw.exe`, then `scripts/build-windows-installer.sh` over it, with the installer uploaded as the `windows-installer`
+artifact. It fires on any push that touches `apps/desktop/installer/**`, `scripts/build-windows-installer.sh`, or
+`xtask/**`, and on `gh workflow run windows-installer.yml --ref <branch>`.
+
+It exists because CI's `installer` check needs no makensis (it compares generated text and reads two facts out of
+`prvw.nsi`), so nothing used to compile the script on Windows until a tag did. Run it on a branch before tagging if
+you've touched anything the installer reads.
+
 ### Build one
 
 ```bash

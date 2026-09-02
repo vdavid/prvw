@@ -1,0 +1,72 @@
+name: Windows installer
+
+# The one code path a release depends on that nothing else ever ran. CI's `installer` check
+# compares generated text and reads two facts out of `prvw.nsi`, so it needs no NSIS and says
+# nothing about whether `makensis` can compile the script on Windows. That gap is how v0.16.0
+# reached the release runner with an `!include` no Windows makensis could resolve. This job runs
+# the real thing whenever the sources behind it change.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'apps/desktop/installer/**'
+      - 'scripts/build-windows-installer.sh'
+      - 'xtask/**'
+      - '.github/workflows/windows-installer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build the installer
+    runs-on: windows-latest
+    # The release leg's budget, for the same reasons: a cold release compile dominates, and NSIS's
+    # solid-LZMA pass over the finished exe adds a couple of minutes after it.
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # No mise: this needs cargo (rustup ships with the image) and makensis, same as the release
+      # leg. Go, node, and pnpm would be dead weight.
+      - name: Cache Cargo
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cargo/registry/cache
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # Pinned to the version release.yml pins, and bumped with it: this job is only worth having
+      # if a green run here means the release leg is green, which needs the same makensis.
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis --version 3.12.0 --yes --no-progress
+          # The package runs the real NSIS setup, which lands in Program Files and neither shims
+          # `makensis` nor touches PATH.
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # Release rather than debug, so this is the build the release leg makes. A debug exe would
+      # compile faster, but it carries its debug info into the installer, which makes the LZMA pass
+      # slower and leaves an artifact nobody would want to install. Hosted minutes are free on a
+      # public repo, and this only runs when the installer's own sources change.
+      - name: Build prvw.exe
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      # Bash, because the script is: `windows-latest` carries Git Bash, and the script translates
+      # its `/d/a/...` paths with `cygpath` before handing any of them to makensis. No signing
+      # command here; that seam belongs to the release, and this job proves the packaging.
+      - name: Build the installer
+        shell: bash
+        run: ./scripts/build-windows-installer.sh --exe target/x86_64-pc-windows-msvc/release/prvw.exe
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-installer
+          path: 'target/windows-installer/PrvwSetup-*-x64.exe'
+          if-no-files-found: error

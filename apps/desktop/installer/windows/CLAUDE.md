@@ -11,6 +11,10 @@ instead, running the same script with `--exe` over a natively compiled binary.
 
 - Build it: `./scripts/build-windows-installer.sh` (see [releasing.md](../../../../docs/guides/releasing.md)).
 - Keep it honest: `./scripts/check.sh --check installer`, which needs no makensis and answers on a Mac.
+- Prove it compiles where it ships: the `Windows installer` workflow (`.github/workflows/windows-installer.yml`) builds
+  it on `windows-latest` whenever `apps/desktop/installer/**`, `scripts/build-windows-installer.sh`, or `xtask/**`
+  changes, and uploads the result as the `windows-installer` artifact. By hand:
+  `gh workflow run windows-installer.yml --ref <branch>`.
 
 ## Decision: NSIS, because it's the only candidate that cross-builds
 
