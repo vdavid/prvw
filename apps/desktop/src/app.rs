@@ -1048,7 +1048,14 @@ impl App {
         }
 
         self.seed_previews_with_current_folder();
-        self.warm_initial_neighbors();
+        // Warm the neighbors only once the opened image is on screen. `request_neighbor_preload`
+        // cancels in-flight tasks outside the requested set, and the requested set never contains
+        // the current image, so warming while its read is still running would cancel exactly the
+        // decode the user is waiting on. When the scan wins that race, `poll_preloader` queues the
+        // neighbors on the target's arrival instead (the same deferral cache-miss navigation uses).
+        if self.navigation.pending_current.is_none() {
+            self.warm_initial_neighbors();
+        }
         self.request_redraw();
     }
 

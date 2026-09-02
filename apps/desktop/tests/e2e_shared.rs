@@ -1639,6 +1639,44 @@ fn launch_shows_the_image_while_the_folder_is_still_being_scanned() {
     assert_eq!(moved["index"].as_u64(), Some(152));
 }
 
+#[test]
+fn a_scan_landing_mid_read_still_shows_the_image() {
+    // The folder listing often arrives while the opened image is still being read: any folder that
+    // lists faster than one big file loads. Installing the real list must not cancel the decode the
+    // user is waiting on. `PRVW_PREVIEW_HOLD_MS` holds every decode so the scan always wins the
+    // race here.
+    let (dir, _first) = create_multi_image_dir(5);
+    let opened = dir.path().join("img-02.png");
+    let Some(app) = SharedApp::start_mid_scan(&[], &opened, &[("PRVW_PREVIEW_HOLD_MS", "1500")])
+    else {
+        return;
+    };
+
+    // The scan lands first: the real folder is in, the image is still loading.
+    let scanned = app.wait_for_state(Duration::from_secs(10), |s| {
+        s["scan_pending"].as_bool() == Some(false)
+    });
+    assert_eq!(scanned["total_files"].as_u64(), Some(5));
+    assert_eq!(scanned["index"].as_u64(), Some(3));
+    assert!(
+        scanned["title"]
+            .as_str()
+            .is_some_and(|t| t.contains("Loading")),
+        "the image should still be loading when the listing arrives, got {scanned}"
+    );
+
+    // The held read still lands and paints, at its real position.
+    let displayed = app.wait_for_state(Duration::from_secs(15), |s| {
+        s["title"].as_str().is_some_and(|t| t.contains("img-02"))
+    });
+    assert_eq!(
+        displayed["title"].as_str(),
+        Some("3 / 5 \u{2013} img-02.png"),
+        "the opened image displays after the scan landed mid-read, got {displayed}"
+    );
+    assert!(displayed["image_width"].as_u64().unwrap_or(0) > 0);
+}
+
 // ── Browse mode ──────────────────────────────────────────────────────────────────────────────
 //
 // Gated on `BrowseMode`, `BrowseFocus`, and `BrowseOpenSelected`. macOS drives an `NSOutlineView`
