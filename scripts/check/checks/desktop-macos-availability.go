@@ -60,10 +60,14 @@ var runtimeGatedClasses = map[string]string{
 	"NSGlassEffectView": "window::liquid_glass_available() (objc_getClass probe)",
 }
 
-// selectorsAssumedOld are selectors whose SDK declaration parses as new but which
-// are safe: same-name selectors on unrelated old classes, or our own subclass
-// methods that merely collide with a framework name.
-var selectorsAssumedOld = map[string]string{}
+// selectorsAssumedOld exempts names that look like a too-new selector but aren't
+// a selector at all. A zero-argument ObjC selector is a bare word, so it can
+// collide with an ordinary Rust method of the same name; multi-part selectors
+// carry underscores and effectively never collide. Add an entry only after
+// confirming the call site is Rust, and say which one.
+var selectorsAssumedOld = map[string]string{
+	"current": "`DirList::current()` in app.rs, not `NSAppearance.current` (macOS 11)",
+}
 
 var (
 	availabilityMacroRe = regexp.MustCompile(`(?:API_AVAILABLE|API_DEPRECATED|API_DEPRECATED_WITH_REPLACEMENT)\s*\([^)]*macos\(([0-9][0-9._]*)\)`)
