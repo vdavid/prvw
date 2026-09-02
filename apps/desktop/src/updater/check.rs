@@ -4,7 +4,7 @@
 //! Everything here is fire-and-forget on a background thread. If the manifest host is down we
 //! log and move on: no user-visible error, no retries.
 
-use super::manifest::{self, Outcome, UpdateManifest};
+use super::manifest::{self, CheckOutcome, Outcome, UpdateCheck, UpdateManifest};
 
 /// Override with PRVW_UPDATE_URL env var for testing.
 fn manifest_url() -> String {
@@ -17,15 +17,13 @@ fn manifest_url() -> String {
 #[cfg(target_os = "macos")]
 pub fn check_only() {
     spawn("update-check", || {
-        let Some(current_version) = start()? else {
+        if !should_check()? {
             return Ok(());
-        };
+        }
         match look()? {
             Outcome::UpToDate => Ok(()),
-            Outcome::Available { version, .. } => {
-                log::info!(
-                    "Update available: v{version} (current: v{current_version}). Will install once a file is opened."
-                );
+            Outcome::Available { .. } => {
+                log::info!("Will install the update once a file is opened");
                 Ok(())
             }
         }
@@ -40,7 +38,7 @@ pub fn check_only() {
 /// Never blocks the calling thread. All errors are logged as warnings, never panics.
 pub fn check_on_launch() {
     spawn("updater", || {
-        if start()?.is_none() {
+        if !should_check()? {
             return Ok(());
         }
         match look()? {
@@ -80,12 +78,11 @@ fn spawn(name: &str, work: impl FnOnce() -> Result<(), String> + Send + 'static)
     }
 }
 
-/// The shared preamble. `None` means this session skips the check entirely; `Some` carries the
-/// running version, which every log line downstream wants.
-fn start() -> Result<Option<&'static str>, String> {
+/// The shared preamble: whether this launch checks at all.
+fn should_check() -> Result<bool, String> {
     if std::env::var("CI").is_ok() {
         log::debug!("Skipping update check in CI");
-        return Ok(None);
+        return Ok(false);
     }
     // Only a copy that was installed checks. On macOS that's `/Applications`, so a dev build
     // or a copy sitting in `~/Downloads` never tries to update itself in place. Windows only
@@ -95,32 +92,38 @@ fn start() -> Result<Option<&'static str>, String> {
     #[cfg(target_os = "macos")]
     if !crate::file_associations::is_in_applications() {
         log::debug!("Not installed in /Applications, skipping update check");
-        return Ok(None);
+        return Ok(false);
     }
     #[cfg(target_os = "windows")]
     if cfg!(debug_assertions) {
         log::debug!("Dev build, skipping update check");
-        return Ok(None);
+        return Ok(false);
     }
 
-    let current_version = env!("CARGO_PKG_VERSION");
-    log::info!("Checking for updates (current: v{current_version})");
-    Ok(Some(current_version))
+    // The "Checking for updates" line belongs to `UpdateCheck`, which prints it exactly once per
+    // launch — which is also how you confirm the one-fetch rule from a real Finder launch's log.
+    Ok(true)
 }
 
-/// Fetch the manifest and say what it means for this build.
+/// This launch's manifest answer, fetched once however many entry points ask.
+///
+/// A Finder double-click asks twice: [`check_only`] while it waits for the Apple Event, then
+/// [`check_on_launch`] once the file lands. The second reads what the first found. A failed fetch
+/// is cached too, so a host that's down stays down for this launch rather than being retried from
+/// the other entry point and putting us back at two round trips.
 fn look() -> Result<Outcome, String> {
-    let manifest = fetch_manifest()?;
-    let outcome = manifest::evaluate(
-        &manifest,
+    match UPDATE_CHECK.outcome(
         env!("CARGO_PKG_VERSION"),
         &manifest::host_platform_key(),
-    );
-    if outcome == Outcome::UpToDate {
-        log::debug!("No update available (latest: v{})", manifest.version);
+        fetch_manifest,
+    ) {
+        CheckOutcome::Answered(outcome) => Ok(outcome.clone()),
+        CheckOutcome::Unavailable(reason) => Err(reason.clone()),
     }
-    Ok(outcome)
 }
+
+/// This launch's check. See [`look`].
+static UPDATE_CHECK: UpdateCheck = UpdateCheck::new();
 
 fn fetch_manifest() -> Result<UpdateManifest, String> {
     let client = reqwest::blocking::Client::builder()
