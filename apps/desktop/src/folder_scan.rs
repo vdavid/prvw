@@ -15,9 +15,10 @@
 //!   by a fresh pass right after — never missed, never doubled. Which requests name one folder is
 //!   [`crate::paths::PathPolicy`]'s call, never a byte comparison: on Windows a launch argument, a
 //!   canonicalized path, and a drive enumeration spell the same folder three ways.
-//! - **Progress.** Each running scan owns an `Arc<AtomicUsize>` bumped per directory entry, plus
-//!   its start `Instant`. The main thread reads both by folder path ([`FolderScanner::progress`]),
-//!   which is how overlays show "3,412 images so far" and apply their appearance delay.
+//! - **Progress.** Each running scan owns an `Arc<AtomicUsize>` bumped per supported image it
+//!   finds (not per directory entry — the text says "images so far"), plus its start `Instant`.
+//!   The main thread reads both by folder path ([`FolderScanner::progress`]), which is how
+//!   overlays show "3,412 images so far" and apply their appearance delay.
 //! - **Test hook.** `PRVW_SCAN_DELAY_MS` makes every scan sleep that long before reading, so
 //!   integration tests can hold the app in its scan-pending state deterministically. Same family
 //!   as `PRVW_BACKGROUND_WINDOW`.
@@ -97,18 +98,19 @@ pub struct ScanRequest {
 /// A running scan's live progress, readable from the main thread while the worker reads.
 #[derive(Debug, Clone)]
 pub struct ScanProgress {
-    /// Directory entries seen so far. Bumped once per entry, so it climbs through a long read.
-    pub entries: Arc<AtomicUsize>,
+    /// Supported images found so far. Named for what the status texts say ("3,412 images so far"),
+    /// so it skips folders, videos, and sidecar files rather than counting every directory entry.
+    pub images: Arc<AtomicUsize>,
     /// When this scan started reading. The status texts hold off until it's older than
     /// [`STATUS_DELAY`], so a folder that lists instantly never flashes a count.
     pub started: Instant,
 }
 
 impl ScanProgress {
-    /// Entries seen so far.
+    /// Supported images found so far.
     #[must_use]
     pub fn count(&self) -> usize {
-        self.entries.load(Ordering::Relaxed)
+        self.images.load(Ordering::Relaxed)
     }
 }
 
@@ -190,17 +192,17 @@ impl ScanQueue {
     /// `None` when nothing is queued.
     pub fn start_next(&mut self, now: Instant) -> Option<(ScanRequest, Arc<AtomicUsize>)> {
         let request = self.queued.pop_front()?;
-        let entries = Arc::new(AtomicUsize::new(0));
+        let images = Arc::new(AtomicUsize::new(0));
         self.progress.insert(
             self.policy.key(&request.folder),
             ScanProgress {
-                entries: Arc::clone(&entries),
+                images: Arc::clone(&images),
                 started: now,
             },
         );
         self.running = Some(request.folder.clone());
         self.rerun_running = None;
-        Some((request, entries))
+        Some((request, images))
     }
 
     /// Close out the running scan. Returns `true` when a request arrived mid-scan and the folder
@@ -321,13 +323,13 @@ fn worker_loop(
     proxy: &EventLoopProxy<AppCommand>,
 ) {
     while wake_rx.recv().is_ok() {
-        while let Some((request, entries)) = queue
+        while let Some((request, images)) = queue
             .lock()
             .ok()
             .and_then(|mut queue| queue.start_next(Instant::now()))
         {
             let folder = request.folder;
-            let contents = read_folder(&folder, request.reveal_child.as_deref(), &entries);
+            let contents = read_folder(&folder, request.reveal_child.as_deref(), &images);
             log::debug!(
                 "Scanned {} ({} image(s), {} subdir(s))",
                 folder.display(),
@@ -356,7 +358,8 @@ fn worker_loop(
 }
 
 /// One `read_dir` pass over `folder`, splitting entries into supported images and the child
-/// directories a browse sidebar shows, and bumping `entries` per entry seen.
+/// directories a browse sidebar shows, and bumping `images` per supported image found — the count
+/// the status texts show.
 ///
 /// `DirEntry::file_type()` comes from the directory read itself on macOS, so classifying costs no
 /// extra `stat`. It doesn't follow symlinks, though, and a symlinked folder should still show as a
@@ -370,11 +373,7 @@ fn worker_loop(
 /// An unreadable folder returns empty lists rather than an error: consumers read that as "nothing
 /// here" (the grid's "(No images)", image mode's empty state), which is what a person sees anyway.
 #[must_use]
-fn read_folder(
-    folder: &Path,
-    reveal_child: Option<&Path>,
-    entries: &AtomicUsize,
-) -> FolderContents {
+fn read_folder(folder: &Path, reveal_child: Option<&Path>, images: &AtomicUsize) -> FolderContents {
     if let Some(delay) = scan_delay() {
         log::debug!("Delaying scan of {} by {delay:?}", folder.display());
         std::thread::sleep(delay);
@@ -384,7 +383,6 @@ fn read_folder(
         return contents;
     };
     for entry in dir.filter_map(Result::ok) {
-        entries.fetch_add(1, Ordering::Relaxed);
         let path = entry.path();
         let is_dir = match entry.file_type() {
             Ok(file_type) if file_type.is_symlink() => path.is_dir(),
@@ -403,6 +401,9 @@ fn read_folder(
             .is_some_and(crate::decoding::is_supported_extension)
         {
             contents.images.push(path);
+            // Bumped here, not per entry: the status text says "images so far", so a folder full
+            // of videos and sidecars must not read as a folder full of pictures.
+            images.fetch_add(1, Ordering::Relaxed);
         }
     }
     contents
@@ -528,9 +529,9 @@ mod tests {
             "the canonical spelling is the same folder"
         );
 
-        let (request, entries) = queue.start_next(Instant::now()).unwrap();
+        let (request, images) = queue.start_next(Instant::now()).unwrap();
         assert_eq!(request.folder, typed);
-        entries.fetch_add(7, Ordering::Relaxed);
+        images.fetch_add(7, Ordering::Relaxed);
         assert_eq!(
             queue.progress(&canonical).map(|p| p.count()),
             Some(7),
@@ -543,9 +544,9 @@ mod tests {
     fn progress_is_readable_while_a_scan_runs_and_gone_after() {
         let mut queue = ScanQueue::new();
         plain(&mut queue, "pics");
-        let (_, entries) = queue.start_next(Instant::now()).unwrap();
+        let (_, images) = queue.start_next(Instant::now()).unwrap();
 
-        entries.fetch_add(3, Ordering::Relaxed);
+        images.fetch_add(3, Ordering::Relaxed);
         let progress = queue.progress(&folder("pics")).expect("scan is running");
         assert_eq!(progress.count(), 3);
         assert!(queue.progress(&folder("docs")).is_none());
@@ -599,8 +600,8 @@ mod tests {
         // A directory whose name looks like an image must not list as one.
         std::fs::create_dir(root.join("holiday.jpg")).unwrap();
 
-        let entries = AtomicUsize::new(0);
-        let contents = read_folder(root, None, &entries);
+        let counted = AtomicUsize::new(0);
+        let contents = read_folder(root, None, &counted);
 
         let mut images = names(&contents.images);
         images.sort();
@@ -612,7 +613,12 @@ mod tests {
             vec!["holiday.jpg", "subdir"],
             "a dot-folder is not a sidebar row"
         );
-        assert_eq!(entries.load(Ordering::Relaxed), 8, "one bump per entry");
+        assert_eq!(
+            counted.load(Ordering::Relaxed),
+            3,
+            "the count says \"images so far\", so only images count \u{2014} not the two non-image \
+             files, and not the three folders"
+        );
     }
 
     #[test]
