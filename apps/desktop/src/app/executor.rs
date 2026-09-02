@@ -826,6 +826,8 @@ impl App {
             folder,
             landing: crate::navigation::ScanLanding::KeepOpenImage,
         });
+        // Opening something new abandons a move queued against the folder we're leaving.
+        self.navigation.queued_nav = None;
         // Live folder sync: watch the newly opened file's folder, and ask for the scan, both
         // before the image is displayed so a change arriving during a slow read isn't missed.
         self.retarget_active_folder_watch();

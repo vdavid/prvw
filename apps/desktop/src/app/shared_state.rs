@@ -110,6 +110,19 @@ pub struct SharedAppState {
     /// `index` is 1 — the provisional list holds only the opened image — and navigation stays put.
     /// Lets QA/tests drive the launch-before-the-scan state (`PRVW_SCAN_DELAY_MS` makes it last).
     pub scan_pending: bool,
+    /// The move the user asked for while the folder scan runs, applied when it lands. `None` when
+    /// nothing is queued, which is what a left-then-right pair nets back to.
+    pub queued_nav: Option<QueuedNavSnapshot>,
+}
+
+/// The queued move, flattened for the QA snapshot: the anchor it counts from and the net steps
+/// away from it. Mirrors `navigation::queued_nav::QueuedNav`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueuedNavSnapshot {
+    /// `"current"`, `"first"`, or `"last"`.
+    pub anchor: &'static str,
+    /// Signed steps from the anchor. Negative walks backward.
+    pub delta: i32,
 }
 
 /// Snapshot of the preview scheduler, mirrored into shared state so the
@@ -189,6 +202,7 @@ impl Default for SharedAppState {
             empty_state: None,
             watched_folders: Vec::new(),
             scan_pending: false,
+            queued_nav: None,
         }
     }
 }
@@ -286,6 +300,10 @@ impl App {
         state.empty_state = self.empty_state.map(super::EmptyState::name);
         state.no_images = self.empty_state == Some(super::EmptyState::NoImages);
         state.scan_pending = self.navigation.scan_pending.is_some();
+        state.queued_nav = self.navigation.queued_nav.map(|q| QueuedNavSnapshot {
+            anchor: q.anchor.as_str(),
+            delta: q.delta,
+        });
 
         if let Some((iw, ih)) = self.navigation.current_image_size {
             state.image_width = iw;

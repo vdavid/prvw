@@ -1601,15 +1601,20 @@ fn launch_shows_the_image_while_the_folder_is_still_being_scanned() {
         "filename only until the scan lands, no position yet"
     );
 
-    // Navigation during the scan doesn't move — there's nowhere to go in a list of one, and the
-    // picture on screen stays put rather than jumping.
-    // TODO(slow-share-launch part B): once moves are queued as intents, this becomes "left then
-    // right nets to zero" and "left once lands on the previous image when the scan finishes".
+    // Navigation during the scan doesn't move the picture — there's nowhere to go in a list of
+    // one. It's queued instead; `a_move_made_during_the_scan_lands_when_the_folder_arrives`
+    // covers where it lands.
     app.post("/navigate", "next");
     let during = app.get_state();
     assert!(
         during["file"].as_str().unwrap().contains("img-150"),
         "navigating mid-scan leaves the displayed image alone, got {during}"
+    );
+    // Undo it, so the scan below lands on the opened image rather than the next one.
+    app.post("/navigate", "prev");
+    assert!(
+        app.get_state()["queued_nav"].is_null(),
+        "a step and its opposite leave nothing queued"
     );
 
     // Then the scan lands: the real folder, positioned on the same image.
@@ -1637,6 +1642,114 @@ fn launch_shows_the_image_while_the_folder_is_still_being_scanned() {
     app.post("/navigate", "next");
     let moved = app.wait_for_state(Duration::from_secs(5), |s| s["index"].as_u64() == Some(152));
     assert_eq!(moved["index"].as_u64(), Some(152));
+}
+
+#[test]
+fn a_move_made_during_the_scan_lands_when_the_folder_arrives() {
+    // An arrow pressed while a slow folder lists isn't lost: it's queued against the image on
+    // screen and applied the moment the real folder arrives. Three rounds, each re-entering the
+    // scan-pending state by re-opening the same image, cover the rules that matter.
+    let dir = tempfile::tempdir().unwrap();
+    let images = 300;
+    for i in 0..images {
+        write_png(&dir.path().join(format!("img-{i:03}.png")), i as u8);
+    }
+    let opened = dir.path().join("img-150.png");
+    let Some(app) = SharedApp::start_mid_scan(
+        &["NextPreviousImage", "GoToLast", "OpenFile"],
+        &opened,
+        &[("PRVW_SCAN_DELAY_MS", "1500")],
+    ) else {
+        return;
+    };
+
+    // ── Round 1: left then right nets to zero, so the scan lands on the opened image. ──
+    wait_for_scanning(&app);
+    app.post("/navigate", "prev");
+    let queued = app.get_state();
+    assert_eq!(
+        queued["queued_nav"]["anchor"].as_str(),
+        Some("current"),
+        "a plain arrow counts from the image on screen, got {queued}"
+    );
+    assert_eq!(queued["queued_nav"]["delta"].as_i64(), Some(-1));
+    assert!(
+        queued["file"].as_str().unwrap().contains("img-150"),
+        "the picture stays while the move waits, got {queued}"
+    );
+
+    app.post("/navigate", "next");
+    assert!(
+        app.get_state()["queued_nav"].is_null(),
+        "a step and its opposite cancel out, leaving nothing to apply"
+    );
+
+    let landed = wait_for_scanned(&app);
+    assert_eq!(
+        landed["index"].as_u64(),
+        Some(151),
+        "nothing was queued, so the scan lands on the opened image, got {landed}"
+    );
+
+    // ── Round 2: one left lands on the previous image once the folder is known. ──
+    app.post("/open", opened.to_str().unwrap());
+    wait_for_scanning(&app);
+    app.post("/navigate", "prev");
+    let during = app.get_state();
+    assert_eq!(during["queued_nav"]["delta"].as_i64(), Some(-1));
+    assert!(
+        during["file"].as_str().unwrap().contains("img-150"),
+        "still the opened image until the folder arrives, got {during}"
+    );
+
+    let landed = wait_for_scanned(&app);
+    assert_eq!(
+        landed["index"].as_u64(),
+        Some(150),
+        "the queued step applies to the real folder, got {landed}"
+    );
+    assert!(
+        landed["file"].as_str().unwrap().contains("img-149"),
+        "one step back from the opened image, got {landed}"
+    );
+
+    // ── Round 3: End then three rights clamps at the last image (loop navigation is off). ──
+    app.post("/open", opened.to_str().unwrap());
+    wait_for_scanning(&app);
+    app.post("/key", "End");
+    for _ in 0..3 {
+        app.post("/navigate", "next");
+    }
+    let during = app.get_state();
+    assert_eq!(
+        during["queued_nav"]["anchor"].as_str(),
+        Some("last"),
+        "End anchors the queued move at the end of the folder, got {during}"
+    );
+    assert_eq!(during["queued_nav"]["delta"].as_i64(), Some(3));
+
+    let landed = wait_for_scanned(&app);
+    assert_eq!(
+        landed["index"].as_u64(),
+        Some(images),
+        "past the end it stops at the last image rather than wrapping, got {landed}"
+    );
+    assert!(landed["file"].as_str().unwrap().contains("img-299"));
+}
+
+/// Block until a folder scan is running and the opened image is up, so a queued move has
+/// something to be queued against.
+fn wait_for_scanning(app: &SharedApp) -> serde_json::Value {
+    app.wait_for_state(Duration::from_secs(10), |s| {
+        s["scan_pending"].as_bool() == Some(true) && s["image_width"].as_u64().unwrap_or(0) > 0
+    })
+}
+
+/// Block until the folder scan has landed and its list is in.
+fn wait_for_scanned(app: &SharedApp) -> serde_json::Value {
+    app.wait_for_state(Duration::from_secs(20), |s| {
+        s["scan_pending"].as_bool() == Some(false) && s["total_files"].as_u64().unwrap_or(0) > 1
+    })
 }
 
 #[test]

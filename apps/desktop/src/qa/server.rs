@@ -205,6 +205,13 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         .map(|p| Value::String(p.display().to_string()))
         .unwrap_or(Value::Null);
 
+    // Built outside the object below: `json!` recurses once per entry, and a nested `json!`
+    // inside an object this long overruns the macro recursion limit.
+    let queued_nav = s
+        .queued_nav
+        .map(|q| json!({ "anchor": q.anchor, "delta": q.delta }))
+        .unwrap_or(Value::Null);
+
     json!({
         "file": file,
         "index": s.current_index + 1,
@@ -234,6 +241,7 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "empty_state": s.empty_state,
         "watched_folders": s.watched_folders,
         "scan_pending": s.scan_pending,
+        "queued_nav": queued_nav,
         "cache_indices": s.cache_indices,
         "window_x": s.window_x,
         "window_y": s.window_y,

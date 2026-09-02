@@ -6,6 +6,10 @@
 // No console window behind the app on Windows. It costs us stderr, which `logging` gets back
 // through the parent console or a log file. Every other target ignores this attribute.
 #![windows_subsystem = "windows"]
+// `serde_json::json!` recurses once per entry, and the QA server's `/state` object has more
+// entries than the default 128 frames allow. Every field of it is observable app state a test
+// asserts on, so the object grows with the app.
+#![recursion_limit = "256"]
 
 // Infrastructure
 mod app;

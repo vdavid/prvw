@@ -3,6 +3,7 @@
 pub mod directory;
 pub mod folder_diff;
 pub mod preloader;
+pub mod queued_nav;
 pub mod sort;
 pub mod wrap;
 
@@ -89,8 +90,12 @@ pub struct State {
     pub pending_current: Option<usize>,
     /// The folder scan image mode is waiting on, if any. Set at launch, on an in-app open, and
     /// when a platform with no browser is handed a folder; cleared when `AppCommand::FolderScanned`
-    /// installs the real list. While it's `Some`, `dir_list` is a stand-in and navigation stays put.
+    /// installs the real list. While it's `Some`, `dir_list` is a stand-in and navigation is queued
+    /// into `queued_nav` instead of moving.
     pub scan_pending: Option<PendingScan>,
+    /// The move the user asked for while `scan_pending` was set, if any.
+    /// `App::install_scanned_folder` resolves it against the real folder and navigates there.
+    pub queued_nav: Option<queued_nav::QueuedNav>,
     /// Direction of the last navigation — drives neighbor preload priority
     /// (`DirectoryList::preload_range`). `Unknown` at startup and after
     /// non-directional jumps (open-file, refresh, settings re-decode).
@@ -121,11 +126,25 @@ impl State {
             preload_neighbors: true,
             pending_current: None,
             scan_pending: None,
+            queued_nav: None,
             last_direction: directory::Direction::Unknown,
             pending_nav_delta: 0,
             nav_deadline: None,
             loop_navigation: false,
         }
+    }
+
+    /// Record a relative move (arrow key, wheel, Next/Previous, a slideshow advance) asked for
+    /// while the folder scan is still running. Steps fold together and cancel out; see
+    /// [`queued_nav::with_step`].
+    pub fn queue_nav_step(&mut self, delta: i32) {
+        self.queued_nav = queued_nav::with_step(self.queued_nav, delta);
+    }
+
+    /// Record an absolute jump (Home / End) asked for while the folder scan is still running. It
+    /// replaces whatever the arrows had walked to, the same as pressing it on a scanned folder.
+    pub fn queue_nav_jump(&mut self, anchor: queued_nav::NavAnchor) {
+        self.queued_nav = Some(queued_nav::QueuedNav::jump(anchor));
     }
 
     pub fn from_settings(settings: &Settings) -> Self {

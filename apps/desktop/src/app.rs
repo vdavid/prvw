@@ -13,7 +13,7 @@ pub(crate) use shared_state::SharedAppState;
 use crate::color::display_profile;
 use crate::commands::{self, AppCommand};
 use crate::diagnostics::NavigationRecord;
-use crate::navigation::{directory, preloader};
+use crate::navigation::{directory, preloader, queued_nav};
 use crate::pixels::{
     Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
     to_logical_size,
@@ -976,12 +976,16 @@ impl App {
     /// and the picture on screen stays where it is: `DirectoryList::from_scan` finds it by path and
     /// positions there. Everything that needs the whole folder then catches up — the title's `n/N`,
     /// the preview scheduler's folder, the preloader's neighbor window. If the image isn't in the
-    /// listing (deleted while the scan ran), the provisional list stays and so does the picture.
+    /// listing (deleted while the scan ran), the provisional list stays and so does the picture,
+    /// and a queued move is dropped along with it — there's nothing to resolve it against.
     ///
     /// **Play from the top.** Nothing was opened out of the folder: it was named on the command
     /// line, or dropped on a platform with no browser. Its images become the list and the first one
     /// is displayed. A folder with no images leaves whatever is on screen alone, and puts up the
     /// "(No images)" empty state when that's nothing.
+    ///
+    /// A move the user made while the scan ran is applied last, once there's a folder to move
+    /// through (see `App::apply_queued_nav`).
     ///
     /// `scan_pending` clears either way — there's no second scan coming, and leaving it set would
     /// freeze navigation for good.
@@ -997,6 +1001,7 @@ impl App {
 
     /// The `ScanLanding::KeepOpenImage` half of [`install_scanned_folder`].
     fn keep_open_image(&mut self, folder: &Path, images: Vec<PathBuf>) {
+        let queued = self.navigation.queued_nav.take();
         let Some((current_path, sort_by)) = self
             .navigation
             .dir_list
@@ -1048,6 +1053,14 @@ impl App {
         }
 
         self.seed_previews_with_current_folder();
+
+        // The move the user asked for mid-scan. It runs the full navigation path, which does its
+        // own preloading, so the warm-up below is for the stay-put case only.
+        if self.apply_queued_nav(queued) {
+            self.request_redraw();
+            return;
+        }
+
         // Warm the neighbors only once the opened image is on screen. `request_neighbor_preload`
         // cancels in-flight tasks outside the requested set, and the requested set never contains
         // the current image, so warming while its read is still running would cancel exactly the
@@ -1909,7 +1922,7 @@ impl App {
     /// time. The actual decode + display still debounces — only the
     /// preview is eager.
     pub(crate) fn queue_nav_step(&mut self, event_loop: &ActiveEventLoop, step: i32) {
-        if self.navigation_blocked_by_scan() {
+        if self.queue_nav_while_scanning(step) {
             return;
         }
         self.navigation.pending_nav_delta = self.navigation.pending_nav_delta.saturating_add(step);
@@ -1945,7 +1958,7 @@ impl App {
     }
 
     fn navigate_by(&mut self, delta: i32) {
-        if delta == 0 || self.navigation_blocked_by_scan() {
+        if delta == 0 || self.queue_nav_while_scanning(delta) {
             return;
         }
         let from_index = self
@@ -1977,7 +1990,7 @@ impl App {
     /// the directory is empty, or no directory is loaded. Mirrors
     /// `navigate_by`'s post-move flow exactly.
     pub(crate) fn navigate_to_first(&mut self) {
-        if self.navigation_blocked_by_scan() {
+        if self.queue_jump_while_scanning(queued_nav::NavAnchor::First) {
             return;
         }
         let from_index = self
@@ -2002,7 +2015,7 @@ impl App {
     /// Absolute jump to the last image. No-op when already at the last
     /// index, the directory is empty, or no directory is loaded.
     pub(crate) fn navigate_to_last(&mut self) {
-        if self.navigation_blocked_by_scan() {
+        if self.queue_jump_while_scanning(queued_nav::NavAnchor::Last) {
             return;
         }
         let from_index = self
@@ -2433,6 +2446,14 @@ impl App {
             self.stop_slideshow();
             return;
         };
+
+        // Mid-scan the sequence is a list of one, so the advance is queued like a key press and
+        // the show keeps its dwell timer running. Every tick that passes before the folder lands
+        // adds another step, so the slideshow resumes where it would have been.
+        if self.queue_nav_while_scanning(1) {
+            self.slideshow.next_advance = Some(Instant::now() + self.slideshow.interval());
+            return;
+        }
 
         if total <= 1 {
             // Nothing to advance to; keep running and check again next tick.
@@ -3175,17 +3196,75 @@ impl App {
         Some(*self.request_times.get(&pending)? + navigation::LOADING_OVERLAY_DELAY)
     }
 
-    /// True while the opened folder is still being scanned, which is when navigation has nowhere to
-    /// go: `dir_list` holds only the image on screen. Logs the ignored move at debug level.
-    ///
-    // TODO(slow-share-launch part B): instead of dropping the move, record it as a navigation
-    // intent (anchor + signed delta) here and resolve it in `install_scanned_folder` once the real
-    // list is in, so an arrow pressed during a slow scan still lands where the user meant.
-    fn navigation_blocked_by_scan(&self) -> bool {
-        let Some(folder) = self.navigation.scan_folder() else {
+    /// Record a relative move (arrow key, wheel, Next/Previous, a slideshow advance) instead of
+    /// making it, while the opened folder is still being scanned: there's nowhere to go in a list
+    /// of one, so the picture stays and the move waits for the real folder.
+    /// `App::install_scanned_folder` resolves it. Returns whether the caller should stand down.
+    fn queue_nav_while_scanning(&mut self, delta: i32) -> bool {
+        if self.navigation.scan_pending.is_none() {
+            return false;
+        }
+        self.navigation.queue_nav_step(delta);
+        self.after_queueing_nav();
+        true
+    }
+
+    /// The Home / End counterpart of [`Self::queue_nav_while_scanning`]. The jump replaces whatever
+    /// the arrows had queued, the same as pressing it on a folder that's already listed.
+    fn queue_jump_while_scanning(&mut self, anchor: queued_nav::NavAnchor) -> bool {
+        if self.navigation.scan_pending.is_none() {
+            return false;
+        }
+        self.navigation.queue_nav_jump(anchor);
+        self.after_queueing_nav();
+        true
+    }
+
+    /// Shared tail for both: QA reads the queued move from `/state`, and the scan status text only
+    /// shows while one is queued, so a redraw may have something new to draw.
+    fn after_queueing_nav(&mut self) {
+        log::debug!(
+            "Navigation queued until the scan lands: {:?}",
+            self.navigation.queued_nav
+        );
+        self.update_shared_state();
+        self.request_redraw();
+    }
+
+    /// Make the move the user asked for while the folder was being scanned, now that there's a
+    /// folder to move through. Goes through `after_position_change`, so preloads, previews, and the
+    /// title behave exactly as they do for a live key press. Returns whether the position moved.
+    fn apply_queued_nav(&mut self, queued: Option<queued_nav::QueuedNav>) -> bool {
+        let Some(queued) = queued else {
             return false;
         };
-        log::debug!("Navigation ignored — still scanning {}", folder.display());
+        let Some(dir) = self.navigation.dir_list.as_ref() else {
+            return false;
+        };
+        let (from_index, total) = (dir.current_index(), dir.len());
+        let Some(target) = queued.resolve(from_index, total, self.navigation.loop_navigation)
+        else {
+            return false;
+        };
+        log::info!(
+            "Applying the move queued during the scan ({:?} {:+}): {} -> {}/{total}",
+            queued.anchor,
+            queued.delta,
+            from_index + 1,
+            target + 1
+        );
+        // `resolve` already wrapped or clamped, so the target is a real slot: a plain clamped step
+        // lands exactly on it whether or not loop navigation is on.
+        let moved = self
+            .navigation
+            .dir_list
+            .as_mut()
+            .map(|d| d.go_by(target as i32 - from_index as i32, false))
+            .unwrap_or(0);
+        if moved == 0 {
+            return false;
+        }
+        self.after_position_change(from_index, queued.direction_hint());
         true
     }
 
