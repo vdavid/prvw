@@ -22,8 +22,24 @@ SetCompressor /SOLID lzma
 !ifndef PRVW_OUTFILE
   !error "PRVW_OUTFILE isn't set: it's where the finished installer goes."
 !endif
+
+; The three paths below arrive from the build script in the host's own notation, and that matters:
+; makensis splits a path on the host separator and only that one (`\` on Windows), so a path this
+; file glued together out of `${__FILEDIR__}` and a `/` would carry both. `!include` resolves
+; through a directory listing, so on a Windows host it would take everything after the last `\` as
+; the file name and go looking for `windows/file-associations.nsh` inside the parent folder.
+;
+; The defaults are for running makensis by hand with no script around it. `${__FILEDIR__}` alone is
+; already in host notation, and the two relative ones reach their file through `fopen`, which takes
+; either separator on either host.
+!ifndef PRVW_INSTALLER_DIR
+  !define PRVW_INSTALLER_DIR "${__FILEDIR__}"
+!endif
 !ifndef PRVW_LICENSE
   !define PRVW_LICENSE "${__FILEDIR__}/../../../../LICENSE"
+!endif
+!ifndef PRVW_ICON
+  !define PRVW_ICON "${__FILEDIR__}/../../resources/AppIcon.ico"
 !endif
 
 !define PRVW_NAME "Prvw"
@@ -59,10 +75,14 @@ VIAddVersionKey "LegalCopyright" "© 2026 ${PRVW_PUBLISHER}"
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
 !include "x64.nsh"
-!include "${__FILEDIR__}/file-associations.nsh"
+; A bare file name against the include path, rather than a path spelled out here: it's the one
+; shape `!include` resolves on every host, because makensis joins the directory to the name with
+; the host's own separator instead of parsing one we wrote.
+!addincludedir "${PRVW_INSTALLER_DIR}"
+!include "file-associations.nsh"
 
-!define MUI_ICON "${__FILEDIR__}/../../resources/AppIcon.ico"
-!define MUI_UNICON "${__FILEDIR__}/../../resources/AppIcon.ico"
+!define MUI_ICON "${PRVW_ICON}"
+!define MUI_UNICON "${PRVW_ICON}"
 !define MUI_ABORTWARNING
 
 !define MUI_WELCOMEPAGE_TITLE "Welcome to Prvw"

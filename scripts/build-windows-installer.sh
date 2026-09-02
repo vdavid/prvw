@@ -105,6 +105,10 @@ sign_if_configured "$EXE"
 # `makensis` is a native Windows program and reads none of that, so translate with `cygpath`,
 # which only exists on the shells that need it. Everywhere else the path is already the right one.
 # The bash-side variables stay POSIX, because `[[ -f ]]` and `du` want them that way.
+#
+# EVERY path handed to makensis goes through this, with no separator glued on afterwards. makensis
+# splits a path on the host separator alone, so a half-translated one breaks `!include` on Windows.
+# See the comment beside the defines in `prvw.nsi`.
 to_native_path() {
   if command -v cygpath >/dev/null 2>&1; then
     cygpath -w "$1"
@@ -123,6 +127,9 @@ makensis \
   -DPRVW_VERSION="$VERSION" \
   -DPRVW_EXE="$(to_native_path "$EXE")" \
   -DPRVW_OUTFILE="$(to_native_path "$OUTFILE")" \
+  -DPRVW_INSTALLER_DIR="$(to_native_path "$INSTALLER_DIR")" \
+  -DPRVW_LICENSE="$(to_native_path "$PROJECT_ROOT/LICENSE")" \
+  -DPRVW_ICON="$(to_native_path "$DESKTOP_DIR/resources/AppIcon.ico")" \
   "$(to_native_path "$INSTALLER_DIR/prvw.nsi")"
 
 if [[ ! -f "$OUTFILE" ]]; then

@@ -10,7 +10,7 @@ instead, running the same script with `--exe` over a natively compiled binary.
 | `file-associations.nsh` | Generated: the registry writes and their inverse. Never edit it by hand |
 
 - Build it: `./scripts/build-windows-installer.sh` (see [releasing.md](../../../../docs/guides/releasing.md)).
-- Keep it honest: `./scripts/check.sh --check installer`.
+- Keep it honest: `./scripts/check.sh --check installer`, which needs no makensis and answers on a Mac.
 
 ## Decision: NSIS, because it's the only candidate that cross-builds
 
@@ -57,6 +57,21 @@ The uninstaller's side comes from `file_types::removal`, which is the exact inve
 "Rymdskottkärra AB" in the installer's version info becomes whatever the build machine's locale makes of those bytes,
 and nothing fails: you get a shipped installer with a mangled publisher. The build script also passes
 `-INPUTCHARSET UTF8`, and the `installer` check asserts the BOM, because either one alone is a single point of failure.
+
+## Gotcha: every path makensis is handed has to be in the host's own notation
+
+**Gotcha:** makensis splits a path on the host separator and only that one, `\` on Windows and `/` everywhere else.
+(`get_dir_name` in the NSIS source says so, with a `BUGBUG` beside it.) A path glued together out of `${__FILEDIR__}`
+and a `/` therefore carries both separators on a Windows host, and `!include` resolves through a directory listing, so
+it reads everything after the last `\` as the file name and goes looking for `windows/file-associations.nsh` inside the
+parent folder. Only `!include` breaks: `Icon` and the licence page reach their file through `fopen`, which takes either
+separator, so three of the four paths worked and hid the fourth until a release run.
+
+So `prvw.nsi` builds no path of its own. `scripts/build-windows-installer.sh` passes `PRVW_INSTALLER_DIR`,
+`PRVW_LICENSE`, and `PRVW_ICON` beside `PRVW_EXE` and `PRVW_OUTFILE`, every one of them through the same `cygpath`
+helper, and the include is a bare file name against `!addincludedir`, so makensis joins the directory to the name
+itself. Keep it that way: a `${...}/...` anywhere in this file is the bug coming back. The `${__FILEDIR__}` defaults
+exist only for running makensis by hand with no script around it.
 
 ## Gotcha: `$` is NSIS's escape character, in every kind of quote
 

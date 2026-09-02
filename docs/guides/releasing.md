@@ -169,7 +169,8 @@ their reputation bypass in 2024.
 3. One pass through the installer on a real Windows box. Nothing in it has ever run; the list of what to watch is at the
    bottom of `apps/desktop/installer/windows/CLAUDE.md`.
 4. A Windows download on getprvw.com. `src/lib/download.ts` names the three `darwin-*` keys and stops there.
-5. The first tagged release since the leg landed, which is what proves any of it works. The job has never run.
+5. A tagged release that carries the installer all the way to the GitHub Release. The Windows leg has run and now
+   packages successfully, but no release has published its output yet.
 
 ## Troubleshooting
 
