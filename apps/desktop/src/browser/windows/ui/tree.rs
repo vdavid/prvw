@@ -627,7 +627,10 @@ pub(super) fn select_parent() {
 /// say "Loading…" rather than a count that would climb while they read it.
 pub(super) fn scan_pending(ui: &Ui) -> bool {
     tree_model::scan_overdue(
-        ui.tree_state.children.earliest_in_flight(),
+        ui.tree_state
+            .children
+            .earliest_in_flight()
+            .map(|(_, started)| started),
         std::time::Instant::now(),
     )
 }

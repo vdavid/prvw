@@ -1050,23 +1050,35 @@ impl State {
         }
     }
 
-    /// The earliest still-in-flight tree-scan start time, or `None` if no scan is pending (or the
-    /// split view isn't built). The event loop uses this to schedule the loading-overlay timer.
+    /// The longest-running still-in-flight tree scan (folder + start time), or `None` if no scan
+    /// is pending (or the split view isn't built). The event loop uses the start time to schedule
+    /// the loading-overlay timer and the folder to read the scan's live entry count.
     #[cfg(target_os = "macos")]
     #[must_use]
-    pub fn earliest_in_flight_scan(&self) -> Option<std::time::Instant> {
+    pub fn earliest_in_flight_scan(&self) -> Option<(std::path::PathBuf, std::time::Instant)> {
         self.split_view
             .as_ref()
             .and_then(split_view::BrowseSplitView::earliest_in_flight_scan)
     }
 
-    /// Show or hide the tree-pane loading overlay based on whether a scan is overdue. Called every
-    /// `about_to_wait` so the overlay appears ~1 s into a slow scan and hides when it completes.
-    /// No-op if the split view isn't built.
+    /// Put the running scan status on the grid's centered label ("Scanning… 3,412 images so far"),
+    /// or `None` to hand the label back to the "(No images)" rule. No-op if the split view isn't
+    /// built.
     #[cfg(target_os = "macos")]
-    pub fn refresh_loading_overlay(&self) {
+    pub fn set_grid_scan_status(&self, text: Option<&str>) {
         if let Some(split) = &self.split_view {
-            split.refresh_loading_overlay();
+            split.set_grid_scan_status(text);
+        }
+    }
+
+    /// Show or hide the tree-pane loading overlay based on whether a scan is overdue, and give it
+    /// `scanned_count` entries-so-far when the caller has a live count. Called every
+    /// `about_to_wait` so the overlay appears ~1 s into a slow scan, keeps its count current, and
+    /// hides when the scan completes. No-op if the split view isn't built.
+    #[cfg(target_os = "macos")]
+    pub fn refresh_loading_overlay(&self, scanned_count: Option<usize>) {
+        if let Some(split) = &self.split_view {
+            split.refresh_loading_overlay(scanned_count);
         }
     }
 

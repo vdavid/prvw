@@ -23,6 +23,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
   you staring at nothing for the best part of a minute; the window and the image now show up straight away, and the
   `n/N` position fills in when the listing arrives. Every format now loads off the main thread (only camera RAW did
   before), and the "Loading…" pill only appears if the image takes longer than 150 ms, so a local file never flashes it
+- Arrow keys work while a folder is still being listed. Pressing next or previous during a slow scan used to do nothing;
+  the move is now remembered and applied the moment the listing arrives, so you end up where you meant to be. Left then
+  right cancels out, Home and End still jump to the ends, and a running slideshow picks up where it would have been. A
+  quiet "Scanning folder… 3,412 images so far" line shows the count climbing while you wait, and the browse grid and
+  folder tree show the same count in place of their empty area
 
 ### Fixed
 

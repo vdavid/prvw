@@ -560,9 +560,9 @@ impl TreeDataSource {
         self.ivars().nodes.borrow().get(path).cloned()
     }
 
-    /// The earliest still-in-flight scan start time, for the loading-overlay timer. `None` when no
-    /// scan is pending.
-    fn earliest_in_flight(&self) -> Option<Instant> {
+    /// The longest-running still-in-flight scan (folder + start time), for the loading overlay.
+    /// `None` when no scan is pending.
+    fn earliest_in_flight(&self) -> Option<(PathBuf, Instant)> {
         self.ivars().children.borrow().earliest_in_flight()
     }
 
@@ -1199,9 +1199,9 @@ impl BrowseTree {
         }
     }
 
-    /// The earliest still-in-flight scan start time, for the loading-overlay timer. `None` when no
-    /// scan is pending (overlay stays hidden).
-    pub fn earliest_in_flight_scan(&self) -> Option<Instant> {
+    /// The longest-running still-in-flight scan (folder + start time), for the loading overlay's
+    /// timer and its live entry count. `None` when no scan is pending (overlay stays hidden).
+    pub fn earliest_in_flight_scan(&self) -> Option<(PathBuf, Instant)> {
         self._data_source.earliest_in_flight()
     }
 

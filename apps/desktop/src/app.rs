@@ -13,6 +13,7 @@ pub(crate) use shared_state::SharedAppState;
 use crate::color::display_profile;
 use crate::commands::{self, AppCommand};
 use crate::diagnostics::NavigationRecord;
+use crate::folder_scan;
 use crate::navigation::{directory, preloader, queued_nav};
 use crate::pixels::{
     Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
@@ -190,6 +191,10 @@ pub(crate) struct App {
     /// we're waiting on has taken longer than `navigation::LOADING_OVERLAY_DELAY`, so a local file
     /// never flashes it. Recomputed in `about_to_wait`; a change there asks for a redraw.
     pub(crate) loading_overlay_visible: bool,
+    /// The image-mode scan status line ("Scanning folder… 3,412 images so far"), or `None` when
+    /// nothing on the main screen is waiting on a folder read. Recomputed in `about_to_wait` at
+    /// `folder_scan::STATUS_POLL`; a change there asks for a redraw.
+    pub(crate) scan_status_text: Option<String>,
     /// Set by a slideshow auto-advance to request that the next image display
     /// crossfades from the current one. Consumed (and cleared) by
     /// `display_from_cache`; cleared on a cache miss so only instant,
@@ -313,6 +318,7 @@ impl App {
             scroll: scroll::Scroll::for_host(),
             needs_redraw: false,
             loading_overlay_visible: false,
+            scan_status_text: None,
             pending_crossfade: false,
             // Neutral until there's a window to ask (`initialize_viewer`). Anything else is a
             // guess at one platform's hardware, and nothing reads this before then anyway.
@@ -1326,6 +1332,11 @@ impl App {
                 self.browser
                     .grid_folder_listed(&folder, images.clone(), &win);
             }
+            // The listing is in, so the grid's label goes back to the "(No images)" rule right
+            // away rather than showing a stale count until the next wakeup. macOS-only: the
+            // Windows shell says "Loading…" in its status bar and shows no count (`windows/status.rs`).
+            #[cfg(target_os = "macos")]
+            self.browser.set_grid_scan_status(None);
             // The listing seeds a selection (index 0); warm it + neighbors so the likely-opened
             // image is ready. Doesn't touch the displayed image.
             self.warm_browse_selection();
@@ -2556,8 +2567,14 @@ impl App {
         // `about_to_wait` can reveal the "Loading…" overlay (fast scans finish before then and
         // never schedule a wakeup that matters). macOS-only — the tree is AppKit.
         #[cfg(target_os = "macos")]
-        if let Some(earliest) = self.browser.earliest_in_flight_scan() {
-            candidates.push(earliest + crate::browser::tree_model::LOADING_OVERLAY_DELAY);
+        if let Some((_, started)) = self.browser.earliest_in_flight_scan() {
+            candidates.push(started + crate::browser::tree_model::LOADING_OVERLAY_DELAY);
+        }
+        // Scan status texts: while a folder read someone is waiting on is in flight, wake about
+        // four times a second so the running count ticks (and so the text appears once the scan
+        // outlives `folder_scan::STATUS_DELAY`). Nothing waiting on a scan, no polling.
+        if self.scan_status_needs_polling() {
+            candidates.push(Instant::now() + folder_scan::STATUS_POLL);
         }
         match candidates.into_iter().min() {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
@@ -3168,6 +3185,27 @@ impl App {
             blocks.push(loading);
         }
 
+        // The scan status line: how far the folder read has got, while a move waits on it (see
+        // `image_scan_status`). Deliberately quieter than the "Loading…" overlay above it —
+        // smaller, unbolded, dimmer, on a fainter pill — because it's information, not a headline.
+        // It sits just below the overlay's slot so the two read as a pair when both are up.
+        if let Some(status) = &self.scan_status_text {
+            let logical_height = rend.logical_height();
+            let status_line_height = 15.0_f32;
+            let center_x = Logical(logical_width.0 / 2.0);
+            let center_y = Logical((logical_height.0 - status_line_height) / 2.0 + 32.0);
+            let mut scan = text::TextBlock::new(status.clone(), center_x, center_y);
+            scan.font_size = 11.5;
+            scan.line_height = status_line_height;
+            scan.color = [255, 255, 255, 170];
+            blocks.push(scan.align_center().pill(
+                [0.0, 0.0, 0.0, 0.40],
+                Logical(9.0_f32),
+                Logical(4.0_f32),
+                Logical(6.0_f32),
+            ));
+        }
+
         blocks
     }
 
@@ -3184,6 +3222,62 @@ impl App {
         self.request_times
             .get(&pending)
             .is_none_or(|requested_at| requested_at.elapsed() >= navigation::LOADING_OVERLAY_DELAY)
+    }
+
+    /// Entries the running scan of `folder` has seen, once it has been reading long enough to be
+    /// worth telling anyone about (`folder_scan::STATUS_DELAY`). `None` when no scan of it is
+    /// running, or when it started too recently to show — a folder that lists instantly never
+    /// flashes a count on screen.
+    fn live_scan_count(&self, folder: &Path) -> Option<usize> {
+        let progress = self.folder_scanner.as_ref()?.progress(folder)?;
+        (progress.started.elapsed() >= folder_scan::STATUS_DELAY).then(|| progress.count())
+    }
+
+    /// The image-mode scan status line. It shows only while a move is queued against the scan:
+    /// the main screen doesn't advertise a folder read nobody is waiting on.
+    fn image_scan_status(&self) -> Option<String> {
+        self.navigation.queued_nav?;
+        let folder = self.navigation.scan_folder()?;
+        let count = self.live_scan_count(folder)?;
+        Some(format!(
+            "Scanning folder\u{2026} {}",
+            folder_scan::images_so_far(count)
+        ))
+    }
+
+    /// Push the running scan count into both browse-mode surfaces: the grid's centered label
+    /// while the folder it's listing is still being read, and the tree pane's overlay for the
+    /// subdirectory scan it's waiting on. Called every wakeup; both are no-ops when the text
+    /// hasn't changed.
+    #[cfg(target_os = "macos")]
+    fn refresh_browse_scan_status(&self) {
+        let grid_status = self
+            .pending_grid_listing
+            .as_deref()
+            .and_then(|folder| self.live_scan_count(folder))
+            .map(|count| format!("Scanning\u{2026} {}", folder_scan::images_so_far(count)));
+        self.browser.set_grid_scan_status(grid_status.as_deref());
+
+        let tree_count = self
+            .browser
+            .earliest_in_flight_scan()
+            .and_then(|(folder, _)| self.live_scan_count(&folder));
+        self.browser.refresh_loading_overlay(tree_count);
+    }
+
+    /// Whether a folder read someone on screen is waiting on is in flight, so the status texts
+    /// need their appearance deadline and their ~4 Hz count refresh. Anything else leaves the loop
+    /// idle.
+    fn scan_status_needs_polling(&self) -> bool {
+        if self.navigation.queued_nav.is_some() && self.navigation.scan_pending.is_some() {
+            return true;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.pending_grid_listing.is_some() || self.browser.earliest_in_flight_scan().is_some()
+        }
+        #[cfg(not(target_os = "macos"))]
+        false
     }
 
     /// When the "Loading…" overlay is due to appear, if it isn't showing yet. `about_to_wait` feeds
@@ -3997,10 +4091,19 @@ impl ApplicationHandler<AppCommand> for App {
             self.request_redraw();
         }
 
-        // Browse-mode tree loading overlay: reveal it once a scan has been pending past the 1s
-        // delay, hide it when scans finish. No-op outside browse mode / off macOS.
+        // Image-mode scan status: the running count of the folder read a queued move is waiting
+        // on. Only a change asks for a redraw, so an idle wait stays idle.
+        let scan_status = self.image_scan_status();
+        if scan_status != self.scan_status_text {
+            self.scan_status_text = scan_status;
+            self.request_redraw();
+        }
+
+        // Browse-mode scan status: the tree overlay (revealed once a scan has been pending past
+        // the 1s delay, hidden when scans finish) and the grid's empty area, both carrying the
+        // live count. No-op outside browse mode / off macOS.
         #[cfg(target_os = "macos")]
-        self.browser.refresh_loading_overlay();
+        self.refresh_browse_scan_status();
 
         // Browse-mode grid: feed the collection view's current visible range to the thumbnail
         // scheduler/cache and pump generation. Native scrolling routes through this run loop, so

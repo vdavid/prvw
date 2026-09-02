@@ -113,8 +113,10 @@ the restore case through `/state` instead.
 ## Browse-mode observability + driving hooks
 
 `GET /state` reports `scan_pending`: true while the opened image's folder is still being read, when `total_files` is 1
-and `index` is 1 because the provisional list holds only that image, and navigation stays put. `PRVW_SCAN_DELAY_MS`
-delays every folder scan so a test can hold the app there (see `crate::folder_scan`).
+and `index` is 1 because the provisional list holds only that image. Navigation asked for meanwhile shows up in
+`queued_nav` — `{"anchor": "current" | "first" | "last", "delta": <signed steps>}`, or `null` when nothing is queued —
+and lands when the scan does. `PRVW_SCAN_DELAY_MS` delays every folder scan so a test can hold the app there (see
+`crate::folder_scan`); `a_move_made_during_the_scan_lands_when_the_folder_arrives` drives all three rules through it.
 
 `GET /state` mirrors the full browse picture (so tests/tools assert it without keystrokes or screenshots): `view_mode`
 (`"image"`/`"browse"`), `focused_pane` (`"tree"`/`"grid"`/`"none"`), `browse_selected_folder`, `browse_grid_selected`,

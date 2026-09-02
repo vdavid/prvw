@@ -143,9 +143,12 @@ pub struct BrowseSplitView {
     tree: BrowseTree,
     /// The thumbnail grid the app drives (listing, selection, thumbnail generation).
     grid: BrowseGrid,
-    /// Translucent "Loading…" overlay covering the tree pane. Hidden by default; shown when a
-    /// directory scan the user is waiting on outlives `LOADING_OVERLAY_DELAY` (slow SMB share).
+    /// Translucent overlay covering the tree pane. Hidden by default; shown when a directory scan
+    /// the user is waiting on outlives `LOADING_OVERLAY_DELAY` (slow SMB share).
     loading_overlay: Retained<NSView>,
+    /// The overlay's centered label. Held so `refresh_loading_overlay` can keep its running scan
+    /// count up to date; dropping it would take the label with it (autorelease discipline).
+    loading_label: Retained<objc2_app_kit::NSTextField>,
 }
 
 // SAFETY: All fields are AppKit objects only ever touched on the main thread (App runs the winit
@@ -161,6 +164,12 @@ impl BrowseSplitView {
         let scale = window.scale_factor();
 
         unsafe { build(mtm, ns_view, sort_by, scale) }
+    }
+
+    /// Put the running scan status on the grid's centered label, or `None` to hand it back to the
+    /// "(No images)" rule.
+    pub fn set_grid_scan_status(&self, text: Option<&str>) {
+        self.grid.set_scan_status(text);
     }
 
     /// The thumbnail grid, for the app to drive (folder listing, thumbnails, selection, open).
@@ -229,7 +238,8 @@ impl BrowseSplitView {
     /// Then refresh the loading overlay (it may now hide if no scan is left pending).
     pub fn tree_children_loaded(&self, path: &std::path::Path, children: Vec<std::path::PathBuf>) {
         self.tree.children_loaded(path, children);
-        self.refresh_loading_overlay();
+        // No count here: whatever scan is still in flight gets its number back on the next wakeup.
+        self.refresh_loading_overlay(None);
     }
 
     /// The source-list root paths (home + volumes), for the live-folder-sync tree watch.
@@ -243,16 +253,27 @@ impl BrowseSplitView {
         self.tree.reload_node(folder);
     }
 
-    /// The earliest still-in-flight tree scan start time, for the loading-overlay timer.
-    pub fn earliest_in_flight_scan(&self) -> Option<std::time::Instant> {
+    /// The longest-running still-in-flight tree scan (folder + start time), for the loading
+    /// overlay's timer and its live entry count.
+    pub fn earliest_in_flight_scan(&self) -> Option<(std::path::PathBuf, std::time::Instant)> {
         self.tree.earliest_in_flight_scan()
     }
 
-    /// Show or hide the tree-pane "Loading…" overlay based on whether a scan is overdue (pending
-    /// longer than `tree_model::LOADING_OVERLAY_DELAY`). Idempotent — safe to call every wakeup.
-    pub fn refresh_loading_overlay(&self) {
-        let overdue =
-            super::tree_model::scan_overdue(self.earliest_in_flight_scan(), Instant::now());
+    /// Show or hide the tree-pane loading overlay based on whether a scan is overdue (pending
+    /// longer than `tree_model::LOADING_OVERLAY_DELAY`), and give it the scan's live entry count
+    /// when the caller has one. Idempotent — safe to call every wakeup.
+    pub fn refresh_loading_overlay(&self, scanned_count: Option<usize>) {
+        let started = self.earliest_in_flight_scan().map(|(_, started)| started);
+        let overdue = super::tree_model::scan_overdue(started, Instant::now());
+        let text = match scanned_count {
+            Some(count) => format!(
+                "Scanning\u{2026} {}",
+                crate::folder_scan::images_so_far(count)
+            ),
+            None => "Loading\u{2026}".to_string(),
+        };
+        self.loading_label
+            .setStringValue(&NSString::from_str(&text));
         unsafe {
             let _: () = msg_send![&*self.loading_overlay, setHidden: !overdue];
         }
@@ -435,6 +456,7 @@ unsafe fn build(
             tree,
             grid,
             loading_overlay,
+            loading_label,
         }
     }
 }

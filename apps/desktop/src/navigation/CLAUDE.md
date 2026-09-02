@@ -8,15 +8,15 @@ RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in b
 
 ## Decision: the current image is found by name, not by canonicalizing every entry
 
-**Why:** `DirectoryList::from_file` sits on the launch path, before the first pixel. Resolving every entry to find the
-one the user opened costs a filesystem call per file: a cheap `realpath` on APFS, a `CreateFileW` +
+**Why:** finding the opened image in its folder sits on the launch path, before the first pixel. Resolving every entry
+to find the one the user opened costs a filesystem call per file: a cheap `realpath` on APFS, a `CreateFileW` +
 `GetFinalPathNameByHandleW` per file on Windows, and a network round trip per file over SMB, which is where the photo
 libraries this viewer is built for actually live.
 
-Every entry came from one `read_dir`, so they share a parent, and the question splits: settle the folder once, then
-compare names. Opening a photo in the middle of a 5,000-file folder went from 29 ms to 0.09 ms on local APFS, the
-filesystem where the old shape was cheapest. The per-entry scan is kept as the fallback for the one case names can't
-answer, a symlink into another folder, and only a symlinked or vanished target reaches it.
+Every entry came from one `read_dir`, so they share a parent and no two of them can share a name. The question splits:
+settle the folder once, then compare names. `DirectoryList::from_scan` does exactly that, through
+`paths::same_file_name`. Opening a photo in the middle of a 5,000-file folder went from 29 ms to 0.09 ms on local APFS,
+the filesystem where the old shape was cheapest.
 
 Numbers, the Windows and SMB reasoning, and the benchmark:
 [`docs/notes/directory-index-lookup.md`](../../../../docs/notes/directory-index-lookup.md).
@@ -60,10 +60,11 @@ Full history, the measured tables, and the rejected alternatives:
 
 | File             | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mod.rs`         | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, scan_pending, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `PendingScan` + `ScanLanding`; `format_offset` + `NAV_DEBOUNCE` + `LOADING_OVERLAY_DELAY` helpers (byte formatting is `diagnostics::format_bytes`)                                                                                                                         |
+| `mod.rs` | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, scan_pending, queued_nav, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `PendingScan` + `ScanLanding`; `queue_nav_step` / `queue_nav_jump`; `format_offset` + `NAV_DEBOUNCE` + `LOADING_OVERLAY_DELAY` helpers (byte formatting is `diagnostics::format_bytes`) |
 | `directory.rs`   | `DirectoryList`: sort, track current position; `provisional(path, sort_by)` (the one-image stand-in used before a folder is scanned) and `from_scan(images, sort_by, current)` (the real list, positioned by name); `from_explicit(files, sort_by, current)` for a multi-file open; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`; absolute jumps via `go_to_first()` / `go_to_last()`; `from_sorted(files, sort_by, index)` for live-sync re-scans |
 | `folder_diff.rs` | Pure, headless-tested live-sync diff: `diff_folder(old, scanned, sort_by, current)` → adds/removes + the delete-current `CurrentOutcome` (`Unchanged`/`Navigate`/`Empty`). No I/O — the `FolderChanged` handler asks the shared folder scanner and applies the result                                                                                                                                                                                                                 |
-| `preloader.rs`   | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction; `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` and the `preload_count()` derived from them                                                                                                                                                                                                                                                                                                                     |
+| `preloader.rs` | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction; `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` and the `preload_count()` derived from them |
+| `queued_nav.rs` | Pure, headless-tested `QueuedNav { anchor: NavAnchor, delta }`: the move made before the folder scan landed. `with_step` folds presses together and drops a pair that cancels; `resolve(current, total, loop_on)` wraps or clamps; `direction_hint()` drives preload priority |
 | `wrap.rs`        | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::refresh_preload_window` on loop toggle / sort change and by `navigate_by` for cache `keep` set                                                                                                                                                                                                                                                       |
 | `sort.rs`        | `SortBy { Name, Date, FileType }` (all ascending) + `sort_files()`. Name uses natural alphanumeric (`photo_2 < photo_10`), case-insensitive. Date and FileType fall back to Name as tiebreaker. Date reads each file's mtime exactly once up front, because a comparator that calls `stat` reads every file O(log n) times: thousands of round trips on a share                                                                                                                       |
 
@@ -92,14 +93,48 @@ folder on an SMB mount takes 17-45 s, and doing it inline meant nothing painted 
 - **The pending decode is matched by path**, not by directory slot (`App::pending_slot_for`): the scan landing
   mid-decode moves the image from provisional slot 0 to its real index, so the slot a task was queued under is not a
   stable identity. `PreloadResponse::Ready` and `Preview` carry only the path for this reason.
-- **Navigation stays put while `scan_pending` is set**: there's nowhere to go in a list of one. See the
-  `TODO(slow-share-launch part B)` on `App::navigation_blocked_by_scan`: the plan is to record the move as an intent and
-  resolve it when the real list arrives.
+- **Navigation is queued while `scan_pending` is set**, not dropped: there's nowhere to go in a list of one, so the
+  picture stays and the move waits. See "Queued navigation" below.
 - **The folder watch starts before the display**, so a file added during a long scan isn't missed.
 - `scan_pending` is exposed in `SharedAppState` and the QA `/state`. `PRVW_SCAN_DELAY_MS` delays every scan so tests can
   hold this state (see `launch_shows_the_image_while_the_folder_is_still_being_scanned`).
 
 The multi-file launch (`explicit_files`) skips all of this: the given files are already the navigation set.
+
+## Queued navigation
+
+A move asked for while the folder is still being scanned is recorded as a `queued_nav::QueuedNav` — an anchor (`Current`
+/ `First` / `Last`) plus a signed step count — and applied the moment the real folder arrives. The picture on screen
+doesn't move meanwhile.
+
+- **Everything queues.** `App::queue_nav_while_scanning` covers arrow keys and the wheel (`App::queue_nav_step`),
+  Next/Previous and the immediate QA/MCP path (`navigate_by`), and a slideshow advance; `App::queue_jump_while_scanning`
+  covers Home / End. All four return `true` to tell the caller to stand down.
+- **Steps fold, jumps replace.** Left then right nets to zero and clears the queued move entirely
+  (`queued_nav::with_step`); Home / End reset the anchor and the step count, then further arrows walk from there.
+- **Resolution wraps or clamps.** `QueuedNav::resolve` takes the anchor index, adds the delta, and wraps when loop
+  navigation is on or clamps to the folder edges when it's off — the same thing the key does on a scanned folder.
+- **It lands through the normal path.** `App::apply_queued_nav` runs from `install_scanned_folder` and goes through
+  `after_position_change`, so preloads, previews, the title, and the navigation history behave as they do for a live key
+  press. It runs before the stay-put neighbor warm-up, which would otherwise warm a folder position we're leaving.
+- **A slideshow advance queues like a key press** and keeps its dwell timer, so every tick that passes during the scan
+  adds a step and the show resumes where it would have been.
+- **Opening another image drops it.** The `OpenFile` handler clears `queued_nav` with the old folder, and so does an
+  `install_scanned_folder` that can't find the current image in the listing.
+- `queued_nav` is exposed in `SharedAppState` and the QA `/state` as `{anchor, delta}` or `null`.
+
+## Scan status text
+
+While a queued move waits on a folder read, image mode draws a quiet glyphon line under the "Loading…" slot: "Scanning
+folder… 3,412 images so far" (`App::image_scan_status`, drawn in `build_text_overlay`). It's deliberately smaller,
+unbolded, and dimmer than the overlay above it — information, not a headline. Nothing shows when no move is queued: the
+main screen doesn't advertise a scan nobody is waiting on.
+
+The count comes from `folder_scan::FolderScanner::progress`, and the text holds off until the scan has been reading for
+`folder_scan::STATUS_DELAY` (150 ms), so a folder that lists instantly never flashes it. `App::about_to_wait` recomputes
+the line and asks for a redraw only when it changes; `schedule_wakeup` holds a `WaitUntil` at `folder_scan::STATUS_POLL`
+(250 ms) while `App::scan_status_needs_polling` is true, which is what keeps the number ticking on an otherwise idle
+loop. The browse grid and tree show the same count through `App::refresh_browse_scan_status` — see `browser/CLAUDE.md`.
 
 ## Navigation render path
 

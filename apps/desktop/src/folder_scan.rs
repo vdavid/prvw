@@ -41,6 +41,35 @@ use crate::paths::PathPolicy;
 /// hold the app in its scan-pending state long enough to assert on. Unset in normal use.
 pub const SCAN_DELAY_ENV_VAR: &str = "PRVW_SCAN_DELAY_MS";
 
+/// How long a scan runs before its status text appears. A local folder lists well inside this, so
+/// the count never flashes on screen; only a genuinely slow read reveals it. Sibling of
+/// `navigation::LOADING_OVERLAY_DELAY`.
+pub const STATUS_DELAY: Duration = Duration::from_millis(150);
+
+/// How often a visible scan status text refreshes its count. Four times a second reads as live
+/// without waking an otherwise idle loop more than it has to.
+pub const STATUS_POLL: Duration = Duration::from_millis(250);
+
+/// The running count both scan status texts end with: `"3,412 images so far"`. Image mode prefixes
+/// it with "Scanning folder… ", the browse grid and tree with "Scanning… ".
+#[must_use]
+pub fn images_so_far(count: usize) -> String {
+    format!("{} images so far", thousands(count))
+}
+
+/// A count with thousands separators: `3412` → `"3,412"`.
+fn thousands(count: usize) -> String {
+    let digits = count.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, digit) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
 /// What one `read_dir` pass found, both lists **unsorted** — consumers order them themselves
 /// (image mode and the grid by the active `SortBy`, the tree by name).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -70,16 +99,13 @@ pub struct ScanRequest {
 pub struct ScanProgress {
     /// Directory entries seen so far. Bumped once per entry, so it climbs through a long read.
     pub entries: Arc<AtomicUsize>,
-    /// When this scan started reading, for overlays that only appear after a delay.
-    // Read by the scan status texts (spec section 4), which land in a follow-up.
-    #[allow(dead_code)]
+    /// When this scan started reading. The status texts hold off until it's older than
+    /// [`STATUS_DELAY`], so a folder that lists instantly never flashes a count.
     pub started: Instant,
 }
 
 impl ScanProgress {
     /// Entries seen so far.
-    // Read by the scan status texts (spec section 4), which land in a follow-up.
-    #[allow(dead_code)]
     #[must_use]
     pub fn count(&self) -> usize {
         self.entries.load(Ordering::Relaxed)
@@ -196,15 +222,13 @@ impl ScanQueue {
 
     /// Live progress for `folder`, or `None` when no scan of it is running. A folder that's only
     /// queued has no counter yet — it reports `None` until its read starts.
-    // Read by the scan status texts (spec section 4), which land in a follow-up.
-    #[allow(dead_code)]
     #[must_use]
     pub fn progress(&self, folder: &Path) -> Option<ScanProgress> {
         self.progress.get(&self.policy.key(folder)).cloned()
     }
 
-    /// Whether a scan of `folder` is queued or running.
-    // Read by the scan status texts (spec section 4), which land in a follow-up.
+    /// Whether a scan of `folder` is queued or running. Every consumer in the app tracks the
+    /// folder it asked about itself, so nothing outside this module's tests reads it.
     #[allow(dead_code)]
     #[must_use]
     pub fn is_pending(&self, folder: &Path) -> bool {
@@ -272,16 +296,15 @@ impl FolderScanner {
         }
     }
 
-    /// Live progress of `folder`'s running scan, if one is running.
-    // Read by the scan status texts (spec section 4), which land in a follow-up.
-    #[allow(dead_code)]
+    /// Live progress of `folder`'s running scan, if one is running. The status texts poll this
+    /// about four times a second while one is on screen.
     #[must_use]
     pub fn progress(&self, folder: &Path) -> Option<ScanProgress> {
         self.queue.lock().ok()?.progress(folder)
     }
 
-    /// Whether a scan of `folder` is queued or running.
-    // Read by the scan status texts (spec section 4), which land in a follow-up.
+    /// Whether a scan of `folder` is queued or running. Every consumer in the app tracks the
+    /// folder it asked about itself, so nothing outside this module's tests reads it.
     #[allow(dead_code)]
     #[must_use]
     pub fn is_pending(&self, folder: &Path) -> bool {
@@ -550,6 +573,17 @@ mod tests {
         );
         queue.finish();
         assert!(!queue.is_pending(&folder("pics")));
+    }
+
+    #[test]
+    fn the_running_count_reads_as_a_number_a_person_would_write() {
+        assert_eq!(images_so_far(3412), "3,412 images so far");
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(7), "7");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000), "1,000");
+        assert_eq!(thousands(12_345), "12,345");
+        assert_eq!(thousands(1_234_567), "1,234,567");
     }
 
     #[test]

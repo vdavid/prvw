@@ -227,12 +227,25 @@ event loop (the whole app) whenever the filesystem is slow — a stale SMB mount
   it's a fast metadata call, not a directory walk.
 
 **Loading overlay (tree pane only).** A scan the user is waiting on that outlives `tree_model::LOADING_OVERLAY_DELAY` (1
-s) reveals a translucent (~0.8) "Loading…" overlay over the tree pane (`BrowseSplitView::loading_overlay`), hidden again
-when scans finish. The 1 s delay keeps it from flashing for fast local dirs. It's driven by the existing wakeup
-mechanism: `ChildCache::earliest_in_flight` feeds `App::schedule_wakeup` (which schedules a wakeup at the 1 s deadline)
-and `App::about_to_wait` calls `refresh_loading_overlay` each pass, which consults the pure `tree_model::scan_overdue`
-predicate. While a scan is in flight the rest of the UI (Tab, Esc/Enter mode switching) stays fully responsive — the
-freeze is contained to the tree pane's loading state, because the main thread never blocks on the read.
+s) reveals a translucent (~0.8) overlay over the tree pane (`BrowseSplitView::loading_overlay`), hidden again when scans
+finish. The 1 s delay keeps it from flashing for fast local dirs. It's driven by the existing wakeup mechanism:
+`ChildCache::earliest_in_flight` (the longest-running in-flight scan's folder and start time) feeds
+`App::schedule_wakeup`, which schedules a wakeup at the 1 s deadline, and `App::about_to_wait` calls
+`App::refresh_browse_scan_status` each pass, which consults the pure `tree_model::scan_overdue` predicate. Its label
+reads "Scanning… 3,412 images so far" once that folder's scan reports a live count, and "Loading…" until then. While a
+scan is in flight the rest of the UI (Tab, Esc/Enter mode switching) stays fully responsive — the freeze is contained to
+the tree pane's loading state, because the main thread never blocks on the read.
+
+**Scan status (grid pane).** The grid's centered label does double duty: "(No images)" for a folder that listed empty,
+and "Scanning… 3,412 images so far" while the folder it's listing is still being read (`BrowseGrid::set_scan_status`,
+fed by `App::refresh_browse_scan_status` from `folder_scan::FolderScanner::progress`). A scan status owns the label
+while it's up; passing `None` restores the empty-folder rule. Both texts hold off until the scan has been reading for
+`folder_scan::STATUS_DELAY` (150 ms) and refresh at `folder_scan::STATUS_POLL` (250 ms), so a local folder never flashes
+a count and an idle loop stays idle.
+
+Both are macOS surfaces. The Windows shell says "Loading…" in its status bar instead and deliberately shows no climbing
+number there (`windows/status.rs`: a half-counted folder reads worse than no count, because it changes while you read
+it). Same scanner underneath either way.
 
 ### First responder restored on entering image mode
 

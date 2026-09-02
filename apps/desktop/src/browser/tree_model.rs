@@ -59,9 +59,10 @@ pub struct ChildCache {
     /// How this platform decides two paths name one folder. Every map below is keyed through it.
     policy: crate::paths::PathPolicy,
     states: HashMap<std::ffi::OsString, ChildState>,
-    /// When each in-flight scan started, so the overlay timer knows if one is overdue. Cleared
-    /// for a path when its scan completes.
-    started: HashMap<std::ffi::OsString, Instant>,
+    /// Each in-flight scan's folder and when it started, so the overlay timer knows if one is
+    /// overdue and can name the folder whose live count it shows. Keyed like `states`, and the
+    /// `PathBuf` alongside is the spelling the scan was asked for. Cleared when the scan completes.
+    started: HashMap<std::ffi::OsString, (PathBuf, Instant)>,
 }
 
 impl Default for ChildCache {
@@ -114,7 +115,7 @@ impl ChildCache {
             return false;
         }
         self.states.insert(key.clone(), ChildState::InFlight);
-        self.started.insert(key, now);
+        self.started.insert(key, (path.to_path_buf(), now));
         true
     }
 
@@ -146,12 +147,16 @@ impl ChildCache {
         self.started.remove(&key);
     }
 
-    /// The earliest start time among all still-in-flight scans, or `None` if none are pending.
-    /// `about_to_wait` feeds this to [`scan_overdue`] to decide whether to show the overlay and
-    /// when to schedule the next wakeup.
+    /// The longest-running still-in-flight scan — its folder and when it started — or `None` if
+    /// none are pending. `about_to_wait` feeds the start time to [`scan_overdue`] to decide whether
+    /// to show the overlay and when to schedule the next wakeup, and reads the folder's live entry
+    /// count for the overlay's text.
     #[must_use]
-    pub fn earliest_in_flight(&self) -> Option<Instant> {
-        self.started.values().copied().min()
+    pub fn earliest_in_flight(&self) -> Option<(PathBuf, Instant)> {
+        self.started
+            .values()
+            .min_by_key(|(_, started)| *started)
+            .cloned()
     }
 }
 
@@ -1260,14 +1265,15 @@ mod tests {
         assert_eq!(cache.earliest_in_flight(), None);
         cache.begin_scan(a, t0);
         cache.begin_scan(b, t0 + Duration::from_millis(100));
-        // The oldest still-pending scan wins.
-        assert_eq!(cache.earliest_in_flight(), Some(t0));
+        // The oldest still-pending scan wins, and it names its folder so the overlay can read
+        // that scan's live entry count.
+        assert_eq!(cache.earliest_in_flight(), Some((a.to_path_buf(), t0)));
 
         // Completing the oldest leaves the younger one as the new earliest.
         cache.complete_scan(a, Vec::new());
         assert_eq!(
             cache.earliest_in_flight(),
-            Some(t0 + Duration::from_millis(100))
+            Some((b.to_path_buf(), t0 + Duration::from_millis(100)))
         );
 
         // Completing the last clears it entirely.

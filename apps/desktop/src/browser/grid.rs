@@ -115,6 +115,9 @@ const SELECTION_FOCUSED_ALPHA: f64 = 0.85;
 /// Point size of the centered "(No images)" empty-state label.
 const EMPTY_LABEL_FONT_PT: f64 = 15.0;
 
+/// What the centered grid label says for a folder that listed with no supported images.
+const EMPTY_LABEL_TEXT: &str = "(No images)";
+
 /// Reuse identifier for grid items.
 const ITEM_IDENTIFIER: &str = "PrvwGridItem";
 
@@ -508,8 +511,12 @@ pub struct BrowseGrid {
     collection: Retained<BrowseCollectionView>,
     /// Kept alive: the collection view holds the data source/delegate weakly (`assign`).
     data_source: Retained<GridDataSource>,
-    /// Centered "(No images)" label, shown when the listed folder has no supported images.
+    /// Centered label over the gallery surface. Reads "(No images)" for a folder that listed
+    /// empty, and carries the running scan status while the folder is still being read.
     empty_label: Retained<NSTextField>,
+    /// The scan status currently on that label, if any. Cached so a 4 Hz refresh only touches
+    /// AppKit when the text actually changed.
+    scan_status: RefCell<Option<String>>,
     /// The window's backing scale factor, for thumbnail request scale.
     scale: f64,
 }
@@ -584,7 +591,7 @@ impl BrowseGrid {
             // "(No images)" overlay, hidden by default. Centered over the grid; shown only for an
             // empty folder. Plain label on a transparent view so the gallery background shows.
             let empty_label = crate::platform::macos::ui_common::make_label(
-                "(No images)",
+                EMPTY_LABEL_TEXT,
                 EMPTY_LABEL_FONT_PT,
                 mtm,
             );
@@ -596,6 +603,7 @@ impl BrowseGrid {
                 collection,
                 data_source,
                 empty_label,
+                scan_status: RefCell::new(None),
                 scale,
             }
         }
@@ -651,9 +659,32 @@ impl BrowseGrid {
         }
     }
 
-    /// The "(No images)" overlay label, for the pane to position centered over the grid.
+    /// The centered overlay label, for the pane to position over the grid.
     pub fn empty_label(&self) -> &NSTextField {
         &self.empty_label
+    }
+
+    /// Show `text` (the running scan status) over the grid instead of the empty-folder message,
+    /// or `None` to hand the label back to the "(No images)" rule. Called every wakeup while a
+    /// scan runs, so it does nothing when the text hasn't changed.
+    pub fn set_scan_status(&self, text: Option<&str>) {
+        if self.scan_status.borrow().as_deref() == text {
+            return;
+        }
+        *self.scan_status.borrow_mut() = text.map(str::to_string);
+        match text {
+            Some(text) => {
+                self.empty_label.setStringValue(&NSString::from_str(text));
+                unsafe {
+                    let _: () = msg_send![&*self.empty_label, setHidden: false];
+                }
+            }
+            None => {
+                self.empty_label
+                    .setStringValue(&NSString::from_str(EMPTY_LABEL_TEXT));
+                self.refresh_empty_overlay();
+            }
+        }
     }
 
     /// True when the listed folder has no supported images. Drives the grid-non-focusable rule
@@ -971,8 +1002,10 @@ impl BrowseGrid {
     /// (an empty grid is non-focusable so Tab keeps focus on the tree).
     fn refresh_empty_overlay(&self) {
         let empty = self.is_empty();
+        // A scan status owns the label while one is up; `set_scan_status(None)` hands it back.
+        let scanning = self.scan_status.borrow().is_some();
         unsafe {
-            let _: () = msg_send![&*self.empty_label, setHidden: !empty];
+            let _: () = msg_send![&*self.empty_label, setHidden: !(empty || scanning)];
         }
         self.collection.setSelectable(!empty);
     }
