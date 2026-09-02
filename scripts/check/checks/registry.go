@@ -55,6 +55,15 @@ var AllChecks = []CheckDefinition{
 		Run:         RunLinuxCross,
 	},
 	{
+		ID:          "desktop-macos-availability",
+		Nickname:    "macos-availability",
+		DisplayName: "macOS availability",
+		App:         AppDesktop,
+		Tech:        "🍎 macOS",
+		DependsOn:   nil,
+		Run:         RunMacOSAvailability,
+	},
+	{
 		ID:          "desktop-rust-tests",
 		Nickname:    "cargo-test",
 		DisplayName: "tests",

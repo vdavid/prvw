@@ -58,6 +58,11 @@ parses the path string at runtime, converts each command (`M`, `c`, `s`, `q`, `a
 and fills it into an `NSImage` via `lockFocus` / `unlockFocus`. Elliptical arcs (the `a` command) are converted to cubic
 Béziers using the SVG 1.1 F.6 algorithm plus the standard `t = (4/3) * tan(δ/4)` approximation per ≤90° sub-arc.
 
+The `q` (quadratic) command degree-elevates to a cubic (`quadratic_to_cubic`) instead of calling AppKit's
+`curveToPoint:controlPoint:`, which is macOS 14+ and crashed every macOS 13 user in v0.15.1. Elevation is exact, so the
+glyph is unchanged. Keep every `NSBezierPath` operation here at the macOS 10.x level;
+`./scripts/check.sh --check macos-availability` enforces it.
+
 Two variants:
 
 - `Green`: solid `#189d34` for a completed step.

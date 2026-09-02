@@ -47,6 +47,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | `console_{windows,other}.go`  | `prepareConsole()`: UTF-8 and ANSI on the Windows console                           |
 | `checks/registry.go`          | `AllChecks`: canonical ordered list, lookup and validation functions                |
 | `checks/desktop-rust-*.go`    | Rust checks (rustfmt, clippy, cargo-test, parity, windows-cross, linux-cross)       |
+| `checks/desktop-macos-availability.go` | ObjC selector/class use vs. the `LSMinimumSystemVersion` floor |
 | `checks/windows-installer.go` | The Windows installer's generated registry include, plus two facts about `prvw.nsi` |
 | `checks/oxfmt.go`             | Monorepo-wide formatter (oxfmt, prettier-compatible)                                |
 | `checks/website-*.go`         | Website checks (eslint, typecheck, build)                                           |
@@ -77,7 +78,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | App     | Tech      | Checks                                                                                          |
 | ------- | --------- | ----------------------------------------------------------------------------------------------- |
 | Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                 |
-| Desktop | Rust      | rustfmt, clippy, cargo-test, parity, installer, windows-cross + linux-cross (both slow, opt-in) |
+| Desktop | Rust      | rustfmt, clippy, cargo-test, parity, installer, macos-availability, windows-cross + linux-cross (both slow, opt-in) |
 | Website | Astro     | eslint, typecheck, build                                                                        |
 | Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests                                  |
 | Other   | -         | changelog-commit-links, conflict-markers                                                        |

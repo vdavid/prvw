@@ -67,6 +67,14 @@ fixture, because it's an ImageIO behaviour we rely on rather than one we control
 - **`Retained<>` lifetime inside long-lived windows.** Every objc2 `Retained<NSTextField/NSButton/...>` must stay alive
   for the window's lifetime. Store them in a `Vec<Retained<AnyObject>>` that outlives the window. Dropping early =
   segfault in autorelease pool cleanup. No compile-time check.
+- **A too-new selector is an unrecoverable crash, and nothing in the toolchain warns you.** `objc2` bindings carry no
+  availability data, and the linker never sees a selector, so calling a macOS 14 method builds cleanly on any SDK and
+  then aborts on macOS 13 with "unrecognized selector sent to instance" plus "Rust cannot catch foreign exceptions".
+  v0.15.1 shipped exactly that: `NSBezierPath`'s `curveToPoint:controlPoint:` is macOS 14+, and every macOS 13 user
+  crashed on the onboarding window. The `macos-availability` check now reads the SDK's own `API_AVAILABLE` annotations
+  and compares every call site against `LSMinimumSystemVersion`; run `./scripts/check.sh --check macos-availability`
+  before shipping AppKit code. When you genuinely need a newer API, probe for it at runtime the way
+  `window::liquid_glass_available()` does and add the class to `runtimeGatedClasses`.
 - **`define_class!` methods get an implicit `_cmd: Sel`.** For plain Rust helpers, put them in a separate `impl` block
   outside the macro.
 - **`msg_send!` return types must match ObjC exactly.** Mismatch → runtime panic.
