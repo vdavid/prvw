@@ -67,6 +67,16 @@ impl AppLog {
     }
 }
 
+/// Whether a launch hands the app back settled or the moment it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Settle {
+    /// Wait for the folder scan and the first pixels, which is what a test asserting about a
+    /// finished launch wants.
+    AfterLaunch,
+    /// Hand it back as soon as the QA server answers, for a test that is about the launch itself.
+    Immediately,
+}
+
 pub struct TestApp {
     // Behind a mutex so `&self` methods can ask whether the app is still alive: that answer is
     // the difference between "it crashed" and "it's wedged", and it's the first thing anyone
@@ -132,10 +142,28 @@ impl TestApp {
         Self::start_with_args_and_home(&[arg], home)
     }
 
+    /// Start the app on `image` with extra environment variables, and return as soon as the QA
+    /// server answers rather than waiting for the launch to settle.
+    ///
+    /// The scan tests need the app while its folder read is still running, and
+    /// [`Settle::AfterLaunch`] waits out exactly the window they are about to assert on.
+    pub fn start_mid_scan(image: &std::path::Path, env: &[(&str, &str)]) -> Self {
+        Self::launch(&[image], None, env, Settle::Immediately)
+    }
+
     /// Start the app with the given CLI arguments and an optional home override.
     pub fn start_with_args_and_home(
         args: &[&std::path::Path],
         home: Option<&std::path::Path>,
+    ) -> Self {
+        Self::launch(args, home, &[], Settle::AfterLaunch)
+    }
+
+    fn launch(
+        args: &[&std::path::Path],
+        home: Option<&std::path::Path>,
+        extra_env: &[(&str, &str)],
+        settle: Settle,
     ) -> Self {
         // Find a free port by binding to :0, then closing the listener
         let port = {
@@ -162,6 +190,9 @@ impl TestApp {
             // A panic that reaches the top of a thread prints its frames, which is the one line
             // that turns "the process died" into "the process died here".
             .env("RUST_BACKTRACE", "1");
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
         if let Some(home) = home {
             // Canonicalize the home path so it matches the launch arg's canonical form. On macOS
             // `$TMPDIR` lives under `/var/folders/...`, a symlink to `/private/var/...`;
@@ -216,10 +247,13 @@ impl TestApp {
             data_dir,
             _fixture_home: None,
         };
-        app.wait_until_launched();
-        // Let the live-sync watcher's control queue drain (it services watch requests on a
-        // ~250 ms tick). A test that mutates the folder right away would otherwise race the watch.
-        std::thread::sleep(Duration::from_millis(500));
+        if settle == Settle::AfterLaunch {
+            app.wait_until_launched();
+            // Let the live-sync watcher's control queue drain (it services watch requests on a
+            // ~250 ms tick). A test that mutates the folder right away would otherwise race the
+            // watch.
+            std::thread::sleep(Duration::from_millis(500));
+        }
         app
     }
 

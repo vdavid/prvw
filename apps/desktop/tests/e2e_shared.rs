@@ -1549,6 +1549,98 @@ fn about_opens_without_holding_up_the_app() {
     );
 }
 
+// ── Slow folder scan (launch decoupled from the directory read) ──────────────────────────────
+//
+// `PRVW_SCAN_DELAY_MS` holds every folder scan for a fixed time, standing in for the SMB mount
+// that takes 17-45 s to list a big folder. That window is what this whole feature exists to make
+// usable, and it's the same on every platform: the read runs on `folder_scan`'s own thread and
+// the app paints without it.
+
+#[test]
+fn launch_shows_the_image_while_the_folder_is_still_being_scanned() {
+    // The point of the whole thing: on a folder that takes forever to list, the opened image is up
+    // and the window is live long before the listing finishes. Then the scan lands and the
+    // sequence fills in around it, still on the same picture.
+    let dir = tempfile::tempdir().unwrap();
+    let images = 300;
+    for i in 0..images {
+        write_png(&dir.path().join(format!("img-{i:03}.png")), i as u8);
+    }
+    // Open one from the middle, so the landed position is a real lookup rather than index 0.
+    let opened = dir.path().join("img-150.png");
+
+    let Some(app) = SharedApp::start_mid_scan(
+        &["NextPreviousImage"],
+        &opened,
+        &[("PRVW_SCAN_DELAY_MS", "3000")],
+    ) else {
+        return;
+    };
+
+    // While the scan runs: the image is displayed, and the sequence is the provisional list of one.
+    let pending = app.wait_for_state(Duration::from_secs(10), |s| {
+        s["image_width"].as_u64().unwrap_or(0) > 0
+    });
+    assert_eq!(
+        pending["scan_pending"].as_bool(),
+        Some(true),
+        "the folder scan should still be running, got {pending}"
+    );
+    assert!(
+        pending["file"].as_str().unwrap().contains("img-150"),
+        "the opened image is displayed before the folder is known, got {pending}"
+    );
+    assert_eq!(
+        pending["total_files"].as_u64(),
+        Some(1),
+        "the provisional list holds only the opened image"
+    );
+    assert_eq!(
+        pending["title"].as_str(),
+        Some("img-150.png"),
+        "filename only until the scan lands, no position yet"
+    );
+
+    // Navigation during the scan doesn't move — there's nowhere to go in a list of one, and the
+    // picture on screen stays put rather than jumping.
+    // TODO(slow-share-launch part B): once moves are queued as intents, this becomes "left then
+    // right nets to zero" and "left once lands on the previous image when the scan finishes".
+    app.post("/navigate", "next");
+    let during = app.get_state();
+    assert!(
+        during["file"].as_str().unwrap().contains("img-150"),
+        "navigating mid-scan leaves the displayed image alone, got {during}"
+    );
+
+    // Then the scan lands: the real folder, positioned on the same image.
+    let scanned = app.wait_for_state(Duration::from_secs(20), |s| {
+        s["scan_pending"].as_bool() == Some(false)
+    });
+    assert_eq!(
+        scanned["total_files"].as_u64(),
+        Some(images),
+        "the full folder replaces the provisional list, got {scanned}"
+    );
+    assert_eq!(
+        scanned["index"].as_u64(),
+        Some(151),
+        "still the same picture, now at its real position (1-based)"
+    );
+    assert!(scanned["file"].as_str().unwrap().contains("img-150"));
+    assert_eq!(
+        scanned["title"].as_str(),
+        Some("151 / 300 \u{2013} img-150.png"),
+        "the title gains the position once the folder is known"
+    );
+
+    // Navigation works normally afterwards.
+    app.post("/navigate", "next");
+    let moved = app.wait_for_state(Duration::from_secs(5), |s| {
+        s["index"].as_u64() == Some(152)
+    });
+    assert_eq!(moved["index"].as_u64(), Some(152));
+}
+
 // ── Browse mode ──────────────────────────────────────────────────────────────────────────────
 //
 // Gated on `BrowseMode`, `BrowseFocus`, and `BrowseOpenSelected`. macOS drives an `NSOutlineView`

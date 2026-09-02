@@ -71,6 +71,22 @@ impl SharedApp {
         Self::gate(TestApp::start_browse_dir(dir, home), commands)
     }
 
+    /// Start on one image with extra environment variables, handed back the moment the QA server
+    /// answers rather than once the launch has settled. `None` when the host doesn't apply.
+    ///
+    /// The folder-scan tests are about the window between the image appearing and its folder
+    /// being read, which the ordinary launch barrier waits out.
+    pub fn start_mid_scan(
+        commands: &[&str],
+        image: &std::path::Path,
+        env: &[(&str, &str)],
+    ) -> Option<Self> {
+        if !display_available() {
+            return None;
+        }
+        Self::gate(TestApp::start_mid_scan(image, env), commands)
+    }
+
     /// Start on one image with the home directory overridden, or `None` when the host doesn't
     /// apply. The home override is what keeps a browse reveal from that image short.
     pub fn start_with_image_and_home(
