@@ -22,7 +22,7 @@ pub enum SortBy {
 pub fn sort_files(files: &mut [PathBuf], sort_by: SortBy) {
     match sort_by {
         SortBy::Name => files.sort_by(|a, b| compare_name(a, b)),
-        SortBy::Date => files.sort_by(|a, b| compare_date(a, b)),
+        SortBy::Date => sort_by_date_with(files, mtime),
         SortBy::FileType => files.sort_by(|a, b| compare_file_type(a, b)),
     }
 }
@@ -47,12 +47,27 @@ fn mtime(path: &Path) -> Option<SystemTime> {
     path.metadata().ok()?.modified().ok()
 }
 
-/// Date primary, Name tiebreaker. Files with no readable mtime sort first
-/// so they're easy to spot rather than hidden at the end.
-fn compare_date(a: &Path, b: &Path) -> Ordering {
-    match mtime(a).cmp(&mtime(b)) {
-        Ordering::Equal => compare_name(a, b),
-        other => other,
+/// Date primary, Name tiebreaker. Files with no readable mtime sort first so they're easy to spot
+/// rather than hidden at the end.
+///
+/// Each file's mtime is read **exactly once**, up front, and the sort compares the precomputed
+/// values. A comparator that stated inside the compare would read every file O(log n) times, and
+/// on a network share each read is a round trip: a 8,000-file folder turned into ~100,000 stats.
+///
+/// The lookup is a parameter so tests can count the reads; production passes [`mtime`].
+fn sort_by_date_with(files: &mut [PathBuf], mtime_of: impl Fn(&Path) -> Option<SystemTime>) {
+    let mut dated: Vec<(Option<SystemTime>, PathBuf)> = files
+        .iter_mut()
+        .map(|slot| (mtime_of(slot), std::mem::take(slot)))
+        .collect();
+    dated.sort_by(
+        |(a_time, a_path), (b_time, b_path)| match a_time.cmp(b_time) {
+            Ordering::Equal => compare_name(a_path, b_path),
+            other => other,
+        },
+    );
+    for (slot, (_, path)) in files.iter_mut().zip(dated) {
+        *slot = path;
     }
 }
 
@@ -181,6 +196,41 @@ mod tests {
             names_of(&files),
             vec!["z_old.jpg", "a_new.jpg", "b_new.jpg"]
         );
+    }
+
+    #[test]
+    fn date_sort_reads_each_mtime_once() {
+        // A comparator that stats inside the compare would read each file O(log n) times —
+        // thousands of round trips on a network share. The sort precomputes instead, so every
+        // path is looked up exactly once regardless of how many comparisons run.
+        let dir = tempfile::tempdir().unwrap();
+        let mut files = make_files(
+            dir.path(),
+            &["e.jpg", "a.jpg", "d.jpg", "b.jpg", "c.jpg", "f.jpg"],
+        );
+        let lookups = std::cell::RefCell::new(Vec::new());
+        sort_by_date_with(&mut files, |path| {
+            lookups.borrow_mut().push(path.to_path_buf());
+            // Reverse-alphabetical mtimes, so the sort has real work to do.
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let rank = u64::from(b'z' - name.as_bytes()[0]);
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(rank))
+        });
+        assert_eq!(
+            names_of(&files),
+            vec!["f.jpg", "e.jpg", "d.jpg", "c.jpg", "b.jpg", "a.jpg"],
+            "newest-mtime-last ordering"
+        );
+        let mut looked_up = lookups.into_inner();
+        let total = looked_up.len();
+        looked_up.sort();
+        looked_up.dedup();
+        assert_eq!(
+            total,
+            looked_up.len(),
+            "every file's mtime is read exactly once"
+        );
+        assert_eq!(total, 6, "one lookup per file, no more");
     }
 
     #[test]
