@@ -5,7 +5,7 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.16.0] - 2026-09-02
 
 ### Added
 
@@ -67,7 +67,6 @@ fullscreen round trip.
   back missing, the background stayed black, and the corner drew as a double cutout at two radii until the next resize.
   The F key no longer toggles the wrong way afterwards either
   ([e56d08fe](https://github.com/vdavid/prvw/commit/e56d08fe))
-
 - Fullscreen no longer gets stuck when you toggle it twice quickly: AppKit drops a transition asked for while one is
   still animating, so the second F (or green-button click) did nothing. Requests made mid-transition now wait their turn
   ([7ffe621b](https://github.com/vdavid/prvw/commit/7ffe621b))
