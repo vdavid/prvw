@@ -1219,7 +1219,9 @@ Microsoft rather than on us.
    Windows TLS story becomes necessary again, and Schannel via `native-tls` is the C-free choice.
 5. **Release workflow: done, unsigned.** A `windows-latest` leg in `.github/workflows/release.yml` builds
    `PrvwSetup-<version>-x64.exe`, attaches it to the GitHub Release beside the DMGs, and adds a `windows-x86_64` entry
-   to `latest.json`. Signing slots into it through `PRVW_WINDOWS_SIGN_CMD` (step 2), and no release has run it yet.
+   to `latest.json`. Signing slots into it through `PRVW_WINDOWS_SIGN_CMD` (step 2). A `Windows installer` workflow
+   builds the same thing on `windows-latest` outside a release, so a tag is no longer the first time the script meets
+   makensis.
 
 ### M8: Linux stays green, and gets its own spec later
 
