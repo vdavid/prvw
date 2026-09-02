@@ -5,6 +5,17 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Non-app
+
+- **The Windows installer's release build works, and CI proves it.** `v0.16.0` never published, because `makensis`
+  couldn't resolve an `!include` whose path mixed both separators, and no release had ever compiled the script on
+  Windows before. Every path now reaches `makensis` in the host's own notation, and a new `Windows installer` workflow
+  builds the real thing on `windows-latest` whenever the installer's sources change
+  ([b9d71b17](https://github.com/vdavid/prvw/commit/b9d71b17),
+  [fb8877f4](https://github.com/vdavid/prvw/commit/fb8877f4))
+
 ## [0.16.0] - 2026-09-02
 
 ### Added
