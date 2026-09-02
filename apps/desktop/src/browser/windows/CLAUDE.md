@@ -92,16 +92,16 @@ site is breaking the rule above.
   folder reaches the tree spelled three ways: what the user typed, what `canonicalize` returned, and what a drive
   enumeration produced.
 - **Children never load on the main thread.** A node claims one child so a chevron shows, the first expand starts a
-  `TreeScanner` scan, and `BrowseTreeChildrenLoaded` fills the rows and corrects the claim. Same `ChildCache` state
-  machine macOS uses.
+  shared `folder_scan` scan, and `FolderScanned` fills the rows and corrects the claim. Same `ChildCache` state machine
+  macOS uses.
 - **The reveal walk is asynchronous for the same reason**: expanding an unscanned node would find no children. It
   expands one level, waits for the delivery, and steps on.
 
 **Gotcha: a reveal walk stalls on a hidden ancestor unless it asks for one.** **Why:** the tree hides what Explorer
 hides, and every Windows temp folder lives under `AppData`, which carries the hidden attribute. A folder dropped from
 there would get no row to expand and the walk would wait forever. `request_children` therefore names the walk's next
-step (`TreeScanner::scan_revealing`), and that one child is listed however hidden it is. Nothing else in the same
-directory is.
+step (`folder_scan::FolderScanner::request_revealing`), and that one child is listed however hidden it is. Nothing else
+in the same directory is.
 
 **Gotcha: a `HashMap<PathBuf, _>` is the same mistake `==` is, and it stalls the walk.** **Why:** the reveal chain is
 built from the canonicalized target, so it names `\\?\C:\Users`, while the scan that fills that node was asked for under

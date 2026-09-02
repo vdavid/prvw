@@ -1635,9 +1635,7 @@ fn launch_shows_the_image_while_the_folder_is_still_being_scanned() {
 
     // Navigation works normally afterwards.
     app.post("/navigate", "next");
-    let moved = app.wait_for_state(Duration::from_secs(5), |s| {
-        s["index"].as_u64() == Some(152)
-    });
+    let moved = app.wait_for_state(Duration::from_secs(5), |s| s["index"].as_u64() == Some(152));
     assert_eq!(moved["index"].as_u64(), Some(152));
 }
 

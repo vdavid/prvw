@@ -19,7 +19,8 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `chrome.rs`                 | What colour every Win32 window of ours paints: theme, surface, ink, and the high-contrast rule        |
 | `clipboard.rs`              | The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`)                   |
 | `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                                                           |
-| `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce + off-thread re-scan lister      |
+| `folder_scan.rs`            | The one off-thread directory reader: images + subdirs per pass, per-folder dedupe, live progress      |
+| `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce                                  |
 | `input.rs`                  | Maps keys and QA keys to `AppCommand`                                                                 |
 | `launch.rs`                 | What Prvw is asked to open, by argument or by drop: wait for a file, a folder's images, nothing       |
 | `logging.rs`                | `env_logger` setup, and where a console-less Windows launch writes instead                            |
@@ -58,6 +59,9 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
   `resumed()`, not at startup.
 - **Render on demand.** `App.needs_redraw` gates frames.
 - **`std::thread` + rayon for preloading.** No `tokio`.
+- **Nothing reads a directory on the main thread.** Every `read_dir` in the app goes through
+  `folder_scan::FolderScanner`, whose result reaches the main thread as one `AppCommand::FolderScanned`. Launch installs
+  a provisional one-image list so the window paints before a slow folder is listed.
 - **Command architecture.** Every user action becomes an `AppCommand`. `App::execute_command` (`app/executor.rs`) is the
   single dispatcher.
 - **Per-feature state.** `zoom::State`, `color::State`, `navigation::State` own feature-specific fields. `App` keeps

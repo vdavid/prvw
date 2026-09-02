@@ -497,9 +497,9 @@ Windows has drive letters and no `/Volumes`, so `tree_model::enumerate_roots` ne
 
 **`GetVolumeInformationW` can block for tens of seconds on a disconnected network drive.** `GetLogicalDrives` is just a
 bitmask and is instant, so enumerate the letters on the main thread, show the bare letter immediately, and fetch labels
-on the existing `TreeScanner` thread. This is the same discipline the macOS tree already enforces, for the same reason:
-a stale SMB mount must never freeze the UI. `tree_model`'s `ChildCache` state machine and the 1-second "Loading…"
-overlay carry over unchanged.
+on the app's shared `folder_scan` thread. This is the same discipline the macOS tree already enforces, for the same
+reason: a stale SMB mount must never freeze the UI. `tree_model`'s `ChildCache` state machine and the 1-second
+"Loading…" overlay carry over unchanged.
 
 **Hidden entries.** `tree_model.rs:202` tests for a leading dot. On Windows it becomes
 `FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM`, both skipped unconditionally. We deliberately do not read Explorer's

@@ -30,6 +30,9 @@ App holds three per-feature State structs (`zoom`, `color`, `navigation`) plus t
   `pending_drops` + `files_hovering` (a drop in progress: winit reports one path per event and nothing to mark the end
   of the batch, so the paths pile up and `about_to_wait` opens them as one request — see `App::open_dropped`).
 - **Cross-thread**: `shared_state`, `event_loop_proxy`, `_qa_handle`.
+- **Folder reading**: `folder_scanner` (the one `folder_scan::FolderScanner`), plus who's waiting on a result:
+  `pending_grid_listing`, `pending_rescan`, `pending_modified`, and `navigation.scan_pending` for image mode.
+  `App::handle_folder_scanned` routes one `AppCommand::FolderScanned` to all of them.
 
 App doesn't implement any feature's logic. The handler arms in `execute_command` mutate `self.zoom`, `self.color`,
 `self.navigation` fields or delegate to the feature (e.g. `window::set_fullscreen`,
@@ -40,6 +43,9 @@ App doesn't implement any feature's logic. The handler arms in `execute_command`
 - **Surface lifecycle.** The window + wgpu surface are created in `resumed()`, not at startup. Required by winit 0.30 on
   macOS.
 - **Render-on-demand.** `needs_redraw` is set by zoom/pan/resize/navigate. No continuous render loop.
+- **No directory reads on the main thread.** Every `read_dir` goes to `folder_scan::FolderScanner`; the result arrives
+  as one `AppCommand::FolderScanned` that `handle_folder_scanned` fans out. Launch and `OpenFile` show the image against
+  a provisional one-file list and swap in the real folder when the scan lands.
 - **Shared-state boundary.** Main thread writes `SharedAppState` on every state change. QA thread reads under
   `Arc<Mutex<_>>`. Diagnostics text is computed via `crate::diagnostics::build_text` and stored in the snapshot.
 - **Commands bridge features and App.** `AppCommand::*` arrives in `execute_command`; the handler mutates App / feature

@@ -8,8 +8,8 @@ folder + mounted volumes, and an `NSCollectionView` thumbnail gallery. The Windo
 [`windows/`](windows/CLAUDE.md): a `SysTreeView32` and a virtual `SysListView32`, led by known folders and drive letters
 rather than a home folder, with a splitter and a status bar of its own. Neither is a port of the other
 (`docs/specs/windows-ui-design.md` → "Browse mode"), and the seam between them is that everything **below** the widgets
-is shared and platform-free: `grid_model`, `grid_scheduler`, `thumbnail_cache`, `tree_model` (`TreeScanner` included),
-and `grid_listing`.
+is shared and platform-free: `grid_model`, `grid_scheduler`, `thumbnail_cache`, and `tree_model`. The directory reads
+both shells need belong to neither: `crate::folder_scan` does every one of them, for image mode and live sync too.
 
 `browser::State` carries both. Its pure transitions (`enter_browse_state`, `enter_image_state`, `toggle_focus_state`,
 `focus_grid_state`) are shared and tested; each platform's windowed methods wrap them with its own `sync_native`. A gate
@@ -17,17 +17,16 @@ that reads `#[cfg(any(target_os = "macos", target_os = "windows"))]` anywhere in
 UI"; Linux has neither and falls back to `set_view_mode(Image)`.
 
 | File                 | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mod.rs`             | `ViewMode` + `PaneSide` + `LaunchTarget` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, `pending_grid_preselect` + `pending_browse_open_focus` for browse-open, native handles); the `sync_native` render-from-state choke-point; `reveal_to_folder`; QA accessors (`grid_count`, `reveal_pending`) + the `qa_select_grid_index` test-driving hook; pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command`/`grid_preselect_index`/`classify_launch_target` + field-transition cores; tree + grid delegation; tests |
 | `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (makes the focused pane's control first responder + refreshes grid emphasis — called by `sync_native`), divider + traffic-light fixes; hosts the tree (left) and the grid (right)                                                                                                                                                                                                                                                                                                                                                                             |
 | `grid.rs`            | macOS `NSCollectionView` grid: `BrowseCollectionView` (keyDown override), `GridItem` (cell, focus-aware selection rect + double-click in `mouseDown:`), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs/focus)                                                                                                                                                                                                                                                                                                          |
 | `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `grid_listing.rs`    | Background folder-image lister (its own OS thread + `mpsc`, like the tree scanner) + the pure `list_supported_images`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (the grid's `BrowseGrid::pump` drives it)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `outline.rs`         | macOS `NSOutlineView` source-list tree: `BrowseOutlineView` (keyDown override), `NodeObject`, `TreeDataSource` (data source + delegate), `BrowseTree` (owns the view + `make_first_responder` + the async `reveal_to_folder` walk)                                                                                                                                                                                                                                                                                                                                                                                |
-| `tree_model.rs`      | Pure, headless-tested logic: `child_directories`, `enumerate_roots`/`build_roots`, `reveal_path_chain` (root-to-target reveal walk), `RevealWalk` (the walk's state machine, with its termination argument and a fake-tree driver in its tests), the `ChildCache` load-state machine, the `scan_overdue` overlay predicate, and the shared `TreeScanner` thread                                                                                                                                                                                                                                                   |
-| `windows/`           | The Windows shell: the tree, the grid, the splitter, and the status bar. Its own [`CLAUDE.md`](windows/CLAUDE.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |     |
+| `tree_model.rs`      | Pure, headless-tested logic: `visible_subdirs` (a scan's subdirectories sorted into tree rows), `hidden_from_the_tree` (what a sidebar leaves out, applied by the scanner while it reads), `enumerate_roots`/`build_roots`, `reveal_path_chain` (root-to-target reveal walk), `RevealWalk` (the walk's state machine, with its termination argument and a fake-tree driver in its tests), the `ChildCache` load-state machine, and the `scan_overdue` overlay predicate                                                                                                                                           |
+| `windows/`           | The Windows shell: the tree, the grid, the splitter, and the status bar. Its own [`CLAUDE.md`](windows/CLAUDE.md)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## The swap
 
@@ -57,7 +56,7 @@ hide-one-show-the-other, not compositing.
 
 Commands: `ToggleBrowseMode` (menu + Enter in image mode), `EnterImageMode` (Esc while browsing; Enter on the tree),
 `ToggleBrowseFocus` (Tab while browsing), `BrowseSelectFolder(PathBuf)` (tree selection — also focuses the tree pane),
-`BrowseFolderListed { folder, images }` (a background listing finished), `BrowseThumbnailsAvailable` (grid-thumbnail
+`ScanFolder(PathBuf)` (the tree asking for a folder's child rows), `BrowseThumbnailsAvailable` (grid-thumbnail
 completions queued), `BrowseGridSelected(usize)` (grid click/selection — also focuses the grid pane),
 `BrowseOpenSelected` (Enter on the focused grid, or a double-click). Browse keys are intercepted by the focused native
 view's `keyDown:` override (`browser::browse_keydown_command`), not winit. Dispatched in `app/executor.rs`. All but
@@ -87,8 +86,7 @@ pending preselect and re-anchors the grid to the current image (scrolling it int
 re-anchor hold even when only the _image within the folder_ changed.
 
 **The async reveal-path walk** (`outline::BrowseTree`). Child directories load on the background scanner, so "reveal a
-path" can't expand synchronously — there'd be no children yet. Instead it's a pending walk advanced by
-`BrowseTreeChildrenLoaded`:
+path" can't expand synchronously: there'd be no children yet. Instead it's a pending walk advanced by `FolderScanned`:
 
 - `tree_model::reveal_path_chain(roots, target)` (pure, tested) computes the root-to-target path list: the **root** is
   the longest-prefix `Root` match (a path under home reveals under Home, not the `/` volume), then every intermediate
@@ -196,9 +194,9 @@ directory on the main thread).
   Up/Down/Left/Right (and type-select) are handled by `NSOutlineView` itself — no programmatic selection code. The
   subclass's `keyDown:` only intercepts Tab/Enter/Esc and calls `super` for the rest.
 - **Selection → app state → grid listing.** `outlineViewSelectionDidChange:` sends `BrowseSelectFolder(path)`; the
-  executor stores it in `State::selected_folder` and kicks off a background listing of that folder's images for the grid
-  (`grid_listing::FolderLister`). It never reads the directory on the main thread — a slow folder selection must not
-  freeze the UI (mirrors the tree's async fix).
+  executor stores it in `State::selected_folder`, notes the grid is waiting on that folder (`App.pending_grid_listing`),
+  and asks the shared `folder_scan::FolderScanner` for it. It never reads the directory on the main thread, because a
+  slow folder selection must not freeze the UI (mirrors the tree's async fix).
 
 ### Children load asynchronously — never read a directory on the main thread
 
@@ -210,13 +208,16 @@ event loop (the whole app) whenever the filesystem is slow — a stale SMB mount
   `paths::PathPolicy::key`, not on the `PathBuf`: a scan is requested under the tree row's spelling of a folder while a
   reveal walk asks about the canonicalized one, and a byte-keyed map answers "not loaded" to a folder it has.
 - On a cache miss (`numberOfChildrenOfItem:` for a not-yet-scanned path), `loaded_or_request` marks the path `InFlight`,
-  enqueues a scan on the background `TreeScanner` thread (`std::thread` + `mpsc`, mirroring `navigation::preloader` — no
-  tokio), and reports **0 children** for now. `begin_scan` returns `false` for an already-in-flight/loaded path, so the
-  same dir is scanned once no matter how often the outline view re-queries during layout.
-- The scanner reads the directory off-thread (`tree_model::child_directories`) and posts the result back to the main
-  thread via `crate::commands::send_command(AppCommand::BrowseTreeChildrenLoaded { path, children })` (the global
-  `EventLoopProxy`). The executor stores it (`complete_scan`) and calls `reloadItem:reloadChildren:` for that node, so
-  the outline view re-queries and shows the rows.
+  posts `AppCommand::ScanFolder` so the executor hands the folder to the shared `folder_scan::FolderScanner` (the data
+  source has no handle on it), and reports **0 children** for now. `begin_scan` returns `false` for an
+  already-in-flight/loaded path, so the same dir is scanned once no matter how often the outline view re-queries during
+  layout.
+- The scan comes back as `AppCommand::FolderScanned`. `browser::State::tree_children_loaded` runs the subdirectories
+  through `tree_model::visible_subdirs` (natural name order; the scanner already dropped what a sidebar hides), stores
+  them (`complete_scan`), and calls `reloadItem:reloadChildren:` for that node, so the outline view re-queries and shows
+  the rows.
+- **A scan the tree didn't ask for is ignored.** The scanner serves image mode and the grid too, so `complete_scan`
+  applies only to a path the cache has `InFlight`. Adopting a stray result would churn a node the user is looking at.
 - **`isItemExpandable:` and `child:ofItem:` never read the disk.** `isItemExpandable:` assumes any directory is
   expandable (returns `YES` on a miss/in-flight, so the disclosure triangle shows; a folder that scans empty loses its
   triangle on the reload). `child:ofItem:` serves only from the loaded cache (it's called only for indices
@@ -344,18 +345,18 @@ live-resize cells is deferred (see "Deferred work + known limitations"). The gri
 
 - **Where the mutable state lives.** `NSCollectionView` holds its data source/delegate weakly, so `BrowseGrid` keeps the
   `Retained<GridDataSource>` alive for the window's life. All the grid's mutable state — the `grid_model::GridModel`,
-  the `grid_scheduler::Scheduler`, the `thumbnail_cache::ThumbnailCache`, the generated-`NSImage` map, the
-  `grid_listing::FolderLister`, and the grid's `quicklook::RequestTable` — lives in `RefCell` ivars on `GridDataSource`
-  (main-thread only; AppKit calls re-entrantly). `BrowseGrid`'s methods delegate into the data source.
+  the `grid_scheduler::Scheduler`, the `thumbnail_cache::ThumbnailCache`, the generated-`NSImage` map, the and the
+  grid's `quicklook::RequestTable` — lives in `RefCell` ivars on `GridDataSource` (main-thread only; AppKit calls
+  re-entrantly). `BrowseGrid`'s methods delegate into the data source.
 - **Raw-selector data source.** `GridDataSource` implements `numberOfItemsInSection:`,
   `itemForRepresentedObjectAtIndexPath:`, `didSelectItemsAtIndexPaths:`, and `prefetchItemsAtIndexPaths:` as raw
   `#[unsafe(method(...))]` arms (like `outline::TreeDataSource`), **not** the typed protocol traits — a `define_class!`
   method can't return `Retained<T>` (no `Encode`) the way `NSCollectionViewDataSource` demands. It's registered via raw
   `setDataSource:`/`setDelegate:`/`setPrefetchDataSource:` passing the object as `&AnyObject`; AppKit only sends the
   selectors, it doesn't check Rust conformance.
-- **Async folder listing.** Selecting a folder in the tree starts a background listing on `grid_listing::FolderLister`
-  (its own OS thread + `mpsc`, like the tree scanner — newest request wins). The worker reads the dir off-thread and
-  posts `BrowseFolderListed { folder, images }`; the executor calls `BrowseGrid::folder_listed`, which sorts via the
+- **Async folder listing.** Selecting a folder in the tree starts a scan on the shared `folder_scan::FolderScanner` (its
+  own OS thread + `mpsc`, like the tree scanner — newest request wins). The worker reads the dir off-thread and posts
+  `FolderScanned { folder, images, subdirs }`; the executor calls `BrowseGrid::folder_listed`, which sorts via the
   model's `SortBy`, reloads the collection view, toggles the "(No images)" overlay, and seeds the scheduler/cache. This
   subsumes the old main-thread `count_supported_images` read — the listing returns the actual paths off-thread.
 - **Reveal → image mode (INSTANT, never blocks on decode).** Double-click (detected in `GridItem::mouseDown:` via
@@ -378,7 +379,7 @@ live-resize cells is deferred (see "Deferred work + known limitations"). The gri
   With no grid selection (Esc/Enter on the tree, or an empty folder), reveal keeps the currently displayed image.
 
 - **Warming the browse selection (so reveal is actually instant).** When the browse selection lands on an image — a grid
-  click (`BrowseGridSelected`) or the seeded selection after a folder lists (`BrowseFolderListed`) — the executor calls
+  click (`BrowseGridSelected`) or the seeded selection after a folder lists (`FolderScanned`) — the executor calls
   `App::warm_browse_selection`: it reads the grid's image list + selected index (`State::grid_warm_target`, focus-
   independent), computes the prospective-current + `preloader::preload_count()` neighbor indices each side
   (`browser::browse_warm_indices`, which takes the radius as a parameter so it stays pure and host-RAM independent,
@@ -424,8 +425,8 @@ re-scan). Two independent watches:
 
 **Grid (active-folder image-list watch).** The active-folder watch follows **the grid's listed folder** in browse (the
 current image's folder in image mode); `App::active_folder` picks by mode and `retarget_active_folder_watch` re-targets
-on every mode switch, on `BrowseFolderListed` (the grid's folder just changed), and on image open. A `FolderChanged` for
-the grid's folder re-scans off-thread; `App::apply_folder_rescan` then drives `State::apply_grid_rescan` →
+on every mode switch, when a `FolderScanned` lists the grid's folder, and on image open. A `FolderChanged` for the
+grid's folder re-scans off-thread; `App::apply_folder_rescan` then drives `State::apply_grid_rescan` →
 `BrowseGrid::apply_rescan`: insert adds at the sorted position, drop removes, **keep the selection by path** (pure
 `grid_model::select_after_rescan` — next/previous surviving image when the selected file was deleted, `None` for an
 emptied folder → "(No images)"), and refresh thumbnails (a full clear-and-repump regenerates modified/added cells from
@@ -441,10 +442,10 @@ split view is first built). Each folder is watched on expand (`outlineViewItemDi
 expanded folders are watched, never the whole disk.
 
 A `FolderChanged` for a watched tree folder re-scans its subdirectories — `State::reload_tree_node` →
-`BrowseTree::reload_node` invalidates the `ChildCache` entry and re-scans via the existing async `TreeScanner`. The
-re-scan completion (`outline::BrowseTree::reload_completed`) is **subdir-delta-gated and selection-preserving** — both
-matter because revealing a folder expands and watches its ancestors, and a busy ancestor (`/tmp`, Downloads) fires
-file-change events constantly:
+`BrowseTree::reload_node` invalidates the `ChildCache` entry and re-scans via the shared folder scanner. The re-scan
+completion (`outline::BrowseTree::reload_completed`) is **subdir-delta-gated and selection-preserving** — both matter
+because revealing a folder expands and watches its ancestors, and a busy ancestor (`/tmp`, Downloads) fires file-change
+events constantly:
 
 - **Reacts to sub-folder changes only, never file changes.** The tree shows directories only, so the completion diffs
   the fresh subdir set against what the node showed before (pure `subdirs_changed`) and `reloadItem:reloadChildren:`s

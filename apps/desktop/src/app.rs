@@ -2339,7 +2339,7 @@ impl App {
         }
         // Live folder sync: the active (image-list) watch follows the grid's folder in browse and
         // the current image's folder in image mode, so re-target on every mode switch. (When
-        // entering browse, the reveal's folder listing also re-targets via `BrowseFolderListed`;
+        // entering browse, the reveal's folder listing also re-targets when its `FolderScanned` lands;
         // this covers leaving browse and the no-reveal cases.)
         self.retarget_active_folder_watch();
         self.update_shared_state();

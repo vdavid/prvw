@@ -51,8 +51,8 @@ fn mtime(path: &Path) -> Option<SystemTime> {
 /// rather than hidden at the end.
 ///
 /// Each file's mtime is read **exactly once**, up front, and the sort compares the precomputed
-/// values. A comparator that stated inside the compare would read every file O(log n) times, and
-/// on a network share each read is a round trip: a 8,000-file folder turned into ~100,000 stats.
+/// values. A comparator that calls `stat` inside the compare reads every file O(log n) times, and
+/// on a network share each read is a round trip: an 8,000-file folder turned into ~100,000 stats.
 ///
 /// The lookup is a parameter so tests can count the reads; production passes [`mtime`].
 fn sort_by_date_with(files: &mut [PathBuf], mtime_of: impl Fn(&Path) -> Option<SystemTime>) {

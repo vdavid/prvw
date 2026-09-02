@@ -7,10 +7,10 @@ overlap.
 Status: shipped, bar a dedicated styling pass (the "beautiful gallery" look, reviewed visually with David). The left
 pane is a live `NSOutlineView` source list (home + mounted volumes, **asynchronous** directory enumeration,
 path-identity nodes, arrow-key nav, selection recorded in `browser::State`). The right pane is a live `NSCollectionView`
-thumbnail gallery (`browser::grid`): selecting a folder lists its supported images **on a background worker**
-(`browser::grid_listing`, never the main thread), the grid populates and shows QuickLook thumbnails generated via a
-second `previews::quicklook` request path (RGBA8 → `NSImage` through `quicklook::nsimage_from_rgba8`), driven by the
-visible-range scheduler + 128 MB byte-budget cache. Native click selects; double-click or Enter (grid focused) opens
+thumbnail gallery (`browser::grid`): selecting a folder lists its supported images **on a background worker** (the
+shared `folder_scan::FolderScanner`, never the main thread), the grid populates and shows QuickLook thumbnails generated
+via a second `previews::quicklook` request path (RGBA8 → `NSImage` through `quicklook::nsimage_from_rgba8`), driven by
+the visible-range scheduler + 128 MB byte-budget cache. Native click selects; double-click or Enter (grid focused) opens
 that image in image mode (sets up `navigation`, switches mode); an empty folder shows "(No images)" and is non-focusable
 so Tab stays on the tree. Browse-open positioning, the async reveal-path walk, dir-arg startup, and arrow-key pane
 isolation are all in place; the QA `/state` snapshot and integration tests assert the full flow. See
@@ -64,9 +64,8 @@ under the live surface. We hide one and show the other.
   so Esc/Enter right after opening round-trips to the same image. The reveal is **async** because child directories load
   on the background scanner: `tree_model::reveal_path_chain` computes the root-to-folder chain (longest-prefix root, so
   a path under home reveals under Home, not the `/` volume), and a pending `RevealWalk` in `outline::BrowseTree` expands
-  one ancestor per `BrowseTreeChildrenLoaded` until the target is reached, then selects it — never blocking the main
-  thread. With the selected folder empty, focus falls back to the tree. See `browser/CLAUDE.md` → "Browse-open
-  positioning".
+  one ancestor per `FolderScanned` until the target is reached, then selects it — never blocking the main thread. With
+  the selected folder empty, focus falls back to the tree. See `browser/CLAUDE.md` → "Browse-open positioning".
 - **Esc == Enter == reveal the browse-selected image.** The user's model: the image-mode current image IS whatever the
   browse cursor points at, even while the Metal canvas is hidden. So Esc, Enter (on the focused grid), a double-click,
   and Navigate → Image view all do the **same** thing — reveal image mode showing the currently-selected browse image.
@@ -213,16 +212,15 @@ What makes up the feature, and where the load-bearing decisions live:
 - **Tree pane.** `NSOutlineView` source-list (`setStyle(.SourceList)`), home + mounted volumes as **flat sibling roots**
   (the grouped "Locations" header fights the path-keyed node model — see `browser/CLAUDE.md`), lazy async directory
   enumeration, path-identity `NodeObject`s, native arrow-key nav, selection → `BrowseSelectFolder`.
-- **Grid pane.** `NSCollectionView` wired to the scheduler + cache, async folder listing (`grid_listing`), the
-  RGBA8→`NSImage` seam (`quicklook::nsimage_from_rgba8`), native selection (single-click instant, double-click opens via
-  `mouseDown:`), focus-aware per-item emphasis, Enter open-to-image hand-off, and the "(No images)" empty state (grid
-  non-focusable when empty).
+- **Grid pane.** `NSCollectionView` wired to the scheduler + cache, async folder listing (the shared
+  `folder_scan::FolderScanner`), the RGBA8→`NSImage` seam (`quicklook::nsimage_from_rgba8`), native selection
+  (single-click instant, double-click opens via `mouseDown:`), focus-aware per-item emphasis, Enter open-to-image
+  hand-off, and the "(No images)" empty state (grid non-focusable when empty).
 - **Behaviors.** Browse-open folder-reveal + scroll-to-mid + current-image preselect + grid focus via the **async
-  reveal-path walk** (`tree_model::reveal_path_chain` + a `RevealWalk` advanced by `BrowseTreeChildrenLoaded`, since
-  children load on the background scanner); Tab; double-click/Enter → image; dir-arg startup
-  (`browser::classify_launch_target` + `App::launch_directory`); arrow-key pane isolation (automatic from the
-  single-first-responder focus model). Pure logic (reveal chain, launch classification, grid-preselect index) is
-  unit-tested.
+  reveal-path walk** (`tree_model::reveal_path_chain` + a `RevealWalk` advanced by `FolderScanned`, since children load
+  on the background scanner); Tab; double-click/Enter → image; dir-arg startup (`browser::classify_launch_target` +
+  `App::launch_directory`); arrow-key pane isolation (automatic from the single-first-responder focus model). Pure logic
+  (reveal chain, launch classification, grid-preselect index) is unit-tested.
 - **QA + tests.** `SharedAppState` browse fields + the test-only QA driving hooks (see the QA observability note in
   "State"); integration tests asserting the full flow.
 

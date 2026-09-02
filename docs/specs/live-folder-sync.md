@@ -48,16 +48,17 @@ A live filesystem watcher keeps the data correct. Two roles, ideally one shared 
 ### Browse-mode live sync
 
 The active-folder (image-list) watch **follows the grid's listed folder in browse, the current image's folder in image
-mode** (`App::active_folder`); `retarget_active_folder_watch` re-targets on every mode switch, browse folder listing
-(`BrowseFolderListed`), and image open. They coincide once synced, but a user can browse a different folder than the
-open image — we watch what's shown.
+mode** (`App::active_folder`); `retarget_active_folder_watch` re-targets on every mode switch, browse folder listing (a
+`FolderScanned` listing the grid's folder), and image open. They coincide once synced, but a user can browse a different
+folder than the open image — we watch what's shown.
 
-A `FolderChanged` for the grid's listed folder re-scans off-thread (same `RescanLister`), and `apply_folder_rescan`
-updates BOTH the grid (`State::apply_grid_rescan` → `BrowseGrid::apply_rescan`) and the image-mode `dir_list` when each
-owns the folder, so synced modes stay coherent. The grid: inserts adds at the sorted position, drops removes, **keeps
-the selection by path** (pure `grid_model::select_after_rescan` — next/previous surviving image when the selected file
-is deleted, empty when the folder emptied), and refreshes thumbnails (a full clear-and-repump regenerates modified/added
-cells from the shared QuickLook cache). A changed selection re-warms via `warm_browse_selection`.
+A `FolderChanged` for the grid's listed folder re-scans off-thread (the shared `folder_scan::FolderScanner`), and
+`apply_folder_rescan` updates BOTH the grid (`State::apply_grid_rescan` → `BrowseGrid::apply_rescan`) and the image-mode
+`dir_list` when each owns the folder, so synced modes stay coherent. The grid: inserts adds at the sorted position,
+drops removes, **keeps the selection by path** (pure `grid_model::select_after_rescan` — next/previous surviving image
+when the selected file is deleted, empty when the folder emptied), and refreshes thumbnails (a full clear-and-repump
+regenerates modified/added cells from the shared QuickLook cache). A changed selection re-warms via
+`warm_browse_selection`.
 
 **Tree-structure watch lifecycle (Part B).** Roots are watched for the window's life (`watch_tree_roots` at browse setup
 / dir-arg launch). Each expanded tree folder is watched on `outlineViewItemDidExpand:` (→ `BrowseTreeFolderExpanded` →
@@ -65,7 +66,7 @@ cells from the shared QuickLook cache). A changed selection re-warms via `warm_b
 `App::unwatch_tree_folder`). Collapse never unwatches a **root**, nor a folder still serving as the active image-list
 folder. Bounded: only roots + expanded folders are watched, never the whole disk. A `FolderChanged` for a watched tree
 folder re-scans its subdirectories (`State::reload_tree_node` → invalidate the child cache + re-scan via the existing
-async `TreeScanner`). The completion is **subdir-delta-gated** — `reloadItem:reloadChildren:` only if a subfolder was
+shared folder scanner). The completion is **subdir-delta-gated** — `reloadItem:reloadChildren:` only if a subfolder was
 actually added/removed (a busy ancestor's file churn must not reload the tree) — and **selection-preserving** — it
 restores a surviving folder's selection without re-listing the grid, and the deleted-selected fallback (select the
 reloaded parent) fires only when the folder is genuinely gone from disk. See "Tree-structure updates" below.
@@ -120,10 +121,10 @@ QuickLook entry (QuickLook keys on file content/mtime, so a fresh request regene
 ## Component map
 
 - **Watcher infrastructure.** The `folder_watch` module: a `notify` FSEvents watcher over a dynamic non-recursive path
-  set (`watch`/`unwatch`), a pure debounce/coalescer (`Coalescer`, ~150 ms), and an off-thread `RescanLister`, posting
-  `AppCommand::FolderChanged` / `ActiveFolderRescanned` via the `EventLoopProxy`. Headless-tested: the coalescer and the
-  folder-diff (`navigation::folder_diff`, old list vs rescanned list → add/remove + delete-current outcome under each
-  `SortBy`).
+  set (`watch`/`unwatch`) and a pure debounce/coalescer (`Coalescer`, ~150 ms), posting `AppCommand::FolderChanged` via
+  the `EventLoopProxy`. The re-read it triggers rides `crate::folder_scan`, which answers with
+  `AppCommand::FolderScanned`. Headless-tested: the coalescer and the folder-diff (`navigation::folder_diff`, old list
+  vs rescanned list → add/remove + delete-current outcome under each `SortBy`).
 - **Image-mode live sync.** The active-folder watch drives sequence updates, cache + preview eviction, current-by-path
   recalc, delete-current navigation (next / previous / empty), and the image-mode "(No images)" empty state. See
   `navigation/CLAUDE.md` → "Live folder sync (image mode)".

@@ -14,8 +14,10 @@ src/
 ├── chrome.rs                What colour every Win32 window of ours paints (theme, surface, ink), pure so a Mac can assert it
 ├── clipboard.rs             The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`), pure and testable anywhere
 ├── commands.rs              AppCommand enum + global EventLoopProxy
+├── folder_scan.rs           The one off-thread directory reader (images + subdirs, dedupe, progress) shared by image mode, both browse grids and trees, and live sync
+├── folder_watch.rs          Live folder sync: notify/FSEvents watcher + pure debounce/coalescer
 ├── input.rs                 Maps keys/QA keys → AppCommand
-├── launch.rs                What Prvw is asked to open, by argument or by drop (waiting vs. empty window, a folder's images)
+├── launch.rs                What Prvw is asked to open, by argument or by drop (waiting vs. empty window)
 ├── logging.rs               `env_logger` setup, and where a console-less Windows launch writes instead
 ├── menu/                    Menu bar + context menu (muda) on macOS and Windows; `absent.rs` covers platforms with no menu bar
 ├── parity/                  Registries of settings, menu items, and commands + each platform's coverage (M0.5 layer 1)
@@ -90,9 +92,10 @@ state: handles (window, renderer, menu), launch flags (file_path, waiting_for_fi
   file through an Apple Event, and `onboarding` puts a window up meanwhile. Nowhere else has anything to wait for (a
   Start-menu shortcut, a taskbar pin, and a desktop icon all pass no argv), so the window comes up on
   `EmptyState::NothingOpen`: black canvas, one centered line, and a click anywhere or Cmd/Ctrl+O opens the picker.
-- **A folder.** macOS boots into browse mode at it. Everywhere else there's no browser until M5, so the folder becomes
-  an image-mode playlist: its images in the user's sort order, starting at the first. A folder with no images lands in
-  `EmptyState::NoImages`.
+- **A folder.** macOS and Windows boot into browse mode at it. Linux has no browser, so the folder becomes an image-mode
+  playlist: its images in the user's sort order, starting at the first. Reading it is the shared scanner's job like
+  every other folder read, so the window is up first and `App::install_scanned_folder` plays the folder when the images
+  land (`navigation::ScanLanding::PlayFromTop`). A folder with no images lands in `EmptyState::NoImages`.
 - **One or more files.** Unchanged everywhere.
 
 ## What a drop opens
@@ -106,7 +109,8 @@ Two things a drop does differently, both because it's a bulk gesture rather than
 
 - **Files Prvw can't decode are ignored.** Opening one would replace the picture on screen with a title-bar error.
 - **A dropped folder with no images changes nothing**, where a folder _argument_ lands in `EmptyState::NoImages`. At
-  launch there was nothing to lose; at runtime there's an image on screen worth keeping.
+  launch there was nothing to lose; at runtime there's an image on screen worth keeping. Both answers come out of the
+  same `ScanLanding::PlayFromTop` landing, which asks whether anything is on screen.
 
 **Gotcha: winit reports a drop one path at a time**, and sends no event to say the batch ended. `App` collects them in
 `pending_drops` and opens them in `about_to_wait`, which runs once the whole batch has been drained. Handling
@@ -121,6 +125,9 @@ Nothing in the shared E2E suite can reach it, because the gate in `tests/e2e/sha
 - **`winit` 0.30 `ApplicationHandler`.** App implements the trait. Window + wgpu surface created in `resumed()`, not
   startup (required on macOS).
 - **Render on demand.** `App.needs_redraw` gates frames. No continuous render loop.
+- **No directory reads on the main thread.** `folder_scan::FolderScanner` owns every `read_dir`; results come back as
+  `AppCommand::FolderScanned`. Launch shows the image against a provisional one-file list and swaps in the real folder
+  when the scan lands (`navigation::State::scan_pending`).
 - **Command architecture.** Every user action becomes an `AppCommand` in `crate::commands`. `App::execute_command`
   (`app/executor.rs`) is the single dispatcher. Keys, menus, QA HTTP, MCP, AppKit delegates all funnel there.
 - **No `tokio`.** CPU-bound decoding runs on `std::thread` via rayon. `mpsc` channels cross threads.
@@ -147,6 +154,8 @@ See `platform/macos/CLAUDE.md` for the full list. Short version:
 - Dev: `cd apps/desktop && cargo run -- <image_path>`
 - Release: `cd apps/desktop && cargo run --release -- <image_path>`
 - Verbose: `RUST_LOG=debug cargo run -- <image_path>`
+- Simulate a slow share: `PRVW_SCAN_DELAY_MS=5000 cargo run -- <image_path>` delays every folder scan
+- Background window (the integration harness sets this): `PRVW_BACKGROUND_WINDOW=1`
 - Target a feature: `RUST_LOG=prvw::navigation::preloader=debug ...`
 
 **Where the logs come out on Windows.** `prvw.exe` is a GUI-subsystem binary (`windows_subsystem` in `main.rs`), so no

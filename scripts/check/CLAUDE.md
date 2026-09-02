@@ -36,26 +36,26 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 
 ## Key files
 
-| File                          | Purpose                                                                             |
-| ----------------------------- | ----------------------------------------------------------------------------------- |
-| `main.go`                     | Entry point: flags, root dir, check selection, runner delegation                    |
-| `runner.go`                   | Parallel executor: goroutine pool, dependency graph, TTY status line                |
-| `checks/common.go`            | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`)           |
-| `checks/common_unix.go`       | Process-group setup and tree kill on macOS and Linux                                |
-| `checks/common_windows.go`    | The same, via job objects, on Windows                                               |
-| `checks/walk.go`              | `findFiles` / `countFiles`: the file counting every check does                      |
-| `console_{windows,other}.go`  | `prepareConsole()`: UTF-8 and ANSI on the Windows console                           |
-| `checks/registry.go`          | `AllChecks`: canonical ordered list, lookup and validation functions                |
-| `checks/desktop-rust-*.go`    | Rust checks (rustfmt, clippy, cargo-test, parity, windows-cross, linux-cross)       |
-| `checks/desktop-macos-availability.go` | ObjC selector/class use vs. the `LSMinimumSystemVersion` floor |
-| `checks/windows-installer.go` | The Windows installer's generated registry include, plus two facts about `prvw.nsi` |
-| `checks/oxfmt.go`             | Monorepo-wide formatter (oxfmt, prettier-compatible)                                |
-| `checks/website-*.go`         | Website checks (eslint, typecheck, build)                                           |
-| `checks/scripts-go-*.go`      | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests)          |
-| `checks/conflict-markers.go`  | Unresolved merge conflict markers in source and docs                                |
-| `stats.go`                    | CSV stats logging (`~/prvw-check-log.csv`)                                          |
-| `colors.go`                   | ANSI color constants                                                                |
-| `utils.go`                    | `findRootDir()` (walks up until `AGENTS.md` is found)                               |
+| File                                   | Purpose                                                                             |
+| -------------------------------------- | ----------------------------------------------------------------------------------- |
+| `main.go`                              | Entry point: flags, root dir, check selection, runner delegation                    |
+| `runner.go`                            | Parallel executor: goroutine pool, dependency graph, TTY status line                |
+| `checks/common.go`                     | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`)           |
+| `checks/common_unix.go`                | Process-group setup and tree kill on macOS and Linux                                |
+| `checks/common_windows.go`             | The same, via job objects, on Windows                                               |
+| `checks/walk.go`                       | `findFiles` / `countFiles`: the file counting every check does                      |
+| `console_{windows,other}.go`           | `prepareConsole()`: UTF-8 and ANSI on the Windows console                           |
+| `checks/registry.go`                   | `AllChecks`: canonical ordered list, lookup and validation functions                |
+| `checks/desktop-rust-*.go`             | Rust checks (rustfmt, clippy, cargo-test, parity, windows-cross, linux-cross)       |
+| `checks/desktop-macos-availability.go` | ObjC selector/class use vs. the `LSMinimumSystemVersion` floor                      |
+| `checks/windows-installer.go`          | The Windows installer's generated registry include, plus two facts about `prvw.nsi` |
+| `checks/oxfmt.go`                      | Monorepo-wide formatter (oxfmt, prettier-compatible)                                |
+| `checks/website-*.go`                  | Website checks (eslint, typecheck, build)                                           |
+| `checks/scripts-go-*.go`               | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests)          |
+| `checks/conflict-markers.go`           | Unresolved merge conflict markers in source and docs                                |
+| `stats.go`                             | CSV stats logging (`~/prvw-check-log.csv`)                                          |
+| `colors.go`                            | ANSI color constants                                                                |
+| `utils.go`                             | `findRootDir()` (walks up until `AGENTS.md` is found)                               |
 
 ## Adding a new check
 
@@ -75,13 +75,13 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 
 ## Apps and checks
 
-| App     | Tech      | Checks                                                                                          |
-| ------- | --------- | ----------------------------------------------------------------------------------------------- |
-| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                 |
+| App     | Tech      | Checks                                                                                                              |
+| ------- | --------- | ------------------------------------------------------------------------------------------------------------------- |
+| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                                     |
 | Desktop | Rust      | rustfmt, clippy, cargo-test, parity, installer, macos-availability, windows-cross + linux-cross (both slow, opt-in) |
-| Website | Astro     | eslint, typecheck, build                                                                        |
-| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests                                  |
-| Other   | -         | changelog-commit-links, conflict-markers                                                        |
+| Website | Astro     | eslint, typecheck, build                                                                                            |
+| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests                                                      |
+| Other   | -         | changelog-commit-links, conflict-markers                                                                            |
 
 ## The conflict-marker check
 

@@ -58,14 +58,14 @@ RAM genuinely buys more of them. It's wrong here in **both** directions:
 Full history, the measured tables, and the rejected alternatives:
 [`docs/notes/preload-window-and-cache-budget.md`](../../../../docs/notes/preload-window-and-cache-budget.md).
 
-| File             | Purpose                                                                                                                                                                                                                                                                                    |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `mod.rs`         | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `format_offset` + `NAV_DEBOUNCE` helpers (byte formatting is `diagnostics::format_bytes`)     |
-| `directory.rs`   | `DirectoryList`: scan parent dir for supported extensions, sort, track current position; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`; absolute jumps via `go_to_first()` / `go_to_last()`; `from_sorted(files, sort_by, index)` for live-sync re-scans |
-| `folder_diff.rs` | Pure, headless-tested live-sync diff: `diff_folder(old, scanned, sort_by, current)` → adds/removes + the delete-current `CurrentOutcome` (`Unchanged`/`Navigate`/`Empty`). No I/O — the `FolderChanged` handler does the off-thread scan and applies the result                            |
-| `preloader.rs`   | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction; `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` and the `preload_count()` derived from them                                                                                                                          |
-| `wrap.rs`        | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::refresh_preload_window` on loop toggle / sort change and by `navigate_by` for cache `keep` set                                                            |
-| `sort.rs`        | `SortBy { Name, Date, FileType }` (all ascending) + `sort_files()` comparator. Name uses natural alphanumeric (`photo_2 < photo_10`), case-insensitive. Date and FileType fall back to Name as tiebreaker                                                                                  |
+| File             | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mod.rs`         | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, scan_pending, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `PendingScan` + `ScanLanding`; `format_offset` + `NAV_DEBOUNCE` + `LOADING_OVERLAY_DELAY` helpers (byte formatting is `diagnostics::format_bytes`)                                                                                                                         |
+| `directory.rs`   | `DirectoryList`: sort, track current position; `provisional(path, sort_by)` (the one-image stand-in used before a folder is scanned) and `from_scan(images, sort_by, current)` (the real list, positioned by name); `from_explicit(files, sort_by, current)` for a multi-file open; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`; absolute jumps via `go_to_first()` / `go_to_last()`; `from_sorted(files, sort_by, index)` for live-sync re-scans |
+| `folder_diff.rs` | Pure, headless-tested live-sync diff: `diff_folder(old, scanned, sort_by, current)` → adds/removes + the delete-current `CurrentOutcome` (`Unchanged`/`Navigate`/`Empty`). No I/O — the `FolderChanged` handler asks the shared folder scanner and applies the result                                                                                                                                                                                                                 |
+| `preloader.rs`   | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction; `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` and the `preload_count()` derived from them                                                                                                                                                                                                                                                                                                                     |
+| `wrap.rs`        | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::refresh_preload_window` on loop toggle / sort change and by `navigate_by` for cache `keep` set                                                                                                                                                                                                                                                       |
+| `sort.rs`        | `SortBy { Name, Date, FileType }` (all ascending) + `sort_files()`. Name uses natural alphanumeric (`photo_2 < photo_10`), case-insensitive. Date and FileType fall back to Name as tiebreaker. Date reads each file's mtime exactly once up front, because a comparator that calls `stat` reads every file O(log n) times: thousands of round trips on a share                                                                                                                       |
 
 ## State
 
@@ -73,15 +73,43 @@ Full history, the measured tables, and the rejected alternatives:
 `VecDeque<NavigationRecord>`. The type is defined in `crate::diagnostics` (it's a measurement record). Navigation pushes
 entries; diagnostics formats them.
 
+## Launch and the folder scan
+
+Nothing waits on a directory read. `initialize_viewer` (and the running-app `AppCommand::OpenFile`) installs a
+**provisional** `DirectoryList` holding only the opened image, records the folder in `State.scan_pending`, asks
+`folder_scan::FolderScanner` for it, and shows the image through `App::display_current_async`. Reading an 8,000-file
+folder on an SMB mount takes 17-45 s, and doing it inline meant nothing painted for that long.
+
+- **The display is async for every format**, not just RAW: `pending_current` is set, the window is sized from ImageIO
+  dimensions (metadata only), and the preloader's prioritized target ships the pixels. The main thread never decodes a
+  launch or open target.
+- **The title is the filename alone** while the folder is unknown (a list of one drops the `n/N`).
+  `App::install_scanned_folder` fills the position in when `AppCommand::FolderScanned` lands, and also re-seeds the
+  preview folder and warms neighbors.
+- **The current image is kept by path** across the swap (`DirectoryList::from_scan`), the same invariant `set_sort_by`
+  and the live-sync re-scan hold. If it's gone from the listing (deleted while the scan ran), the provisional list stays
+  and so does the picture.
+- **The pending decode is matched by path**, not by directory slot (`App::pending_slot_for`): the scan landing
+  mid-decode moves the image from provisional slot 0 to its real index, so the slot a task was queued under is not a
+  stable identity. `PreloadResponse::Ready` and `Preview` carry only the path for this reason.
+- **Navigation stays put while `scan_pending` is set**: there's nowhere to go in a list of one. See the
+  `TODO(slow-share-launch part B)` on `App::navigation_blocked_by_scan`: the plan is to record the move as an intent and
+  resolve it when the real list arrives.
+- **The folder watch starts before the display**, so a file added during a long scan isn't missed.
+- `scan_pending` is exposed in `SharedAppState` and the QA `/state`. `PRVW_SCAN_DELAY_MS` delays every scan so tests can
+  hold this state (see `launch_shows_the_image_while_the_folder_is_still_being_scanned`).
+
+The multi-file launch (`explicit_files`) skips all of this: the given files are already the navigation set.
+
 ## Navigation render path
 
 On cache hit, `navigate_by` renders from cache synchronously and submits neighbor preloads via
 `Preloader::request_neighbor_preload`. On cache miss it sets `State.pending_current = Some(index)`, shows a "Loading…"
 title, and calls `Preloader::prioritize_target(index, path, total)` — which cancels every other in-flight task so the
 priority-0 target gets the worker's full attention. `poll_preloader` runs the render when
-`PreloadResponse::Ready { index }` matches `pending_current`, then queues the now-displayed image's neighbors (deferred
-until after the target arrives — see "Preloader prioritization" below). The main thread never decodes navigation targets
-directly. Only settings re-decode and `Refresh` still call the sync `display_image` path.
+`PreloadResponse::Ready { path }` matches the file `pending_current` points at, then queues the now-displayed image's
+neighbors (deferred until after the target arrives — see "Preloader prioritization" below). The main thread never
+decodes navigation targets directly. Only settings re-decode and `Refresh` still call the sync `display_image` path.
 
 ## Debounced navigation
 
@@ -151,7 +179,10 @@ after the deferred-neighbor change reduced background work. If you add another a
 
 ## Preview placeholder
 
-On a cache-miss navigation the title bar shows "Loading…" and a centered "Loading..." pill appears mid-screen.
+On a cache-miss navigation the title bar shows "Loading…", and a centered "Loading..." pill appears mid-screen once the
+target has taken longer than `LOADING_OVERLAY_DELAY` (150 ms). A local file decodes well inside that, so it never
+flashes. `App::about_to_wait` recomputes `App.loading_overlay_visible` and asks for a redraw only when it flips;
+`schedule_wakeup` holds a `WaitUntil` at the deadline so the overlay still appears on an otherwise idle loop.
 `apply_preview_auto_fit` resizes the window to the source dimensions (read from the file's header by
 `previews::metadata`, no decode) before any pixels paint, on **every** platform. On macOS, if the `previews` module also
 has a cached QuickLook preview for the target index, that preview is uploaded to the image texture as a blurry
@@ -175,14 +206,13 @@ Off macOS a RAW cache-miss therefore fits the window from the header and then wa
 Not `display_preview_placeholder`, which is the QuickLook path and compiles everywhere; it just finds an empty cache and
 returns `false`.
 
-**Initial launch uses the same path for RAW.** `App::display_initial_image` (called from `initialize_viewer`) gates on
-`decoding::is_raw_extension`: a RAW launch mirrors the cache-miss nav flow (set `pending_current`, size the window from
-header dims via `apply_preview_auto_fit`, show "Loading…", call `prioritize_target`) so the embedded preview paints
-instantly instead of blocking the main thread on the ~450 ms develop. Non-RAW launches keep the synchronous
-`display_image` decode unchanged (tens of ms — an async path would only add a needless "Loading…" flash). This requires
-two ordering points in `initialize_viewer`: the preloader is stored into `navigation.preloader` and the preview folder
-is seeded BEFORE the initial display, and the preview scheduler is paused AFTER it (so the RAW path's `pending_current`
-gates the pause).
+**Launch and open take the same path, for every format.** `App::display_current_async` (called from `initialize_viewer`
+and the `OpenFile` handler) mirrors the cache-miss nav flow: set `pending_current`, size the window from header dims via
+`apply_preview_auto_fit`, call `prioritize_target`. A RAW gets its embedded preview instantly instead of blocking on the
+~450 ms develop, and everything else gets the same non-blocking treatment, which is what keeps a slow network read off
+the main thread. Ordering matters inside it: the preview folder is seeded BEFORE the auto-fit (which reads source
+dimensions through `previews`), and `initialize_viewer` pauses the preview scheduler AFTER the display, so the path's
+`pending_current` gates the pause.
 
 ## Loop navigation
 
@@ -212,16 +242,16 @@ re-issue it under its new slot via `prioritize_target`.
 ## Live folder sync (image mode)
 
 The active folder — the current image's parent — is watched live, so adds/modifies/deletes reflect without a manual
-refresh. The watcher infra lives in `crate::folder_watch` (a `notify` FSEvents watcher + a pure debounce/coalescer + an
-off-thread re-scan lister); this is the image-mode consumer.
+refresh. The watcher infra lives in `crate::folder_watch` (a `notify` FSEvents watcher + a pure debounce/coalescer); the
+re-read it triggers rides the shared `crate::folder_scan` worker. This is the image-mode consumer.
 
 **Flow.** `App::retarget_active_folder_watch` watches the current image's folder (unwatching the previous one) on every
-active-folder change: `OpenFile`, browse reveal (`reveal_selected_image`), and a re-scan that empties the folder. A
-coalesced `AppCommand::FolderChanged { folder, modified }` arrives on the main thread; `App::handle_folder_changed`
-evicts the `modified` paths from `image_cache` (`ImageCache::remove`) and the preview cache (`previews::forget_path`),
-then enqueues an **off-thread** re-scan on `folder_watch::RescanLister` (never `read_dir` inline — a slow SMB folder
-must not block the loop). The result returns as `AppCommand::ActiveFolderRescanned`, handled by
-`App::apply_folder_rescan`.
+active-folder change: launch, `OpenFile`, browse reveal (`reveal_selected_image`), and a re-scan that empties the
+folder. A coalesced `AppCommand::FolderChanged { folder, modified }` arrives on the main thread;
+`App::handle_folder_changed` evicts the `modified` paths from `image_cache` (`ImageCache::remove`) and the preview cache
+(`previews::forget_path`), then asks the shared `folder_scan::FolderScanner` to re-read the folder (never `read_dir`
+inline — a slow SMB folder must not block the loop) and notes it in `App.pending_rescan`. The result returns as
+`AppCommand::FolderScanned`, which `App::handle_folder_scanned` routes to `App::apply_folder_rescan`.
 
 **Applying the diff** (`apply_folder_rescan` → pure `folder_diff::diff_folder`):
 

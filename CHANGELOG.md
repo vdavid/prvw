@@ -16,6 +16,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
   in-app repair button can't drift. It's unsigned until a certificate exists, so expect SmartScreen
   ([0c85da41](https://github.com/vdavid/prvw/commit/0c85da41),
   [0fa56ca2](https://github.com/vdavid/prvw/commit/0fa56ca2))
+
+### Changed
+
+- Opening an image no longer waits for its folder to be listed. A picture in a big folder on a network share could leave
+  you staring at nothing for the best part of a minute; the window and the image now show up straight away, and the
+  `n/N` position fills in when the listing arrives. Every format now loads off the main thread (only camera RAW did
+  before), and the "Loading…" pill only appears if the image takes longer than 150 ms, so a local file never flashes it
+
 ### Fixed
 
 - Prvw starts on macOS 13 again. The onboarding window drew its checkmark with an `NSBezierPath` call that only exists
