@@ -2,8 +2,8 @@
 //!
 //! Reading a JPEG header is microseconds locally and a round trip on a NAS, and the browser's
 //! whole premise is that a slow filesystem never reaches the main thread. So this is one worker
-//! and a channel, the same shape as `browser::grid_listing::FolderLister` and
-//! `navigation::preloader`: `std::thread` + `mpsc`, no tokio.
+//! and a channel, the same shape as `crate::folder_scan` and `navigation::preloader`:
+//! `std::thread` + `mpsc`, no tokio.
 //!
 //! One request supersedes the previous. Arrowing through a folder fires a request per cell, and
 //! only the file the user settles on is worth a header read; the worker drains the queue and

@@ -3,8 +3,8 @@
 //! It reads its rows from [`super::super::roots`] and its child folders from
 //! [`crate::browser::tree_model`], and it never touches the disk on the main thread — a stale
 //! mapped network drive blocks for tens of seconds, and that would freeze winit's pump along with
-//! everything else. A node's children are a [`ChildCache`] state machine filled by a
-//! [`TreeScanner`] thread, exactly as the macOS outline view fills its own.
+//! everything else. A node's children are a [`ChildCache`] state machine filled by the app's
+//! shared `crate::folder_scan::FolderScanner`, exactly as the macOS outline view fills its own.
 //!
 //! ## Decision: `SetWindowTheme(tree, "Explorer")`
 //!
@@ -56,7 +56,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
-use crate::browser::tree_model::{self, ChildCache, Root, TreeScanner};
+use crate::browser::tree_model::{self, ChildCache, Root};
 use crate::paths::PathPolicy;
 
 use super::{ID_TREE, Ui, set_font, wide, with_ui, with_ui_mut};
@@ -78,8 +78,6 @@ pub(super) struct TreeState {
     /// Per-path child folders, and their load state. The tree serves children from here and
     /// never reads a directory itself.
     children: ChildCache,
-    /// The background directory scanner that fills the cache.
-    scanner: TreeScanner,
     /// Every path the tree has a row for. A row carries its index here in its `lParam`, because
     /// `HTREEITEM` is an opaque handle with nowhere to hang a `PathBuf`.
     paths: Vec<PathBuf>,
@@ -156,7 +154,6 @@ pub(super) fn create(
     let state = TreeState {
         roots,
         children: ChildCache::new(),
-        scanner: TreeScanner::start(),
         paths: Vec::new(),
         rows: HashMap::new(),
         reveal: None,
@@ -343,11 +340,15 @@ fn request_children(item: HTREEITEM) {
     // doesn't strand it. Every Windows temp folder is under `AppData`, which is hidden, so
     // without this a dropped folder from there would never get a row.
     let reveal_child = with_ui(|ui| reveal_child_of(ui, &path)).flatten();
-    with_ui(|ui| match reveal_child {
-        Some(child) => ui.tree_state.scanner.scan_revealing(path, child),
-        None => ui.tree_state.scanner.scan(path),
-    });
+    request_scan(path, reveal_child);
     super::refresh_status_bar();
+}
+
+/// Ask the shared folder scanner (`crate::folder_scan`) to read `path`. The tree has no handle on
+/// the scanner — it's owned by `App` — so the request rides an `AppCommand` through the event loop.
+/// Fire-and-forget; the answer arrives as `AppCommand::FolderScanned`.
+fn request_scan(path: PathBuf, reveal_child: Option<PathBuf>) {
+    crate::commands::send_command(crate::commands::AppCommand::ScanFolder { path, reveal_child });
 }
 
 /// The step after `folder` on the reveal walk in flight, if that walk is sitting on `folder`.
@@ -536,7 +537,7 @@ fn advance_reveal() {
                     parent.display()
                 );
                 with_ui_mut(|ui| ui.tree_state.children.invalidate(&parent));
-                with_ui(|ui| ui.tree_state.scanner.scan_revealing(parent, child));
+                request_scan(parent, Some(child));
                 return;
             }
             tree_model::RevealStep::Wait => return,
@@ -640,5 +641,5 @@ pub(super) fn root_paths(ui: &Ui) -> Vec<PathBuf> {
 /// folder changes on disk; the delivery lands in [`children_loaded`], which replaces its rows.
 pub(super) fn invalidate(path: &Path) {
     with_ui_mut(|ui| ui.tree_state.children.invalidate(path));
-    with_ui(|ui| ui.tree_state.scanner.scan(path.to_path_buf()));
+    request_scan(path.to_path_buf(), None);
 }

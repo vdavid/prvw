@@ -32,10 +32,10 @@
 //! Reading a directory on the main thread freezes winit's event loop (the whole app) whenever the
 //! filesystem is slow — a stale SMB mount can block for ~10 s. So the data source serves children
 //! **only from an in-memory cache** ([`tree_model::ChildCache`]) and never calls `read_dir` inline.
-//! On a cache miss it marks the path in flight, enqueues a scan on a background [`TreeScanner`]
-//! thread (`std::thread` + `mpsc`, the same pattern as `navigation::preloader` — no tokio), and
-//! reports zero children for now. The scanner reads the directory off-thread and posts the result
-//! back via `AppCommand::BrowseTreeChildrenLoaded`; the executor stores it in the cache and calls
+//! On a cache miss it marks the path in flight, posts `AppCommand::ScanFolder` so the executor
+//! hands the folder to the shared `folder_scan::FolderScanner` (one OS thread for every directory
+//! read in the app — no tokio), and reports zero children for now. The scan's result comes back as
+//! `AppCommand::FolderScanned`; the executor stores the subdirectories in the cache and calls
 //! `reloadItem:reloadChildren:` so the outline view re-queries the node. `isItemExpandable:`
 //! assumes every directory is expandable (no disk read) until a scan proves it empty.
 //!
@@ -63,7 +63,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSNotification, NSRect, NSString};
 
-use super::tree_model::{self, ChildCache, TreeScanner};
+use super::tree_model::{self, ChildCache};
 
 // ─── Sidebar styling constants (tweak for a Finder-like feel) ───────────────
 // All in logical points.
@@ -122,6 +122,16 @@ impl BrowseOutlineView {
     }
 }
 
+/// Ask the shared folder scanner (`crate::folder_scan`) to read `path`. The data source has no
+/// handle on the scanner — it's owned by `App` — so the request rides an `AppCommand` through the
+/// event loop. Fire-and-forget; the answer arrives as `AppCommand::FolderScanned`.
+fn request_scan(path: &Path) {
+    crate::commands::send_command(crate::commands::AppCommand::ScanFolder {
+        path: path.to_path_buf(),
+        reveal_child: None,
+    });
+}
+
 // ─── NodeObject: the per-path item, pointer-identity stable ────────────────
 
 /// Ivars for [`NodeObject`]: the node's absolute path. Stored as a `PathBuf` so the Rust side
@@ -158,9 +168,9 @@ impl NodeObject {
 // ─── Data source + delegate ────────────────────────────────────────────────
 
 /// Ivars for [`TreeDataSource`]: the roots, the node-identity cache, the async child-load state
-/// machine, and the background scanner. All `RefCell` because AppKit calls the data source
-/// re-entrantly on the main thread; no cross-thread sharing happens (the scanner talks back via
-/// the global `EventLoopProxy`, not by sharing these).
+/// machine. All `RefCell` because AppKit calls the data source re-entrantly on the main thread;
+/// no cross-thread sharing happens (the shared folder scanner talks back through the executor, not
+/// by sharing these).
 struct TreeDataSourceIvars {
     /// Top-level rows (home + volumes), in display order. Built once at construction.
     roots: Vec<tree_model::Root>,
@@ -168,10 +178,9 @@ struct TreeDataSourceIvars {
     nodes: RefCell<HashMap<PathBuf, Retained<NodeObject>>>,
     /// Per-path child-directory load state (`NotLoaded` → `InFlight` → `Loaded`). The data source
     /// serves children only from here and NEVER reads a directory inline — a slow filesystem on
-    /// the main thread would freeze the app. A miss enqueues a background scan via `scanner`.
+    /// the main thread would freeze the app. A miss asks the shared folder scanner via
+    /// [`request_scan`].
     children: RefCell<ChildCache>,
-    /// Background directory scanner (its own OS thread). Kept alive for the data source's life.
-    scanner: TreeScanner,
     /// Paths whose pending scan was kicked off by a **live-folder-sync reload** (`reload_node`), not
     /// an ordinary expand/reveal. Their completion is subdir-delta-gated: the tree only reloads if
     /// the subdirectory set actually changed (a busy folder churning file events must NOT churn the
@@ -427,7 +436,6 @@ impl TreeDataSource {
             roots,
             nodes: RefCell::new(HashMap::new()),
             children: RefCell::new(ChildCache::new()),
-            scanner: TreeScanner::start(),
             reload_pending: RefCell::new(HashMap::new()),
             suppress_selection_command: Cell::new(false),
         };
@@ -465,7 +473,7 @@ impl TreeDataSource {
 
     /// Like [`loaded_children`](Self::loaded_children), but on a cache miss it marks the path in
     /// flight and enqueues a background scan (so the result comes back via
-    /// `AppCommand::BrowseTreeChildrenLoaded`). Returns the children only if already loaded; never
+    /// `AppCommand::FolderScanned`). Returns the children only if already loaded; never
     /// reads the disk on the main thread.
     fn loaded_or_request(&self, path: &Path) -> Option<Vec<PathBuf>> {
         let mut cache = self.ivars().children.borrow_mut();
@@ -475,7 +483,7 @@ impl TreeDataSource {
         // Miss or in flight: ask the cache to start a scan (no-op if already in flight).
         if cache.begin_scan(path, Instant::now()) {
             log::debug!("Tree scan queued: {}", path.display());
-            self.ivars().scanner.scan(path.to_path_buf());
+            request_scan(path);
         }
         None
     }
@@ -487,7 +495,7 @@ impl TreeDataSource {
     }
 
     /// Invalidate `path`'s cached children and enqueue a fresh background scan (live folder sync,
-    /// Part B). The result returns via `AppCommand::BrowseTreeChildrenLoaded` → `children_loaded`,
+    /// Part B). The result returns via `AppCommand::FolderScanned` → `children_loaded`,
     /// which **subdir-delta-gates** the reload: only if the fresh subdirectory set differs from
     /// what the node showed does it `reloadItem:reloadChildren:`. A busy folder (`/tmp`, Downloads)
     /// firing constant *file*-change events therefore never churns the tree (the tree shows
@@ -521,7 +529,7 @@ impl TreeDataSource {
             .begin_scan(path, Instant::now())
         {
             log::debug!("Tree re-scan queued (live sync): {}", path.display());
-            self.ivars().scanner.scan(path.to_path_buf());
+            request_scan(path);
         }
     }
 
@@ -533,15 +541,20 @@ impl TreeDataSource {
         self.ivars().reload_pending.borrow_mut().remove(path)
     }
 
-    /// Store a finished scan's children. Called from the executor on
-    /// `AppCommand::BrowseTreeChildrenLoaded` before it reloads the node. Returns the node so the
-    /// caller can hand it to `reloadItem:reloadChildren:` (or `None` if the path isn't a known
-    /// node — e.g. a stale scan after the tree changed).
+    /// Store a finished scan's children. Called from the executor on `AppCommand::FolderScanned`
+    /// before it reloads the node. Returns the node so the caller can hand it to
+    /// `reloadItem:reloadChildren:`, or `None` when there's nothing to reload: the tree had no
+    /// scan in flight for this path (the shared scanner serves other consumers too), or the path
+    /// isn't a known node.
     fn complete_scan(&self, path: &Path, children: Vec<PathBuf>) -> Option<Retained<NodeObject>> {
-        self.ivars()
+        if !self
+            .ivars()
             .children
             .borrow_mut()
-            .complete_scan(path, children);
+            .complete_scan(path, children)
+        {
+            return None;
+        }
         // Only return a node if we already minted one for this path (roots and expanded folders
         // have one). A path we've never shown has no node and needs no reload.
         self.ivars().nodes.borrow().get(path).cloned()
@@ -717,7 +730,7 @@ unsafe fn as_nsview<T>(obj: &T) -> &NSView {
 /// down through every ancestor to the current image's folder, then select it — but child
 /// directories load **asynchronously** (the data source never reads the disk on the main thread).
 /// So the walk can't expand synchronously; it advances one level each time a
-/// `BrowseTreeChildrenLoaded` for the level it's waiting on arrives.
+/// `FolderScanned` for the level it's waiting on arrives.
 ///
 /// `chain` is the root-to-target path list from `tree_model::reveal_path_chain`; `position` is the
 /// index in `chain` whose children the walk is currently waiting on. When `chain[position]`'s
@@ -825,9 +838,9 @@ impl BrowseTree {
 
     /// Apply a completed background scan: store the children in the cache, then reload that node so
     /// the outline view re-queries it and shows the rows. Called from the executor on
-    /// `AppCommand::BrowseTreeChildrenLoaded`. A `None` node (path never shown, or a stale scan)
-    /// just updates the cache with no UI reload needed. After the reload, advances any in-progress
-    /// reveal walk that was waiting on this path's children (browse-open positioning).
+    /// `AppCommand::FolderScanned`. Nothing to reload (no scan in flight for this path, or the path
+    /// was never shown) leaves the tree alone. After the reload, advances any in-progress reveal
+    /// walk that was waiting on this path's children (browse-open positioning).
     ///
     /// **Live-folder-sync reloads are gated.** A scan kicked off by [`reload_node`](Self::reload_node)
     /// (a watched tree folder changed on disk) goes through [`reload_completed`](Self::reload_completed)
@@ -989,7 +1002,7 @@ impl BrowseTree {
 
     /// Re-scan a watched (expanded) tree folder's subdirectories after it changed on disk (live
     /// folder sync, Part B): invalidate its cached children and enqueue a fresh background scan. The
-    /// result arrives via `BrowseTreeChildrenLoaded` → `children_loaded`, which
+    /// result arrives via `FolderScanned` → `children_loaded`, which
     /// `reloadItem:reloadChildren:`s the node — so a new subfolder appears and a deleted one
     /// vanishes. `reloadItem:reloadChildren:` preserves the expansion + selection of surviving
     /// descendants (tracked by identity-stable `NodeObject`s), so the user's open subtree stays put.
@@ -1100,7 +1113,7 @@ impl BrowseTree {
         // node through the data source's identity cache.
         self.expand_node(path);
         // If this level's children are already loaded (the data source served them synchronously),
-        // no `BrowseTreeChildrenLoaded` will arrive to advance us — step now.
+        // no `FolderScanned` will arrive to advance us — step now.
         if self._data_source.loaded_children(path).is_some() {
             self.advance_reveal(path);
         }

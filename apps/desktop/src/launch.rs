@@ -1,11 +1,11 @@
 //! What Prvw is being asked to open, whether that came from the command line or a drop.
 //!
 //! Every question here is answered purely, so it's testable for every platform from any host,
-//! the way `parity` is. `main` asks [`waits_for_a_file`] before the event loop exists,
-//! `App::initialize_viewer` asks [`images_in`] while it's building the navigation list, and
-//! `App::open_dropped` asks [`classify_open_request`] each time files land on the window.
+//! the way `parity` is. `main` asks [`waits_for_a_file`] before the event loop exists, and
+//! `App::open_dropped` asks [`classify_open_request`] each time files land on the window. Reading
+//! the folder itself is `crate::folder_scan`'s job, on its own thread.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::browser::LaunchTarget;
 use crate::decoding;
@@ -21,26 +21,6 @@ use crate::parity::Platform;
 /// empty state (`app::EmptyState::NothingOpen`) and the user picks a file from there.
 pub fn waits_for_a_file(nothing_named: bool, platform: Platform) -> bool {
     nothing_named && platform == Platform::MacOs
-}
-
-/// The images in `dir`, in whatever order the filesystem hands them over.
-///
-/// Callers sort: `DirectoryList::from_explicit` puts them in the user's chosen order. Subfolders
-/// are not walked, matching what opening any image in a folder gives you.
-pub fn images_in(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        log::warn!("Couldn't read the folder {}", dir.display());
-        return Vec::new();
-    };
-    entries
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(decoding::is_supported_extension)
-        })
-        .collect()
 }
 
 /// What a set of paths handed to Prvw at once resolves to. See [`classify_open_request`].
@@ -68,7 +48,7 @@ pub enum OpenRequest {
 ///   files means the pictures among them. A typed `prvw notes.txt` is trusted and shows its
 ///   decode error; a dropped one would take the image on screen away, so it's ignored instead.
 ///   The extension gate is [`crate::decoding::is_supported_extension`], the same one that picks
-///   a folder's images in [`images_in`].
+///   a folder's images.
 /// - **Folders alongside anything else are ignored**, since a set of images is the only thing
 ///   the app can show at once. The command line takes the same line: no browsing two folders.
 ///
@@ -119,34 +99,6 @@ mod tests {
         for platform in Platform::ALL {
             assert!(!waits_for_a_file(false, *platform));
         }
-    }
-
-    #[test]
-    fn a_folder_offers_its_images_and_nothing_else() {
-        let dir = tempfile::tempdir().unwrap();
-        for name in ["b.png", "a.jpg", "notes.txt", "raw.cr2"] {
-            std::fs::write(dir.path().join(name), b"x").unwrap();
-        }
-        std::fs::create_dir(dir.path().join("subfolder")).unwrap();
-
-        let mut found: Vec<String> = images_in(dir.path())
-            .iter()
-            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-        found.sort();
-        assert_eq!(found, vec!["a.jpg", "b.png", "raw.cr2"]);
-    }
-
-    #[test]
-    fn a_folder_with_no_images_offers_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("notes.txt"), b"x").unwrap();
-        assert!(images_in(dir.path()).is_empty());
-    }
-
-    #[test]
-    fn an_unreadable_folder_offers_nothing_rather_than_panicking() {
-        assert!(images_in(Path::new("/no/such/folder/anywhere")).is_empty());
     }
 
     /// The ordinary drop: one picture, which opens.

@@ -44,4 +44,4 @@ mod ui;
 #[cfg(target_os = "windows")]
 pub use ui::selection_measured;
 #[cfg(target_os = "windows")]
-pub use ui::{BrowseUi, list_folder, refresh_status_bar, thumbnails_available};
+pub use ui::{BrowseUi, listing_started, refresh_status_bar, thumbnails_available};

@@ -13,6 +13,10 @@
 //! via the global `EventLoopProxy`, never blocking it. No tokio — `std::thread` + channels, the
 //! same pattern as `navigation::preloader`.
 //!
+//! The re-scan a change triggers isn't done here: `App::handle_folder_changed` hands the folder to
+//! the shared `crate::folder_scan::FolderScanner`, the one worker that does every directory read in
+//! the app.
+//!
 //! The debounce/coalesce logic is the pure, headless-tested `Coalescer`; the thread is a thin
 //! timing shell around it.
 //!
@@ -320,75 +324,6 @@ fn record_watch_outcome(armed: &mut BTreeSet<PathBuf>, request: Control, applied
         Control::Watch(path) if applied => armed.insert(path),
         Control::Watch(path) | Control::Unwatch(path) => armed.remove(&path),
     }
-}
-
-/// A background folder re-lister for live folder sync. Owns one OS thread that lists a folder's
-/// supported images off the main thread (a slow SMB folder must never block the event loop) and
-/// posts them back as `AppCommand::ActiveFolderRescanned`. Mirrors `browser::grid_listing` but
-/// posts via the `EventLoopProxy` directly so it's cross-platform (the grid lister's
-/// `send_command` path is macOS-only). Newest request wins, so a burst of coalesced changes lists
-/// the folder once.
-pub struct RescanLister {
-    request_tx: mpsc::Sender<PathBuf>,
-}
-
-impl RescanLister {
-    /// Spawn the rescan worker. Runs until the `Sender` (held by `App`) drops.
-    pub fn start(proxy: EventLoopProxy<AppCommand>) -> Self {
-        let (request_tx, request_rx) = mpsc::channel::<PathBuf>();
-        std::thread::Builder::new()
-            .name("prvw-rescan".into())
-            .spawn(move || {
-                while let Ok(mut folder) = request_rx.recv() {
-                    // Coalesce: skip to the newest queued folder.
-                    while let Ok(newer) = request_rx.try_recv() {
-                        folder = newer;
-                    }
-                    let images = list_supported_images(&folder);
-                    log::debug!(
-                        "Active folder re-scanned: {} ({} image(s))",
-                        folder.display(),
-                        images.len()
-                    );
-                    if proxy
-                        .send_event(AppCommand::ActiveFolderRescanned { folder, images })
-                        .is_err()
-                    {
-                        return; // Event loop closed.
-                    }
-                }
-            })
-            .expect("Failed to spawn rescan lister worker thread");
-        log::info!("Rescan lister started (dedicated OS thread)");
-        RescanLister { request_tx }
-    }
-
-    /// Enqueue a folder re-scan. Fire-and-forget; the result arrives as
-    /// `AppCommand::ActiveFolderRescanned`.
-    pub fn list(&self, folder: PathBuf) {
-        if self.request_tx.send(folder).is_err() {
-            log::debug!("Rescan lister worker is gone — dropping rescan request");
-        }
-    }
-}
-
-/// List the supported image files directly inside `folder` (non-recursive), unsorted. The caller
-/// sorts via the active `SortBy`. Returns an empty `Vec` for an unreadable folder (which the
-/// re-scan reads as "the folder emptied").
-#[must_use]
-pub fn list_supported_images(folder: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(crate::decoding::is_supported_extension)
-        })
-        .collect()
 }
 
 #[cfg(test)]

@@ -186,6 +186,10 @@ pub(crate) struct App {
     /// from raw deltas to zoom steps and images. See `crate::scroll`.
     pub(crate) scroll: scroll::Scroll,
     pub(crate) needs_redraw: bool,
+    /// Whether the centered "Loading…" overlay is currently drawn. It only appears once the image
+    /// we're waiting on has taken longer than `navigation::LOADING_OVERLAY_DELAY`, so a local file
+    /// never flashes it. Recomputed in `about_to_wait`; a change there asks for a redraw.
+    pub(crate) loading_overlay_visible: bool,
     /// Set by a slideshow auto-advance to request that the next image display
     /// crossfades from the current one. Consumed (and cleared) by
     /// `display_from_cache`; cleared on a cache miss so only instant,
@@ -222,9 +226,16 @@ pub(crate) struct App {
     /// black canvas plus one centered overlay. Cleared when an image is displayed (leaving the
     /// folder, opening a file, or one appearing in the watched folder).
     pub(crate) empty_state: Option<EmptyState>,
-    /// Background worker that re-scans the active folder off the main thread on a `FolderChanged`,
-    /// posting `ActiveFolderRescanned` back. `None` until the viewer initializes.
-    pub(crate) rescan_lister: Option<crate::folder_watch::RescanLister>,
+    /// The one worker that reads directories for the whole app (image mode, the browse grid, the
+    /// browse tree, live sync). `None` until the viewer initializes. See `crate::folder_scan`.
+    pub(crate) folder_scanner: Option<crate::folder_scan::FolderScanner>,
+    /// The folder whose scan the browse grid is waiting on, so `FolderScanned` for it repopulates
+    /// the grid. `None` when the grid isn't waiting on anything.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub(crate) pending_grid_listing: Option<PathBuf>,
+    /// The folder whose scan live sync is waiting on, so `FolderScanned` for it runs the
+    /// add/remove/delete-current diff. `None` when no change is outstanding.
+    pub(crate) pending_rescan: Option<PathBuf>,
     /// Paths flagged `Modify` by the latest `FolderChanged`, carried across the async re-scan so
     /// `apply_folder_rescan` can re-decode a modified currently-displayed image. Cleared on apply.
     pub(crate) pending_modified: Vec<PathBuf>,
@@ -301,6 +312,7 @@ impl App {
             last_click_time: None,
             scroll: scroll::Scroll::for_host(),
             needs_redraw: false,
+            loading_overlay_visible: false,
             pending_crossfade: false,
             // Neutral until there's a window to ask (`initialize_viewer`). Anything else is a
             // guess at one platform's hardware, and nothing reads this before then anyway.
@@ -313,7 +325,10 @@ impl App {
             watched_folder: None,
             armed_watch_folders: Vec::new(),
             empty_state: None,
-            rescan_lister: None,
+            folder_scanner: None,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            pending_grid_listing: None,
+            pending_rescan: None,
             pending_modified: Vec::new(),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             watched_tree_folders: Vec::new(),
@@ -659,32 +674,32 @@ impl App {
             window::set_fullscreen_appearance(&win, window::is_fullscreen(&win));
         }
 
-        // Build the navigation list
+        // Build the navigation list. Nothing here reads the directory: on a network share that
+        // takes tens of seconds, and until it finished nothing would paint. The shared scanner
+        // does the read, and the list it produces lands via `AppCommand::FolderScanned` (see
+        // `install_scanned_folder`).
         let initial_sort_by = settings::Settings::load().sort_by;
         // The browse grid lists folder images in the same order, so opening a grid item lands on
         // the matching image-mode index.
         self.browser.set_sort_by(initial_sort_by);
         let launch_directory = self.launch_directory.take();
+        // The folder this launch needs read, if any. `None` for a directory launch that boots
+        // into browse mode (the tree asks for its own folders) and for an explicit multi-file
+        // open, where the named files ARE the navigation set.
+        let mut folder_to_scan: Option<PathBuf> = None;
         self.navigation.dir_list = if let Some(dir) = &launch_directory {
             // A folder argument. A platform with a browser boots into browse mode at it
             // (handled at the end of this function), so there's no list and no initial image —
             // the user opens one from the grid. Linux has no browser, and a window with no image
             // and no way to get one is the defect M1 step 1 exists to fix, so there the folder
             // becomes an image-mode playlist instead: its images in the user's sort order,
-            // starting at the first. A folder with no images lands in the "(No images)" empty
-            // state below, and Ctrl+O is the way out of it.
-            if cfg!(any(target_os = "macos", target_os = "windows")) {
-                None
-            } else {
-                let images = crate::launch::images_in(dir);
-                log::info!(
-                    "Folder launch: {} image(s) in {}",
-                    images.len(),
-                    dir.display()
-                );
-                (!images.is_empty())
-                    .then(|| directory::DirectoryList::from_explicit(images, initial_sort_by, None))
+            // starting at the first. The scanner reads it like every other folder, so the list
+            // arrives in `install_scanned_folder`, and a folder with no images lands in the
+            // "(No images)" empty state from there.
+            if !cfg!(any(target_os = "macos", target_os = "windows")) {
+                folder_to_scan = Some(dir.clone());
             }
+            None
         } else if let Some(files) = self.explicit_files.take() {
             // The list sorts; the image that opens is the one named first on the command line
             // (`self.file_path`), so the list has to sit on it rather than on whatever sorts
@@ -699,7 +714,11 @@ impl App {
             // says how to open something.
             None
         } else {
-            directory::DirectoryList::from_file(&self.file_path, initial_sort_by)
+            folder_to_scan = self.file_path.parent().map(Path::to_path_buf);
+            Some(directory::DirectoryList::provisional(
+                &self.file_path,
+                initial_sort_by,
+            ))
         };
 
         // Start preloader thread pool and store it before displaying the
@@ -714,52 +733,49 @@ impl App {
             self.event_loop_proxy.clone(),
         ));
 
-        // Hand the preview state the full folder. Two things follow: the
-        // dimension prefetcher warms `(width, height)` for the window around
-        // `current` on every platform, and on macOS the scheduler queues a
-        // QuickLook preview per index in priority order (indices outside the
-        // preload window first). Done BEFORE the initial display so the async
-        // RAW path can read source dimensions (via `source_dimensions`'s
-        // synchronous fallback over `self.previews.paths`) for the pre-paint
-        // auto-fit. The scheduler is paused below, after the display sets
-        // `pending_current` on the async path.
-        if let Some(dir) = &self.navigation.dir_list {
-            let paths = dir.files();
-            let current = dir.current_index();
-            self.previews.set_folder(paths, current);
-        }
+        // Start the live folder-sync watcher and the shared folder scanner BEFORE the first
+        // display, so the watch is already live while a slow scan runs (a file added meanwhile
+        // isn't missed) and the scan overlaps the image's own read+decode instead of following it.
+        self.folder_watcher =
+            crate::folder_watch::FolderWatcher::start(self.event_loop_proxy.clone());
+        self.folder_scanner = Some(crate::folder_scan::FolderScanner::start(
+            self.event_loop_proxy.clone(),
+        ));
 
-        // Load and display the initial image. RAW launches take the async
-        // quick-preview path (mirrors cache-miss navigation); everything else
-        // stays on the synchronous decode (fast enough not to need it). There
-        // may be no initial image at all: a macOS directory launch opens browse
-        // mode below and the user picks from the grid, and the two empty states
-        // have nothing to show yet.
-        let initial_path = if !self.file_path.as_os_str().is_empty() {
-            Some(self.file_path.clone())
-        } else {
-            // A folder launch off macOS: no single file was named, so the list decides which
-            // image opens. `None` when the folder had none, or when browse mode is about to
-            // open over it (macOS).
-            self.navigation
-                .dir_list
-                .as_ref()
-                .map(|dir| dir.current().to_path_buf())
-        };
-        if let Some(initial_path) = initial_path {
-            self.display_initial_image(&initial_path);
-            self.warm_initial_neighbors();
+        // Ask for the folder this launch needs. Until it lands, `dir_list` is the provisional
+        // single-image list (or nothing at all, for a folder argument with no browser to show it)
+        // and navigation stays put. A directory launch into browse mode asks for its own folders
+        // below.
+        if let Some(folder) = folder_to_scan {
+            self.navigation.scan_pending = Some(navigation::PendingScan {
+                folder: folder.clone(),
+                landing: if launch_directory.is_some() {
+                    navigation::ScanLanding::PlayFromTop
+                } else {
+                    navigation::ScanLanding::KeepOpenImage
+                },
+            });
+            self.request_folder_scan(folder);
+        }
+        self.retarget_active_folder_watch();
+
+        // Display the initial image. Every format takes the async path (mirrors cache-miss
+        // navigation): the preloader owns the read+decode, so the window paints now and the image
+        // lands when it's ready. A directory launch has no initial image — browse mode opens
+        // below, or the scan lands and plays the folder from the top.
+        if !self.file_path.as_os_str().is_empty() {
+            let initial_path = self.file_path.clone();
+            self.display_current_async(&initial_path);
+            // An explicit file list is already the whole navigation set, so its neighbors can warm
+            // right away. A scanned folder warms in `install_scanned_folder` instead.
+            if self.navigation.scan_pending.is_none() {
+                self.warm_initial_neighbors();
+            }
         } else if launch_directory.is_none() {
             // Nothing was named at all. macOS never reaches this (it waits for Finder's Apple
             // Event instead, see `launch::waits_for_a_file`); everywhere else this is the
             // window that used to not exist.
             self.empty_state = Some(EmptyState::NothingOpen);
-        } else if !cfg!(target_os = "macos") {
-            // A folder argument holding no images. Cmd/Ctrl+O is the way out. Unlike the
-            // live-sync route into this state, nothing watches the folder: the image-list watch
-            // follows the current image (`active_folder`) and there has never been one, so an
-            // image dropped in there won't open by itself.
-            self.empty_state = Some(EmptyState::NoImages);
         }
 
         // Pause the preview scheduler while the initial primary decode is
@@ -780,17 +796,6 @@ impl App {
                 self.event_loop_proxy.clone(),
             );
         }
-
-        // Start the live folder-sync watcher + the off-thread rescan worker, and point the watch at
-        // the active folder (the current image's folder). A directory launch has no current image
-        // yet — the watch starts when the user opens one from the grid
-        // (`reveal_selected_image` re-targets).
-        self.folder_watcher =
-            crate::folder_watch::FolderWatcher::start(self.event_loop_proxy.clone());
-        self.rescan_lister = Some(crate::folder_watch::RescanLister::start(
-            self.event_loop_proxy.clone(),
-        ));
-        self.retarget_active_folder_watch();
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         if settings::Settings::load().auto_update {
@@ -817,18 +822,19 @@ impl App {
         self.request_redraw();
     }
 
-    /// Display the initial (launch) image. RAW files take the async
-    /// quick-preview path so the window paints the camera's embedded JPEG
-    /// preview instantly (then snaps to the full develop when it lands),
-    /// instead of blocking the main thread on the ~450 ms RAW develop and
-    /// leaving the user on a blank window. Everything else (JPEG, PNG, …)
-    /// keeps the synchronous `display_image` decode — those finish in tens of
-    /// ms, so an async path would only add a needless "Loading…" flash.
+    /// Show the image at the directory cursor asynchronously, whatever the format. Used by launch
+    /// and by the running-app `OpenFile`.
     ///
-    /// Mirrors the cache-miss navigation flow (`after_position_change`): set
-    /// `pending_current`, size the window from ImageIO dims (no decode), show
-    /// the "Loading…" title, and let the preloader's prioritized target ship a
-    /// `Preview` then a `Ready` that `poll_preloader` displays.
+    /// Mirrors the cache-miss navigation flow (`after_position_change`): set `pending_current`,
+    /// size the window from ImageIO dims (metadata only, no decode), and let the preloader's
+    /// prioritized target ship a `Preview` (RAW only) then a `Ready` that `poll_preloader`
+    /// displays. Nothing blocks the main thread, so the window is up and painting while the file
+    /// is still being read — which is the whole point on a share where the read takes seconds.
+    ///
+    /// The title stays the plain filename: the folder hasn't been scanned yet, so there's no
+    /// `n/N` to show and no honest "Loading…" count either. `install_scanned_folder` fills the
+    /// position in when the scan lands. The centered "Loading…" overlay waits out
+    /// `navigation::LOADING_OVERLAY_DELAY`, so a local file never flashes it.
     /// Warm the preloader's neighbor window around the current image (both sides, since the
     /// direction is unknown at this point). Used by the launch path and by opening an image from
     /// the browse grid. No-op when neighbor preloading is disabled (a benchmark setting).
@@ -916,39 +922,25 @@ impl App {
         self.browser.reveal_to_folder(&folder, Some(image));
     }
 
-    fn display_initial_image(&mut self, path: &Path) {
-        let is_raw = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(crate::decoding::is_raw_extension)
-            .unwrap_or(false);
-
+    pub(crate) fn display_current_async(&mut self, path: &Path) {
         let Some((index, total)) = self
             .navigation
             .dir_list
             .as_ref()
             .map(|d| (d.current_index(), d.len()))
         else {
-            // No directory (shouldn't happen — set up just above), but keep the
+            // No directory (shouldn't happen — every call site sets one up first), but keep the
             // app working with a direct synchronous decode.
             self.display_image(path);
             return;
         };
 
-        if !is_raw {
-            // Non-RAW: unchanged synchronous decode, then the final title.
-            self.display_image(path);
-            if let Some(win) = &self.window {
-                window::set_title_keeping_buttons(
-                    win,
-                    &window::window_title_with_position(path, index, total),
-                );
-            }
-            return;
-        }
+        log::info!("Opening {} asynchronously", path.display());
+        // Seed the preview scheduler with the list we have, BEFORE the auto-fit below: that reads
+        // source dimensions through `previews`, and a stale folder there would size the window from
+        // some other image. `install_scanned_folder` re-seeds with the full folder later.
+        self.seed_previews_with_current_folder();
 
-        // RAW: async quick-preview path.
-        log::info!("Initial RAW image — using async quick-preview path");
         self.navigation.pending_current = Some(index);
         self.request_times.insert(index, Instant::now());
 
@@ -959,18 +951,161 @@ impl App {
         self.on_primary_decode_started();
         self.apply_preview_auto_fit(index);
 
+        // Filename only while the folder is unscanned (the provisional list is 1 long, so
+        // `window_title_with_position` drops the `n/N`); the real position arrives with the scan.
         if let Some(win) = &self.window {
-            window::set_title_keeping_buttons(win, &window::window_title_loading(index, total));
+            window::set_title_keeping_buttons(
+                win,
+                &window::window_title_with_position(path, index, total),
+            );
         }
 
         if let Some(preloader) = &mut self.navigation.preloader {
             preloader.prioritize_target(index, path.to_path_buf(), total);
         }
 
-        // The window/surface exist, but nothing has painted yet. Request a
-        // redraw so the "Loading…" overlay shows immediately, before the first
+        // The window/surface exist, but nothing has painted yet. Request a redraw so the empty
+        // canvas (and, past the delay, the "Loading…" overlay) shows before the first
         // `Preview`/`Ready` arrives.
         self.request_redraw();
+    }
+
+    /// Apply a finished folder scan to image mode. Two shapes, per `navigation::ScanLanding`.
+    ///
+    /// **Keep the open image.** The provisional single-image list is swapped for the real folder
+    /// and the picture on screen stays where it is: `DirectoryList::from_scan` finds it by path and
+    /// positions there. Everything that needs the whole folder then catches up — the title's `n/N`,
+    /// the preview scheduler's folder, the preloader's neighbor window. If the image isn't in the
+    /// listing (deleted while the scan ran), the provisional list stays and so does the picture.
+    ///
+    /// **Play from the top.** Nothing was opened out of the folder: it was named on the command
+    /// line, or dropped on a platform with no browser. Its images become the list and the first one
+    /// is displayed. A folder with no images leaves whatever is on screen alone, and puts up the
+    /// "(No images)" empty state when that's nothing.
+    ///
+    /// `scan_pending` clears either way — there's no second scan coming, and leaving it set would
+    /// freeze navigation for good.
+    fn install_scanned_folder(&mut self, folder: &Path, images: Vec<PathBuf>) {
+        let Some(pending) = self.navigation.scan_pending.take() else {
+            return;
+        };
+        match pending.landing {
+            navigation::ScanLanding::KeepOpenImage => self.keep_open_image(folder, images),
+            navigation::ScanLanding::PlayFromTop => self.play_scanned_folder(folder, images),
+        }
+    }
+
+    /// The `ScanLanding::KeepOpenImage` half of [`install_scanned_folder`].
+    fn keep_open_image(&mut self, folder: &Path, images: Vec<PathBuf>) {
+        let Some((current_path, sort_by)) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|d| (d.current().to_path_buf(), d.sort_by()))
+        else {
+            return;
+        };
+
+        let image_count = images.len();
+        let Some(list) = directory::DirectoryList::from_scan(images, sort_by, &current_path) else {
+            log::warn!(
+                "Scanned {} ({image_count} image(s)) but {} isn't in it — staying on it alone",
+                folder.display(),
+                current_path.display()
+            );
+            return;
+        };
+        let index = list.current_index();
+        let total = list.len();
+        log::info!(
+            "Folder scan landed: {} image(s) in {}, showing {}/{total}",
+            total,
+            folder.display(),
+            index + 1
+        );
+        self.navigation.dir_list = Some(list);
+
+        // The window title gained its position; a still-decoding image keeps its "Loading…" title.
+        if let Some(win) = &self.window {
+            let title = if self.navigation.pending_current.is_some() {
+                window::window_title_loading(index, total)
+            } else {
+                window::window_title_with_position(&current_path, index, total)
+            };
+            window::set_title_keeping_buttons(win, &title);
+        }
+
+        // The preloader was given the provisional list's slot 0; the image is the same, so the
+        // in-flight decode still lands (`poll_preloader` matches the pending target by path), but
+        // `pending_current` has to follow the image to its real index.
+        if let Some(previous_slot) = self.navigation.pending_current.replace(index) {
+            // The "displayed after Xms" clock is keyed by slot; move it with the image.
+            if let Some(requested_at) = self.request_times.remove(&previous_slot) {
+                self.request_times.insert(index, requested_at);
+            }
+        } else {
+            self.navigation.pending_current = None;
+        }
+
+        self.seed_previews_with_current_folder();
+        self.warm_initial_neighbors();
+        self.request_redraw();
+    }
+
+    /// The `ScanLanding::PlayFromTop` half of [`install_scanned_folder`].
+    fn play_scanned_folder(&mut self, folder: &Path, images: Vec<PathBuf>) {
+        if images.is_empty() {
+            log::info!(
+                "Folder scan landed: nothing to show in {}",
+                folder.display()
+            );
+            // A folder dropped over a picture leaves the picture; a folder argument had nothing
+            // to lose, so it gets the empty state and Cmd/Ctrl+O as the way out.
+            if self.navigation.dir_list.is_none() {
+                self.empty_state = Some(EmptyState::NoImages);
+                self.request_redraw();
+            }
+            return;
+        }
+        let sort_by = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(directory::DirectoryList::sort_by)
+            .unwrap_or_default();
+        let list = directory::DirectoryList::from_explicit(images, sort_by, None);
+        let first = list.current().to_path_buf();
+        log::info!(
+            "Folder scan landed: {} image(s) in {}, playing from the top",
+            list.len(),
+            folder.display()
+        );
+        self.file_path = first.clone();
+        self.navigation.dir_list = Some(list);
+        self.empty_state = None;
+        self.seed_previews_with_current_folder();
+        // Live folder sync: the folder being played is now the active one.
+        self.retarget_active_folder_watch();
+        self.display_current_async(&first);
+        self.warm_initial_neighbors();
+        self.request_redraw();
+    }
+
+    /// Hand the preview state the folder the navigation list now holds, positioned at the current
+    /// image. The dimension prefetcher warms `(width, height)` around it on every platform, and on
+    /// macOS the scheduler queues a QuickLook preview per index in priority order.
+    fn seed_previews_with_current_folder(&mut self) {
+        let Some((paths, index)) = self
+            .navigation
+            .dir_list
+            .as_ref()
+            .map(|dir| (dir.files(), dir.current_index()))
+        else {
+            return;
+        };
+        self.previews.set_folder(paths, index);
+        #[cfg(target_os = "macos")]
+        self.pump_preview_requests();
     }
 
     /// The active folder whose images are on screen: in **browse mode** the grid's listed folder
@@ -1098,10 +1233,104 @@ impl App {
         log::debug!("Tree-watch removed: {}", folder.display());
     }
 
+    /// Ask the shared scanner to read `folder`. Fire-and-forget: the result arrives as
+    /// `AppCommand::FolderScanned` and `handle_folder_scanned` hands it to whoever is waiting.
+    /// Requests for a folder already queued or running are deduped inside the scanner.
+    pub(crate) fn request_folder_scan(&self, folder: PathBuf) {
+        let Some(scanner) = &self.folder_scanner else {
+            log::debug!("Folder scanner isn't up yet — dropping scan request");
+            return;
+        };
+        scanner.request(folder);
+    }
+
+    /// Ask the shared scanner to read `folder`, naming the one child a reveal walk needs listed
+    /// however hidden it is (`folder_scan::FolderScanner::request_revealing`). `None` is an
+    /// ordinary scan.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub(crate) fn request_folder_scan_revealing(
+        &self,
+        folder: PathBuf,
+        reveal_child: Option<PathBuf>,
+    ) {
+        match reveal_child {
+            Some(child) => {
+                let Some(scanner) = &self.folder_scanner else {
+                    log::debug!("Folder scanner isn't up yet — dropping scan request");
+                    return;
+                };
+                scanner.request_revealing(folder, child);
+            }
+            None => self.request_folder_scan(folder),
+        }
+    }
+
+    /// Route one finished folder scan to every consumer waiting on that folder. A single scan can
+    /// serve several at once: the tree row for a folder image mode just opened, say, or the grid
+    /// and the image sequence when they're showing the same folder.
+    pub(crate) fn handle_folder_scanned(
+        &mut self,
+        folder: PathBuf,
+        images: Vec<PathBuf>,
+        subdirs: Vec<PathBuf>,
+    ) {
+        // ── Browse tree: subdirectory rows. Ignores folders it has no scan in flight for. ──
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        self.browser.tree_children_loaded(&folder, subdirs);
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = subdirs;
+
+        // ── Image mode: swap the provisional single-file list for the real folder. ──
+        if self
+            .navigation
+            .scan_folder()
+            .is_some_and(|pending| crate::paths::same_path(pending, &folder))
+        {
+            self.install_scanned_folder(&folder, images.clone());
+        }
+
+        // ── Browse grid: the folder the user selected in the tree. ──
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if self
+            .pending_grid_listing
+            .as_deref()
+            .is_some_and(|pending| crate::paths::same_path(pending, &folder))
+        {
+            self.pending_grid_listing = None;
+            log::info!(
+                "Browse: folder listed {} ({} image(s))",
+                folder.display(),
+                images.len()
+            );
+            if let Some(win) = self.window.clone() {
+                self.browser
+                    .grid_folder_listed(&folder, images.clone(), &win);
+            }
+            // The listing seeds a selection (index 0); warm it + neighbors so the likely-opened
+            // image is ready. Doesn't touch the displayed image.
+            self.warm_browse_selection();
+            // Live folder sync: in browse the active (image-list) watch follows the grid's listed
+            // folder, so re-target it onto the folder that just listed.
+            self.retarget_active_folder_watch();
+        }
+
+        // ── Live folder sync: diff the fresh listing against what's on screen. ──
+        if self
+            .pending_rescan
+            .as_deref()
+            .is_some_and(|pending| crate::paths::same_path(pending, &folder))
+        {
+            self.pending_rescan = None;
+            self.apply_folder_rescan(&folder, images);
+        }
+
+        self.update_shared_state();
+    }
+
     /// Handle a coalesced filesystem change for `folder`. When `folder` is the active (watched)
-    /// folder, re-scan it OFF the main thread (a slow SMB folder must never block here — reuse the
-    /// background `grid_listing::FolderLister` worker) and finish in `apply_folder_rescan` once the
-    /// listing posts back as `BrowseFolderListed`. `modified` paths are evicted from the image and
+    /// folder, re-scan it OFF the main thread (a slow SMB folder must never block here — the shared
+    /// `folder_scan::FolderScanner` does every directory read) and finish in `apply_folder_rescan`
+    /// once the scan posts back as `FolderScanned`. `modified` paths are evicted from the image and
     /// preview caches right away (cheap, no I/O) so nothing stale is served; a modified
     /// currently-displayed image is re-decoded after the re-scan lands.
     ///
@@ -1156,13 +1385,12 @@ impl App {
         // once the off-thread listing returns.
         self.pending_modified = modified.to_vec();
 
-        // Re-scan off the main thread; the result arrives as `AppCommand::ActiveFolderRescanned`,
-        // where `apply_folder_rescan` diffs it against the live list. The rescan lister is a
-        // dedicated background worker (`std::thread` + `mpsc`, never reads the directory on the main
-        // thread — a slow SMB folder would freeze the UI otherwise).
-        if let Some(lister) = &self.rescan_lister {
-            lister.list(folder.to_path_buf());
-        }
+        // Re-scan off the main thread; the result arrives as `AppCommand::FolderScanned`, where
+        // `apply_folder_rescan` diffs it against the live list. The scanner is the app's one
+        // directory-reading worker — nothing reads a folder on the main thread, because a slow SMB
+        // folder would freeze the UI.
+        self.pending_rescan = Some(folder.to_path_buf());
+        self.request_folder_scan(folder.to_path_buf());
     }
 
     /// Apply a completed off-thread re-scan to the live `DirectoryList`. Diffs the fresh list
@@ -1173,8 +1401,8 @@ impl App {
     ///   "(No images)" empty state if the folder is now imageless,
     /// - re-decodes + repaints a modified currently-displayed image (from `pending_modified`).
     ///
-    /// Called from the `BrowseFolderListed` arm when a re-scan (not a browse folder selection) is
-    /// outstanding, and directly off macOS. Never blocks: the only decode here is the
+    /// Called from `handle_folder_scanned` when a re-scan (not a browse folder selection) is
+    /// outstanding. Never blocks: the only decode here is the
     /// currently-displayed image via the normal display path (cache hit after eviction → async
     /// re-decode), matching the spec's "re-decode + repaint seamlessly".
     ///
@@ -1674,6 +1902,9 @@ impl App {
     /// time. The actual decode + display still debounces — only the
     /// preview is eager.
     pub(crate) fn queue_nav_step(&mut self, event_loop: &ActiveEventLoop, step: i32) {
+        if self.navigation_blocked_by_scan() {
+            return;
+        }
         self.navigation.pending_nav_delta = self.navigation.pending_nav_delta.saturating_add(step);
         let deadline = Instant::now() + navigation::NAV_DEBOUNCE;
         self.navigation.nav_deadline = Some(deadline);
@@ -1707,7 +1938,7 @@ impl App {
     }
 
     fn navigate_by(&mut self, delta: i32) {
-        if delta == 0 {
+        if delta == 0 || self.navigation_blocked_by_scan() {
             return;
         }
         let from_index = self
@@ -1739,6 +1970,9 @@ impl App {
     /// the directory is empty, or no directory is loaded. Mirrors
     /// `navigate_by`'s post-move flow exactly.
     pub(crate) fn navigate_to_first(&mut self) {
+        if self.navigation_blocked_by_scan() {
+            return;
+        }
         let from_index = self
             .navigation
             .dir_list
@@ -1761,6 +1995,9 @@ impl App {
     /// Absolute jump to the last image. No-op when already at the last
     /// index, the directory is empty, or no directory is loaded.
     pub(crate) fn navigate_to_last(&mut self) {
+        if self.navigation_blocked_by_scan() {
+            return;
+        }
         let from_index = self
             .navigation
             .dir_list
@@ -2281,6 +2518,11 @@ impl App {
         if self.slideshow.crossfade.is_some() {
             // ~60 fps while the fade runs.
             candidates.push(Instant::now() + Duration::from_millis(16));
+        }
+        // A slow image decode: wake when the "Loading…" overlay is due so it appears on time
+        // even if nothing else is happening. Fast decodes land first and never reach it.
+        if let Some(due) = self.loading_overlay_deadline() {
+            candidates.push(due);
         }
         // Browse-mode loading overlay: if a tree scan is in flight, wake at its 1s deadline so
         // `about_to_wait` can reveal the "Loading…" overlay (fast scans finish before then and
@@ -2870,13 +3112,14 @@ impl App {
             blocks.push(zoom_block);
         }
 
-        // Centered "Loading..." overlay during a pending navigation target.
+        // Centered "Loading..." overlay for a target that's taking a while (see
+        // `loading_overlay_due` — a fast decode never shows it).
         // Styled like the title pill but larger — system font, bigger
         // font size, bigger corner radius to match. The `align_center`
         // flag measures the actual shaped text width at prepare time and
         // repositions the block so the text is truly centered on `x`;
         // the pill follows the text.
-        if self.navigation.pending_current.is_some() {
+        if self.loading_overlay_visible {
             let logical_height = rend.logical_height();
             let loading_font_size = 14.0_f32;
             let loading_line_height = 18.0_f32;
@@ -2902,6 +3145,55 @@ impl App {
 
     /// Drain preloader responses, cache the results, and if the pending
     /// navigation target just arrived, render it immediately.
+    /// Whether the image we're waiting on has been pending long enough to earn the centered
+    /// "Loading…" overlay. A decode that finishes inside `navigation::LOADING_OVERLAY_DELAY` never
+    /// shows it, so opening a local file doesn't flash a spinner at the user. A pending target with
+    /// no recorded request time (shouldn't happen) shows the overlay rather than hiding forever.
+    fn loading_overlay_due(&self) -> bool {
+        let Some(pending) = self.navigation.pending_current else {
+            return false;
+        };
+        self.request_times
+            .get(&pending)
+            .is_none_or(|requested_at| requested_at.elapsed() >= navigation::LOADING_OVERLAY_DELAY)
+    }
+
+    /// When the "Loading…" overlay is due to appear, if it isn't showing yet. `about_to_wait` feeds
+    /// this to `schedule_wakeup` so the overlay appears on time even with nothing else going on.
+    fn loading_overlay_deadline(&self) -> Option<Instant> {
+        if self.loading_overlay_visible {
+            return None;
+        }
+        let pending = self.navigation.pending_current?;
+        Some(*self.request_times.get(&pending)? + navigation::LOADING_OVERLAY_DELAY)
+    }
+
+    /// True while the opened folder is still being scanned, which is when navigation has nowhere to
+    /// go: `dir_list` holds only the image on screen. Logs the ignored move at debug level.
+    ///
+    // TODO(slow-share-launch part B): instead of dropping the move, record it as a navigation
+    // intent (anchor + signed delta) here and resolve it in `install_scanned_folder` once the real
+    // list is in, so an arrow pressed during a slow scan still lands where the user meant.
+    fn navigation_blocked_by_scan(&self) -> bool {
+        let Some(folder) = self.navigation.scan_folder() else {
+            return false;
+        };
+        log::debug!("Navigation ignored — still scanning {}", folder.display());
+        true
+    }
+
+    /// The directory slot we're waiting on, when `path` is the file that slot holds.
+    ///
+    /// Matched **by path**, not by the index the preload task was queued under: the folder scan
+    /// landing mid-decode reorders the list beneath an in-flight target (`install_scanned_folder`
+    /// moves the opened image from provisional slot 0 to its real position). The path a task was
+    /// queued for never changes, so it's the reliable identity.
+    fn pending_slot_for(&self, path: &Path) -> Option<usize> {
+        let pending = self.navigation.pending_current?;
+        let current = self.navigation.dir_list.as_ref()?.get(pending)?;
+        (current == path).then_some(pending)
+    }
+
     fn poll_preloader(&mut self) {
         // Drain responses into an owned Vec so we can release the
         // preloader borrow before calling `display_from_cache` (which needs
@@ -2917,7 +3209,6 @@ impl App {
         for response in responses {
             match response {
                 preloader::PreloadResponse::Ready {
-                    index,
                     path,
                     image,
                     decode_duration,
@@ -2926,15 +3217,16 @@ impl App {
                     if let Some(p) = &mut self.navigation.preloader {
                         p.mark_complete(&path);
                     }
+                    let pending_slot = self.pending_slot_for(&path);
                     let evicted =
                         self.navigation
                             .image_cache
                             .insert(path, image, decode_duration, file_name);
                     self.log_evictions(evicted, "LRU");
-                    if self.navigation.pending_current != Some(index) {
+                    if pending_slot.is_none() {
                         neighbor_arrived = true;
                     }
-                    if self.navigation.pending_current == Some(index) {
+                    if let Some(index) = pending_slot {
                         self.navigation.pending_current = None;
                         self.display_from_cache(index);
                         // Title was "Loading…" — swap to the final title.
@@ -3000,7 +3292,7 @@ impl App {
                         "Preload response: failed [{index}] {}: {reason}",
                         path.display()
                     );
-                    if self.navigation.pending_current == Some(index) {
+                    if self.pending_slot_for(&path).is_some() {
                         self.navigation.pending_current = None;
                         log::error!(
                             "Failed to decode current image {}: {reason}",
@@ -3049,22 +3341,22 @@ impl App {
                         );
                     }
                 }
-                preloader::PreloadResponse::Preview { index, path, image } => {
+                preloader::PreloadResponse::Preview { path, image } => {
                     // RAW embedded-JPEG preview: show it as a soft placeholder
                     // only while we're still waiting on THIS target's full
                     // develop. If a newer nav moved on (index no longer
                     // pending), or the full image already landed, drop it.
                     // macOS-only display (see `display_raw_preview_placeholder`).
                     #[cfg(target_os = "macos")]
-                    if self.navigation.pending_current == Some(index) {
+                    if let Some(slot) = self.pending_slot_for(&path) {
                         log::debug!(
-                            "Showing RAW preview placeholder [{index}] {}",
+                            "Showing RAW preview placeholder [{slot}] {}",
                             path.display()
                         );
-                        self.display_raw_preview_placeholder(index, image);
+                        self.display_raw_preview_placeholder(slot, image);
                     }
                     #[cfg(not(target_os = "macos"))]
-                    let _ = (index, path, image);
+                    let _ = (path, image);
                 }
             }
         }
@@ -3610,6 +3902,14 @@ impl ApplicationHandler<AppCommand> for App {
 
         // Crossfade animation: ramp the fade factor each frame until done.
         self.drive_crossfade();
+
+        // "Loading…" overlay: reveal it once the pending image has outlived the delay, hide it the
+        // moment the image lands. Only a change asks for a redraw, so an idle wait stays idle.
+        let overlay_due = self.loading_overlay_due();
+        if overlay_due != self.loading_overlay_visible {
+            self.loading_overlay_visible = overlay_due;
+            self.request_redraw();
+        }
 
         // Browse-mode tree loading overlay: reveal it once a scan has been pending past the 1s
         // delay, hide it when scans finish. No-op outside browse mode / off macOS.

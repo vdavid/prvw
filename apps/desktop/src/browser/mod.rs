@@ -36,9 +36,6 @@
 
 #[cfg(target_os = "macos")]
 mod grid;
-// The background folder lister is shared: the Windows grid drives the same worker.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub(crate) mod grid_listing;
 pub(crate) mod grid_model;
 #[cfg(target_os = "macos")]
 mod outline;
@@ -451,18 +448,17 @@ impl State {
         self.selected_folder.as_deref()
     }
 
-    /// Record the folder selected in the tree and begin listing its images for the grid on the
-    /// background worker (the result arrives as `AppCommand::BrowseFolderListed`). Never reads the
-    /// disk here — a slow folder selection must not freeze the UI.
+    /// Record the folder selected in the tree. Listing its images for the grid is the executor's
+    /// job (it asks the shared `folder_scan::FolderScanner` and applies the result via
+    /// [`grid_folder_listed`](Self::grid_folder_listed)) — nothing here reads the disk, because a
+    /// slow folder selection must not freeze the UI.
     pub fn set_selected_folder(&mut self, folder: std::path::PathBuf) {
-        self.selected_folder = Some(folder.clone());
-        #[cfg(target_os = "macos")]
-        if let Some(split) = &self.split_view {
-            split.grid().list_folder(folder);
-        }
+        self.selected_folder = Some(folder);
+        // Nothing here reads the disk: the executor asks the shared scanner, and this only tells
+        // the Windows status bar to say "Loading…" until the answer arrives.
         #[cfg(target_os = "windows")]
         if self.browse_ui.is_some() {
-            windows::list_folder(folder);
+            windows::listing_started();
         }
     }
 
@@ -738,9 +734,9 @@ impl State {
 
     /// Store a finished tree scan and put its children on the row.
     #[cfg(target_os = "windows")]
-    pub fn tree_children_loaded(&self, path: &std::path::Path, children: Vec<std::path::PathBuf>) {
+    pub fn tree_children_loaded(&self, path: &std::path::Path, subdirs: Vec<std::path::PathBuf>) {
         if let Some(ui) = &self.browse_ui {
-            ui.tree_children_loaded(path, children);
+            ui.tree_children_loaded(path, tree_model::visible_subdirs(subdirs));
         }
     }
 
@@ -1042,13 +1038,15 @@ impl State {
         }
     }
 
-    /// Apply a completed background directory scan to the tree: store the children and reload that
-    /// node so the outline view shows them. No-op if the split view isn't built (browse never
-    /// entered). Also refreshes the loading overlay.
+    /// Apply a completed folder scan to the tree: filter the scanned subdirectories down to the
+    /// rows a sidebar shows (`tree_model::visible_subdirs`), store them, and reload that node so
+    /// the outline view shows them. The tree ignores scans it didn't ask for — the scanner is
+    /// shared, so results for image mode's folder land here too. No-op if the split view isn't
+    /// built (browse never entered). Also refreshes the loading overlay.
     #[cfg(target_os = "macos")]
-    pub fn tree_children_loaded(&self, path: &std::path::Path, children: Vec<std::path::PathBuf>) {
+    pub fn tree_children_loaded(&self, path: &std::path::Path, subdirs: Vec<std::path::PathBuf>) {
         if let Some(split) = &self.split_view {
-            split.tree_children_loaded(path, children);
+            split.tree_children_loaded(path, tree_model::visible_subdirs(subdirs));
         }
     }
 

@@ -51,7 +51,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
-use crate::browser::grid_listing::FolderLister;
 use crate::browser::grid_model::{self, GridModel};
 use crate::browser::grid_scheduler::Scheduler;
 use crate::browser::thumbnail_cache::ThumbnailCache;
@@ -96,9 +95,8 @@ pub(super) struct GridState {
     free_slots: Vec<i32>,
     /// One slot's side in device pixels, which is also what a thumbnail is generated at.
     slot_side: u32,
-    /// The background workers: listing a folder, generating thumbnails, and measuring the
-    /// selected image for the status bar.
-    lister: FolderLister,
+    /// The background workers: generating thumbnails, and measuring the selected image for the
+    /// status bar. The folder listing itself rides the app's shared `folder_scan::FolderScanner`.
     requests: RequestTable,
     measurer: SelectionMeasurer,
     /// True between asking for a folder listing and its arrival, so the status bar can say
@@ -180,7 +178,6 @@ pub(super) fn create(
         slots: HashMap::new(),
         free_slots: (0..SLOTS as i32).rev().collect(),
         slot_side,
-        lister: FolderLister::start(),
         requests: RequestTable::new(
             || crate::commands::AppCommand::BrowseThumbnailsAvailable,
             "prvw-gridgen",
@@ -259,13 +256,11 @@ pub(super) fn is_empty(ui: &Ui) -> bool {
     ui.grid_state.model.is_empty()
 }
 
-/// Start listing a folder's images on the background worker. Never reads the disk here: a slow
-/// folder selection must not freeze the UI.
-pub(super) fn list_folder(folder: PathBuf) {
-    with_ui_mut(|ui| {
-        ui.grid_state.listing = true;
-        ui.grid_state.lister.list(folder);
-    });
+/// Note that the grid is waiting on a folder listing, so the status bar says "Loading…" rather
+/// than the previous folder's count. The read itself belongs to the shared
+/// `folder_scan::FolderScanner`, which the executor asks; nothing here touches the disk.
+pub(super) fn listing_started() {
+    with_ui_mut(|ui| ui.grid_state.listing = true);
     super::refresh_status_bar();
 }
 

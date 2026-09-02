@@ -127,7 +127,7 @@ impl AppCommand {
             // ── Plumbing: worker results, OS notifications, QA hooks ──
             AppCommand::SetCursorPosition { .. }
             | AppCommand::FolderChanged { .. }
-            | AppCommand::ActiveFolderRescanned { .. }
+            | AppCommand::FolderScanned { .. }
             | AppCommand::WatchedFoldersChanged { .. }
             | AppCommand::SetWindowGeometry { .. }
             | AppCommand::ScrollZoom { .. }
@@ -143,10 +143,9 @@ impl AppCommand {
             // as a feature is `CommandKey::BrowseMode`.
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseSelectFolder(_)
-            | AppCommand::BrowseTreeChildrenLoaded { .. }
+            | AppCommand::ScanFolder { .. }
             | AppCommand::BrowseTreeFolderExpanded(_)
             | AppCommand::BrowseTreeFolderCollapsed(_)
-            | AppCommand::BrowseFolderListed { .. }
             | AppCommand::BrowseThumbnailsAvailable
             | AppCommand::BrowseGridSelected(_)
             | AppCommand::BrowseQaSelectGrid(_)
@@ -284,15 +283,16 @@ pub enum AppCommand {
     /// (Listing the folder's images in the grid is a later phase.)
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseSelectFolder(PathBuf),
-    /// A background scan of `path`'s child directories finished. The data source NEVER reads a
-    /// directory on the main thread (a slow SMB share would freeze the whole app), so children
-    /// arrive here: the executor stores them in the tree's child cache and tells the outline view
-    /// to re-query that node (`reloadItem:reloadChildren:`). Posted by the tree scanner thread via
-    /// the global `EventLoopProxy`. `children` is already filtered to subdirectories and sorted.
+    /// The browse tree wants `path`'s child directories. Fired by the tree's data source, which
+    /// never reads a directory itself (a slow SMB share would freeze the whole app) — the executor
+    /// hands the request to the shared `folder_scan::FolderScanner` and the answer comes back as
+    /// `FolderScanned`. `reveal_child` names the one child a reveal walk is waiting on, which the
+    /// scan lists however hidden it is (see `folder_scan::FolderScanner::request_revealing`).
+    /// Browse-mode only.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    BrowseTreeChildrenLoaded {
+    ScanFolder {
         path: PathBuf,
-        children: Vec<PathBuf>,
+        reveal_child: Option<PathBuf>,
     },
     /// A tree node was expanded — start watching its folder for subdirectory changes (live folder
     /// sync, Part B). Fired by the `NSOutlineView` `outlineViewItemDidExpand:` delegate after the
@@ -306,15 +306,6 @@ pub enum AppCommand {
     /// stay watched. Browse-mode only.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseTreeFolderCollapsed(PathBuf),
-    /// A background folder listing finished. The grid NEVER reads a directory on the main thread (a
-    /// slow SMB share would freeze the app), so the selected folder's images arrive here: the
-    /// executor populates the grid model + reloads the collection view. Posted by the grid lister
-    /// thread via the global `EventLoopProxy`. `images` is unsorted (the grid model sorts).
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    BrowseFolderListed {
-        folder: PathBuf,
-        images: Vec<PathBuf>,
-    },
     /// One or more grid-thumbnail QL completions are queued (the grid's `quicklook::RequestTable`).
     /// Fired only when the queue was empty (see `quicklook::push_delivery`) so a burst of N
     /// completions sends 1–2 events, not N. The executor drains them, builds `NSImage`s, and
@@ -383,13 +374,14 @@ pub enum AppCommand {
         folder: PathBuf,
         modified: Vec<PathBuf>,
     },
-    /// A background re-scan of the active folder finished (triggered by `FolderChanged`). The
-    /// executor diffs `images` against the live `DirectoryList` and applies adds/removes, the
-    /// delete-current navigation, and the "(No images)" empty state. `images` is unsorted (the
-    /// diff sorts by the active `SortBy`). Posted by the `folder_watch::RescanLister` worker.
-    ActiveFolderRescanned {
+    /// A folder scan finished. The single result of every directory read in the app (see
+    /// `crate::folder_scan`): `App::handle_folder_scanned` routes it to whoever is waiting on that
+    /// folder — image mode's provisional list, the browse grid, the browse tree's child rows, and
+    /// live folder sync's diff. Both lists are unsorted; each consumer orders them its own way.
+    FolderScanned {
         folder: PathBuf,
         images: Vec<PathBuf>,
+        subdirs: Vec<PathBuf>,
     },
     /// The `folder_watch` worker applied a watch/unwatch, so the set of folders whose FSEvents
     /// stream is actually live changed. Sorted. Mirrored into shared state as `watched_folders`,

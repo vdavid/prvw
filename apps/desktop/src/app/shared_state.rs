@@ -106,6 +106,10 @@ pub struct SharedAppState {
     /// mutating it; a change made before the stream starts is never delivered, so this is the
     /// non-flaky barrier for live folder sync (the counterpart of `browse_reveal_pending`).
     pub watched_folders: Vec<String>,
+    /// Whether the opened image's folder is still being scanned. While true, `total_files` is 1 and
+    /// `index` is 1 — the provisional list holds only the opened image — and navigation stays put.
+    /// Lets QA/tests drive the launch-before-the-scan state (`PRVW_SCAN_DELAY_MS` makes it last).
+    pub scan_pending: bool,
 }
 
 /// Snapshot of the preview scheduler, mirrored into shared state so the
@@ -184,6 +188,7 @@ impl Default for SharedAppState {
             no_images: false,
             empty_state: None,
             watched_folders: Vec::new(),
+            scan_pending: false,
         }
     }
 }
@@ -280,6 +285,7 @@ impl App {
         }
         state.empty_state = self.empty_state.map(super::EmptyState::name);
         state.no_images = self.empty_state == Some(super::EmptyState::NoImages);
+        state.scan_pending = self.navigation.scan_pending.is_some();
 
         if let Some((iw, ih)) = self.navigation.current_image_size {
             state.image_width = iw;

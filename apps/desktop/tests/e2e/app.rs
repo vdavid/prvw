@@ -208,17 +208,46 @@ impl TestApp {
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        // Wait a bit more for the image to load
-        std::thread::sleep(Duration::from_millis(500));
-
-        Self {
+        let app = Self {
             child: Mutex::new(child),
             log,
             base_url,
             client,
             data_dir,
             _fixture_home: None,
+        };
+        app.wait_until_launched();
+        // Let the live-sync watcher's control queue drain (it services watch requests on a
+        // ~250 ms tick). A test that mutates the folder right away would otherwise race the watch.
+        std::thread::sleep(Duration::from_millis(500));
+        app
+    }
+
+    /// Block until the launch has settled: the opened image's folder has been scanned (so
+    /// `total_files` is the real count rather than the provisional 1) and its pixels are up.
+    ///
+    /// Launch is asynchronous — the window paints before either finishes — so a fixed sleep would
+    /// race it. A directory launch has no image and no image-mode scan of its own; the browse
+    /// tests gate on the browse state instead.
+    fn wait_until_launched(&self) {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            let state = self.get_state();
+            let scanned = state["scan_pending"].as_bool() != Some(true);
+            let displayed = state["image_width"].as_u64().unwrap_or(0) > 0;
+            if scanned && (displayed || state["view_mode"].as_str() == Some("browse")) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
+        panic!(
+            "The app didn't finish launching within 10 seconds.\n{}\napp log:\n{}",
+            match self.child.lock() {
+                Ok(mut child) => process_status(&mut child),
+                Err(_) => "the child handle is poisoned".to_string(),
+            },
+            self.log.tail()
+        );
     }
 
     /// The per-test `settings.json`. `PRVW_DATA_DIR` makes `settings::persistence::data_dir()`

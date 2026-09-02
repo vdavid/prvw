@@ -11,7 +11,7 @@ use crate::navigation::directory;
 use crate::pixels::{Logical, from_physical_size, to_logical_pos, to_logical_size};
 use crate::settings;
 use crate::window;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use winit::event_loop::ActiveEventLoop;
 
 impl App {
@@ -363,30 +363,16 @@ impl App {
             AppCommand::BrowseSelectFolder(folder) => {
                 log::info!("Browse: selected folder {}", folder.display());
                 // Selecting in the tree focuses the tree pane (single source of truth) and renders;
-                // then list the folder's images on a background worker (never the main thread); the
-                // grid populates when `BrowseFolderListed` arrives.
+                // then ask the shared scanner for the folder's images (never read the disk on the
+                // main thread). The grid populates when `FolderScanned` arrives.
                 if let Some(win) = self.window.clone() {
                     self.browser.set_tree_focused(&win);
                 }
-                self.browser.set_selected_folder(folder);
-                self.update_shared_state();
-            }
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
-            AppCommand::BrowseFolderListed { folder, images } => {
-                log::info!(
-                    "Browse: folder listed {} ({} image(s))",
-                    folder.display(),
-                    images.len()
-                );
-                if let Some(win) = self.window.clone() {
-                    self.browser.grid_folder_listed(&folder, images, &win);
-                }
-                // The listing seeds a selection (index 0); warm it + neighbors so the likely-opened
-                // image is ready. Doesn't touch the displayed image.
-                self.warm_browse_selection();
-                // Live folder sync: in browse the active (image-list) watch follows the grid's
-                // listed folder, so re-target it onto the folder that just listed.
-                self.retarget_active_folder_watch();
+                self.browser.set_selected_folder(folder.clone());
+                // The grid never reads the folder itself: the shared scanner does, and
+                // `FolderScanned` for this folder repopulates it.
+                self.pending_grid_listing = Some(folder.clone());
+                self.request_folder_scan(folder);
                 self.update_shared_state();
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -436,11 +422,10 @@ impl App {
                 self.reveal_selected_image();
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
-            AppCommand::BrowseTreeChildrenLoaded { path, children } => {
-                // A background tree scan finished. Store its children and reload the node so the
-                // outline view shows them (the data source never reads directories on the main
-                // thread — see `browser::outline`). Refreshing the overlay happens inside.
-                self.browser.tree_children_loaded(&path, children);
+            AppCommand::ScanFolder { path, reveal_child } => {
+                // The browse tree wants a folder's child rows. It has no handle on the scanner,
+                // so the request comes through here (see `browser::outline::request_scan`).
+                self.request_folder_scan_revealing(path, reveal_child);
             }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseTreeFolderExpanded(path) => {
@@ -516,8 +501,12 @@ impl App {
             AppCommand::FolderChanged { folder, modified } => {
                 self.handle_folder_changed(&folder, &modified);
             }
-            AppCommand::ActiveFolderRescanned { folder, images } => {
-                self.apply_folder_rescan(&folder, images);
+            AppCommand::FolderScanned {
+                folder,
+                images,
+                subdirs,
+            } => {
+                self.handle_folder_scanned(folder, images, subdirs);
             }
             AppCommand::WatchedFoldersChanged { folders } => {
                 self.armed_watch_folders = folders;
@@ -620,8 +609,12 @@ impl App {
                     return;
                 }
 
-                let list = directory::DirectoryList::from_file(&resolved, self.sort_by());
-                self.show_image_list(list, &resolved);
+                // Same shape as launch: install a provisional single-image list, show the image
+                // through the async path, and let the shared scanner fill the folder in later.
+                // Reading the folder here would freeze the app for as long as it takes.
+                let provisional = directory::DirectoryList::provisional(&resolved, self.sort_by());
+                let folder = resolved.parent().map(Path::to_path_buf);
+                self.show_image_list(Some(provisional), &resolved, folder);
             }
             AppCommand::OpenDropped(paths) => self.open_dropped(&paths, event_loop),
             AppCommand::SetWindowGeometry {
@@ -815,22 +808,33 @@ impl App {
     ///
     /// Every route that opens something new ends here — File → Open, a Finder double-click, a
     /// drop — so they can't drift on the bookkeeping that follows the image itself.
-    fn show_image_list(&mut self, list: Option<directory::DirectoryList>, current: &Path) {
+    ///
+    /// `scan` names the folder still to be read, for the routes that open one image out of one:
+    /// `list` is then the provisional one-file stand-in, and `App::install_scanned_folder` swaps
+    /// in the real folder when `FolderScanned` lands. `None` when the list handed in is already
+    /// the whole navigation set (a multi-file drop).
+    fn show_image_list(
+        &mut self,
+        list: Option<directory::DirectoryList>,
+        current: &Path,
+        scan: Option<PathBuf>,
+    ) {
         self.file_path = current.to_path_buf();
         self.navigation.dir_list = list;
         self.empty_state = None;
-        self.display_image(current);
-        // Live folder sync: watch the newly opened file's folder.
+        self.navigation.scan_pending = scan.clone().map(|folder| crate::navigation::PendingScan {
+            folder,
+            landing: crate::navigation::ScanLanding::KeepOpenImage,
+        });
+        // Live folder sync: watch the newly opened file's folder, and ask for the scan, both
+        // before the image is displayed so a change arriving during a slow read isn't missed.
         self.retarget_active_folder_watch();
-
-        if let Some(dir) = &self.navigation.dir_list
-            && let Some(win) = &self.window
-        {
-            window::set_title_keeping_buttons(
-                win,
-                &window::window_title_with_position(current, dir.current_index(), dir.len()),
-            );
+        if let Some(folder) = scan {
+            self.request_folder_scan(folder);
         }
+        // The async path, whatever the format: the preloader owns the read+decode, so the window
+        // keeps painting while a slow file is still being read. It sets the title too.
+        self.display_current_async(current);
 
         // An image on screen means image mode. Dropping one (or picking one from File → Open)
         // while the browser is up would otherwise open it behind the browser, with nothing to
@@ -878,7 +882,7 @@ impl App {
                 let first = images[0].clone();
                 let list =
                     directory::DirectoryList::from_explicit(images, self.sort_by(), Some(&first));
-                self.show_image_list(Some(list), &first);
+                self.show_image_list(Some(list), &first, None);
             }
             crate::launch::OpenRequest::Folder(folder) => {
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -888,22 +892,17 @@ impl App {
                 }
                 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
                 {
-                    let images = crate::launch::images_in(&folder);
-                    log::info!(
-                        "Dropped the folder {} ({} image(s))",
-                        folder.display(),
-                        images.len()
-                    );
-                    if images.is_empty() {
-                        // Unlike a folder argument at launch, there may be an image on screen,
-                        // and taking it away to show "(No images)" would be a worse answer than
-                        // leaving the drop unanswered.
-                        return;
-                    }
-                    let list =
-                        directory::DirectoryList::from_explicit(images, self.sort_by(), None);
-                    let first = list.current().to_path_buf();
-                    self.show_image_list(Some(list), &first);
+                    log::info!("Dropped the folder {}", folder.display());
+                    // The shared scanner reads it, like every other folder in the app, and
+                    // `install_scanned_folder` plays it from the top when the images arrive.
+                    // Nothing changes on screen meanwhile: unlike a folder argument at launch,
+                    // there may be an image up, and taking it away to show "(No images)" would be
+                    // a worse answer than leaving the drop unanswered.
+                    self.navigation.scan_pending = Some(crate::navigation::PendingScan {
+                        folder: folder.clone(),
+                        landing: crate::navigation::ScanLanding::PlayFromTop,
+                    });
+                    self.request_folder_scan(folder);
                 }
             }
         }

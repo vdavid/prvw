@@ -3,9 +3,9 @@
 //! The `NSOutlineView` data source (in `outline.rs`) is the macOS view wiring; this module
 //! holds the platform-free decisions it leans on so they're unit-testable without AppKit:
 //!
-//! - [`child_directories`]: a node's child folders — directories only, dot-folders and
-//!   unreadable entries skipped, sorted case-insensitively by name. Runs on the background
-//!   scanner thread (never the main thread — slow filesystems would freeze the UI).
+//! - [`visible_subdirs`]: which of a scanned folder's child directories become tree rows —
+//!   dot-folders dropped, sorted case-insensitively by name. The read itself happens on the shared
+//!   `crate::folder_scan` worker (never the main thread — slow filesystems would freeze the UI).
 //! - [`enumerate_roots`]: the source-list roots — the home folder plus every mounted volume.
 //! - [`ChildCache`]: the per-path load-state machine (`NotLoaded` → `InFlight` → `Loaded`) the
 //!   data source serves children from. The data source NEVER reads a directory inline; it only
@@ -48,7 +48,9 @@ pub enum ChildState {
 /// State machine per path: absent (`NotLoaded`) → [`ChildState::InFlight`] (via [`begin_scan`])
 /// → [`ChildState::Loaded`] (via [`complete_scan`]). A path is scanned at most once: `begin_scan`
 /// returns `false` if the path is already in flight or loaded, so the data source won't enqueue
-/// duplicate scans no matter how often the outline view re-queries it during layout.
+/// duplicate scans no matter how often the outline view re-queries it during layout. In the other
+/// direction, `complete_scan` ignores a result for a path that isn't in flight — the shared folder
+/// scanner serves every consumer, so results the tree never asked for arrive here too.
 ///
 /// [`begin_scan`]: ChildCache::begin_scan
 /// [`complete_scan`]: ChildCache::complete_scan
@@ -118,11 +120,20 @@ impl ChildCache {
 
     /// Record a finished scan: store the children and flip the path to [`ChildState::Loaded`].
     /// Clears its in-flight start time so it no longer counts toward the overlay timer.
-    pub fn complete_scan(&mut self, path: &Path, children: Vec<PathBuf>) {
+    ///
+    /// Only applies to a path the cache actually has [`ChildState::InFlight`], and says so in the
+    /// return value. Every folder read in the app shares one scanner, so a scan the tree never
+    /// asked for (image mode opening a folder, say) reaches this too — adopting it would churn a
+    /// node the user is looking at, or resurrect one the tree has since dropped.
+    pub fn complete_scan(&mut self, path: &Path, children: Vec<PathBuf>) -> bool {
         let key = self.policy.key(path);
+        if !matches!(self.states.get(&key), Some(ChildState::InFlight)) {
+            return false;
+        }
         self.states
             .insert(key.clone(), ChildState::Loaded(children));
         self.started.remove(&key);
+        true
     }
 
     /// Forget `path`'s load state so the next query re-scans it from scratch. Used by live folder
@@ -150,93 +161,6 @@ impl ChildCache {
 #[must_use]
 pub fn scan_overdue(earliest: Option<Instant>, now: Instant) -> bool {
     earliest.is_some_and(|start| now.duration_since(start) >= LOADING_OVERLAY_DELAY)
-}
-
-/// A background directory scanner. Owns a single `std::thread` (the same pattern as
-/// `navigation::preloader`: an OS thread + an `mpsc` channel, no tokio) that reads directories so
-/// the main thread never blocks on a slow filesystem. Each request is a path; the worker computes
-/// its child directories and posts them back to the main thread via the global `EventLoopProxy`
-/// as `AppCommand::BrowseTreeChildrenLoaded`.
-///
-/// Requests are served in order and never coalesced: expanding three nodes in a row has to fill
-/// three of them, and the newest is not the only one anybody is waiting on. That's the one
-/// difference from `grid_listing::FolderLister`, which coalesces because only the folder the
-/// user settled on is worth listing.
-///
-/// Only where there's a tree to fill: it posts an `AppCommand`, and the platforms with no
-/// browser have no such command to post.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub struct TreeScanner {
-    request_tx: std::sync::mpsc::Sender<ScanRequest>,
-}
-
-/// One directory for the scanner to read, and the one child it must list whatever its
-/// attributes say. See [`child_directories_revealing`].
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-struct ScanRequest {
-    path: PathBuf,
-    reveal_child: Option<PathBuf>,
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-impl TreeScanner {
-    /// Spawn the scanner worker. It runs until the `Sender` (held by the tree, alive for the
-    /// window's life) drops, closing the channel and ending the loop.
-    #[must_use]
-    pub fn start() -> Self {
-        let (request_tx, request_rx) = std::sync::mpsc::channel::<ScanRequest>();
-        std::thread::Builder::new()
-            .name("prvw-tree-scan".into())
-            .spawn(move || {
-                while let Ok(ScanRequest { path, reveal_child }) = request_rx.recv() {
-                    let children = child_directories(&path, reveal_child.as_deref());
-                    log::debug!(
-                        "Tree scan done: {} ({} subdir(s))",
-                        path.display(),
-                        children.len()
-                    );
-                    // Post back to the main thread. `send_command` uses the global proxy set in
-                    // `resumed()`; if it's gone the app is shutting down and we just drop the work.
-                    crate::commands::send_command(
-                        crate::commands::AppCommand::BrowseTreeChildrenLoaded { path, children },
-                    );
-                }
-                log::debug!("Tree scanner worker exiting");
-            })
-            .expect("Failed to spawn tree scanner worker thread");
-        log::info!("Tree scanner started (dedicated OS thread)");
-        TreeScanner { request_tx }
-    }
-
-    /// Enqueue a directory scan. Fire-and-forget; the result comes back as an `AppCommand`.
-    pub fn scan(&self, path: PathBuf) {
-        self.enqueue(path, None);
-    }
-
-    /// Enqueue a scan that a reveal walk is waiting on, naming the child it has to find.
-    ///
-    /// Windows-only in practice: it exists because `AppData` carries the hidden attribute, and
-    /// on macOS the same filter only skips dot-folders, which no reveal chain runs through.
-    ///
-    /// The tree hides what Explorer hides, and a reveal target can sit under a folder on that
-    /// list: every Windows temp directory is under `AppData`, which carries the hidden
-    /// attribute. Refusing to list the one folder the walk needs would leave the reveal stuck
-    /// forever with no row to expand, so a folder the user is being taken to is listed however
-    /// hidden it is. Everything else in the same directory still obeys the filter.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    pub fn scan_revealing(&self, path: PathBuf, reveal_child: PathBuf) {
-        self.enqueue(path, Some(reveal_child));
-    }
-
-    fn enqueue(&self, path: PathBuf, reveal_child: Option<PathBuf>) {
-        if self
-            .request_tx
-            .send(ScanRequest { path, reveal_child })
-            .is_err()
-        {
-            log::warn!("Tree scanner worker is gone — dropping scan request");
-        }
-    }
 }
 
 /// A source-list root: the home folder or a mounted volume. `name` is the row's display label
@@ -427,7 +351,8 @@ impl RevealWalk {
     }
 
     /// The step after `folder`, when the walk is sitting on `folder`. A scan of `folder` has to
-    /// list that one child however hidden it is (see [`TreeScanner::scan_revealing`]), or the walk
+    /// list that one child however hidden it is (`folder_scan::FolderScanner::request_revealing`),
+    /// or the walk
     /// is stranded with no row to expand.
     #[must_use]
     pub fn child_after(&self, folder: &Path) -> Option<PathBuf> {
@@ -501,43 +426,15 @@ impl RevealWalk {
     }
 }
 
-/// List the immediate child directories of `dir`, ready to show as tree rows.
+/// Turn a scan's raw subdirectory list into the rows the tree shows.
 ///
-/// Keeps only directories (no files), skips dot-folders (`.git`, `.Trash`, …) and entries we
-/// can't read the type of, and sorts case-insensitively by file name so the order matches what
-/// a person expects in a sidebar. Symlinks that point at directories are followed (via
-/// `Path::is_dir`, which resolves the link) so aliased folders still show.
-///
-/// Returns an empty `Vec` when `dir` can't be read (permission denied, not a directory, gone).
-/// That's deliberate: the tree shows the node with no children rather than erroring.
-/// `reveal_child` is the next step of a reveal walk, and it is listed however hidden it is.
-/// Without that exception the walk stalls on any hidden ancestor — on Windows that is every temp
-/// folder, since they all live under `AppData` — and the tree sits on a folder the user was just
-/// taken to with no row for it. Naming the one folder the user is going to is far narrower than
-/// showing hidden folders generally, which would put `AppData` and `System Volume Information`
-/// in a photo browser.
+/// Sorts case-insensitively by file name, naturally, so `trip_2` comes before `trip_10`. Pure:
+/// the directory read happens on the shared `crate::folder_scan` worker, which resolved symlinked
+/// folders, applied [`hidden_from_the_tree`], and honoured the reveal walk's one exception to it.
 #[must_use]
-pub fn child_directories(dir: &Path, reveal_child: Option<&Path>) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-
-    let mut dirs: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let revealing =
-                reveal_child.is_some_and(|wanted| crate::paths::same_path(&path, wanted));
-            if !revealing && is_hidden_entry(&entry, &path) {
-                return None;
-            }
-            // Directories only. `is_dir` resolves symlinks, so dir aliases still count.
-            if path.is_dir() { Some(path) } else { None }
-        })
-        .collect();
-
-    sort_by_name(&mut dirs);
-    dirs
+pub fn visible_subdirs(mut subdirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    sort_by_name(&mut subdirs);
+    subdirs
 }
 
 /// Whether a directory entry is too hidden to show in the tree.
@@ -547,7 +444,11 @@ pub fn child_directories(dir: &Path, reveal_child: Option<&Path>) -> Vec<PathBuf
 /// alike, which is what keeps `AppData` and `System Volume Information` out of a photo browser.
 /// We deliberately don't read Explorer's "show hidden files" setting — skipping unconditionally
 /// matches both Explorer's default and the macOS behaviour.
-fn is_hidden_entry(entry: &std::fs::DirEntry, path: &Path) -> bool {
+///
+/// Applied by `crate::folder_scan` while it reads, because the answer needs the `DirEntry` the
+/// read produced: asking again from a `PathBuf` afterwards would be a second `stat` per folder.
+/// The one exception, a reveal walk's next step, is honoured there too.
+pub fn hidden_from_the_tree(entry: &std::fs::DirEntry, path: &Path) -> bool {
     if file_name_str(path).is_some_and(|name| name.starts_with('.')) {
         return true;
     }
@@ -715,74 +616,45 @@ fn sort_by_name(paths: &mut [PathBuf]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
 
-    /// A reveal walk into a hidden folder has to get a row for it, or it stalls with nothing to
-    /// expand. The dot-folder stands in for Windows's hidden attribute here, because the two go
-    /// through the same filter and only one of them exists on a Mac.
-    #[test]
-    fn a_reveal_target_is_listed_however_hidden_it_is() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        fs::create_dir(root.join(".appdata")).unwrap();
-        fs::create_dir(root.join(".other")).unwrap();
-        fs::create_dir(root.join("Photos")).unwrap();
-
-        // Without a reveal, hidden means hidden.
-        let plain: Vec<_> = child_directories(root, None)
-            .iter()
-            .map(|p| file_name_str(p).unwrap().to_string())
-            .collect();
-        assert_eq!(plain, vec!["Photos"]);
-
-        // With one, the named folder joins it — and only that one.
-        let revealing: Vec<_> = child_directories(root, Some(&root.join(".appdata")))
-            .iter()
-            .map(|p| file_name_str(p).unwrap().to_string())
-            .collect();
-        assert_eq!(revealing, vec![".appdata", "Photos"]);
-    }
-
-    #[test]
-    fn child_directories_keeps_only_dirs_skips_dotfolders_and_sorts() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        fs::create_dir(root.join("Photos")).unwrap();
-        fs::create_dir(root.join("archive")).unwrap();
-        fs::create_dir(root.join(".hidden")).unwrap();
-        fs::write(root.join("a_file.txt"), b"x").unwrap();
-        fs::write(root.join("image.jpg"), b"x").unwrap();
-
-        let dirs = child_directories(root, None);
-        let names: Vec<_> = dirs
+    fn names_of(paths: &[PathBuf]) -> Vec<String> {
+        paths
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
-
-        // Files excluded, dot-folder excluded, case-insensitive name order.
-        assert_eq!(names, vec!["archive", "Photos"]);
+            .collect()
     }
 
     #[test]
-    fn child_directories_unreadable_is_empty_not_error() {
-        // A path that doesn't exist can't be read; we want an empty list, not a panic.
-        let missing = Path::new("/this/path/does/not/exist/prvw-test");
-        assert!(child_directories(missing, None).is_empty());
+    fn visible_subdirs_sorts_case_insensitively() {
+        // What gets hidden is decided during the read (`folder_scan::read_folder`); the rows only
+        // have to come out in the order a sidebar shows them.
+        let scanned = vec![
+            PathBuf::from("/pics/Photos"),
+            PathBuf::from("/pics/archive"),
+        ];
+        assert_eq!(
+            names_of(&visible_subdirs(scanned)),
+            vec!["archive", "Photos"]
+        );
     }
 
     #[test]
-    fn child_directories_natural_numeric_order() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        for name in ["trip_10", "trip_2", "trip_1"] {
-            fs::create_dir(root.join(name)).unwrap();
-        }
-        let names: Vec<_> = child_directories(root, None)
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
+    fn visible_subdirs_uses_natural_numeric_order() {
+        let scanned = vec![
+            PathBuf::from("/pics/trip_10"),
+            PathBuf::from("/pics/trip_2"),
+            PathBuf::from("/pics/trip_1"),
+        ];
         // Natural order: trip_2 before trip_10 (not alphabetic).
-        assert_eq!(names, vec!["trip_1", "trip_2", "trip_10"]);
+        assert_eq!(
+            names_of(&visible_subdirs(scanned)),
+            vec!["trip_1", "trip_2", "trip_10"]
+        );
+    }
+
+    #[test]
+    fn visible_subdirs_of_an_empty_scan_is_empty() {
+        assert!(visible_subdirs(Vec::new()).is_empty());
     }
 
     #[test]
@@ -1043,7 +915,7 @@ mod tests {
     ///
     /// `hidden` is the Windows filter this walk exists to work around — `AppData` carries the
     /// hidden attribute and every temp folder is a dot-folder — so a hidden entry appears only in
-    /// a scan that names it, exactly as `child_directories` treats `reveal_child`.
+    /// a scan that names it, exactly as `folder_scan::read_folder` treats `reveal_child`.
     struct FakeTree {
         disk: HashMap<PathBuf, Vec<PathBuf>>,
         hidden: std::collections::HashSet<PathBuf>,

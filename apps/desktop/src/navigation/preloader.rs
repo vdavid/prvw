@@ -87,11 +87,11 @@ const _: () = assert!(
 
 /// Messages sent from the preloader back to the main thread.
 pub enum PreloadResponse {
-    /// An image was decoded and is ready. `index` is the navigation slot
-    /// at submission time (used to match `pending_current` for cache-miss
-    /// arrivals); `path` is the cache key the caller inserts under.
+    /// An image was decoded and is ready. `path` is both the cache key the caller inserts under
+    /// and how the main thread recognizes a cache-miss arrival: it matches against the path the
+    /// pending slot holds, because the slot can move under an in-flight decode (a folder scan
+    /// landing reorders the list) while the path never does.
     Ready {
-        index: usize,
         path: PathBuf,
         image: DecodedImage,
         decode_duration: Duration,
@@ -126,11 +126,7 @@ pub enum PreloadResponse {
     /// develop. Sent only for the priority target so the main thread can show
     /// it as a soft placeholder instantly, then swap in the full develop when
     /// `Ready` arrives. Not cached — purely a transient placeholder.
-    Preview {
-        index: usize,
-        path: PathBuf,
-        image: DecodedImage,
-    },
+    Preview { path: PathBuf, image: DecodedImage },
 }
 
 /// LRU cache for decoded images with a memory budget. Keyed by absolute
@@ -672,7 +668,6 @@ impl Preloader {
                     && !cancelled.load(Ordering::Relaxed)
                 {
                     let _ = tx.send(PreloadResponse::Preview {
-                        index,
                         path: path.clone(),
                         image: preview,
                     });
@@ -752,7 +747,6 @@ impl Preloader {
                         duration.as_millis()
                     );
                     let _ = tx.send(PreloadResponse::Ready {
-                        index,
                         path,
                         image,
                         decode_duration: duration,

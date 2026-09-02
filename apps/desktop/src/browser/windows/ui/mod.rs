@@ -970,9 +970,10 @@ fn cursor_over_splitter(hwnd: HWND) -> Option<bool> {
 
 // ── What the rest of browse mode calls ───────────────────────────────────────
 
-/// Start listing a folder's images for the grid, on the background worker.
-pub fn list_folder(folder: PathBuf) {
-    grid::list_folder(folder);
+/// Note that the grid is waiting on a folder listing. The read is the shared
+/// `folder_scan::FolderScanner`'s; this only moves the status bar to "Loading…".
+pub fn listing_started() {
+    grid::listing_started();
 }
 
 /// Apply every queued thumbnail into the grid's image list.

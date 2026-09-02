@@ -2,8 +2,8 @@
 //!
 //! A vertically-scrolling `NSCollectionView` (flow layout) of the selected folder's images, each
 //! cell an `NSImageView` showing a QuickLook thumbnail plus a filename label. Mirrors the tree's
-//! discipline: **nothing reads the disk on the main thread** (folder listing runs on a background
-//! worker — `grid_listing`), and **thumbnails ride the previews' `QLThumbnailGenerator` worker**
+//! discipline: **nothing reads the disk on the main thread** (folder listing rides the shared
+//! `folder_scan::FolderScanner`), and **thumbnails ride the previews' `QLThumbnailGenerator` worker**
 //! (a second `quicklook::RequestTable` into the same shared `quicklookd` cache, delivering RGBA8
 //! that the main thread wraps in an `NSImage` via `quicklook::nsimage_from_rgba8`).
 //!
@@ -20,9 +20,9 @@
 //!
 //! ## Thumbnail flow
 //!
-//! 1. The tree selects a folder → `BrowseSelectFolder` → the executor calls
-//!    [`BrowseGrid::list_folder`], which enqueues a background listing.
-//! 2. The listing returns via `BrowseFolderListed` → [`BrowseGrid::folder_listed`] populates the
+//! 1. The tree selects a folder → `BrowseSelectFolder` → the executor asks the shared folder
+//!    scanner for it and notes that the grid is waiting on that folder.
+//! 2. The scan returns via `FolderScanned` → [`BrowseGrid::folder_listed`] populates the
 //!    model, reseeds the scheduler/cache on the visible range, and `reloadData`s the collection
 //!    view. An empty folder shows the "(No images)" overlay.
 //! 3. On scroll (and after a reload), `BrowseGrid::pump_visible_range` feeds the visible
@@ -68,7 +68,6 @@ use objc2_foundation::{
     NSArray, NSEdgeInsets, NSIndexPath, NSInteger, NSPoint, NSRect, NSSet, NSSize, NSString,
 };
 
-use super::grid_listing::FolderLister;
 use super::grid_model::{self, GridModel};
 use super::grid_scheduler::Scheduler;
 use super::thumbnail_cache::{self, GRID_THUMBNAIL_PX, ThumbnailCache};
@@ -349,8 +348,6 @@ struct GridDataSourceIvars {
     /// Generated thumbnails as `NSImage`, keyed by folder index. AppKit owns the bitmaps; this map
     /// keeps them alive while resident and drops them on eviction.
     images: RefCell<HashMap<usize, Retained<objc2_app_kit::NSImage>>>,
-    /// Background folder lister (its own OS thread). Kept alive for the data source's life.
-    lister: FolderLister,
     /// QL request worker for grid thumbnails — a second path into the shared `quicklookd` cache.
     requests: RequestTable,
     /// Whether the grid pane is the focused pane, mirrored from `browser::State::focused_pane` by
@@ -451,7 +448,6 @@ impl GridDataSource {
             scheduler: RefCell::new(Scheduler::new(max_parallel)),
             cache: RefCell::new(ThumbnailCache::new()),
             images: RefCell::new(HashMap::new()),
-            lister: FolderLister::start(),
             requests: RequestTable::new(
                 || crate::commands::AppCommand::BrowseThumbnailsAvailable,
                 "prvw-gridgen",
@@ -685,12 +681,6 @@ impl BrowseGrid {
     /// mode on open).
     pub fn images(&self) -> Vec<PathBuf> {
         self.data_source.ivars().model.borrow().images().to_vec()
-    }
-
-    /// Begin listing `folder`'s images on the background worker. The result arrives as
-    /// `AppCommand::BrowseFolderListed` → [`Self::folder_listed`]. Never reads the disk here.
-    pub fn list_folder(&self, folder: PathBuf) {
-        self.data_source.ivars().lister.list(folder);
     }
 
     /// Apply a completed background folder listing: populate the model (sorted), reset the

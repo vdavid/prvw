@@ -12,7 +12,7 @@
 //!   navigated away from are dropped (mirrors `previews::State::folder_generation`).
 //!
 //! The model never touches AppKit and never reads the disk on the main thread — the folder listing
-//! itself runs on a background worker (`grid_listing`) and is handed in via [`GridModel::set_images`].
+//! itself runs on the shared `folder_scan` worker and is handed in via [`GridModel::set_images`].
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};

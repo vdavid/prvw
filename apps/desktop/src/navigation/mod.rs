@@ -11,6 +11,7 @@ pub use sort::SortBy;
 use crate::diagnostics::NavigationRecord;
 use crate::settings::Settings;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Coalesce window for user-initiated navigation (arrow keys, mouse wheel).
@@ -19,6 +20,35 @@ use std::time::{Duration, Instant};
 /// directly from N to N+20 with one decode, not twenty. The value is low
 /// enough that a single key press still feels immediate.
 pub const NAV_DEBOUNCE: Duration = Duration::from_millis(30);
+
+/// How long the image we're waiting on may take before the centered "Loading…" overlay appears.
+/// A local file decodes well inside this, so the overlay never flashes for one; only a genuinely
+/// slow read (a big RAW, a network share) outlives the delay and reveals it. Sibling of the browse
+/// tree's `browser::tree_model::LOADING_OVERLAY_DELAY`, which is longer because the tree can show
+/// its rows meanwhile.
+pub const LOADING_OVERLAY_DELAY: Duration = Duration::from_millis(150);
+
+/// A folder scan image mode is waiting on, and what the answer is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingScan {
+    /// The folder being read.
+    pub folder: PathBuf,
+    /// What to do when its images arrive.
+    pub landing: ScanLanding,
+}
+
+/// What image mode does with a folder scan it asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanLanding {
+    /// Keep the image already on screen and give it its real neighbours. The ordinary open: a
+    /// provisional one-file `DirectoryList` is standing in for the folder until this lands.
+    KeepOpenImage,
+    /// Play the folder from its first image. A folder argument or a dropped folder on a platform
+    /// with no browser, where the folder itself is the thing being opened. A folder with no images
+    /// leaves whatever is on screen alone, and shows the "(No images)" empty state when that's
+    /// nothing.
+    PlayFromTop,
+}
 
 /// Format a directory index as its offset from the current image: `"N"`,
 /// `"N+1"`, `"N-2"`, etc. Used in preload / cache-eviction debug logs so
@@ -57,6 +87,10 @@ pub struct State {
     /// again (pointing us at a different target). While `Some`, the window
     /// title shows "Loading…".
     pub pending_current: Option<usize>,
+    /// The folder scan image mode is waiting on, if any. Set at launch, on an in-app open, and
+    /// when a platform with no browser is handed a folder; cleared when `AppCommand::FolderScanned`
+    /// installs the real list. While it's `Some`, `dir_list` is a stand-in and navigation stays put.
+    pub scan_pending: Option<PendingScan>,
     /// Direction of the last navigation — drives neighbor preload priority
     /// (`DirectoryList::preload_range`). `Unknown` at startup and after
     /// non-directional jumps (open-file, refresh, settings re-decode).
@@ -86,6 +120,7 @@ impl State {
             current_image_size: None,
             preload_neighbors: true,
             pending_current: None,
+            scan_pending: None,
             last_direction: directory::Direction::Unknown,
             pending_nav_delta: 0,
             nav_deadline: None,
@@ -99,6 +134,15 @@ impl State {
             loop_navigation: settings.loop_navigation,
             ..Self::new()
         }
+    }
+
+    /// The folder a scan is pending on, if one is. Callers that only ask "which folder?" go
+    /// through this rather than reaching into [`PendingScan`].
+    #[must_use]
+    pub fn scan_folder(&self) -> Option<&std::path::Path> {
+        self.scan_pending
+            .as_ref()
+            .map(|pending| pending.folder.as_path())
     }
 }
 
