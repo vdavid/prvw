@@ -19,18 +19,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 
 ### Changed
 
-- Opening an image no longer waits for its folder to be listed. A picture in a big folder on a network share could leave
-  you staring at nothing for the best part of a minute; the window and the image now show up straight away, and the
-  `n/N` position fills in when the listing arrives. Every format now loads off the main thread (only camera RAW did
+- **Opening an image no longer waits for its folder to be listed.** A picture in a big folder on a network share could
+  leave you staring at nothing for the best part of a minute; the window and the image now show up straight away, and
+  the `n/N` position fills in when the listing arrives. Every format now loads off the main thread (only camera RAW did
   before), and the "Loading…" pill only appears if the image takes longer than 150 ms, so a local file never flashes it
+  ([c2385247](https://github.com/vdavid/prvw/commit/c2385247),
+  [4cff946e](https://github.com/vdavid/prvw/commit/4cff946e))
 - Arrow keys work while a folder is still being listed. Pressing next or previous during a slow scan used to do nothing;
   the move is now remembered and applied the moment the listing arrives, so you end up where you meant to be. Left then
   right cancels out, Home and End still jump to the ends, and a running slideshow picks up where it would have been. A
   quiet "Scanning folder… 3,412 images so far" line shows the count climbing while you wait, and the browse grid and
   folder tree show the same count in place of their empty area
+  ([d8e68831](https://github.com/vdavid/prvw/commit/d8e68831),
+  [973d8cc7](https://github.com/vdavid/prvw/commit/973d8cc7))
+- The "Loading…" pill now carries a small bar that fills with how much of the file has actually been read, so a slow
+  photo on a share shows real progress instead of a word that never changes. It works for every format, and like the
+  pill it only appears once the wait passes 150 ms ([3f673c0a](https://github.com/vdavid/prvw/commit/3f673c0a))
+- Launching from Finder asks the update server once instead of twice, freeing a network round trip for the image you're
+  waiting on ([dde0d8a8](https://github.com/vdavid/prvw/commit/dde0d8a8))
 
 ### Fixed
 
+- The opened image no longer vanishes when a folder lists faster than the picture loads: the window sat on "Loading…"
+  while every neighbor decoded around it ([1863e487](https://github.com/vdavid/prvw/commit/1863e487))
+- The "3,412 images so far" count now counts images. It was counting every directory entry, so a folder of videos and
+  sidecar files read as a folder full of pictures ([4f9364df](https://github.com/vdavid/prvw/commit/4f9364df))
 - Prvw starts on macOS 13 again. The onboarding window drew its checkmark with an `NSBezierPath` call that only exists
   on macOS 14 and later, so every macOS 13 user hit an instant crash on first launch. The same curve is now drawn with
   an operator that has been around since macOS 10.0 ([59e3ee27](https://github.com/vdavid/prvw/commit/59e3ee27))
