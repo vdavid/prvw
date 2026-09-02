@@ -6,6 +6,7 @@ the renderer.
 | File               | Purpose                                                                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `mod.rs`           | Public API: `DecodedImage`, `PixelBuffer` (Phase 5 RGBA8/RGBA16F), `load_image` (always-cancellable), `is_supported_extension`                                     |
+| `read_progress.rs` | `ReadProgress`: the live byte counter of one file read, plus `READ_CHUNK_BYTES` and the `PRVW_READ_DELAY_MS` test hook                                             |
 | `dispatch.rs`      | `Backend` enum + extension-to-backend mapping                                                                                                                      |
 | `jpeg.rs`          | Fast JPEG path via `zune-jpeg` (SIMD)                                                                                                                              |
 | `raw.rs`           | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)                                                                                         |
@@ -20,7 +21,7 @@ the renderer.
 - **Backend dispatch is extension-based.** `dispatch::pick_backend(ext)` picks the decoder; `is_supported_extension` is
   the gate the directory scanner uses. Adding a format means: teach `dispatch` about its extensions, add a backend
   module, and match it in `mod::decode_with`.
-- **Cancellation.** `load_image` takes an `AtomicBool`, checked between each RAW pipeline stage and at every 64 KB
+- **Cancellation.** `load_image` takes an `AtomicBool`, checked between each RAW pipeline stage and at every 256 KB
   file-read chunk. Returns `Err("cancelled")` when the flag flips. Worst-case cancel latency inside RAW decode is one
   stage (≈ 80 ms on the `lens` stage; see the stage budget table). JPEG and generic decodes are a single opaque library
   call we can't checkpoint, so they run on an abandonable thread instead (see below) — cancel frees the caller within
@@ -31,7 +32,9 @@ the renderer.
   discards its result when the send fails.
   - `read_file_cancellable` covers the file read. Critical for slow / wedged network shares: `std::fs::File::read` has
     no timeout, so an in-thread flag check does nothing until the kernel unblocks the syscall. The caller is never
-    blocked.
+    blocked. It also fills in an optional `ReadProgress` handle (file length from metadata, then a byte count per
+    `READ_CHUNK_BYTES` chunk), which is what the "Loading…" overlay's read bar draws — see `navigation/CLAUDE.md`.
+    `PRVW_READ_DELAY_MS` pauses it before every chunk so tests can watch the bar climb.
   - `run_decode_cancellable` wraps the JPEG and generic decodes (RAW self-cancels between stages, so it stays inline).
     Trade-off: an abandoned decode burns CPU to completion (bounded; only on cancellation of a large in-flight decode),
     in exchange for the serial preload worker never blocking on a huge image the user has already navigated past — for

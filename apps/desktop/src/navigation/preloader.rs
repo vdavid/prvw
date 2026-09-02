@@ -1,5 +1,5 @@
 use crate::commands::AppCommand;
-use crate::decoding::{self, DecodedImage, RawPipelineFlags};
+use crate::decoding::{self, DecodedImage, RawPipelineFlags, ReadProgress};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -396,12 +396,10 @@ pub struct Preloader {
     task_tx: mpsc::Sender<Box<dyn FnOnce() + Send + 'static>>,
     response_tx: mpsc::Sender<PreloadResponse>,
     pub response_rx: mpsc::Receiver<PreloadResponse>,
-    /// In-flight cancellation tokens keyed by file path. When
-    /// `request_neighbor_preload` runs, paths still in the new task list
-    /// keep their existing token (so a mid-decode task survives), and
-    /// paths no longer in the list have their token flipped (cancelling
-    /// that decode).
-    in_flight: HashMap<PathBuf, Arc<AtomicBool>>,
+    /// In-flight tasks keyed by file path. When `request_neighbor_preload` runs, paths still in
+    /// the new task list keep their existing entry (so a mid-decode task survives), and paths no
+    /// longer in the list have their token flipped (cancelling that decode).
+    in_flight: HashMap<PathBuf, InFlight>,
     /// ICC profile bytes for the current display (target color space for decoding).
     display_icc: Arc<Vec<u8>>,
     /// Whether to use relative colorimetric rendering intent instead of perceptual.
@@ -423,6 +421,13 @@ pub struct Preloader {
     /// always runs `about_to_wait` after any event, which is where we
     /// poll the response channel.
     event_proxy: EventLoopProxy<AppCommand>,
+}
+
+/// What the main thread keeps on a queued or running decode: the switch that stops it, and the
+/// live byte count of its file read, which the "Loading…" overlay draws as a bar.
+struct InFlight {
+    cancelled: Arc<AtomicBool>,
+    read_progress: Arc<ReadProgress>,
 }
 
 impl Preloader {
@@ -500,11 +505,11 @@ impl Preloader {
     /// navigation.
     pub fn prioritize_target(&mut self, target_index: usize, path: PathBuf, total: usize) {
         let mut cancelled_count = 0usize;
-        self.in_flight.retain(|p, token| {
+        self.in_flight.retain(|p, task| {
             if p == &path {
                 true
             } else {
-                token.store(true, Ordering::Relaxed);
+                task.cancelled.store(true, Ordering::Relaxed);
                 cancelled_count += 1;
                 false
             }
@@ -528,8 +533,8 @@ impl Preloader {
     /// after the re-sort completes.
     pub fn cancel_all(&mut self) {
         let count = self.in_flight.len();
-        for token in self.in_flight.values() {
-            token.store(true, Ordering::Relaxed);
+        for task in self.in_flight.values() {
+            task.cancelled.store(true, Ordering::Relaxed);
         }
         self.in_flight.clear();
         if count > 0 {
@@ -551,11 +556,11 @@ impl Preloader {
         let requested: std::collections::HashSet<PathBuf> =
             tasks.iter().map(|(_, p)| p.clone()).collect();
         let mut cancelled_count = 0usize;
-        self.in_flight.retain(|p, token| {
+        self.in_flight.retain(|p, task| {
             if requested.contains(p) {
                 true
             } else {
-                token.store(true, Ordering::Relaxed);
+                task.cancelled.store(true, Ordering::Relaxed);
                 cancelled_count += 1;
                 false
             }
@@ -593,11 +598,11 @@ impl Preloader {
         let requested: std::collections::HashSet<PathBuf> =
             tasks.iter().map(|(_, p)| p.clone()).collect();
         let mut cancelled_count = 0usize;
-        self.in_flight.retain(|p, token| {
+        self.in_flight.retain(|p, task| {
             if requested.contains(p) {
                 true
             } else {
-                token.store(true, Ordering::Relaxed);
+                task.cancelled.store(true, Ordering::Relaxed);
                 cancelled_count += 1;
                 false
             }
@@ -634,7 +639,14 @@ impl Preloader {
         wants_preview: bool,
     ) {
         let cancelled = Arc::new(AtomicBool::new(false));
-        self.in_flight.insert(path.clone(), Arc::clone(&cancelled));
+        let read_progress = Arc::new(ReadProgress::new());
+        self.in_flight.insert(
+            path.clone(),
+            InFlight {
+                cancelled: Arc::clone(&cancelled),
+                read_progress: Arc::clone(&read_progress),
+            },
+        );
 
         let offset_label = crate::navigation::format_offset(index, current_index);
         let position_label = format!("{}/{}", index + 1, total);
@@ -739,6 +751,7 @@ impl Preloader {
                 raw_flags,
                 edr_headroom,
                 Some(salvage_sink),
+                Some(Arc::clone(&read_progress)),
             ) {
                 Ok(image) => {
                     let duration = start.elapsed();
@@ -781,6 +794,16 @@ impl Preloader {
         if self.task_tx.send(Box::new(task)).is_err() {
             log::warn!("Preloader worker is gone — dropping task for [{index}]");
         }
+    }
+
+    /// Live byte progress of `path`'s file read, while its decode task is queued or running.
+    /// `None` once the task is done (the caller has the image by then) or if it never started.
+    /// The entry outlives the read itself, so the bar holds at full through the decode.
+    #[must_use]
+    pub fn read_progress(&self, path: &Path) -> Option<Arc<ReadProgress>> {
+        self.in_flight
+            .get(path)
+            .map(|task| Arc::clone(&task.read_progress))
     }
 
     /// Clear the in-flight tracking for a completed path.

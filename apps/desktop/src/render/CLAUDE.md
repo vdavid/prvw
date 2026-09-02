@@ -3,14 +3,15 @@
 Not a feature. This is the GPU rendering scaffolding. Features like `zoom` (which owns `ViewState`) plug transforms into
 the renderer's uniform buffer via `crate::zoom::view::TransformUniform`.
 
-| File           | Purpose                                                                                          |
-| -------------- | ------------------------------------------------------------------------------------------------ |
-| `gpu.rs`       | Which backend and which adapter this platform asks wgpu for, as a pure policy                    |
-| `renderer.rs`  | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback    |
-| _(HDR)_        | `display_hdr_headroom` and `configure_surface` live in `renderer.rs`; see the two sections below |
-| `text.rs`      | `glyphon`-based text layout and rendering for the overlay pill                                   |
-| `shader.wgsl`  | Image-quad vertex/fragment shader with a 2D affine transform                                     |
-| `overlay.wgsl` | Rounded-rect pill shader for the title overlay                                                   |
+| File              | Purpose                                                                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------ |
+| `gpu.rs`          | Which backend and which adapter this platform asks wgpu for, as a pure policy                    |
+| `renderer.rs`     | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback    |
+| _(HDR)_           | `display_hdr_headroom` and `configure_surface` live in `renderer.rs`; see the two sections below |
+| `text.rs`         | `glyphon`-based text layout and rendering for the overlay pill                                   |
+| `progress_bar.rs` | Pure layout for the read progress bar under the "Loading…" overlay: three overlay pills          |
+| `shader.wgsl`     | Image-quad vertex/fragment shader with a 2D affine transform                                     |
+| `overlay.wgsl`    | Rounded-rect pill shader for the title overlay                                                   |
 
 ## Decision: the backend is pinned per platform, with a wider fallback
 
@@ -74,6 +75,9 @@ mode. On macOS the headroom is ours to use; on Windows it is ours to respect.
 ## Key patterns
 
 - **Render-on-demand.** `App.needs_redraw` gates frames. Renderer is passive.
+- **The overlay pill does outlines too.** `StandalonePill.border_width` above `0.0` makes `overlay.wgsl` subtract the
+  same rounded rect shrunk by that width, leaving a ring instead of a fill. That's how the read progress bar draws its 1
+  px outline without a second pipeline. `0.0` fills, which is what every other pill wants.
 - **Two pipelines, two passes.** Image quad renders inside a viewport clipped to the image area (below the title-bar
   strip); the viewport is RESET to the full surface before pills/text.
 - **Compositing with vibrancy.** Metal layer is `isOpaque = false`, clear color is `TRANSPARENT`, `zPosition = 1.0` puts

@@ -283,6 +283,7 @@ fn produce(route: &Route, path: &Path, pixels: u32) -> Option<PreviewPixels> {
                 RawPipelineFlags::default(),
                 1.0,
                 None,
+                None,
             )
             .ok()?;
             downscale(decoded, pixels)

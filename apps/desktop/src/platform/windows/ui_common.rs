@@ -33,6 +33,7 @@ pub(crate) fn decode_srgb(
         raw_flags,
         1.0,
         None,
+        None,
     )
     .ok()?;
     match decoded.pixels {

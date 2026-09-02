@@ -66,6 +66,9 @@ pub struct StandalonePill {
     pub height: Logical<f32>,
     pub corner_radius: Logical<f32>,
     pub color: [f32; 4],
+    /// Outline thickness in logical pixels. `0.0` fills the rect; anything above draws only that
+    /// wide a ring along the edge, which is how the read progress bar gets its outline.
+    pub border_width: Logical<f32>,
 }
 
 impl TextBlock {

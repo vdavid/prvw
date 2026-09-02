@@ -2383,3 +2383,67 @@ fn live_sync_browse_grid_empties_when_all_images_are_deleted() {
     // Still in browse mode (the grid emptying doesn't bounce us to image mode).
     assert_eq!(state["view_mode"].as_str(), Some("browse"));
 }
+
+// ── Read progress bar ────────────────────────────────────────────────────────────────────────
+
+/// A PNG big enough that its read spans several 256 KB chunks, so the progress bar has somewhere
+/// to climb. Random pixels: a solid color compresses to a few hundred bytes.
+fn write_multi_chunk_png(path: &std::path::Path) {
+    let side = 900u32;
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    let img = image::RgbaImage::from_fn(side, side, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let bytes = seed.to_le_bytes();
+        image::Rgba([bytes[0], bytes[1], bytes[2], 255])
+    });
+    img.save(path).unwrap();
+}
+
+/// The bar under the "Loading…" overlay tracks real bytes: it appears part-full partway through a
+/// slow read and reaches full before the image lands. `PRVW_READ_DELAY_MS` stretches the read of an
+/// otherwise-instant local file so the intermediate states are observable.
+#[test]
+fn the_read_progress_bar_climbs_while_a_slow_file_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let opened = dir.path().join("big.png");
+    write_multi_chunk_png(&opened);
+    let chunks = std::fs::metadata(&opened).unwrap().len() / (256 * 1024);
+    assert!(
+        chunks >= 4,
+        "the fixture needs several read chunks to climb through, got {chunks}"
+    );
+
+    let Some(app) = SharedApp::start_mid_scan(&[], &opened, &[("PRVW_READ_DELAY_MS", "60")]) else {
+        return;
+    };
+
+    // Partway through: the overlay is up and the bar is drawn, neither empty nor full.
+    let climbing = app.wait_for_state(Duration::from_secs(15), |s| {
+        s["read_progress"]
+            .as_f64()
+            .is_some_and(|f| f > 0.0 && f < 1.0)
+    });
+    let fraction = climbing["read_progress"].as_f64();
+    assert!(
+        fraction.is_some_and(|f| f > 0.0 && f < 1.0),
+        "the bar should sit part-full during the read, got {climbing}"
+    );
+    assert!(
+        climbing["title"]
+            .as_str()
+            .is_some_and(|t| t.contains("Loading")),
+        "the bar only shows alongside the \"Loading…\" overlay, got {climbing}"
+    );
+
+    // The image lands, and with nothing pending there's no bar left to draw.
+    let displayed = app.wait_for_state(Duration::from_secs(20), |s| {
+        s["title"].as_str().is_some_and(|t| t.contains("big.png"))
+    });
+    assert_eq!(displayed["image_width"].as_u64(), Some(900));
+    assert!(
+        displayed["read_progress"].is_null(),
+        "no pending read, no bar, got {displayed}"
+    );
+}

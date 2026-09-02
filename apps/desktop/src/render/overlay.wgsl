@@ -6,7 +6,8 @@ struct Rect {
     pos: vec4<f32>,
     // RGBA color, each component 0..1
     color: vec4<f32>,
-    // (corner_radius, screen_width, screen_height, 0)
+    // (corner_radius, screen_width, screen_height, border_width)
+    // border_width is in physical pixels; 0 fills the rect, anything above draws only a ring.
     params: vec4<f32>,
 };
 
@@ -41,7 +42,14 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
     let dist = min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - radius;
 
     // Smooth edge (1px anti-aliasing)
-    let alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
+    var alpha = 1.0 - smoothstep(-0.5, 0.5, dist);
+
+    // Outline mode: subtract the same shape shrunk by the border width, leaving a ring.
+    let border = rect.params.w;
+    if border > 0.0 {
+        let inner_alpha = 1.0 - smoothstep(-0.5, 0.5, dist + border);
+        alpha = alpha - inner_alpha;
+    }
 
     if alpha < 0.001 {
         discard;

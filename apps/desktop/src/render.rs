@@ -4,10 +4,12 @@
 //! - `renderer` — `wgpu` surface, pipelines, texture upload, screenshot path.
 //! - `view` — zoom/pan math, transform uniform, `fit_zoom`, cursor-centered zoom.
 //! - `text` — text layout + glyph geometry for the overlay pill rendering.
+//! - `progress_bar` — the read progress bar under the "Loading…" overlay, as overlay pills.
 //! - `shader.wgsl` — main image quad shader.
 //! - `overlay.wgsl` — pill/text overlay shader.
 
 pub mod gpu;
 pub mod overlay_style;
+pub mod progress_bar;
 pub mod renderer;
 pub mod text;

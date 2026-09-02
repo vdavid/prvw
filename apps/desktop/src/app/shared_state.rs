@@ -113,6 +113,10 @@ pub struct SharedAppState {
     /// The move the user asked for while the folder scan runs, applied when it lands. `None` when
     /// nothing is queued, which is what a left-then-right pair nets back to.
     pub queued_nav: Option<QueuedNavSnapshot>,
+    /// How full the read progress bar under the "Loading…" overlay is, in `0.0..=1.0`. `None`
+    /// whenever no bar is drawn, which is the normal case: a file that reads inside the overlay's
+    /// 150 ms delay never shows one.
+    pub read_progress: Option<f32>,
 }
 
 /// The queued move, flattened for the QA snapshot: the anchor it counts from and the net steps
@@ -203,6 +207,7 @@ impl Default for SharedAppState {
             watched_folders: Vec::new(),
             scan_pending: false,
             queued_nav: None,
+            read_progress: None,
         }
     }
 }
@@ -304,6 +309,7 @@ impl App {
             anchor: q.anchor.as_str(),
             delta: q.delta,
         });
+        state.read_progress = self.read_progress;
 
         if let Some((iw, ih)) = self.navigation.current_image_size {
             state.image_width = iw;

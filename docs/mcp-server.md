@@ -60,12 +60,15 @@ both a text confirmation and a `state` field with the current app state as JSON.
 
 - **prvw://state**: Current app state as JSON (file, zoom, pan, fullscreen, window/image geometry, settings, title,
   `loop_navigation`, `slideshow_running`, `cache_indices` (sorted directory indices currently in the image cache), the
-  folder-scan fields `scan_pending` and `queued_nav`, and the browse-mode fields `view_mode`, `focused_pane`,
-  `browse_selected_folder`, `browse_grid_selected`, `browse_grid_count`, `browse_reveal_pending`).
+  folder-scan fields `scan_pending`, `queued_nav`, and `read_progress`, and the browse-mode fields `view_mode`,
+  `focused_pane`, `browse_selected_folder`, `browse_grid_selected`, `browse_grid_count`, `browse_reveal_pending`).
 
   `queued_nav` is the move made while the folder was still being scanned, applied when the scan lands:
   `{"anchor": "current" | "first" | "last", "delta": <signed steps>}`, or `null` when nothing is queued (which is what a
   left-then-right pair nets back to).
+
+  `read_progress` is how full the read progress bar under the "Loading…" overlay is, `0.0` to `1.0`, or `null` when no
+  bar is drawn. Null is the normal case: a file that reads inside the overlay's 150 ms delay never shows one.
 
 - **prvw://settings**: Current settings from disk as JSON (auto_update, auto_fit_window, enlarge_small_images,
   loop_navigation).

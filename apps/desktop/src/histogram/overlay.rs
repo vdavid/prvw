@@ -63,6 +63,7 @@ pub fn build<'a>(
         height: Logical(PANEL_HEIGHT),
         corner_radius: Logical(PANEL_RADIUS),
         color: BACKDROP_COLOR,
+        border_width: Logical(0.0),
     });
 
     // Plot rect — where the bars actually live, inside the padded area.
@@ -86,6 +87,7 @@ pub fn build<'a>(
             height: Logical(plot_h),
             corner_radius: Logical(0.0),
             color: TICK_COLOR,
+            border_width: Logical(0.0),
         });
     }
 
@@ -97,6 +99,7 @@ pub fn build<'a>(
             height: Logical(plot_h),
             corner_radius: Logical(0.0),
             color: [0.0; 4],
+            border_width: Logical(0.0),
         },
         data,
     };

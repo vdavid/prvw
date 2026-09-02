@@ -507,7 +507,7 @@ impl Renderer {
             color: [0.0; 4],
             params: [0.0; 4],
         };
-        let overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)> = (0..16)
+        let overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)> = (0..24)
             .map(|i| {
                 let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(&format!("overlay uniform {i}")),
@@ -1056,7 +1056,7 @@ impl Renderer {
                     sp.corner_radius.0 * sf,
                     self.config.width as f32,
                     self.config.height as f32,
-                    0.0,
+                    sp.border_width.0 * sf,
                 ],
             };
             self.queue.write_buffer(

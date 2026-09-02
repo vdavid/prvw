@@ -155,6 +155,8 @@ See `platform/macos/CLAUDE.md` for the full list. Short version:
 - Release: `cd apps/desktop && cargo run --release -- <image_path>`
 - Verbose: `RUST_LOG=debug cargo run -- <image_path>`
 - Simulate a slow share: `PRVW_SCAN_DELAY_MS=5000 cargo run -- <image_path>` delays every folder scan
+- Simulate a slow read: `PRVW_READ_DELAY_MS=60 cargo run -- <image_path>` pauses the file read before every 256 KB
+  chunk, so the "Loading…" overlay and its read progress bar stay up long enough to look at
 - Background window (the integration harness sets this): `PRVW_BACKGROUND_WINDOW=1`
 - Target a feature: `RUST_LOG=prvw::navigation::preloader=debug ...`
 

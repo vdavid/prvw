@@ -60,11 +60,11 @@ Full history, the measured tables, and the rejected alternatives:
 
 | File             | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mod.rs` | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, scan_pending, queued_nav, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `PendingScan` + `ScanLanding`; `queue_nav_step` / `queue_nav_jump`; `format_offset` + `NAV_DEBOUNCE` + `LOADING_OVERLAY_DELAY` helpers (byte formatting is `diagnostics::format_bytes`) |
+| `mod.rs`         | `navigation::State { dir_list, preloader, image_cache, history, current_image_size, preload_neighbors, pending_current, scan_pending, queued_nav, last_direction, pending_nav_delta, nav_deadline, loop_navigation }`; `PendingScan` + `ScanLanding`; `queue_nav_step` / `queue_nav_jump`; `format_offset` + `NAV_DEBOUNCE` + `LOADING_OVERLAY_DELAY` helpers (byte formatting is `diagnostics::format_bytes`)                                                                        |
 | `directory.rs`   | `DirectoryList`: sort, track current position; `provisional(path, sort_by)` (the one-image stand-in used before a folder is scanned) and `from_scan(images, sort_by, current)` (the real list, positioned by name); `from_explicit(files, sort_by, current)` for a multi-file open; `Direction`-aware `preload_range(count, dir, loop_on)`; `go_by(delta, loop_on)`; absolute jumps via `go_to_first()` / `go_to_last()`; `from_sorted(files, sort_by, index)` for live-sync re-scans |
 | `folder_diff.rs` | Pure, headless-tested live-sync diff: `diff_folder(old, scanned, sort_by, current)` → adds/removes + the delete-current `CurrentOutcome` (`Unchanged`/`Navigate`/`Empty`). No I/O — the `FolderChanged` handler asks the shared folder scanner and applies the result                                                                                                                                                                                                                 |
-| `preloader.rs` | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction; `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` and the `preload_count()` derived from them |
-| `queued_nav.rs` | Pure, headless-tested `QueuedNav { anchor: NavAnchor, delta }`: the move made before the folder scan landed. `with_step` folds presses together and drops a pair that cancels; `resolve(current, total, loop_on)` wraps or clamps; `direction_hint()` drives preload priority |
+| `preloader.rs`   | Serial `std::thread` worker + `ImageCache` with LRU + retain-only eviction; `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` and the `preload_count()` derived from them; `read_progress(path)` hands the main thread the live byte counter of an in-flight file read                                                                                                                                                                                                                        |
+| `queued_nav.rs`  | Pure, headless-tested `QueuedNav { anchor: NavAnchor, delta }`: the move made before the folder scan landed. `with_step` folds presses together and drops a pair that cancels; `resolve(current, total, loop_on)` wraps or clamps; `direction_hint()` drives preload priority                                                                                                                                                                                                         |
 | `wrap.rs`        | Pure-logic loop helpers: `active_preload_indices(current, total, radius, loop_on)`, `step_next` / `step_previous`. Used by `App::refresh_preload_window` on loop toggle / sort change and by `navigate_by` for cache `keep` set                                                                                                                                                                                                                                                       |
 | `sort.rs`        | `SortBy { Name, Date, FileType }` (all ascending) + `sort_files()`. Name uses natural alphanumeric (`photo_2 < photo_10`), case-insensitive. Date and FileType fall back to Name as tiebreaker. Date reads each file's mtime exactly once up front, because a comparator that calls `stat` reads every file O(log n) times: thousands of round trips on a share                                                                                                                       |
 
@@ -98,6 +98,28 @@ folder on an SMB mount takes 17-45 s, and doing it inline meant nothing painted 
 - **The folder watch starts before the display**, so a file added during a long scan isn't missed.
 - `scan_pending` is exposed in `SharedAppState` and the QA `/state`. `PRVW_SCAN_DELAY_MS` delays every scan so tests can
   hold this state (see `launch_shows_the_image_while_the_folder_is_still_being_scanned`).
+
+## The read progress bar
+
+While the "Loading…" overlay is up, a small bar under it fills with the pending image's **real** file read, for every
+format that goes through `decoding::load_image`. On a share the read is the wait, so the bar is honest progress rather
+than a spinner.
+
+- **The counter is `decoding::ReadProgress`**, an `Arc` of relaxed atomics. `read_file_cancellable` publishes the file
+  length from its metadata, then adds each `READ_CHUNK_BYTES` (256 KB) chunk. A metadata call that fails publishes no
+  total, and `fraction()` returns `None`, so the bar stays undrawn instead of stuck at zero.
+- **The preloader owns the handle.** `Preloader::in_flight` maps each queued or running path to its cancel token and its
+  `ReadProgress`; `Preloader::read_progress(path)` hands it to the main thread. The entry outlives the read, so the bar
+  holds at full through the decode, which has no honest progress of its own.
+- **`App::read_progress_fraction`** joins the two: it returns `None` unless the overlay is visible, so the bar inherits
+  the overlay's `LOADING_OVERLAY_DELAY` and a local file flashes neither. `about_to_wait` recomputes it every
+  `READ_PROGRESS_POLL` (100 ms) and asks for a redraw only on a change; `schedule_wakeup` adds the poll deadline only
+  while a bar is on screen, so an idle viewer never wakes for it.
+- **Drawing is `render::progress_bar::build`**, three overlay pills (dark track, thin outline, fill) laid out under the
+  "Loading…" pill by `read_bar_top`. The scan status line steps down past the bar when both are up.
+- `read_progress` (a `0.0..=1.0` fraction, or null) is exposed in `SharedAppState` and the QA `/state`.
+  `PRVW_READ_DELAY_MS` pauses the read before every chunk so tests can watch the bar climb on a local file (see
+  `the_read_progress_bar_climbs_while_a_slow_file_reads`).
 
 The multi-file launch (`explicit_files`) skips all of this: the given files are already the navigation set.
 

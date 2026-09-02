@@ -242,6 +242,7 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "watched_folders": s.watched_folders,
         "scan_pending": s.scan_pending,
         "queued_nav": queued_nav,
+        "read_progress": s.read_progress,
         "cache_indices": s.cache_indices,
         "window_x": s.window_x,
         "window_y": s.window_y,

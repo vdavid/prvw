@@ -40,6 +40,7 @@ mod orientation;
 mod raw;
 mod raw_flags;
 mod raw_preview;
+mod read_progress;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -51,6 +52,7 @@ use orientation::{apply_orientation_bytes, parse_exif_orientation};
 
 pub use exif_metadata::{ExifMetadata, parse_exif_metadata, parse_raw_exif};
 pub use raw_flags::RawPipelineFlags;
+pub use read_progress::{READ_CHUNK_BYTES, ReadProgress};
 // Range constants are re-exported for both Settings → RAW panels: the AppKit
 // sliders on macOS, and the trackbar ranges the Windows dialog's model holds.
 pub use raw_flags::{
@@ -148,7 +150,7 @@ pub type SalvageSink = Box<dyn FnOnce(DecodedImage) + Send>;
 /// profile are assumed sRGB and transformed to `target_icc`.
 ///
 /// `cancelled` is the cancellation flag. It frees the caller promptly while
-/// reading the file (every 64 KB), between RAW pipeline stages, and — for the
+/// reading the file (every chunk), between RAW pipeline stages, and — for the
 /// opaque JPEG / generic decodes — within ~10 ms via the abandonable
 /// `run_decode_cancellable`. Pass `&AtomicBool::new(false)` if you don't need
 /// cancellation.
@@ -157,11 +159,16 @@ pub type SalvageSink = Box<dyn FnOnce(DecodedImage) + Send>;
 /// cancellation instead of discarding it — see [`run_decode_cancellable`] and
 /// [`SalvageSink`]. Pass `None` if you don't want the recovered image.
 ///
+/// `read_progress`, when given, is filled in as the file is read: the total from its metadata,
+/// then the byte count per chunk. The preloader hands one in for the image the user is waiting on
+/// so the "Loading…" overlay can draw a read bar. Pass `None` everywhere else.
+///
 /// `edr_headroom` is the peak-white headroom the display can show (from
 /// [`crate::render::renderer::Renderer::display_hdr_headroom`]). `1.0`
 /// means "SDR only, clip highlights at display-white". Anything above
 /// `1.0` combined with `raw_flags.hdr_output == true` triggers the
 /// `RGBA16F` output path for RAW files.
+#[allow(clippy::too_many_arguments)] // Decode knobs, all independent; a struct would just move them
 pub fn load_image(
     path: &Path,
     cancelled: &AtomicBool,
@@ -170,6 +177,7 @@ pub fn load_image(
     raw_flags: RawPipelineFlags,
     edr_headroom: f32,
     salvage: Option<SalvageSink>,
+    read_progress: Option<Arc<ReadProgress>>,
 ) -> Result<DecodedImage, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -177,7 +185,7 @@ pub fn load_image(
     log::debug!("Loading {}", path.display());
     let start = Instant::now();
 
-    let bytes = read_file_cancellable(path, cancelled)?;
+    let bytes = read_file_cancellable(path, cancelled, read_progress)?;
     if cancelled.load(Ordering::Relaxed) {
         return Err("cancelled".into());
     }
@@ -336,11 +344,17 @@ fn finalize(mut img: DecodedImage, orientation: u16) -> DecodedImage {
 /// return `Err("cancelled")` immediately. The reader thread finishes at its
 /// own pace and silently discards its result.
 ///
-/// 64 KB chunks + flag check between chunks — same as before, but now we
-/// also abandon the syscall entirely on cancellation. That's the critical
-/// difference: `std::fs::File::read` has no timeout, so on a wedged share
-/// the old in-thread check was useless until the kernel unblocked.
-fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>, String> {
+/// Reads in [`READ_CHUNK_BYTES`] chunks with a flag check between them, and abandons the syscall
+/// entirely on cancellation. That last part is what matters: `std::fs::File::read` has no timeout,
+/// so on a wedged share an in-thread flag check does nothing until the kernel unblocks.
+///
+/// `progress`, when given, learns the file's length up front and then climbs a chunk at a time, so
+/// the main thread can draw an honest read bar under the "Loading…" overlay.
+fn read_file_cancellable(
+    path: &Path,
+    cancelled: &AtomicBool,
+    progress: Option<Arc<ReadProgress>>,
+) -> Result<Vec<u8>, String> {
     use std::io::Read;
     use std::sync::mpsc;
 
@@ -358,12 +372,27 @@ fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>,
             let result = (|| {
                 let mut file = std::fs::File::open(&path_for_thread)
                     .map_err(|e| format!("{}: {e}", crate::paths::for_display(&path_for_thread)))?;
-                let size = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
+                // Only publish a total we actually learned. Metadata that won't answer leaves the
+                // progress handle at "unknown", and the caller draws no bar instead of a stuck one.
+                let size = match file.metadata() {
+                    Ok(metadata) => {
+                        let size = metadata.len();
+                        if let Some(progress) = &progress {
+                            progress.set_total(size);
+                        }
+                        size as usize
+                    }
+                    Err(_) => 0,
+                };
                 let mut buf = Vec::with_capacity(size);
-                let mut chunk = [0u8; 65536];
+                let mut chunk = vec![0u8; READ_CHUNK_BYTES];
+                let chunk_delay = read_progress::read_delay();
                 loop {
                     if thread_cancelled.load(Ordering::Relaxed) {
                         return Err::<Vec<u8>, String>("cancelled".into());
+                    }
+                    if let Some(delay) = chunk_delay {
+                        std::thread::sleep(delay);
                     }
                     let n = file.read(&mut chunk).map_err(|e| {
                         format!("{}: {e}", crate::paths::for_display(&path_for_thread))
@@ -372,6 +401,12 @@ fn read_file_cancellable(path: &Path, cancelled: &AtomicBool) -> Result<Vec<u8>,
                         break;
                     }
                     buf.extend_from_slice(&chunk[..n]);
+                    if let Some(progress) = &progress {
+                        progress.add(n as u64);
+                    }
+                }
+                if let Some(progress) = &progress {
+                    progress.finish();
                 }
                 Ok(buf)
             })();
@@ -555,6 +590,7 @@ mod tests {
             RawPipelineFlags::default(),
             1.0,
             None,
+            None,
         )
         .expect("decode should succeed");
 
@@ -581,6 +617,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0,
+            None,
             None,
         )
         .expect("decode should succeed");
@@ -743,20 +780,21 @@ mod tests {
 
             let noop = AtomicBool::new(false);
             // One warm-up pass each.
-            let _ = load_image(path, &noop, &target, false, flags_off, 1.0, None);
-            let _ = load_image(path, &noop, &target, false, flags_on, 1.0, None);
+            let _ = load_image(path, &noop, &target, false, flags_off, 1.0, None, None);
+            let _ = load_image(path, &noop, &target, false, flags_on, 1.0, None, None);
 
             let iters = 3;
             let mut off_ms: u128 = 0;
             for _ in 0..iters {
                 let t = Instant::now();
-                let _ = load_image(path, &noop, &target, false, flags_off, 1.0, None).unwrap();
+                let _ =
+                    load_image(path, &noop, &target, false, flags_off, 1.0, None, None).unwrap();
                 off_ms += t.elapsed().as_millis();
             }
             let mut on_ms: u128 = 0;
             for _ in 0..iters {
                 let t = Instant::now();
-                let _ = load_image(path, &noop, &target, false, flags_on, 1.0, None).unwrap();
+                let _ = load_image(path, &noop, &target, false, flags_on, 1.0, None, None).unwrap();
                 on_ms += t.elapsed().as_millis();
             }
             println!(
@@ -784,6 +822,7 @@ mod tests {
             RawPipelineFlags::default(),
             1.0, // SDR headroom — keep the fixture path RGBA8 for golden diffs
             None,
+            None,
         )
         .expect("decode failed");
         assert_eq!((img.width, img.height), (5456, 3632));
@@ -803,6 +842,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0, // SDR headroom — keep the fixture path RGBA8 for golden diffs
+            None,
             None,
         )
         .expect("decode failed");
@@ -835,6 +875,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0,
+            None,
             None,
         )
         .expect("synthetic DNG should decode");
@@ -911,5 +952,61 @@ mod tests {
             stats.mean,
             stats.p95
         );
+    }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    /// The counter has to end exactly on the file's length: the bar filling to 97% and stopping
+    /// there would read as a stall on the very files (big, on a share) the bar exists for.
+    #[test]
+    fn a_read_reports_every_byte_of_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("big.bin");
+        // Several chunks' worth, so the counter is bumped repeatedly rather than once.
+        let payload = vec![7u8; READ_CHUNK_BYTES * 3 + 1234];
+        std::fs::write(&path, &payload).unwrap();
+
+        let progress = Arc::new(ReadProgress::new());
+        let bytes =
+            read_file_cancellable(&path, &AtomicBool::new(false), Some(Arc::clone(&progress)))
+                .expect("the file reads");
+
+        assert_eq!(bytes.len(), payload.len());
+        assert_eq!(progress.total_bytes(), Some(payload.len() as u64));
+        assert_eq!(progress.bytes_read(), payload.len() as u64);
+        assert_eq!(progress.fraction(), Some(1.0));
+    }
+
+    #[test]
+    fn an_empty_file_reports_a_full_bar() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("empty.bin");
+        std::fs::write(&path, b"").unwrap();
+
+        let progress = Arc::new(ReadProgress::new());
+        read_file_cancellable(&path, &AtomicBool::new(false), Some(Arc::clone(&progress)))
+            .expect("an empty file still reads");
+
+        assert_eq!(progress.total_bytes(), Some(0));
+        assert_eq!(progress.fraction(), Some(1.0));
+    }
+
+    /// A file that never opens leaves the total unknown, so the caller draws no bar rather than
+    /// an empty one that never moves.
+    #[test]
+    fn a_missing_file_leaves_the_bar_undrawn() {
+        let progress = Arc::new(ReadProgress::new());
+        let result = read_file_cancellable(
+            Path::new("/no/such/file/prvw-read-progress.jpg"),
+            &AtomicBool::new(false),
+            Some(Arc::clone(&progress)),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(progress.fraction(), None);
     }
 }

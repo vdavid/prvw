@@ -19,7 +19,7 @@ use crate::pixels::{
     Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
     to_logical_size,
 };
-use crate::render::{renderer, text};
+use crate::render::{progress_bar, renderer, text};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::updater;
 use crate::{
@@ -34,6 +34,27 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::ModifiersState;
 use winit::window::{Window, WindowId};
+
+/// Line height of the centered "Loading…" overlay text, in logical pixels. Shared so the read
+/// progress bar can sit a fixed gap under the overlay's pill.
+const LOADING_LINE_HEIGHT: f32 = 18.0;
+
+/// Vertical padding of the "Loading…" pill, in logical pixels.
+const LOADING_PAD_Y: f32 = 5.0;
+
+/// How often the read progress bar re-reads its byte counter. Ten times a second reads as smooth
+/// without waking an otherwise idle loop more than it has to. Only polled while a bar is on screen.
+const READ_PROGRESS_POLL: Duration = Duration::from_millis(100);
+
+/// Top edge of the "Loading…" overlay text for a window this tall, in logical pixels.
+fn loading_text_top(logical_height: Logical<f32>) -> f32 {
+    (logical_height.0 - LOADING_LINE_HEIGHT) / 2.0
+}
+
+/// Top edge of the read progress bar: a fixed gap below the "Loading…" pill's bottom.
+fn read_bar_top(logical_height: Logical<f32>) -> f32 {
+    loading_text_top(logical_height) + LOADING_LINE_HEIGHT + LOADING_PAD_Y + progress_bar::TOP_GAP
+}
 
 /// Push the user-provided custom DCP directory into the `PRVW_DCP_DIR` env
 /// var so `color::dcp::discovery::find_dcp_for_camera` picks it up. When
@@ -195,6 +216,10 @@ pub(crate) struct App {
     /// nothing on the main screen is waiting on a folder read. Recomputed in `about_to_wait` at
     /// `folder_scan::STATUS_POLL`; a change there asks for a redraw.
     pub(crate) scan_status_text: Option<String>,
+    /// How full to draw the read progress bar under the "Loading…" overlay, or `None` when there's
+    /// no bar to draw. Recomputed in `about_to_wait` at `READ_PROGRESS_POLL`; a change there asks
+    /// for a redraw.
+    pub(crate) read_progress: Option<f32>,
     /// Set by a slideshow auto-advance to request that the next image display
     /// crossfades from the current one. Consumed (and cleared) by
     /// `display_from_cache`; cleared on a cache miss so only instant,
@@ -319,6 +344,7 @@ impl App {
             needs_redraw: false,
             loading_overlay_visible: false,
             scan_status_text: None,
+            read_progress: None,
             pending_crossfade: false,
             // Neutral until there's a window to ask (`initialize_viewer`). Anything else is a
             // guess at one platform's hardware, and nothing reads this before then anyway.
@@ -1684,6 +1710,7 @@ impl App {
             self.raw_flags,
             self.edr_headroom,
             None, // Synchronous path — never cancelled, so nothing to salvage.
+            None, // Nor is there an overlay up to show a read bar on.
         );
 
         match result {
@@ -2570,6 +2597,11 @@ impl App {
         if let Some((_, started)) = self.browser.earliest_in_flight_scan() {
             candidates.push(started + crate::browser::tree_model::LOADING_OVERLAY_DELAY);
         }
+        // Read progress bar: while one is on screen, wake ~10 times a second so it climbs. It only
+        // exists alongside the "Loading…" overlay, so an idle viewer never gets here.
+        if self.read_progress.is_some() {
+            candidates.push(Instant::now() + READ_PROGRESS_POLL);
+        }
         // Scan status texts: while a folder read someone is waiting on is in flight, wake about
         // four times a second so the running count ticks (and so the text appears once the scan
         // outlives `folder_scan::STATUS_DELAY`). Nothing waiting on a scan, no polling.
@@ -2975,6 +3007,15 @@ impl App {
         // for the duration of the render call.
         let mut standalone_pills: Vec<crate::render::text::StandalonePill> = Vec::new();
         let logical_width = self.renderer.as_ref().map(|r| r.logical_width());
+
+        // Read progress bar, centered under the "Loading…" overlay it accompanies.
+        if let Some(fraction) = self.read_progress
+            && let Some(rend) = &self.renderer
+        {
+            let center_x = Logical(rend.logical_width().0 / 2.0);
+            let top = Logical(read_bar_top(rend.logical_height()));
+            standalone_pills.extend(progress_bar::build(center_x, top, fraction));
+        }
         let histogram_call: Option<crate::render::renderer::HistogramDrawCall<'_>> = if self
             .histogram
             .visible
@@ -3167,15 +3208,14 @@ impl App {
         if self.loading_overlay_visible {
             let logical_height = rend.logical_height();
             let loading_font_size = 14.0_f32;
-            let loading_line_height = 18.0_f32;
             let loading_pad_x = Logical(11.0_f32);
-            let loading_pad_y = Logical(5.0_f32);
             let loading_radius = Logical(7.0_f32);
+            let loading_pad_y = Logical(LOADING_PAD_Y);
             let center_x = Logical(logical_width.0 / 2.0);
-            let center_y = Logical((logical_height.0 - loading_line_height) / 2.0);
+            let center_y = Logical(loading_text_top(logical_height));
             let mut loading = text::TextBlock::new("Loading...", center_x, center_y);
             loading.font_size = loading_font_size;
-            loading.line_height = loading_line_height;
+            loading.line_height = LOADING_LINE_HEIGHT;
             loading = loading.bold().align_center().pill(
                 pill_color,
                 loading_pad_x,
@@ -3193,7 +3233,14 @@ impl App {
             let logical_height = rend.logical_height();
             let status_line_height = 15.0_f32;
             let center_x = Logical(logical_width.0 / 2.0);
-            let center_y = Logical((logical_height.0 - status_line_height) / 2.0 + 32.0);
+            // The bar, when it's up, takes the slot right below the overlay, so the status line
+            // steps down past it rather than colliding with it.
+            let bar_room = if self.read_progress.is_some() {
+                progress_bar::HEIGHT + progress_bar::TOP_GAP + 6.0
+            } else {
+                0.0
+            };
+            let center_y = Logical((logical_height.0 - status_line_height) / 2.0 + 32.0 + bar_room);
             let mut scan = text::TextBlock::new(status.clone(), center_x, center_y);
             scan.font_size = 11.5;
             scan.line_height = status_line_height;
@@ -3222,6 +3269,26 @@ impl App {
         self.request_times
             .get(&pending)
             .is_none_or(|requested_at| requested_at.elapsed() >= navigation::LOADING_OVERLAY_DELAY)
+    }
+
+    /// How full the read progress bar should be, or `None` when there's no bar: nothing pending,
+    /// the "Loading…" overlay not up yet, no in-flight read for that file, or a file whose length
+    /// we never learned. It rides the overlay's 150 ms delay rather than carrying its own, so the
+    /// two appear together and a local file shows neither.
+    ///
+    /// The preloader keeps the read's byte counter alive until the decode finishes, so the bar
+    /// holds at full through the decode instead of vanishing between read and `Ready`.
+    fn read_progress_fraction(&self) -> Option<f32> {
+        if !self.loading_overlay_visible {
+            return None;
+        }
+        let pending = self.navigation.pending_current?;
+        let path = self.navigation.dir_list.as_ref()?.get(pending)?;
+        self.navigation
+            .preloader
+            .as_ref()?
+            .read_progress(path)?
+            .fraction()
     }
 
     /// Entries the running scan of `folder` has seen, once it has been reading long enough to be
@@ -4089,6 +4156,16 @@ impl ApplicationHandler<AppCommand> for App {
         if overlay_due != self.loading_overlay_visible {
             self.loading_overlay_visible = overlay_due;
             self.request_redraw();
+        }
+
+        // Read progress bar: how far the pending image's file read has got. Recomputed after the
+        // overlay flag above, because the bar rides on it. Only a change asks for a redraw.
+        let read_progress = self.read_progress_fraction();
+        if read_progress != self.read_progress {
+            self.read_progress = read_progress;
+            self.request_redraw();
+            // Mirror it out for QA/tests; nothing else on this path syncs the snapshot.
+            self.update_shared_state();
         }
 
         // Image-mode scan status: the running count of the folder read a queued move is waiting

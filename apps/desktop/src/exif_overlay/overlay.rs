@@ -104,6 +104,7 @@ pub fn build(
         height: Logical(panel_height),
         corner_radius: Logical(PANEL_RADIUS),
         color: BACKDROP_COLOR,
+        border_width: Logical(0.0),
     }];
 
     let mut text_blocks = Vec::with_capacity(rows.len() * 2 + 1);

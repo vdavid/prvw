@@ -118,6 +118,10 @@ and `index` is 1 because the provisional list holds only that image. Navigation 
 and lands when the scan does. `PRVW_SCAN_DELAY_MS` delays every folder scan so a test can hold the app there (see
 `crate::folder_scan`); `a_move_made_during_the_scan_lands_when_the_folder_arrives` drives all three rules through it.
 
+`read_progress` reports how full the read progress bar under the "Loading…" overlay is (`0.0` to `1.0`), or `null` when
+no bar is drawn. `PRVW_READ_DELAY_MS` pauses the file read before every 256 KB chunk so a test can watch it climb on a
+local file; `the_read_progress_bar_climbs_while_a_slow_file_reads` does exactly that.
+
 `GET /state` mirrors the full browse picture (so tests/tools assert it without keystrokes or screenshots): `view_mode`
 (`"image"`/`"browse"`), `focused_pane` (`"tree"`/`"grid"`/`"none"`), `browse_selected_folder`, `browse_grid_selected`,
 `browse_grid_count` (the listed folder's supported-image count), and `browse_reveal_pending` (the tree's async reveal
