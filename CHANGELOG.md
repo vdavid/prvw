@@ -16,6 +16,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
   in-app repair button can't drift. It's unsigned until a certificate exists, so expect SmartScreen
   ([0c85da41](https://github.com/vdavid/prvw/commit/0c85da41),
   [0fa56ca2](https://github.com/vdavid/prvw/commit/0fa56ca2))
+### Fixed
+
+- Prvw starts on macOS 13 again. The onboarding window drew its checkmark with an `NSBezierPath` call that only exists
+  on macOS 14 and later, so every macOS 13 user hit an instant crash on first launch. The same curve is now drawn with
+  an operator that has been around since macOS 10.0 ([59e3ee27](https://github.com/vdavid/prvw/commit/59e3ee27))
+
+### Non-app
+
+- Add a `macos-availability` check that reads the SDK's own availability annotations and flags any AppKit call newer
+  than the macOS version we claim to support. Neither the compiler nor the linker can see this class of bug, which is
+  how the macOS 13 crash shipped ([bc88e38d](https://github.com/vdavid/prvw/commit/bc88e38d),
+  [c604bd44](https://github.com/vdavid/prvw/commit/c604bd44))
 
 ## [0.15.1] - 2026-08-19
 
