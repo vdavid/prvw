@@ -244,6 +244,23 @@ fn build_overlay_pipeline(
     })
 }
 
+/// The instance flags every attempt is built with.
+///
+/// `InstanceFlags::default()` asks for `VALIDATION_INDIRECT_CALL` in **release** builds too, and
+/// that flag is not free: it makes `request_device` compile a small compute shader that
+/// range-checks the arguments of indirect draws and dispatches. Prvw issues none of those — it
+/// draws one textured quad plus glyphon's text — so the validation has nothing to guard, and the
+/// pipeline is pure startup cost.
+///
+/// It also costs correctness on older macOS. On macOS 13 Apple's Metal compiler fails that
+/// specific shader with `CompilerError` / "Compiler encountered an internal error", and
+/// `IndirectValidation::new` propagates the failure, so device creation fails outright: v0.16.0
+/// crashed the moment a window needed a GPU. Asking only for what we use removes the failure mode
+/// on every driver, present and future, rather than special-casing one OS version.
+fn instance_flags() -> wgpu::InstanceFlags {
+    wgpu::InstanceFlags::default().difference(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL)
+}
+
 /// Get a surface and an adapter by following the host's [`GpuPolicy`].
 ///
 /// Each attempt needs its own `Instance`, because the backend set is fixed when the instance is
@@ -258,7 +275,7 @@ async fn acquire_gpu(
     for (index, request) in policy.attempts().enumerate() {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: request.backends,
-            flags: wgpu::InstanceFlags::default(),
+            flags: instance_flags(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
             display: None,
@@ -320,7 +337,7 @@ impl Renderer {
         let scale_factor = window.scale_factor();
         let (surface, adapter) = acquire_gpu(Arc::clone(&window), &GpuPolicy::for_host()).await;
 
-        let (device, queue) = adapter
+        let (device, queue) = match adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("prvw device"),
                 required_features: wgpu::Features::empty(),
@@ -328,7 +345,20 @@ impl Renderer {
                 ..Default::default()
             })
             .await
-            .expect("Failed to create wgpu device");
+        {
+            Ok(pair) => pair,
+            // An adapter that answered and then refused a device is almost always a driver or
+            // shader-compiler fault rather than missing hardware, and the bare wgpu error names
+            // neither the machine nor the driver. Say both, so one QA report is enough to act on.
+            Err(why) => {
+                let info = adapter.get_info();
+                panic!(
+                    "Prvw reached a GPU but couldn't open a device on it: {why}. \
+                     Adapter: {} ({:?}, {:?}), driver: {} {}",
+                    info.name, info.device_type, info.backend, info.driver, info.driver_info
+                );
+            }
+        };
 
         let surface_caps = surface.get_capabilities(&adapter);
         let surface_format = surface_caps
@@ -1430,5 +1460,33 @@ impl Renderer {
 
     pub fn logical_height(&self) -> Logical<f32> {
         Physical(self.config.height).to_logical_f32(self.scale_factor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// v0.16.0 crashed on macOS 13 because `InstanceFlags::default()` asks for indirect-call
+    /// validation in release builds too, and compiling its shader trips an internal error in that
+    /// OS's Metal compiler. Prvw issues no indirect draws or dispatches, so the flag guards
+    /// nothing and must stay off. Pre-fix this would have passed wrongly on this Mac: the flag
+    /// only bites on older drivers.
+    #[test]
+    fn instance_never_asks_for_indirect_call_validation() {
+        assert!(
+            !instance_flags().contains(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL),
+            "indirect-call validation compiles a shader we don't need and older Metal compilers \
+             reject; keep it off unless Prvw starts issuing indirect draws"
+        );
+    }
+
+    /// The rest of `default()` (debug labels, backend validation in debug builds) is worth
+    /// keeping, so the fix has to subtract one bit rather than reach for `empty()`.
+    #[test]
+    fn instance_flags_keep_everything_else_from_the_defaults() {
+        let expected = wgpu::InstanceFlags::default()
+            .difference(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+        assert_eq!(instance_flags(), expected);
     }
 }

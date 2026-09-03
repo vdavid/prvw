@@ -146,6 +146,12 @@ with the same faces, or a layout pass disagrees with what gets drawn.
 - **wgpu 30 API quirks.** `Instance::new()` takes a value. `get_current_texture()` returns an enum. Presenting is
   `Queue::present(texture)`, not `SurfaceTexture::present()`. `Buffer::get_mapped_range` returns a `Result`.
   `PipelineLayoutDescriptor` uses `immediate_size`. `RenderPassColorAttachment` requires `depth_slice`.
+- **Ask the instance for nothing you don't draw with.** `InstanceFlags::default()` carries `VALIDATION_INDIRECT_CALL` in
+  **release** builds too, and that flag makes `request_device` compile a compute shader that range-checks indirect draw
+  arguments. Prvw issues no indirect calls, so it guarded nothing — and on macOS 13 Apple's Metal compiler fails that
+  shader with an internal error, which fails device creation and crashed every v0.16.0 user the moment a window wanted a
+  GPU. `instance_flags()` subtracts the bit, and a unit test keeps it subtracted. The general rule: an unused wgpu
+  feature is not inert, because wgpu may build GPU resources for it at device creation, on a driver you have never seen.
 - **`Surface::display_hdr_info` is main-thread-only on Metal.** It reads `NSScreen` through the hosting `NSWindow`, and
   answers "nothing known" off the main thread rather than failing. Call it from the event loop.
 - **Shaders are `include_str!`'d** relative to `renderer.rs`. Keep them colocated.
