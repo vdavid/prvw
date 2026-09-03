@@ -5,6 +5,15 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Opening an image works again on macOS 13. Prvw asked wgpu for a validation feature it never uses, and building it
+  fails on that macOS version's Metal shader compiler, so the app crashed as soon as it needed the GPU. Launching with
+  no image looked fine because that path needs no GPU at all
+  ([0db6b27d](https://github.com/vdavid/prvw/commit/0db6b27d))
+
 ## [0.16.0] - 2026-09-02
 
 ### Added
