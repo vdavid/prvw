@@ -53,7 +53,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | `checks/website-*.go`                  | Website checks (eslint, typecheck, build)                                           |
 | `checks/scripts-go-*.go`               | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests)          |
 | `checks/conflict-markers.go`           | Unresolved merge conflict markers in source and docs                                |
-| `stats.go`                             | CSV stats logging (`~/prvw-check-log.csv`)                                          |
+| `stats.go`                             | CSV stats logging (`~/.local/share/check-runner/prvw/check-log.csv`)                |
 | `colors.go`                            | ANSI color constants                                                                |
 | `utils.go`                             | `findRootDir()` (walks up until `AGENTS.md` is found)                               |
 
@@ -71,7 +71,8 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 - **Graceful skipping**: Rust and website checks skip if their directory/`Cargo.toml` doesn't exist yet.
 - **Auto-fix vs CI**: `--ci` disables auto-fixing. Formatters fix locally, report-only in CI.
 - **IDs vs nicknames**: `--check` accepts either. `CLIName()` returns nickname if set, else ID.
-- **CSV stats**: Each run appends to `~/prvw-check-log.csv`. Disabled by `--no-log` or `--ci`.
+- **CSV stats**: Each run appends to `~/.local/share/check-runner/prvw/check-log.csv`, outside the repo so a worktree
+  teardown can't take the history. Disabled by `--no-log` or `--ci`.
 
 ## Apps and checks
 

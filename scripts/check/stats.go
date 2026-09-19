@@ -10,23 +10,44 @@ import (
 	"time"
 )
 
-const csvFileName = "prvw-check-log.csv"
+// projectLogDirName is this repo's subdirectory under the shared check-runner
+// data dir, and the ONE token a copy of this runner in another repo has to
+// change: the filename and the resolver below are identical everywhere.
+const projectLogDirName = "prvw"
+
+const csvFileName = "check-log.csv"
 
 var (
 	csvHeader = []string{"timestamp", "app", "check", "duration_s", "result", "total", "issues", "changes", "message"}
 	csvMu     sync.Mutex
 )
 
-// logCheckStats appends one CSV row to ~/prvw-check-log.csv with the check result.
+// logPath resolves the log to ~/.local/share/check-runner/<project>/<fileName>,
+// honoring $XDG_DATA_HOME. The log lives outside the repo on purpose: it's a
+// measurement history spanning worktrees, and a teardown must never take it.
+func logPath(fileName string) (string, error) {
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if dataHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dataHome = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataHome, "check-runner", projectLogDirName, fileName), nil
+}
+
+// logCheckStats appends one CSV row to the per-run log with the check result.
 func logCheckStats(state *CheckState) {
 	csvMu.Lock()
 	defer csvMu.Unlock()
-	home, err := os.UserHomeDir()
+	csvPath, err := logPath(csvFileName)
 	if err != nil {
 		return
 	}
-
-	csvPath := filepath.Join(home, csvFileName)
+	if err := os.MkdirAll(filepath.Dir(csvPath), 0o755); err != nil {
+		return
+	}
 
 	_, statErr := os.Stat(csvPath)
 	isNew := os.IsNotExist(statErr)
