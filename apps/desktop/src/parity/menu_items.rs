@@ -22,6 +22,7 @@ pub enum Menu {
     View,
     Navigate,
     Slideshow,
+    Tags,
     /// The right-click menu over the image, which is a separate menu from the bar.
     Context,
 }
@@ -35,6 +36,7 @@ impl Menu {
             Menu::View => "View",
             Menu::Navigate => "Navigate",
             Menu::Slideshow => "Slideshow",
+            Menu::Tags => "Tags",
             Menu::Context => "Context menu",
         }
     }
@@ -155,6 +157,18 @@ menu_items! {
     SlideshowIncreaseSpeed { label: "Increase speed", hint: "      ]", menu: Slideshow, command: Some(CommandKey::SlideshowSpeed), }
     SlideshowDecreaseSpeed { label: "Decrease speed", hint: "     [", menu: Slideshow, command: Some(CommandKey::SlideshowSpeed), }
 
+    // ── Tags menu ────────────────────────────────────────────────────
+    // Finder's seven colors in Finder's order, each advertising the digit that toggles it. The
+    // padding differs per item because the labels differ in width: it's measured against the
+    // menu font so the digits line up within about a point and a half.
+    TagRed { label: "Red", hint: "            1", menu: Tags, command: Some(CommandKey::ToggleTag), }
+    TagOrange { label: "Orange", hint: "      2", menu: Tags, command: Some(CommandKey::ToggleTag), }
+    TagYellow { label: "Yellow", hint: "        3", menu: Tags, command: Some(CommandKey::ToggleTag), }
+    TagGreen { label: "Green", hint: "        4", menu: Tags, command: Some(CommandKey::ToggleTag), }
+    TagBlue { label: "Blue", hint: "           5", menu: Tags, command: Some(CommandKey::ToggleTag), }
+    TagPurple { label: "Purple", hint: "        6", menu: Tags, command: Some(CommandKey::ToggleTag), }
+    TagGray { label: "Gray", hint: "           7", menu: Tags, command: Some(CommandKey::ToggleTag), }
+
     // ── Right-click menu over the image ──────────────────────────────
     ContextCopy { label: "Copy image", hint: "", menu: Context, command: Some(CommandKey::CopyImage), }
     ContextPrint { label: "Print\u{2026}", hint: "", menu: Context, command: Some(CommandKey::Print), }
@@ -208,6 +222,13 @@ impl MenuItemKey {
             | MenuItemKey::SlideshowToggle
             | MenuItemKey::SlideshowIncreaseSpeed
             | MenuItemKey::SlideshowDecreaseSpeed
+            | MenuItemKey::TagRed
+            | MenuItemKey::TagOrange
+            | MenuItemKey::TagYellow
+            | MenuItemKey::TagGreen
+            | MenuItemKey::TagBlue
+            | MenuItemKey::TagPurple
+            | MenuItemKey::TagGray
             | MenuItemKey::ContextCopy
             | MenuItemKey::ContextPrint => Coverage::Present,
         }
@@ -234,6 +255,16 @@ impl MenuItemKey {
                 reason: "Prvw has one window on Windows, and a Windows app with no windows is \
                          an invisible process rather than a running app. Closing that window is \
                          exiting, which File → Exit already does.",
+            },
+            MenuItemKey::TagRed
+            | MenuItemKey::TagOrange
+            | MenuItemKey::TagYellow
+            | MenuItemKey::TagGreen
+            | MenuItemKey::TagBlue
+            | MenuItemKey::TagPurple
+            | MenuItemKey::TagGray => Coverage::NotApplicable {
+                reason: "Color tags are Finder's, and Windows has no per-file color tag for a \
+                         Tags menu to set.",
             },
             MenuItemKey::Quit
             | MenuItemKey::Open
@@ -284,6 +315,16 @@ impl MenuItemKey {
                              app's own menu.",
                 }
             }
+            MenuItemKey::TagRed
+            | MenuItemKey::TagOrange
+            | MenuItemKey::TagYellow
+            | MenuItemKey::TagGreen
+            | MenuItemKey::TagBlue
+            | MenuItemKey::TagPurple
+            | MenuItemKey::TagGray => Coverage::NotApplicable {
+                reason: "Color tags are Finder's, and Linux file managers share no color-tag \
+                         convention for a Tags menu to set.",
+            },
             MenuItemKey::About
             | MenuItemKey::Settings
             | MenuItemKey::Quit

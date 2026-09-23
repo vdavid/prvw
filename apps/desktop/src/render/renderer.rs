@@ -39,6 +39,12 @@ struct HistogramUniform {
 /// Number of u32 entries in the histogram storage buffer (R + G + B = 3 × 256).
 const HISTOGRAM_BIN_COUNT: usize = 256 * 3;
 
+/// How many overlay pills one frame can draw; a pill past this is silently skipped. The busiest
+/// frame today is about 30: seven tag dots at two pills each, the histogram's six, the read
+/// progress bar's three, the EXIF backdrop, and the text pills. One uniform buffer each, 48 bytes
+/// apiece, so headroom is free.
+const OVERLAY_POOL_SIZE: usize = 48;
+
 /// GPU state for an in-flight slideshow crossfade: the outgoing image's
 /// texture plus a bind group that samples it through `prev_uniform_buffer`
 /// (which holds the outgoing image's transform with fade = 1.0). The incoming
@@ -537,7 +543,7 @@ impl Renderer {
             color: [0.0; 4],
             params: [0.0; 4],
         };
-        let overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)> = (0..24)
+        let overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)> = (0..OVERLAY_POOL_SIZE)
             .map(|i| {
                 let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some(&format!("overlay uniform {i}")),

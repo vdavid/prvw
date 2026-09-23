@@ -117,6 +117,18 @@ pub struct SharedAppState {
     /// whenever no bar is drawn, which is the normal case: a file that reads inside the overlay's
     /// 150 ms delay never shows one.
     pub read_progress: Option<f32>,
+    /// The Finder tags of the image on screen, in the file's own order, as last read from disk.
+    /// `None` when there's no image to tag (browse mode, the empty state, nothing painted yet).
+    /// Always an empty list off macOS, which has no Finder tags.
+    pub tags: Option<Vec<TagSnapshot>>,
+}
+
+/// One Finder tag, flattened for the QA snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagSnapshot {
+    pub name: String,
+    /// The color's name in lower case (`"red"` … `"gray"`), or `None` for a colorless tag.
+    pub color: Option<String>,
 }
 
 /// The queued move, flattened for the QA snapshot: the anchor it counts from and the net steps
@@ -208,6 +220,7 @@ impl Default for SharedAppState {
             scan_pending: false,
             queued_nav: None,
             read_progress: None,
+            tags: None,
         }
     }
 }
@@ -215,6 +228,11 @@ impl Default for SharedAppState {
 impl App {
     /// Push current app state into the shared mutex for the QA server to read.
     pub(super) fn update_shared_state(&self) {
+        // The Tags menu follows the same snapshot, and costs nothing when the tags didn't move.
+        if let Some(menu) = &self.app_menu {
+            menu.set_tags(self.current_tags());
+        }
+
         let Ok(mut state) = self.shared_state.lock() else {
             return;
         };
@@ -310,6 +328,14 @@ impl App {
             delta: q.delta,
         });
         state.read_progress = self.read_progress;
+        state.tags = self.current_tags().map(|tags| {
+            tags.iter()
+                .map(|tag| TagSnapshot {
+                    name: tag.name.clone(),
+                    color: tag.color.map(|color| color.name().to_ascii_lowercase()),
+                })
+                .collect()
+        });
 
         if let Some((iw, ih)) = self.navigation.current_image_size {
             state.image_width = iw;

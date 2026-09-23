@@ -111,6 +111,9 @@ impl AppCommand {
                 Action(CommandKey::SlideshowSpeed)
             }
 
+            // ── Tags ─────────────────────────────────────────────────
+            AppCommand::ToggleTag(_) => Action(CommandKey::ToggleTag),
+
             // ── RAW ──────────────────────────────────────────────────
             AppCommand::SetRawPipelineFlags(_) => Action(CommandKey::RawPipelineFlags),
             AppCommand::SetCustomDcpDir(_) => Action(CommandKey::CustomDcpDir),
@@ -354,6 +357,12 @@ pub enum AppCommand {
     IncreaseSlideshowSpeed,
     /// Lengthen the time-per-image by one second (Slideshow → Decrease speed, `[`).
     DecreaseSlideshowSpeed,
+
+    // ── Tags ─────────────────────────────────────────────────────────
+    /// Add the Finder color tag to the current image, or take it off if the image has it
+    /// (Tags → Red … Gray, bare `1`–`7`). Every other tag stays. A no-op with no image on
+    /// screen, and off macOS, where there are no Finder tags. See `crate::tags`.
+    ToggleTag(crate::tags::TagColor),
 
     // ── RAW pipeline (Phase 3.7) ─────────────────────────────────────
     /// Replace the RAW pipeline flags wholesale. Used by the Settings → RAW

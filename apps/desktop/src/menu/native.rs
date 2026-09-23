@@ -17,6 +17,8 @@
 //! Everything else (which menus exist, what is in them, the order, the separators) is one
 //! definition, and [`MenuBuilder::offers`] is what thins it per platform.
 
+use std::cell::Cell;
+
 use muda::{
     CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
 };
@@ -28,6 +30,22 @@ use crate::parity::command_keys::CommandParity;
 use crate::parity::menu_items::MenuItemKey;
 use crate::parity::{Audit, Coverage, Mismatch, Platform};
 use crate::settings::Settings;
+use crate::tags::{Tag, TagColor};
+
+/// The Tags menu's items, each with the color it toggles, in menu order.
+const TAG_ITEMS: [(TagColor, MenuItemKey); 7] = [
+    (TagColor::Red, MenuItemKey::TagRed),
+    (TagColor::Orange, MenuItemKey::TagOrange),
+    (TagColor::Yellow, MenuItemKey::TagYellow),
+    (TagColor::Green, MenuItemKey::TagGreen),
+    (TagColor::Blue, MenuItemKey::TagBlue),
+    (TagColor::Purple, MenuItemKey::TagPurple),
+    (TagColor::Gray, MenuItemKey::TagGray),
+];
+
+/// What the Tags menu last showed: `None` greyed out (no image on screen), or which colors
+/// were ticked, one bit per [`TAG_ITEMS`] entry.
+type TagsMenuState = Option<u8>;
 
 /// How this platform dresses a menu item. See the module docs.
 #[cfg(target_os = "macos")]
@@ -240,6 +258,12 @@ pub struct AppMenu {
     /// Image browser / Image view. Kept so `set_browse_mode` can flip the label. `None` off
     /// macOS, where browse mode doesn't exist yet (M5).
     browse_toggle_item: Option<MenuItem>,
+    /// The Tags menu's items, the ones this platform offers. Empty where there are no Finder
+    /// tags. `set_tags` writes them.
+    tag_items: Vec<(TagColor, CheckMenuItem)>,
+    /// What `set_tags` last wrote, so the per-state-change call costs nothing when the current
+    /// image's tags didn't move. `None` until the first write.
+    tags_shown: Cell<Option<TagsMenuState>>,
 }
 
 /// Tick or untick an item this platform may not have.
@@ -343,6 +367,32 @@ impl AppMenu {
         }
     }
 
+    /// Mirror the image on screen's tags onto the Tags menu: its colors ticked, or every item
+    /// greyed out when `current` is `None` (no image on screen).
+    ///
+    /// Tags aren't a setting, so this is `sync_from_settings`' sibling rather than part of it.
+    /// `App::update_shared_state` calls it on every observable change, which is why it skips
+    /// the native calls when nothing moved.
+    pub fn set_tags(&self, current: Option<&[Tag]>) {
+        use crate::tags::has_color;
+
+        let state: TagsMenuState = current.map(|tags| {
+            TAG_ITEMS
+                .iter()
+                .enumerate()
+                .filter(|(_, (color, _))| has_color(tags, *color))
+                .fold(0u8, |bits, (position, _)| bits | 1 << position)
+        });
+        if self.tags_shown.get() == Some(state) {
+            return;
+        }
+        self.tags_shown.set(Some(state));
+        for (color, item) in &self.tag_items {
+            item.set_enabled(current.is_some());
+            item.set_checked(current.is_some_and(|tags| has_color(tags, *color)));
+        }
+    }
+
     /// Take the bar away for fullscreen, and put it back on the way out.
     ///
     /// Fullscreen is where the image really is the whole app, and no Windows app shows a menu
@@ -423,6 +473,19 @@ impl AppMenu {
             MenuItemKey::SlideshowToggle => Some(AppCommand::ToggleSlideshow),
             MenuItemKey::SlideshowIncreaseSpeed => Some(AppCommand::IncreaseSlideshowSpeed),
             MenuItemKey::SlideshowDecreaseSpeed => Some(AppCommand::DecreaseSlideshowSpeed),
+
+            // The click has already flipped the checkmark, but it's the file that decides:
+            // `set_tags` puts it back to what the disk says once the command has run.
+            MenuItemKey::TagRed
+            | MenuItemKey::TagOrange
+            | MenuItemKey::TagYellow
+            | MenuItemKey::TagGreen
+            | MenuItemKey::TagBlue
+            | MenuItemKey::TagPurple
+            | MenuItemKey::TagGray => TAG_ITEMS
+                .iter()
+                .find(|(_, candidate)| *candidate == key)
+                .map(|(color, _)| AppCommand::ToggleTag(*color)),
 
             // A CheckMenuItem auto-toggles on click, so these five carry the item's new state
             // in the command. The other checkable items (Histogram, Exif info, Loop
@@ -560,6 +623,7 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
     let view_menu = top_level(&menu, "View");
     let nav_menu = top_level(&menu, "Navigate");
     let slideshow_menu = top_level(&menu, "Slideshow");
+    let tags_menu = top_level(&menu, "Tags");
     let tools_menu = top_level(&menu, "Tools");
     // Help is left empty on macOS on purpose: AppKit auto-adds its Spotlight-style "Search"
     // field to any menu titled "Help", which is all we want there.
@@ -731,6 +795,18 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
         ],
     );
 
+    // Tags menu. Checkable, because each color is either on the image or not; `set_tags` gives
+    // the items their state, and greys them out while no image is on screen.
+    let tag_items: Vec<(TagColor, CheckMenuItem)> = TAG_ITEMS
+        .iter()
+        .filter_map(|(color, key)| Some((*color, build.check_item(*key)?)))
+        .collect();
+    for (_, item) in &tag_items {
+        tags_menu
+            .append(item)
+            .expect("Failed to append a menu item");
+    }
+
     // A menu the filter emptied comes back off rather than showing blank, so a platform with no
     // Settings item shows no Tools menu at all. Help is the exception, and only on macOS: an
     // empty one is exactly what we want there, because AppKit fills it with its own search field.
@@ -742,6 +818,7 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
         &view_menu,
         &nav_menu,
         &slideshow_menu,
+        &tags_menu,
         &tools_menu,
     ]
     .into_iter()
@@ -795,6 +872,8 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
         loop_navigation_item: loop_navigation,
         slideshow_toggle_item: slideshow_toggle,
         browse_toggle_item: browse_toggle,
+        tag_items,
+        tags_shown: Cell::new(None),
         _menu: menu,
         context_menu,
         #[cfg(target_os = "macos")]
@@ -805,6 +884,8 @@ pub fn create_menu_bar(window: &Window) -> Option<AppMenu> {
     // The one place settings become menu state. Building the items unchecked and syncing here
     // keeps initial state and every later update on the same code path.
     app_menu.sync_from_settings(&Settings::load());
+    // Nothing is on screen yet. The first state update ticks whatever the image carries.
+    app_menu.set_tags(None);
 
     Some(app_menu)
 }
@@ -851,27 +932,44 @@ mod tests {
 
     #[test]
     fn platforms_without_the_feature_dont_offer_the_item() {
+        // The Tags menu is Finder's, so it's `NotApplicable` on both.
+        let tags = [
+            "TagRed",
+            "TagOrange",
+            "TagYellow",
+            "TagGreen",
+            "TagBlue",
+            "TagPurple",
+            "TagGray",
+        ];
         assert_eq!(
             dropped_by(Platform::Windows),
-            vec!["Hide", "HideOthers", "ShowAll", "CloseWindow"]
+            [
+                &["Hide", "HideOthers", "ShowAll", "CloseWindow"][..],
+                &tags[..]
+            ]
+            .concat()
         );
         // Linux has no bar at all, so nothing here reaches anyone there. Close window is the
         // one difference from Windows: it stays `Missing` rather than `NotApplicable`, because
         // no Linux window model has been decided (M8).
         assert_eq!(
             dropped_by(Platform::Linux),
-            vec![
-                "About",
-                "Settings",
-                "Hide",
-                "HideOthers",
-                "ShowAll",
-                "Print",
-                "Copy",
-                "BrowseToggle",
-                "ContextCopy",
-                "ContextPrint",
+            [
+                &[
+                    "About",
+                    "Settings",
+                    "Hide",
+                    "HideOthers",
+                    "ShowAll",
+                    "Print",
+                    "Copy",
+                    "BrowseToggle",
+                ][..],
+                &tags[..],
+                &["ContextCopy", "ContextPrint"][..],
             ]
+            .concat()
         );
     }
 

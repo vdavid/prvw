@@ -211,6 +211,16 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         .queued_nav
         .map(|q| json!({ "anchor": q.anchor, "delta": q.delta }))
         .unwrap_or(Value::Null);
+    let tags = s
+        .tags
+        .as_ref()
+        .map(|tags| {
+            tags.iter()
+                .map(|tag| json!({ "name": tag.name, "color": tag.color }))
+                .collect::<Vec<_>>()
+        })
+        .map(Value::Array)
+        .unwrap_or(Value::Null);
 
     json!({
         "file": file,
@@ -243,6 +253,7 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "scan_pending": s.scan_pending,
         "queued_nav": queued_nav,
         "read_progress": s.read_progress,
+        "tags": tags,
         "cache_indices": s.cache_indices,
         "window_x": s.window_x,
         "window_y": s.window_y,

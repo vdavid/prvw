@@ -11,15 +11,15 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 
 ## Summary
 
-- macOS: 117 of 117 done, 0 not applicable, 0 missing
-- Windows: 111 of 117 done, 6 not applicable, 0 missing
-- Linux: 32 of 117 done, 5 not applicable, 80 missing
+- macOS: 125 of 125 done, 0 not applicable, 0 missing
+- Windows: 111 of 125 done, 14 not applicable, 0 missing
+- Linux: 32 of 125 done, 13 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
 - Settings (40 entries): macOS 40 / 0 / 0, Windows 39 / 1 / 0, Linux 0 / 1 / 39
-- Menu items (37 entries): macOS 37 / 0 / 0, Windows 33 / 4 / 0, Linux 0 / 3 / 34
-- Commands (40 entries): macOS 40 / 0 / 0, Windows 39 / 1 / 0, Linux 32 / 1 / 7
+- Menu items (44 entries): macOS 44 / 0 / 0, Windows 33 / 11 / 0, Linux 0 / 10 / 34
+- Commands (41 entries): macOS 41 / 0 / 0, Windows 39 / 2 / 0, Linux 32 / 2 / 7
 
 ## What each platform still owes
 
@@ -61,7 +61,15 @@ Nothing missing.
 - `HideOthers` (menu item): Hiding an app while leaving it running is a macOS app-menu convention. Windows minimizes windows instead, from the window itself rather than a menu.
 - `ShowAll` (menu item): Hiding an app while leaving it running is a macOS app-menu convention. Windows minimizes windows instead, from the window itself rather than a menu.
 - `CloseWindow` (menu item): Prvw has one window on Windows, and a Windows app with no windows is an invisible process rather than a running app. Closing that window is exiting, which File → Exit already does.
+- `TagRed` (menu item): Color tags are Finder's, and Windows has no per-file color tag for a Tags menu to set.
+- `TagOrange` (menu item): Color tags are Finder's, and Windows has no per-file color tag for a Tags menu to set.
+- `TagYellow` (menu item): Color tags are Finder's, and Windows has no per-file color tag for a Tags menu to set.
+- `TagGreen` (menu item): Color tags are Finder's, and Windows has no per-file color tag for a Tags menu to set.
+- `TagBlue` (menu item): Color tags are Finder's, and Windows has no per-file color tag for a Tags menu to set.
+- `TagPurple` (menu item): Color tags are Finder's, and Windows has no per-file color tag for a Tags menu to set.
+- `TagGray` (menu item): Color tags are Finder's, and Windows has no per-file color tag for a Tags menu to set.
 - `TitleBar` (command): The title bar never covers the image on Windows, so there's no strip to reserve and nothing for the command to switch.
+- `ToggleTag` (command): Color tags are Finder's: macOS keeps them in an extended attribute that Finder and Spotlight read. Windows has no per-file color tag for the command to set.
 
 ### Linux
 
@@ -69,7 +77,15 @@ Nothing missing.
 - `Hide` (menu item): Hiding an app while leaving it running is a macOS app-menu convention, and no Linux desktop offers the equivalent from an app's own menu.
 - `HideOthers` (menu item): Hiding an app while leaving it running is a macOS app-menu convention, and no Linux desktop offers the equivalent from an app's own menu.
 - `ShowAll` (menu item): Hiding an app while leaving it running is a macOS app-menu convention, and no Linux desktop offers the equivalent from an app's own menu.
+- `TagRed` (menu item): Color tags are Finder's, and Linux file managers share no color-tag convention for a Tags menu to set.
+- `TagOrange` (menu item): Color tags are Finder's, and Linux file managers share no color-tag convention for a Tags menu to set.
+- `TagYellow` (menu item): Color tags are Finder's, and Linux file managers share no color-tag convention for a Tags menu to set.
+- `TagGreen` (menu item): Color tags are Finder's, and Linux file managers share no color-tag convention for a Tags menu to set.
+- `TagBlue` (menu item): Color tags are Finder's, and Linux file managers share no color-tag convention for a Tags menu to set.
+- `TagPurple` (menu item): Color tags are Finder's, and Linux file managers share no color-tag convention for a Tags menu to set.
+- `TagGray` (menu item): Color tags are Finder's, and Linux file managers share no color-tag convention for a Tags menu to set.
 - `TitleBar` (command): Linux decorations sit outside the surface Prvw draws into, so the command has no strip to reserve or release.
+- `ToggleTag` (command): Color tags are Finder's: macOS keeps them in an extended attribute that Finder and Spotlight read. Linux file managers share no color-tag convention for the command to write.
 
 ## Every entry
 
@@ -153,6 +169,13 @@ Nothing missing.
 - `SlideshowToggle` "Start slideshow" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
 - `SlideshowIncreaseSpeed` "Increase speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
 - `SlideshowDecreaseSpeed` "Decrease speed" (menu item, Slideshow menu): macOS done, Windows done, Linux missing
+- `TagRed` "Red" (menu item, Tags menu): macOS done, Windows not applicable, Linux not applicable
+- `TagOrange` "Orange" (menu item, Tags menu): macOS done, Windows not applicable, Linux not applicable
+- `TagYellow` "Yellow" (menu item, Tags menu): macOS done, Windows not applicable, Linux not applicable
+- `TagGreen` "Green" (menu item, Tags menu): macOS done, Windows not applicable, Linux not applicable
+- `TagBlue` "Blue" (menu item, Tags menu): macOS done, Windows not applicable, Linux not applicable
+- `TagPurple` "Purple" (menu item, Tags menu): macOS done, Windows not applicable, Linux not applicable
+- `TagGray` "Gray" (menu item, Tags menu): macOS done, Windows not applicable, Linux not applicable
 - `ContextCopy` "Copy image" (menu item, Context menu): macOS done, Windows done, Linux missing
 - `ContextPrint` "Print…" (menu item, Context menu): macOS done, Windows done, Linux missing
 
@@ -191,6 +214,7 @@ Nothing missing.
 - `SlideshowCrossfade` "Crossfade" (command, Slideshow): macOS done, Windows done, Linux done
 - `SlideshowLoop` "Loop the slideshow" (command, Slideshow): macOS done, Windows done, Linux done
 - `SlideshowSpeed` "Increase / decrease speed" (command, Slideshow): macOS done, Windows done, Linux done
+- `ToggleTag` "Toggle a color tag" (command, Tags): macOS done, Windows not applicable, Linux not applicable
 - `RawPipelineFlags` "RAW pipeline stages" (command, RAW): macOS done, Windows done, Linux done
 - `CustomDcpDir` "Custom DCP directory" (command, RAW): macOS done, Windows done, Linux done
 - `CopyImage` "Copy image" (command, App): macOS done, Windows done, Linux missing

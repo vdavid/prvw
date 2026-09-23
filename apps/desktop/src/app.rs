@@ -7,6 +7,7 @@
 mod executor;
 mod previews_hook;
 mod shared_state;
+mod tags_hook;
 
 pub(crate) use shared_state::SharedAppState;
 
@@ -169,6 +170,8 @@ pub(crate) struct App {
     /// split-view handles on macOS. Starts in `Image`.
     pub(crate) browser: crate::browser::State,
     pub(crate) previews: crate::previews::State,
+    /// The Finder tags of the images that have been on screen, as last read from disk.
+    pub(crate) tags: crate::tags::State,
 
     // ── Cross-cutting toggles (owned by App because they don't fit one feature) ──
     /// Whether to reserve space at the top for the title bar.
@@ -330,6 +333,7 @@ impl App {
             slideshow: slideshow::State::from_settings(&initial_settings),
             browser: crate::browser::State::new(),
             previews: crate::previews::State::new(),
+            tags: crate::tags::State::default(),
             title_bar: initial_settings.title_bar,
             raw_flags: initial_settings.raw,
             edr_headroom: 1.0,
@@ -1900,6 +1904,7 @@ impl App {
     /// from settings (`apply_initial_zoom`), push the transform to the
     /// GPU, request a redraw. Call after `renderer.set_image`.
     fn finalize_display(&mut self) {
+        self.load_current_tags();
         self.apply_initial_zoom();
         if let Some(renderer) = &self.renderer {
             renderer.update_transform(&self.zoom.view.transform());
@@ -3010,6 +3015,15 @@ impl App {
             let center_x = Logical(rend.logical_width().0 / 2.0);
             let top = Logical(read_bar_top(rend.logical_height()));
             standalone_pills.extend(progress_bar::build(center_x, top, fraction));
+        }
+        // The image's Finder tags, as dots in the bottom-left corner.
+        if let Some(current_tags) = self.current_tags()
+            && let Some(rend) = &self.renderer
+        {
+            standalone_pills.extend(crate::tags::overlay::build(
+                current_tags,
+                rend.logical_height(),
+            ));
         }
         let histogram_call: Option<crate::render::renderer::HistogramDrawCall<'_>> = if self
             .histogram

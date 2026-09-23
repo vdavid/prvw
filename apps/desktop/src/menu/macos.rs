@@ -89,6 +89,13 @@ pub fn accelerator(key: MenuItemKey) -> Option<Accelerator> {
         | MenuItemKey::SlideshowToggle
         | MenuItemKey::SlideshowIncreaseSpeed
         | MenuItemKey::SlideshowDecreaseSpeed
+        | MenuItemKey::TagRed
+        | MenuItemKey::TagOrange
+        | MenuItemKey::TagYellow
+        | MenuItemKey::TagGreen
+        | MenuItemKey::TagBlue
+        | MenuItemKey::TagPurple
+        | MenuItemKey::TagGray
         | MenuItemKey::ContextCopy
         | MenuItemKey::ContextPrint => return None,
     };
@@ -138,6 +145,26 @@ mod tests {
         // The alternate name doesn't carry it: `native::slideshow_toggle_title` composes that
         // one, because `s` stops a slideshow as well as starting it.
         assert_eq!(title(key, "Stop slideshow"), "Stop slideshow     S");
+    }
+
+    /// The Tags menu advertises its digits and binds none: a bare-digit key equivalent would
+    /// fire while a settings field has focus, so `input` owns the keys.
+    #[test]
+    fn the_tag_items_advertise_their_digit_and_bind_nothing() {
+        for (key, digit) in [
+            (MenuItemKey::TagRed, '1'),
+            (MenuItemKey::TagOrange, '2'),
+            (MenuItemKey::TagYellow, '3'),
+            (MenuItemKey::TagGreen, '4'),
+            (MenuItemKey::TagBlue, '5'),
+            (MenuItemKey::TagPurple, '6'),
+            (MenuItemKey::TagGray, '7'),
+        ] {
+            assert!(accelerator(key).is_none(), "{}", key.name());
+            let title = title(key, key.label());
+            assert!(title.starts_with(key.label()), "{title:?}");
+            assert!(title.ends_with(digit), "{title:?}");
+        }
     }
 
     /// The padded hint the registry declares is what lines the shortcut column up.

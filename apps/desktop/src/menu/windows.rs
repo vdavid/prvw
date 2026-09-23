@@ -168,7 +168,14 @@ pub fn decoration(key: MenuItemKey) -> Option<Decoration> {
         MenuItemKey::Hide
         | MenuItemKey::HideOthers
         | MenuItemKey::ShowAll
-        | MenuItemKey::CloseWindow => return None,
+        | MenuItemKey::CloseWindow
+        | MenuItemKey::TagRed
+        | MenuItemKey::TagOrange
+        | MenuItemKey::TagYellow
+        | MenuItemKey::TagGreen
+        | MenuItemKey::TagBlue
+        | MenuItemKey::TagPurple
+        | MenuItemKey::TagGray => return None,
     };
     Some(decoration)
 }
@@ -213,6 +220,10 @@ pub fn menu_title(title: &'static str) -> String {
         "Sort by" => 's',
         "Navigate" => 'n',
         "Slideshow" => 's',
+        // Built on every platform and dropped here, empty, like the app menu: Windows has no
+        // Finder tags. It still gets a mnemonic, one Tools doesn't claim, so the table stays
+        // total.
+        "Tags" => 'g',
         "Tools" => 't',
         "Help" => 'h',
         // The app menu is macOS-only: it is built on every platform and dropped here, empty,

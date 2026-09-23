@@ -60,6 +60,13 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
     if key == Key::Character("0") {
         return bare.then_some(AppCommand::FitToWindow);
     }
+    // Bare `1`–`7` toggle Finder's colors, in Finder's order. Only bare, like the letters: ⌘1
+    // and friends belong to the system.
+    if let Key::Character(text) = key
+        && let Some(color) = crate::tags::TagColor::from_digit(text)
+    {
+        return bare.then_some(AppCommand::ToggleTag(color));
+    }
     match key {
         // Navigation (user input → debounced so a wheel spin coalesces).
         // `;` / `'` sit under the right hand next to the speed keys `[` / `]`.
@@ -121,6 +128,9 @@ pub fn browse_key_to_command(key: Key<&str>, _modifiers: &ModifiersState) -> Opt
 
 /// Map a QA server key name (web conventions) to an `AppCommand`.
 pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
+    if let Some(color) = crate::tags::TagColor::from_digit(key_name) {
+        return Some(AppCommand::ToggleTag(color));
+    }
     match key_name {
         "ArrowLeft" | "Backspace" | ";" => Some(AppCommand::Navigate(false)),
         "ArrowRight" | " " | "Space" | "'" => Some(AppCommand::Navigate(true)),
@@ -241,10 +251,54 @@ mod tests {
         }
     }
 
-    /// Bare digits 1–9 are free (Finder tags will take 1–7), with or without a modifier.
+    /// Bare `1` to `7` toggle Finder's colors in Finder's order, on the keyboard and the QA path
+    /// alike.
     #[test]
-    fn digits_1_to_9_are_unbound() {
-        for digit in ["1", "2", "3", "4", "5", "6", "7", "8", "9"] {
+    fn bare_1_to_7_toggle_the_color_tags() {
+        use crate::tags::TagColor;
+        for (digit, color) in [
+            ("1", TagColor::Red),
+            ("2", TagColor::Orange),
+            ("3", TagColor::Yellow),
+            ("4", TagColor::Green),
+            ("5", TagColor::Blue),
+            ("6", TagColor::Purple),
+            ("7", TagColor::Gray),
+        ] {
+            assert!(
+                matches!(key_to_command(Key::Character(digit), &bare()), Some(AppCommand::ToggleTag(c)) if c == color),
+                "{digit}"
+            );
+            assert!(
+                matches!(qa_key_to_command(digit), Some(AppCommand::ToggleTag(c)) if c == color),
+                "QA {digit}"
+            );
+        }
+    }
+
+    /// A digit with a modifier held is someone else's shortcut (⌘1 is a window-switching reflex
+    /// on macOS), so it never tags.
+    #[test]
+    fn modified_digits_dont_toggle_tags() {
+        for digit in ["1", "2", "3", "4", "5", "6", "7"] {
+            for modifiers in [
+                ModifiersState::SUPER,
+                ModifiersState::CONTROL,
+                ModifiersState::ALT,
+                ModifiersState::SHIFT,
+            ] {
+                assert!(
+                    key_to_command(Key::Character(digit), &modifiers).is_none(),
+                    "{digit} with {modifiers:?} is bound"
+                );
+            }
+        }
+    }
+
+    /// `8` and `9` are still free.
+    #[test]
+    fn digits_8_and_9_are_unbound() {
+        for digit in ["8", "9"] {
             for modifiers in [bare(), ModifiersState::SUPER, ModifiersState::CONTROL] {
                 assert!(
                     key_to_command(Key::Character(digit), &modifiers).is_none(),
@@ -253,6 +307,14 @@ mod tests {
             }
             assert!(qa_key_to_command(digit).is_none(), "QA {digit} is bound");
         }
+    }
+
+    /// Browse mode's panes own the digits (type-ahead select), and tagging a grid selection is
+    /// its own feature.
+    #[test]
+    fn browse_mode_leaves_the_digits_alone() {
+        assert!(browse_key_to_command(Key::Character("1"), &bare()).is_none());
+        assert!(browse_qa_key_to_command("1").is_none());
     }
 
     /// The QA table is the real keyboard's twin, so a binding that lands in one lands in both.

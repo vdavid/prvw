@@ -259,6 +259,7 @@ impl App {
                 self.request_redraw();
                 self.update_shared_state();
             }
+            AppCommand::ToggleTag(color) => self.toggle_tag(color),
             AppCommand::ToggleLoopNavigation => {
                 self.navigation.loop_navigation = !self.navigation.loop_navigation;
                 let enabled = self.navigation.loop_navigation;

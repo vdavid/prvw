@@ -27,6 +27,11 @@ impl AppMenu {
         match *self {}
     }
 
+    /// Mirror the image on screen's tags onto the Tags menu.
+    pub fn set_tags(&self, _current: Option<&[crate::tags::Tag]>) {
+        match *self {}
+    }
+
     /// Take the bar away for fullscreen, and put it back on the way out.
     pub fn set_fullscreen(&self, _fullscreen: bool) {
         match *self {}

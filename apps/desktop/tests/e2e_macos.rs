@@ -16,6 +16,8 @@
 //!   cache. Plain fullscreen behaviour is shared; this specific failure mode isn't.
 //! - **`screenshot_window`** exists on Windows too, but only the macOS path needs a granted
 //!   Screen Recording permission, which is what keeps this test `#[ignore]`d.
+//! - **Finder tags** are a macOS filesystem fact: what a test has to check is the extended
+//!   attribute Finder reads, and `ToggleTag` is `not applicable` everywhere else.
 //!
 //! When Windows grows any of these, its own driver file is the place for the equivalent, and the
 //! parts that turn out to be genuinely the same move to the shared suite.
@@ -155,4 +157,153 @@ fn browse_arrow_keys_drive_tree_without_crashing() {
     // The selected-folder field is present in the state contract (null until a row
     // is selected, a string path once the selection delegate fires).
     assert!(state.get("browse_selected_folder").is_some());
+}
+
+// ── Finder tags ──────────────────────────────────────────────────────────────────────────────
+
+/// The attribute Finder keeps a file's tags in.
+const TAGS_XATTR: &str = "com.apple.metadata:_kMDItemUserTags";
+
+/// The raw tag attribute on `path`, or `None` when the file has none. Read with the system's own
+/// `xattr` tool, so the test checks the file rather than the app's reading of it.
+fn tag_attribute(path: &std::path::Path) -> Option<Vec<u8>> {
+    let output = std::process::Command::new("/usr/bin/xattr")
+        .args(["-px", TAGS_XATTR])
+        .arg(path)
+        .output()
+        .expect("run xattr");
+    if !output.status.success() {
+        return None;
+    }
+    let hex: String = String::from_utf8(output.stdout)
+        .expect("xattr prints hex")
+        .split_whitespace()
+        .collect();
+    Some(
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex"))
+            .collect(),
+    )
+}
+
+/// Whether the attribute holds this `"Name\nN"` tag string. A binary plist stores short ASCII
+/// strings inline, so the bytes are there to find.
+fn carries(attribute: &[u8], tag: &str) -> bool {
+    attribute
+        .windows(tag.len())
+        .any(|window| window == tag.as_bytes())
+}
+
+/// The tags `/state` reports, as `(name, color)` pairs.
+fn state_tags(state: &serde_json::Value) -> Option<Vec<(String, Option<String>)>> {
+    state["tags"].as_array().map(|tags| {
+        tags.iter()
+            .map(|tag| {
+                (
+                    tag["name"].as_str().unwrap_or_default().to_string(),
+                    tag["color"].as_str().map(str::to_string),
+                )
+            })
+            .collect()
+    })
+}
+
+fn tags_of(pairs: &[(&str, Option<&str>)]) -> Option<Vec<(String, Option<String>)>> {
+    Some(
+        pairs
+            .iter()
+            .map(|(name, color)| (name.to_string(), color.map(str::to_string)))
+            .collect(),
+    )
+}
+
+#[test]
+fn digit_keys_toggle_finder_tags_and_keep_the_others() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let image = dir.path().join("photo.png");
+    e2e::fixtures::create_fixture_image(&image);
+    // What Finder writes for a colorless "Important" plus its red tag.
+    let seeded = std::process::Command::new("/usr/bin/xattr")
+        .args([
+            "-wx",
+            TAGS_XATTR,
+            "62706C6973743030A201025B496D706F7274616E740A30555265640A36080B17000000000000010100000000000000030000000000000000000000000000001D",
+        ])
+        .arg(&image)
+        .status()
+        .expect("run xattr");
+    assert!(seeded.success());
+
+    let app = TestApp::start_with_image(&image);
+    let wait = Duration::from_secs(10);
+    let read = app.wait_for_state(wait, |s| state_tags(s).is_some_and(|t| t.len() == 2));
+    assert_eq!(
+        state_tags(&read),
+        tags_of(&[("Important", None), ("Red", Some("red"))])
+    );
+
+    // `1` is red, which the file has: it comes off, and the colorless tag stays.
+    app.post("/key", "1");
+    let removed = app.wait_for_state(wait, |s| state_tags(s).is_some_and(|t| t.len() == 1));
+    assert_eq!(state_tags(&removed), tags_of(&[("Important", None)]));
+    let on_disk = tag_attribute(&image).expect("the colorless tag keeps the attribute");
+    assert!(carries(&on_disk, "Important\n0"));
+    assert!(!carries(&on_disk, "Red\n6"));
+
+    // `5` is blue, which it doesn't have: it goes on, after the tags already there.
+    app.post("/key", "5");
+    let added = app.wait_for_state(wait, |s| state_tags(s).is_some_and(|t| t.len() == 2));
+    assert_eq!(
+        state_tags(&added),
+        tags_of(&[("Important", None), ("Blue", Some("blue"))])
+    );
+    let on_disk = tag_attribute(&image).expect("attribute");
+    assert!(carries(&on_disk, "Important\n0"));
+    assert!(carries(&on_disk, "Blue\n4"));
+}
+
+#[test]
+fn toggling_the_last_tag_off_removes_the_attribute() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let image = dir.path().join("photo.png");
+    e2e::fixtures::create_fixture_image(&image);
+
+    let app = TestApp::start_with_image(&image);
+    let wait = Duration::from_secs(10);
+    let untagged = app.wait_for_state(wait, |s| state_tags(s).is_some());
+    assert_eq!(state_tags(&untagged), tags_of(&[]));
+    assert!(tag_attribute(&image).is_none());
+
+    app.post("/key", "3");
+    let yellow = app.wait_for_state(wait, |s| state_tags(s).is_some_and(|t| !t.is_empty()));
+    assert_eq!(state_tags(&yellow), tags_of(&[("Yellow", Some("yellow"))]));
+    assert!(carries(
+        &tag_attribute(&image).expect("attribute"),
+        "Yellow\n5"
+    ));
+
+    app.post("/key", "3");
+    let cleared = app.wait_for_state(wait, |s| state_tags(s).is_some_and(|t| t.is_empty()));
+    assert_eq!(state_tags(&cleared), tags_of(&[]));
+    assert!(
+        tag_attribute(&image).is_none(),
+        "clearing the last tag removes the attribute, the way Finder does"
+    );
+}
+
+/// Browse mode shows no single image, so there's nothing to tag: `/state` says so, and a digit
+/// that reaches the app leaves the file alone.
+#[test]
+fn browse_mode_has_no_image_to_tag() {
+    let app = TestApp::start();
+    app.wait_for_state(Duration::from_secs(10), |s| state_tags(s).is_some());
+    let image = std::path::PathBuf::from(app.get_state()["file"].as_str().expect("a file"));
+    app.post("/key", "Enter");
+    let browsing = app.wait_for_state(Duration::from_secs(10), |s| {
+        s["view_mode"].as_str() == Some("browse")
+    });
+    assert!(browsing["tags"].is_null(), "{}", browsing["tags"]);
+    app.post("/key", "1");
+    assert!(tag_attribute(&image).is_none());
 }

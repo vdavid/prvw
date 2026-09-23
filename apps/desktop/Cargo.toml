@@ -215,6 +215,12 @@ objc2-image-io = { version = "0.3", default-features = false, features = [
   "objc2-core-graphics",
 ] }
 block2 = "0.6"
+# Finder tags (`tags::finder`): the `com.apple.metadata:_kMDItemUserTags` extended attribute, and
+# the binary plist Finder keeps inside it. Only macOS has Finder tags, so neither crate builds
+# elsewhere. `plist` drops its default `serde` feature: the tags code only needs `plist::Value`.
+# xattr is MIT OR Apache-2.0, plist is MIT.
+xattr = "1.6.1"
+plist = { version = "1.10.1", default-features = false }
 
 # NOTE: dev-profile opt-level overrides for zune-jpeg and moxcms live in the
 # workspace-root Cargo.toml — Cargo ignores `[profile.*]` in member manifests.

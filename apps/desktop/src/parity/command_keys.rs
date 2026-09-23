@@ -20,6 +20,7 @@ pub enum Area {
     View,
     Browse,
     Slideshow,
+    Tags,
     Raw,
     App,
 }
@@ -31,6 +32,7 @@ impl Area {
             Area::View => "View",
             Area::Browse => "Browse mode",
             Area::Slideshow => "Slideshow",
+            Area::Tags => "Tags",
             Area::Raw => "RAW",
             Area::App => "App",
         }
@@ -113,6 +115,9 @@ command_keys! {
     SlideshowLoop { label: "Loop the slideshow", area: Slideshow, }
     SlideshowSpeed { label: "Increase / decrease speed", area: Slideshow, }
 
+    // ── Tags ─────────────────────────────────────────────────────────
+    ToggleTag { label: "Toggle a color tag", area: Tags, }
+
     // ── RAW ──────────────────────────────────────────────────────────
     RawPipelineFlags { label: "RAW pipeline stages", area: Raw, }
     CustomDcpDir { label: "Custom DCP directory", area: Raw, }
@@ -184,6 +189,7 @@ impl CommandKey {
             | CommandKey::SlideshowCrossfade
             | CommandKey::SlideshowLoop
             | CommandKey::SlideshowSpeed
+            | CommandKey::ToggleTag
             | CommandKey::RawPipelineFlags
             | CommandKey::CustomDcpDir
             | CommandKey::CopyImage
@@ -203,6 +209,11 @@ impl CommandKey {
             CommandKey::TitleBar => Coverage::NotApplicable {
                 reason: "The title bar never covers the image on Windows, so there's no strip \
                          to reserve and nothing for the command to switch.",
+            },
+            CommandKey::ToggleTag => Coverage::NotApplicable {
+                reason: "Color tags are Finder's: macOS keeps them in an extended attribute that \
+                         Finder and Spotlight read. Windows has no per-file color tag for the \
+                         command to set.",
             },
             CommandKey::NextPreviousImage
             | CommandKey::GoToFirst
@@ -257,6 +268,11 @@ impl CommandKey {
             CommandKey::TitleBar => Coverage::NotApplicable {
                 reason: "Linux decorations sit outside the surface Prvw draws into, so the \
                          command has no strip to reserve or release.",
+            },
+            CommandKey::ToggleTag => Coverage::NotApplicable {
+                reason: "Color tags are Finder's: macOS keeps them in an extended attribute that \
+                         Finder and Spotlight read. Linux file managers share no color-tag \
+                         convention for the command to write.",
             },
             CommandKey::NextPreviousImage
             | CommandKey::GoToFirst
