@@ -49,6 +49,7 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                                                                             |
 | `settings/`          | JSON persistence + the AppKit settings window (shell + General panel) + the Win32 one (`settings/windows/`)                                                     |
 | `slideshow/`         | Timer-driven auto-advance (`S`) + crossfade + Slideshow settings panel + `slideshow::State`                                                                     |
+| `tags/`              | Finder color tags (macOS): bare `1`–`7` and the Tags menu toggle them, dots in the bottom-left corner show them, `tags::State` caches them per path             |
 | `updater.rs`         | Update check: macOS installs the DMG, Windows opens the download                                                                                                |
 | `window.rs`          | Main viewer window: create, fullscreen, auto-fit, title-bar vibrancy                                                                                            |
 | `zoom/`              | `ViewState` + zoom/pan math + Zoom settings panel + `zoom::State`                                                                                               |

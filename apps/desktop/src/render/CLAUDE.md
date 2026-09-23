@@ -77,7 +77,10 @@ mode. On macOS the headroom is ours to use; on Windows it is ours to respect.
 - **Render-on-demand.** `App.needs_redraw` gates frames. Renderer is passive.
 - **The overlay pill does outlines too.** `StandalonePill.border_width` above `0.0` makes `overlay.wgsl` subtract the
   same rounded rect shrunk by that width, leaving a ring instead of a fill. That's how the read progress bar draws its 1
-  px outline without a second pipeline. `0.0` fills, which is what every other pill wants.
+  px outline without a second pipeline. `0.0` fills, which is what every other pill wants. A pill whose corner radius is
+  half its size is a circle, which is how `tags::overlay` draws its dots.
+- **The pill pool has a fixed size.** `OVERLAY_POOL_SIZE` uniform buffers, and a pill past it is silently skipped. Add
+  up the busiest frame when a new overlay adds pills; the tag dots alone take up to 14.
 - **Two pipelines, two passes.** Image quad renders inside a viewport clipped to the image area (below the title-bar
   strip); the viewport is RESET to the full surface before pills/text.
 - **Compositing with vibrancy.** Metal layer is `isOpaque = false`, clear color is `TRANSPARENT`, `zPosition = 1.0` puts

@@ -14,8 +14,18 @@ The menu bar and the right-click context menu, plus the seam for platforms that 
 - `absent.rs` is the platform with no menu bar (Linux today). `AppMenu` there is an uninhabited enum and
   `create_menu_bar` returns `None`.
 
-`App` holds `Option<AppMenu>` and calls five methods on it: `sync_from_settings`, `set_slideshow_running`,
-`set_browse_mode`, `set_fullscreen`, and `poll_command`. macOS adds `show_image_context_menu`.
+`App` holds `Option<AppMenu>` and calls six methods on it: `sync_from_settings`, `set_slideshow_running`,
+`set_browse_mode`, `set_fullscreen`, `set_tags`, and `poll_command`. macOS adds `show_image_context_menu`.
+
+## Decision: the Tags menu follows the state snapshot, not the settings
+
+**Why:** its checkmarks mirror the image on screen's Finder tags, which live on disk rather than in `Settings`, so
+`sync_from_settings` can't own them. `App::update_shared_state` calls `set_tags` instead, because "every observable
+change" is exactly when the current image or its tags may have moved. That runs often (hover, zoom), so `set_tags`
+remembers what it last wrote and makes no native call when nothing changed. A click flips the checkmark before the
+command runs; the re-read after the write puts it back to what the file says, so a write that didn't land shows as
+unticked. The items are greyed out while there's no image to tag (browse mode, the empty state). Windows and Linux say
+`NotApplicable`, so the Windows bar builds the menu empty and drops it like any other empty menu.
 
 ## Decision: muda is a macOS-and-Windows dependency
 

@@ -43,6 +43,7 @@ src/
 ├── qa/                      Embedded HTTP + MCP server
 ├── settings/                JSON persistence + Settings window shell + widgets + General panel + RAW panel (Phase 3.7)
 ├── slideshow/               Timer-driven auto-advance + crossfade + Slideshow settings panel + slideshow::State
+├── tags/                    Finder color tags (macOS): bare 1–7 + the Tags menu toggle them, bottom-left dots show them + tags::State
 ├── previews/                Header-only dimensions (all platforms) + preview preload (QuickLook on macOS, our own pool on Windows)
 ├── updater.rs + updater/    Is a newer release out: portable policy, a macOS install, a Windows hand-off to the browser
 ├── window.rs                Main viewer window: create, fullscreen, auto-fit, vibrancy
@@ -79,10 +80,10 @@ toolchain that compiles a Windows installer on a Mac; `scripts/build-windows-ins
 
 ## Per-feature state
 
-`App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`, `browser: browser::State`, and
-`previews: previews::State`. Each feature's runtime state lives in its own module. App only keeps truly cross-cutting
-state: handles (window, renderer, menu), launch flags (file_path, waiting_for_file, launch_directory), runtime input
-(modifiers, drag_start, etc.), and the single cross-feature toggle `title_bar`.
+`App` holds `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`, `browser: browser::State`,
+`previews: previews::State`, and `tags: tags::State`. Each feature's runtime state lives in its own module. App only
+keeps truly cross-cutting state: handles (window, renderer, menu), launch flags (file_path, waiting_for_file,
+launch_directory), runtime input (modifiers, drag_start, etc.), and the single cross-feature toggle `title_bar`.
 
 ## What a launch opens
 

@@ -61,7 +61,13 @@ both a text confirmation and a `state` field with the current app state as JSON.
 - **prvw://state**: Current app state as JSON (file, zoom, pan, fullscreen, window/image geometry, settings, title,
   `loop_navigation`, `slideshow_running`, `cache_indices` (sorted directory indices currently in the image cache), the
   folder-scan fields `scan_pending`, `queued_nav`, and `read_progress`, and the browse-mode fields `view_mode`,
-  `focused_pane`, `browse_selected_folder`, `browse_grid_selected`, `browse_grid_count`, `browse_reveal_pending`).
+  `focused_pane`, `browse_selected_folder`, `browse_grid_selected`, `browse_grid_count`, `browse_reveal_pending`, and
+  `tags`).
+
+  `tags` is the Finder tags of the image on screen, in the file's own order: `[{"name": "Red", "color": "red"}, ...]`,
+  with `color` `null` for a colorless tag. It's `null` when there's no image to tag (browse mode, the empty state, or
+  nothing painted yet), and always an empty list off macOS. Keys `1`–`7` toggle red, orange, yellow, green, blue,
+  purple, and gray.
 
   `queued_nav` is the move made while the folder was still being scanned, applied when the scan lands:
   `{"anchor": "current" | "first" | "last", "delta": <signed steps>}`, or `null` when nothing is queued (which is what a

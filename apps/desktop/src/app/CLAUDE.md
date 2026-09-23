@@ -7,6 +7,7 @@ Not a feature. This is the runtime scaffolding every feature plugs into.
 | `app.rs`          | `App` struct, `App::new`, `ApplicationHandler` impl              |
 | `executor.rs`     | `App::execute_command`: single dispatcher for every `AppCommand` |
 | `shared_state.rs` | `SharedAppState` snapshot + `App::update_shared_state` writer    |
+| `tags_hook.rs`    | Finder tags glue: `tag_target`, `toggle_tag`, `refresh_tags`     |
 
 ## App's fields
 
@@ -14,8 +15,9 @@ App holds three per-feature State structs (`zoom`, `color`, `navigation`) plus t
 
 - **Per-feature state**: `zoom: zoom::State`, `color: color::State`, `navigation: navigation::State`,
   `histogram: histogram::State`, `exif_overlay: exif_overlay::State`, `slideshow: slideshow::State`,
-  `browser: browser::State` (browse mode — `ViewMode`, `focused_pane`, tree selection, grid selection, native handles).
-  Each feature's runtime + setting-backed fields live in its own module.
+  `browser: browser::State` (browse mode — `ViewMode`, `focused_pane`, tree selection, grid selection, native handles),
+  `tags: tags::State` (each viewed image's Finder tags, as last read from disk). Each feature's runtime + setting-backed
+  fields live in its own module.
 - **Launch**: `file_path`, `explicit_files`, `waiting_for_file`, `launch_directory` (a lone directory CLI arg → browse
   mode on macOS and Windows, the folder's images in image mode on Linux; see `browser::classify_launch_target`,
   `launch`, and `initialize_viewer`), `wait_start`, `empty_state` (why image mode is showing no image, if it isn't).
