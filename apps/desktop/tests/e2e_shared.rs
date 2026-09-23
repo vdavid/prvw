@@ -367,6 +367,41 @@ fn fullscreen_respects_enlarge_setting_even_with_auto_fit_on() {
     );
 }
 
+#[test]
+fn actual_size_undoes_enlarging_a_small_image() {
+    // In a window that stays put (auto-fit off here; fullscreen takes the same path),
+    // "Enlarge small images" blows a small image up to fill it. Actual size must still take
+    // it down to 100%. Pre-fix, the zoom floor sat at that enlarged fit, so Actual size (and
+    // ⌘0) was clamped straight back and did nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("small.png");
+    create_white_image(&img_path, 64, 64);
+    let Some(app) = SharedApp::start_with_image(
+        &["ActualSize", "AutoFitWindow", "EnlargeSmallImages"],
+        &img_path,
+    ) else {
+        return;
+    };
+
+    app.post("/auto-fit", "off");
+    app.post("/enlarge-small", "on");
+    let s = app.wait_for_state(Duration::from_secs(8), |s| {
+        s["zoom"].as_f64().unwrap_or(0.0) > 1.5
+    });
+    let enlarged = s["zoom"].as_f64().unwrap();
+    assert!(
+        enlarged > 1.5,
+        "the small image should fill the window, got {enlarged}"
+    );
+
+    app.post("/zoom", "actual");
+    let zoom = app.get_state()["zoom"].as_f64().unwrap();
+    assert!(
+        (zoom - 1.0).abs() < 0.01,
+        "actual size should be zoom=1.0, got {zoom}"
+    );
+}
+
 // ── Title bar ────────────────────────────────────────────────────────────────────────────────
 //
 // The `TitleBar` capability is what makes these shared rather than macOS-only. Prvw draws behind

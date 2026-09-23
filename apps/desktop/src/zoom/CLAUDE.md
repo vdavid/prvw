@@ -28,6 +28,12 @@ image + window dimensions.
 Zoom is **absolute**: `zoom=1.0` means 1 image pixel = 1 screen pixel. `fit_zoom()` is the zoom that exactly fills the
 content area (< 1.0 for large images, > 1.0 for small ones). `min_zoom` is the floor, preventing zooming out past fit.
 
+**In a fixed window (auto-fit off, or fullscreen) the floor is `min(fit, 1.0)`** (`ViewState::fixed_window_floor`), not
+fit. "Enlarge small images" only picks the starting zoom; if it also set the floor, a small image blown up to fill the
+screen couldn't go back to 100%, and Actual size (⌘0) would clamp straight back to fit and do nothing. That's the bug
+this shape prevents: don't fold `enlarge` back into the floor. With auto-fit on, the floor is whatever keeps the window
+at its 200px minimum.
+
 On image load, `App::apply_initial_zoom` picks the starting zoom and floor based on the three settings (`auto_fit`,
 `enlarge`, `min_zoom`) and the image vs window sizes. See the full matrix in `apps/desktop/CLAUDE.md`.
 

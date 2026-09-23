@@ -3,7 +3,8 @@
 //! Zoom is in logical pixels: 1.0 = one image pixel per logical pixel (point).
 //! On Retina (2x), this means 1 image pixel = 2 physical pixels.
 //! Values below 1.0 shrink the image, above 1.0 magnify it. The minimum zoom
-//! is the fit-to-window level. All window dimensions are logical pixels.
+//! is the fit-to-window level or 100%, whichever is lower. All window dimensions
+//! are logical pixels.
 
 use crate::pixels::Logical;
 
@@ -18,8 +19,8 @@ pub struct ViewState {
     /// Pan offset in NDC. (0, 0) = centered.
     pub pan_x: f32,
     pub pan_y: f32,
-    /// Minimum zoom level (the zoom that fits the image in the window, or 1.0 for
-    /// small images when enlargement is disabled).
+    /// Minimum zoom level. In a fixed window, [`Self::fixed_window_floor`]; with auto-fit,
+    /// whatever keeps the window above its minimum size.
     min_zoom: f32,
     /// Image dimensions in native pixels.
     image_width: u32,
@@ -95,6 +96,15 @@ impl ViewState {
         let scale_x = self.window_width.0 / self.image_width as f32;
         let scale_y = eh.0 / self.image_height as f32;
         scale_x.min(scale_y)
+    }
+
+    /// The zoom floor when the window stays put (auto-fit off, or fullscreen): fit, or 100%,
+    /// whichever is lower. Zooming out stops once the whole image shows, but never short of
+    /// actual size, so a small image that "Enlarge small images" blew up to fill the window can
+    /// still go back to 100% (Actual size, ⌘0). Enlarging only picks the starting zoom
+    /// (`App::apply_initial_zoom`); it doesn't pin the floor there.
+    pub fn fixed_window_floor(&self) -> f32 {
+        self.fit_zoom().min(1.0)
     }
 
     /// Set zoom to fit the image in the window, centered.
@@ -438,6 +448,27 @@ mod tests {
             view.keyboard_zoom(false);
         }
         assert!((view.zoom - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// A small image enlarged to fill a fixed window (fullscreen, or auto-fit off) still goes to
+    /// 100% on Actual size. The floor stops zooming out past fit, never short of actual size.
+    #[test]
+    fn actual_size_reaches_100_percent_on_an_enlarged_small_image() {
+        let mut view = ViewState::new();
+        // 200x200 in 800x800: fit_zoom = 4.0
+        view.update_dimensions(200, 200, Logical(800.0), Logical(800.0));
+        view.set_min_zoom(view.fixed_window_floor());
+        view.fit_to_window();
+        view.actual_size();
+        assert!((view.zoom - 1.0).abs() < f32::EPSILON, "got {}", view.zoom);
+    }
+
+    /// A large image's floor is still its fit, so zooming out stops where the whole image shows.
+    #[test]
+    fn a_large_images_floor_is_its_fit() {
+        let mut view = ViewState::new();
+        view.update_dimensions(1600, 900, Logical(800.0), Logical(800.0));
+        assert!((view.fixed_window_floor() - 0.5).abs() < 0.01);
     }
 
     #[test]

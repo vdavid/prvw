@@ -458,13 +458,8 @@ impl App {
             return;
         }
 
-        let fit = self.zoom.view.fit_zoom();
-        let is_small = fit > 1.0;
-        if is_small && !self.zoom.enlarge {
-            self.zoom.view.set_min_zoom(1.0);
-        } else {
-            self.zoom.view.set_min_zoom(fit);
-        }
+        let floor = self.zoom.view.fixed_window_floor();
+        self.zoom.view.set_min_zoom(floor);
     }
 
     /// Compute the target ICC bytes based on current settings.
