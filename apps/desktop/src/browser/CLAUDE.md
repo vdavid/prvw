@@ -21,6 +21,7 @@ UI"; Linux has neither and falls back to `set_view_mode(Image)`.
 | `mod.rs`             | `ViewMode` + `PaneSide` + `LaunchTarget` enums; `browser::State` (mode, `focused_pane: Option<PaneSide>` single source of truth, selected folder, grid selection, sort, `pending_grid_preselect` + `pending_browse_open_focus` for browse-open, native handles); the `sync_native` render-from-state choke-point; `reveal_to_folder`; QA accessors (`grid_count`, `reveal_pending`) + the `qa_select_grid_index` test-driving hook; pure `next_focused_pane`/`browse_entry_pane`/`browse_keydown_command`/`grid_preselect_index`/`classify_launch_target` + field-transition cores; tree + grid delegation; tests |
 | `split_view.rs`      | macOS `NSSplitView` build, hide/show, `apply_focus` (makes the focused pane's control first responder + refreshes grid emphasis — called by `sync_native`), divider + traffic-light fixes; hosts the tree (left) and the grid (right)                                                                                                                                                                                                                                                                                                                                                                             |
 | `grid.rs`            | macOS `NSCollectionView` grid: `BrowseCollectionView` (keyDown override), `GridItem` (cell, focus-aware selection rect + double-click in `mouseDown:`), `GridDataSource` (data source + delegate + prefetch, owns the grid's mutable state), `BrowseGrid` (owns the views + drives listing/thumbs/focus)                                                                                                                                                                                                                                                                                                          |
+| `grid_tags.rs`       | macOS: the grid's Finder tag dots. Pure, tested `GridTags` (which cells need a read, stale-while-rereading) + `TagReader`, the serial `prvw-gridtags` worker that reads them off the main thread                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `grid_model.rs`      | Pure, headless-tested: the folder image list + sort + selected index + empty detection + folder generation, and `clamp_visible_range`                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `grid_scheduler.rs`  | Pure, headless-tested: visible-range-centered generation order for the grid (the grid's `BrowseGrid::pump` drives it)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `thumbnail_cache.rs` | Pure, headless-tested: 128 MB byte-budget, distance-from-visible-range eviction state + the `MAX_CELL_PT`/`GRID_THUMBNAIL_PX` size constants                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -426,6 +427,29 @@ previews. The worker delivers RGBA8 (`cg_image_to_rgba8`); the grid's consumptio
   `thumbnail_cache::ThumbnailCache` (128 MB byte budget, farthest-from-range eviction, ties by least-recently-touched)
   stay pure and unit-tested; `grid.rs` is their runtime caller. Both share `grid_scheduler::distance_from_range` so
   scheduling and eviction agree.
+
+### Tag dots (macOS, display only)
+
+Each cell shows its file's Finder tag colors as overlapping dots before the filename, Finder icon-view style
+(`TagDotsView`, found again through its fixed `NSView.tag`; `label_row` centers dots + name as a group and squeezes a
+long name, never the dots). Same size, overlap, and palette as the image-mode dots (`tags::overlay::DOT_SIZE` /
+`DOT_STEP`, `TagColor::srgb`), each dot ringed in `controlBackgroundColor` so overlaps separate. The grid never sets
+tags.
+
+- **Reads never run on the main thread.** `BrowseGrid::pump_visible_range` also asks `GridTags::take_requests` for the
+  cells in the visible range (plus margin) that don't know their tags, and queues them on `TagReader`. Results come back
+  as `AppCommand::BrowseTagsAvailable` (one wake per batch) → `BrowseGrid::tags_available`, which repaints only the
+  visible cells whose colors changed (`itemAtIndexPath:`, no `reloadItems`, so the thumbnail and selection are
+  untouched). A new listing or re-scan resets them with the thumbnails (`clear_thumbnails`); the reader skips jobs from
+  an older folder generation without touching the disk.
+- **Staying current.** `App::note_tags_changed` (live sync's metadata-only path, and our own image-mode toggle via
+  `refresh_tags`) calls `State::grid_tags_changed` → `GridTags::invalidate`: the cell keeps its dots and is re-read on
+  the next pump, which runs on every `about_to_wait` while browsing. A tag set in image mode is therefore picked up when
+  browse comes back. A change that lands while its read is running gets one more read (`stale_in_flight`).
+- `/state`'s `browse_grid_selected_tags` is the selected cell's colors, for tests.
+
+The Windows grid shows no tags: Finder tags don't exist there. Not a parity item (the registries cover settings, menu
+items, and commands).
 
 **Size constant:** `thumbnail_cache::MAX_CELL_PT` (256pt) → `GRID_THUMBNAIL_PX` (512px = 256 × 2 Retina). One max-size
 RGBA8 thumbnail is `512 × 512 × 4 ≈ 1 MB` (`EST_THUMBNAIL_BYTES`), so 128 MB ≈ 128 resident thumbnails. Generated

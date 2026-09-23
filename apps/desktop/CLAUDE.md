@@ -44,7 +44,7 @@ src/
 ├── qa/                      Embedded HTTP + MCP server
 ├── settings/                JSON persistence + Settings window shell + widgets + General panel + RAW panel (Phase 3.7)
 ├── slideshow/               Timer-driven auto-advance + crossfade + Slideshow settings panel + slideshow::State
-├── tags/                    Finder color tags (macOS): bare 1–7 + the Tags menu toggle them, bottom-left dots show them + tags::State
+├── tags/                    Finder color tags (macOS): bare 1–7 + the Tags menu toggle them, bottom-left dots show them (and the browse grid's dots) + tags::State
 ├── previews/                Header-only dimensions (all platforms) + preview preload (QuickLook on macOS, our own pool on Windows)
 ├── updater.rs + updater/    Is a newer release out: portable policy, a macOS install, a Windows hand-off to the browser
 ├── window.rs                Main viewer window: create, fullscreen, auto-fit, vibrancy

@@ -121,6 +121,10 @@ pub struct SharedAppState {
     /// `None` when there's no image to tag (browse mode, the empty state, nothing painted yet).
     /// Always an empty list off macOS, which has no Finder tags.
     pub tags: Option<Vec<TagSnapshot>>,
+    /// The tag dot colors the browse grid's selected cell shows (`"red"` … `"gray"`, in the
+    /// file's order), as the grid last read them. `None` without a grid selection, and always
+    /// `None` off macOS, whose grids show no tags.
+    pub browse_grid_selected_tags: Option<Vec<String>>,
 }
 
 /// One Finder tag, flattened for the QA snapshot.
@@ -221,6 +225,7 @@ impl Default for SharedAppState {
             queued_nav: None,
             read_progress: None,
             tags: None,
+            browse_grid_selected_tags: None,
         }
     }
 }
@@ -336,6 +341,16 @@ impl App {
                 })
                 .collect()
         });
+        #[cfg(target_os = "macos")]
+        {
+            state.browse_grid_selected_tags =
+                self.browser.grid_selected_tag_colors().map(|colors| {
+                    colors
+                        .iter()
+                        .map(|color| color.name().to_ascii_lowercase())
+                        .collect()
+                });
+        }
 
         if let Some((iw, ih)) = self.navigation.current_image_size {
             state.image_width = iw;

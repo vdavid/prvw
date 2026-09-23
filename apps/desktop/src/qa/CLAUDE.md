@@ -50,7 +50,7 @@ every platform (layer 3 of the parity harness, `docs/specs/cross-platform-plan.m
 - `tests/e2e/` — the harness. `TestApp` spawns the binary and talks to this server, `fixtures` generates the images,
   `shared` holds the gate. Compiles everywhere.
 - `tests/e2e_shared.rs` — the platform-neutral core, 41 tests. No `cfg` anywhere in it.
-- `tests/e2e_macos.rs` — eight tests for macOS window-system and filesystem facts: browse mode's arrow keys, the AppKit
+- `tests/e2e_macos.rs` — nine tests for macOS window-system and filesystem facts: browse mode's arrow keys, the AppKit
   fullscreen round trip, `screenshot_window`, and Finder tags (which read the attribute back off the file with
   `/usr/bin/xattr`).
 
@@ -96,6 +96,8 @@ macOS. `tests/e2e/mod.rs` carries the full caveat list.
   (1024x768) gives it. `window::auto_fit_size` holds the rule and the host-independent tests for both branches.
 - **`tags` in `/state`** is the image on screen's Finder tags (`[{"name", "color"}]`, `color` null for a colorless tag),
   or `null` when there's no image to tag. `POST /key` with `1`–`7` toggles them, the same as the keyboard.
+- **`browse_grid_selected_tags` in `/state`** is the browse grid's selected cell's tag dot colors (`["red", ...]`), as
+  the grid last read them, or `null` without a selection. Always `null` off macOS.
 - **`full_decodes` in `/state`** counts every `decoding::load_image` success since launch, read live rather than from
   the snapshot. A test that wants "this change did NOT decode the image again" reads it before and after, in a one-image
   folder so no neighbor preload moves it (`a_tag_set_in_finder_shows_up_without_a_re_decode`).

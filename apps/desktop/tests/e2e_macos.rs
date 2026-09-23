@@ -363,6 +363,64 @@ fn toggling_a_tag_does_not_re_decode_the_image() {
     assert_eq!(full_decodes(&app.get_state()), decodes);
 }
 
+/// Finder's blue tag: `["Blue\n4"]`.
+const BLUE_TAG_PLIST: &str = "62706C6973743030A10156426C75650A34080A0000000000000101000000000000000200000000000000000000000000000011";
+
+/// The tag dot colors the browse grid's selected cell shows.
+fn grid_tags(state: &serde_json::Value) -> Option<Vec<String>> {
+    state["browse_grid_selected_tags"].as_array().map(|colors| {
+        colors
+            .iter()
+            .map(|color| color.as_str().unwrap_or_default().to_string())
+            .collect()
+    })
+}
+
+fn colors(names: &[&str]) -> Option<Vec<String>> {
+    Some(names.iter().map(|name| name.to_string()).collect())
+}
+
+/// The grid shows each cell's tags, follows a tag set in Finder while it's up, and picks up a tag
+/// set in image mode once browse mode comes back.
+#[test]
+fn the_browse_grid_shows_tag_dots_and_keeps_them_current() {
+    let home = tempfile::tempdir().expect("temp home");
+    let pics = home.path().join("pics");
+    std::fs::create_dir(&pics).unwrap();
+    let first = pics.join("a.png");
+    e2e::fixtures::write_png(&first, 1);
+    e2e::fixtures::write_png(&pics.join("b.png"), 2);
+    write_tag_attribute(&first, RED_TAG_PLIST);
+
+    let app = TestApp::start_browse_dir(&pics, home.path());
+    let wait = Duration::from_secs(10);
+    let listed = app.wait_for_state(wait, |s| {
+        s["view_mode"].as_str() == Some("browse")
+            && s["browse_reveal_pending"].as_bool() == Some(false)
+            && s["browse_grid_count"].as_u64() == Some(2)
+            && grid_tags(s) == colors(&["red"])
+    });
+    assert_eq!(listed["browse_grid_selected"].as_u64(), Some(0));
+    assert_eq!(grid_tags(&listed), colors(&["red"]));
+    app.wait_for_watch(&pics);
+
+    // Finder retags it while the grid is up.
+    write_tag_attribute(&first, BLUE_TAG_PLIST);
+    let retagged = app.wait_for_state(wait, |s| grid_tags(s) == colors(&["blue"]));
+    assert_eq!(grid_tags(&retagged), colors(&["blue"]));
+
+    // Tag it in image mode, then come back.
+    app.post("/browse/open", "");
+    app.wait_for_state(wait, |s| state_tags(s).is_some_and(|t| t.len() == 1));
+    app.post("/key", "3");
+    app.wait_for_state(wait, |s| state_tags(s).is_some_and(|t| t.len() == 2));
+    app.post("/key", "Enter");
+    let back = app.wait_for_state(wait, |s| {
+        s["view_mode"].as_str() == Some("browse") && grid_tags(s) == colors(&["blue", "yellow"])
+    });
+    assert_eq!(grid_tags(&back), colors(&["blue", "yellow"]));
+}
+
 /// Browse mode shows no single image, so there's nothing to tag: `/state` says so, and a digit
 /// that reaches the app leaves the file alone.
 #[test]

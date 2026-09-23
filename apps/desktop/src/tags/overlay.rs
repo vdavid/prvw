@@ -9,7 +9,7 @@
 //! Nothing else draws in the bottom-left corner. In fullscreen the window is the screen, so this
 //! is the screen's corner there.
 
-use super::{Tag, TagColor};
+use super::{Tag, TagColor, dot_colors};
 use crate::pixels::Logical;
 use crate::render::text::StandalonePill;
 
@@ -17,7 +17,7 @@ use crate::render::text::StandalonePill;
 pub const DOT_SIZE: f32 = 10.0;
 
 /// How far along each next dot starts. Less than [`DOT_SIZE`], so the dots overlap.
-const DOT_STEP: f32 = 6.0;
+pub const DOT_STEP: f32 = 6.0;
 
 /// The halo's width around each dot.
 const HALO_WIDTH: f32 = 1.5;
@@ -63,32 +63,10 @@ fn circle(left: f32, top: f32, size: f32, color: [f32; 4]) -> StandalonePill {
     }
 }
 
-/// The colors to draw, in the file's own order, each once: a custom red tag next to Finder's
-/// red draws one red dot, which is what Finder does.
-fn dot_colors(tags: &[Tag]) -> Vec<TagColor> {
-    let mut colors: Vec<TagColor> = Vec::with_capacity(tags.len());
-    for color in tags.iter().filter_map(|tag| tag.color) {
-        if !colors.contains(&color) {
-            colors.push(color);
-        }
-    }
-    colors
-}
-
-/// A dot's fill. These are Cmdr's dark-appearance tag colors, whatever the system appearance:
-/// the dots sit on a photo, never on a light window, and the brighter set holds up over both a
-/// dark image and the dark halo. Written as sRGB and converted, because the overlay pipeline
-/// blends in linear light (the surface is an sRGB format).
+/// A dot's fill: [`TagColor::srgb`], converted, because the overlay pipeline blends in linear
+/// light (the surface is an sRGB format).
 fn dot_color(color: TagColor) -> [f32; 4] {
-    let [r, g, b] = match color {
-        TagColor::Red => [0xef, 0x6f, 0x6a],
-        TagColor::Orange => [0xf0, 0x9a, 0x4c],
-        TagColor::Yellow => [0xf0, 0xc5, 0x4e],
-        TagColor::Green => [0x6f, 0xc4, 0x63],
-        TagColor::Blue => [0x5e, 0xa0, 0xee],
-        TagColor::Purple => [0xbd, 0x86, 0xe0],
-        TagColor::Gray => [0xa8, 0xa8, 0xad],
-    };
+    let [r, g, b] = color.srgb();
     [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), 1.0]
 }
 

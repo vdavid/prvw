@@ -385,6 +385,11 @@ impl App {
                 #[cfg(target_os = "windows")]
                 self.browser.grid_thumbnails_available();
             }
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseTagsAvailable => {
+                self.browser.grid_tags_available();
+                self.update_shared_state();
+            }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::BrowseGridSelected(index) => {
                 if let Some(win) = self.window.clone() {

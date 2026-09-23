@@ -56,8 +56,9 @@ which reads lossily on both paths.
 - **Contrast:** each dot sits on a 1.5 px halo of 45% black, drawn first. It reads as a thin outline on a bright photo,
   disappears on a dark one, and separates overlapping dots the way Finder's ring does.
 - **Colors:** Cmdr's dark-appearance palette (`--color-tag-*` in its `app.css`), whatever the system appearance, because
-  the dots sit on a photo rather than on a light or dark window, and the brighter set holds up over both. They are
-  converted from sRGB to linear light, since the surface is an sRGB format and the pill shader writes linear.
+  the dots sit on a photo rather than on a light or dark window, and the brighter set holds up over both. It lives in
+  `TagColor::srgb`, which the browse grid's dots use too. They are converted from sRGB to linear light, since the
+  surface is an sRGB format and the pill shader writes linear.
 - Up to 14 pills per frame, which is why the renderer's pill pool is 48 (`render/CLAUDE.md`).
 
 ## Tags set outside Prvw
@@ -76,4 +77,6 @@ hasn't been checked, and one that does bump mtime costs a re-decode per tag, whi
 ## Gotchas
 
 - **Browse mode has no tag target.** `tag_target` is `None` there, the Tags menu greys out, and `/state` reports
-  `tags: null`. The digits belong to the focused pane.
+  `tags: null`. The digits belong to the focused pane. The grid does show every cell's tags as dots
+  (`browser/grid_tags.rs`, `browser/CLAUDE.md` → "Tag dots"), read on its own worker, from the same palette
+  (`TagColor::srgb`) and `dot_colors`.

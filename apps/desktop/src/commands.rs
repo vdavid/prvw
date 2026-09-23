@@ -153,6 +153,8 @@ impl AppCommand {
             | AppCommand::BrowseGridSelected(_)
             | AppCommand::BrowseQaSelectGrid(_)
             | AppCommand::BrowseSelectionMeasured { .. } => Internal,
+            #[cfg(target_os = "macos")]
+            AppCommand::BrowseTagsAvailable => Internal,
             #[cfg(all(debug_assertions, any(target_os = "macos", target_os = "windows")))]
             AppCommand::GetNativeWindowId(_) => Internal,
             #[cfg(all(debug_assertions, target_os = "macos"))]
@@ -315,6 +317,11 @@ pub enum AppCommand {
     /// reloads the affected cells.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     BrowseThumbnailsAvailable,
+    /// The grid's tag reader (`browser::grid_tags::TagReader`) has results queued. Fired only when
+    /// its queue was empty, like `BrowseThumbnailsAvailable`. The executor drains them into the
+    /// cells' tag dots.
+    #[cfg(target_os = "macos")]
+    BrowseTagsAvailable,
     /// The grid selection changed to `index` (native click or programmatic). Records it in the grid
     /// model + `browser::State` for QA/tests. Browse-mode only.
     #[cfg(any(target_os = "macos", target_os = "windows"))]

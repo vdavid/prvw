@@ -65,6 +65,22 @@ impl TagColor {
             .find(|color| key.len() == 1 && key.starts_with(color.digit()))
     }
 
+    /// The dot color, as 8-bit sRGB. Cmdr's dark-appearance tag palette (`--color-tag-*` in its
+    /// `app.css`), used whatever the system appearance: the image-mode dots sit on a photo and
+    /// the browse grid's on a light or dark gallery, and this brighter set holds up over all of
+    /// them. The one palette every tag dot draws from.
+    pub const fn srgb(self) -> [u8; 3] {
+        match self {
+            TagColor::Red => [0xef, 0x6f, 0x6a],
+            TagColor::Orange => [0xf0, 0x9a, 0x4c],
+            TagColor::Yellow => [0xf0, 0xc5, 0x4e],
+            TagColor::Green => [0x6f, 0xc4, 0x63],
+            TagColor::Blue => [0x5e, 0xa0, 0xee],
+            TagColor::Purple => [0xbd, 0x86, 0xe0],
+            TagColor::Gray => [0xa8, 0xa8, 0xad],
+        }
+    }
+
     /// The name Finder gives its built-in tag of this color. A tag written under this name is
     /// indistinguishable from one Finder wrote, so it lands in Finder's own sidebar entry.
     pub const fn name(self) -> &'static str {
@@ -96,6 +112,28 @@ pub struct Tag {
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 pub fn has_color(tags: &[Tag], color: TagColor) -> bool {
     tags.iter().any(|tag| tag.color == Some(color))
+}
+
+/// The colors to draw as dots for `tags`, in the file's own order, each once: a custom red tag
+/// next to Finder's red draws one red dot, which is what Finder does. Colorless tags draw nothing.
+pub fn dot_colors(tags: &[Tag]) -> Vec<TagColor> {
+    let mut colors: Vec<TagColor> = Vec::with_capacity(tags.len());
+    for color in tags.iter().filter_map(|tag| tag.color) {
+        if !colors.contains(&color) {
+            colors.push(color);
+        }
+    }
+    colors
+}
+
+/// A file's tags for display: what [`read_tags`] says, or no tags when it can't say (logged).
+/// Drawing no dot is the safe reading of an attribute we couldn't read; the write path reads
+/// strictly instead (see `CLAUDE.md`).
+pub fn read_tags_for_display(path: &Path) -> Vec<Tag> {
+    read_tags(path).unwrap_or_else(|error| {
+        log::warn!("Couldn't read the tags of {}: {error}", path.display());
+        Vec::new()
+    })
 }
 
 /// A file's tags, straight from disk. A file with no tag attribute has no tags.
@@ -161,10 +199,7 @@ impl State {
     /// A read that fails caches no tags and logs why, so the dots never claim a tag the file may
     /// not carry.
     pub fn refresh(&mut self, path: &Path) {
-        let tags = read_tags(path).unwrap_or_else(|error| {
-            log::warn!("Couldn't read the tags of {}: {error}", path.display());
-            Vec::new()
-        });
+        let tags = read_tags_for_display(path);
         self.by_path.insert(PathPolicy::HOST.key(path), tags);
     }
 

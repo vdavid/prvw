@@ -59,7 +59,7 @@ use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
 };
 use objc2_app_kit::{
-    NSCollectionView, NSCollectionViewFlowLayout, NSCollectionViewItem,
+    NSBezierPath, NSCollectionView, NSCollectionViewFlowLayout, NSCollectionViewItem,
     NSCollectionViewScrollDirection, NSCollectionViewScrollPosition, NSColor, NSEvent,
     NSImageScaling, NSImageView, NSIndexPathNSCollectionViewAdditions, NSScrollView, NSTextField,
     NSView,
@@ -70,11 +70,13 @@ use objc2_foundation::{
 
 use super::grid_model::{self, GridModel};
 use super::grid_scheduler::Scheduler;
+use super::grid_tags::{GridTags, TagReader};
 use super::thumbnail_cache::{self, GRID_THUMBNAIL_PX, ThumbnailCache};
 use crate::file_stamp::FileStamp;
 use crate::navigation::SortBy;
 use crate::previews::quicklook::{self, RequestTable};
 use crate::previews::request::SubmitRequest;
+use crate::tags::TagColor;
 
 // ─── Styling constants (tweak these for the gallery look) ───────────────────
 // All in logical points. The cell-size slider is a later phase; these tune the
@@ -126,6 +128,18 @@ const ITEM_IDENTIFIER: &str = "PrvwGridItem";
 /// good default; the scheduler's own `MARGIN` is the hard cap on generation.
 const PREFETCH_MARGIN: usize = 24;
 
+/// The ring cut around each tag dot in the gallery's own color, which separates overlapping dots
+/// the way Finder's icon view does. The dot size and overlap are the image-mode dots'
+/// (`tags::overlay`), so both read as the same thing.
+const TAG_DOT_RING_PT: f64 = 1.0;
+/// Space between a cell's tag dots and its filename.
+const TAG_DOTS_LABEL_GAP_PT: f64 = 3.0;
+/// What a filename label needs beyond its text's intrinsic width so a short name isn't
+/// truncated to "…" (the text field cell's own inset, both sides).
+const LABEL_CELL_SLACK_PT: f64 = 6.0;
+/// `NSView.tag` of a cell's dot view, which is how a cell finds it again (`viewWithTag:`).
+const TAG_DOTS_VIEW_TAG: NSInteger = 0x7461_6773; // "tags"
+
 // ─── BrowseCollectionView: keyDown override for Tab/Enter/Esc ───────────────
 
 define_class!(
@@ -162,6 +176,149 @@ impl BrowseCollectionView {
         let this = mtm.alloc().set_ivars(());
         unsafe { msg_send![super(this), init] }
     }
+}
+
+// ─── TagDotsView: a cell's Finder tag dots ──────────────────────────────────
+
+struct TagDotsIvars {
+    colors: RefCell<Vec<TagColor>>,
+}
+
+define_class!(
+    /// The overlapping tag dots before a cell's filename, Finder's icon-view style: one per
+    /// color, leftmost on top, each ringed in the gallery's color so overlaps read as separate
+    /// dots. Draws nothing without colors. Its `tag` is fixed so a cell can find it again.
+    // SAFETY: NSView subclass, no Drop. Main-thread only.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PrvwGridTagDots"]
+    #[ivars = TagDotsIvars]
+    struct TagDotsView;
+
+    unsafe impl NSObjectProtocol for TagDotsView {}
+
+    impl TagDotsView {
+        #[unsafe(method(tag))]
+        fn view_tag(&self) -> NSInteger {
+            TAG_DOTS_VIEW_TAG
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty_rect: NSRect) {
+            let colors = self.ivars().colors.borrow();
+            let bounds: NSRect = unsafe { msg_send![self, bounds] };
+            let dot = f64::from(crate::tags::overlay::DOT_SIZE);
+            let step = f64::from(crate::tags::overlay::DOT_STEP);
+            let ring = TAG_DOT_RING_PT;
+            let top = (bounds.size.height - dot) / 2.0;
+            // Right to left, so each dot's ring cuts into the one to its right and the leftmost
+            // ends on top.
+            for (position, color) in colors.iter().enumerate().rev() {
+                let left = ring + position as f64 * step;
+                NSColor::controlBackgroundColor().setFill();
+                NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+                    NSPoint::new(left - ring, top - ring),
+                    NSSize::new(dot + 2.0 * ring, dot + 2.0 * ring),
+                ))
+                .fill();
+                let [r, g, b] = color.srgb();
+                NSColor::colorWithSRGBRed_green_blue_alpha(
+                    f64::from(r) / 255.0,
+                    f64::from(g) / 255.0,
+                    f64::from(b) / 255.0,
+                    1.0,
+                )
+                .setFill();
+                NSBezierPath::bezierPathWithOvalInRect(NSRect::new(
+                    NSPoint::new(left, top),
+                    NSSize::new(dot, dot),
+                ))
+                .fill();
+            }
+        }
+    }
+);
+
+impl TagDotsView {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = mtm.alloc().set_ivars(TagDotsIvars {
+            colors: RefCell::new(Vec::new()),
+        });
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
+/// Where a cell's label row puts its tag dots and its filename, horizontally, in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LabelRow {
+    dots_x: f64,
+    dots_width: f64,
+    label_x: f64,
+    label_width: f64,
+}
+
+/// Lay out the label row of a `cell_width` cell: the dots, a gap, then the filename, centered as
+/// a group the way Finder's icon view does. `text_width` is what the filename needs; a long one is
+/// squeezed (the label middle-truncates) so the dots always fit. No dots is the plain full-width
+/// centered label.
+fn label_row(cell_width: f64, text_width: f64, dots: usize) -> LabelRow {
+    if dots == 0 {
+        return LabelRow {
+            dots_x: 0.0,
+            dots_width: 0.0,
+            label_x: 0.0,
+            label_width: cell_width,
+        };
+    }
+    let dot = f64::from(crate::tags::overlay::DOT_SIZE);
+    let step = f64::from(crate::tags::overlay::DOT_STEP);
+    let dots_width = 2.0 * TAG_DOT_RING_PT + dot + (dots - 1) as f64 * step;
+    let label_width = text_width
+        .min(cell_width - dots_width - TAG_DOTS_LABEL_GAP_PT)
+        .max(0.0);
+    let total = dots_width + TAG_DOTS_LABEL_GAP_PT + label_width;
+    let dots_x = ((cell_width - total) / 2.0).max(0.0);
+    LabelRow {
+        dots_x,
+        dots_width,
+        label_x: dots_x + dots_width + TAG_DOTS_LABEL_GAP_PT,
+        label_width,
+    }
+}
+
+/// Show `colors` as `item`'s tag dots and lay its label row out around them. Cheap when nothing
+/// changed, so it's safe to call on every cell configure.
+fn show_tag_dots(item: &NSCollectionViewItem, colors: &[TagColor]) {
+    let view: Option<Retained<NSView>> = unsafe { msg_send![item, view] };
+    let (Some(view), Some(label)) = (view, item.textField()) else {
+        return;
+    };
+    let Some(dots) = view
+        .viewWithTag(TAG_DOTS_VIEW_TAG)
+        .and_then(|dots| dots.downcast::<TagDotsView>().ok())
+    else {
+        return;
+    };
+    if *dots.ivars().colors.borrow() != colors {
+        *dots.ivars().colors.borrow_mut() = colors.to_vec();
+        dots.setNeedsDisplay(true);
+    }
+    // The intrinsic width is the text's own, and a field exactly that wide still truncates it:
+    // its cell draws inside a small inset on each side.
+    let text_width = label.intrinsicContentSize().width.ceil() + LABEL_CELL_SLACK_PT;
+    let row = label_row(CELL_PT, text_width, colors.len());
+    let label_y = CELL_IMAGE_PT + CELL_IMAGE_LABEL_GAP_PT;
+    unsafe {
+        let _: () = msg_send![&*label, setFrame: NSRect::new(
+            NSPoint::new(row.label_x, label_y),
+            NSSize::new(row.label_width, CELL_LABEL_PT),
+        )];
+        let _: () = msg_send![&*dots, setFrame: NSRect::new(
+            NSPoint::new(row.dots_x, label_y),
+            NSSize::new(row.dots_width, CELL_LABEL_PT),
+        )];
+    }
+    dots.setHidden(colors.is_empty());
 }
 
 // ─── GridItem: the NSCollectionViewItem subclass ───────────────────────────
@@ -228,6 +385,12 @@ define_class!(
                 let _: () = msg_send![&*label, setAutoresizingMask: lbl_mask];
             }
             container.addSubview(&label);
+
+            // Tag dots before the filename, hidden until the cell has tags (`show_tag_dots`
+            // positions both).
+            let dots = TagDotsView::new(mtm);
+            dots.setHidden(true);
+            container.addSubview(&dots);
 
             unsafe {
                 let _: () = msg_send![self, setView: &*container];
@@ -358,6 +521,9 @@ struct GridDataSourceIvars {
     stamps: RefCell<HashMap<usize, FileStamp>>,
     /// QL request worker for grid thumbnails — a second path into the shared `quicklookd` cache.
     requests: RequestTable,
+    /// Which cells know their Finder tags, and the worker that reads them off the main thread.
+    tags: RefCell<GridTags>,
+    tag_reader: TagReader,
     /// Whether the grid pane is the focused pane, mirrored from `browser::State::focused_pane` by
     /// `sync_native` (via `BrowseGrid::set_focused`). The single source of truth for the grid's
     /// selection-emphasis color: blue when focused, gray when not. We DON'T infer it from the
@@ -461,6 +627,8 @@ impl GridDataSource {
                 || crate::commands::AppCommand::BrowseThumbnailsAvailable,
                 "prvw-gridgen",
             ),
+            tags: RefCell::new(GridTags::default()),
+            tag_reader: TagReader::start(),
             focused: Cell::new(false),
         };
         let this = mtm.alloc().set_ivars(ivars);
@@ -490,6 +658,7 @@ impl GridDataSource {
         if let Some(label) = item.textField() {
             label.setStringValue(&NSString::from_str(&name));
         }
+        show_tag_dots(item, self.ivars().tags.borrow().colors(index));
     }
 }
 
@@ -832,11 +1001,12 @@ impl BrowseGrid {
             .set_visible_range(range.clone());
         let evicted = {
             let mut cache = self.data_source.ivars().cache.borrow_mut();
-            cache.set_visible_range(range);
+            cache.set_visible_range(range.clone());
             cache.evict_to_budget()
         };
         self.drop_evicted(&evicted);
         self.pump();
+        self.pump_tags(range);
     }
 
     /// Drain the scheduler into the QL worker at `GRID_THUMBNAIL_PX`, stamped with the current
@@ -972,10 +1142,77 @@ impl BrowseGrid {
         }
     }
 
-    /// Drop every generated thumbnail, with the stamps that describe them.
+    /// Drop every generated thumbnail, with the stamps that describe them, and every cell's tags:
+    /// both are keyed by folder index, and the caller has just replaced the listing.
     fn clear_thumbnails(&self) {
-        self.data_source.ivars().images.borrow_mut().clear();
-        self.data_source.ivars().stamps.borrow_mut().clear();
+        let ivars = self.data_source.ivars();
+        ivars.images.borrow_mut().clear();
+        ivars.stamps.borrow_mut().clear();
+        ivars.tags.borrow_mut().reset();
+        ivars
+            .tag_reader
+            .set_generation(ivars.model.borrow().generation());
+    }
+
+    /// Queue tag reads for the cells in `range` that don't know their tags yet.
+    fn pump_tags(&self, range: std::ops::Range<usize>) {
+        let ivars = self.data_source.ivars();
+        let wanted = ivars.tags.borrow_mut().take_requests(range);
+        if wanted.is_empty() {
+            return;
+        }
+        let model = ivars.model.borrow();
+        for index in wanted {
+            if let Some(path) = model.path(index) {
+                ivars
+                    .tag_reader
+                    .request(model.generation(), index, path.to_path_buf());
+            }
+        }
+    }
+
+    /// Apply queued tag reads: store them, and repaint the dots of the visible cells whose
+    /// tags changed. Reads from a folder the grid has since left are dropped.
+    pub fn tags_available(&self) {
+        let ivars = self.data_source.ivars();
+        let generation = ivars.model.borrow().generation();
+        let mut changed = Vec::new();
+        for read in ivars.tag_reader.drain() {
+            if read.generation == generation
+                && ivars.tags.borrow_mut().arrived(read.index, read.colors)
+            {
+                changed.push(read.index);
+            }
+        }
+        for index in changed {
+            let ip = NSIndexPath::indexPathForItem_inSection(index as NSInteger, 0);
+            // `None` for a cell that isn't on screen, which picks its dots up when it's configured.
+            if let Some(item) = self.collection.itemAtIndexPath(&ip) {
+                show_tag_dots(&item, ivars.tags.borrow().colors(index));
+            }
+        }
+    }
+
+    /// The tag dot colors the selected cell shows, for `/state`. `None` without a selection.
+    pub fn selected_tag_colors(&self) -> Option<Vec<TagColor>> {
+        let index = self.selected_index()?;
+        Some(
+            self.data_source
+                .ivars()
+                .tags
+                .borrow()
+                .colors(index)
+                .to_vec(),
+        )
+    }
+
+    /// `path`'s tags may have changed on disk: read them again on the next pump. Its cell keeps
+    /// its dots until the new read lands. No-op for a file the grid doesn't list.
+    pub fn tags_changed(&self, path: &std::path::Path) {
+        let index = self.data_source.ivars().model.borrow().index_of(path);
+        if let Some(index) = index {
+            self.data_source.ivars().tags.borrow_mut().invalidate(index);
+        }
     }
 
     /// The stamp of the file `path`'s thumbnail was generated from, when the grid is showing one.
@@ -1079,6 +1316,46 @@ fn first_screen_count() -> usize {
 #[cfg(test)]
 mod tests {
     // The grid's pure logic (model, sort, selection, empty detection, visible-range clamping) is
-    // tested in `grid_model`. The `NSCollectionView` view wiring here is covered by the smoke run
-    // + live QA. No headless test seam exists for the objc2 plumbing.
+    // tested in `grid_model`, and its tags in `grid_tags`. The `NSCollectionView` view wiring here
+    // is covered by the smoke run + live QA. No headless test seam exists for the objc2 plumbing.
+    use super::*;
+
+    #[test]
+    fn no_dots_is_the_plain_full_width_label() {
+        let row = label_row(CELL_PT, 40.0, 0);
+        assert_eq!(row.label_x, 0.0);
+        assert_eq!(row.label_width, CELL_PT);
+        assert_eq!(row.dots_width, 0.0);
+    }
+
+    /// A short name: dots, gap, name, centered together.
+    #[test]
+    fn dots_and_a_short_name_are_centered_as_a_group() {
+        let row = label_row(CELL_PT, 40.0, 2);
+        let right = row.label_x + row.label_width;
+        assert_eq!(row.label_width, 40.0);
+        assert_eq!(
+            row.label_x,
+            row.dots_x + row.dots_width + TAG_DOTS_LABEL_GAP_PT
+        );
+        assert!(
+            (row.dots_x - (CELL_PT - right)).abs() < 1e-9,
+            "equal margins: {row:?}"
+        );
+        // Two overlapping dots are narrower than two side by side.
+        let dot = f64::from(crate::tags::overlay::DOT_SIZE);
+        assert!(row.dots_width < 2.0 * dot + 2.0 * TAG_DOT_RING_PT);
+    }
+
+    /// A long name gives way to the dots, which never slide off the cell.
+    #[test]
+    fn a_long_name_is_squeezed_so_the_dots_fit() {
+        let row = label_row(CELL_PT, 500.0, 7);
+        assert_eq!(row.dots_x, 0.0);
+        assert!(
+            (row.label_x + row.label_width - CELL_PT).abs() < 1e-9,
+            "{row:?}"
+        );
+        assert!(row.label_width > 0.0);
+    }
 }

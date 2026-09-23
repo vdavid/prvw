@@ -55,7 +55,8 @@ impl App {
     /// batch of files that publishes once at the end. The image on screen is re-read right away
     /// (one attribute call) and redrawn; any other file's cached tags are dropped, so they're read
     /// when it next comes on screen instead of now, on the main thread, for a file nobody is
-    /// looking at (a Finder tag spree on a share would otherwise cost a round trip per file).
+    /// looking at (a Finder tag spree on a share would otherwise cost a round trip per file). The
+    /// browse grid's cell for it is marked for a re-read on the grid's own worker.
     pub(super) fn note_tags_changed(&mut self, path: &Path) {
         let on_screen = self
             .tag_target()
@@ -66,6 +67,9 @@ impl App {
         } else {
             self.tags.forget(path);
         }
+        // The browse grid keeps its own per-cell tags, read on its own worker.
+        #[cfg(target_os = "macos")]
+        self.browser.grid_tags_changed(path);
     }
 
     /// Toggle `color` on the image on screen. A write that doesn't land is logged and changes

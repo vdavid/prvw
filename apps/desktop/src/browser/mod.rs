@@ -38,6 +38,8 @@
 mod grid;
 pub(crate) mod grid_model;
 #[cfg(target_os = "macos")]
+mod grid_tags;
+#[cfg(target_os = "macos")]
 mod outline;
 #[cfg(target_os = "macos")]
 mod split_view;
@@ -569,6 +571,31 @@ impl State {
         path: &std::path::Path,
     ) -> Option<crate::file_stamp::FileStamp> {
         self.split_view.as_ref()?.grid().thumbnail_stamp(path)
+    }
+
+    /// Drain the grid's queued tag reads into its cells' dots. No-op if the split view isn't built.
+    #[cfg(target_os = "macos")]
+    pub fn grid_tags_available(&self) {
+        if let Some(split) = &self.split_view {
+            split.grid().tags_available();
+        }
+    }
+
+    /// The tag dot colors the grid's selected cell shows, for `/state`. `None` without a
+    /// selection or before the split view is built.
+    #[cfg(target_os = "macos")]
+    pub fn grid_selected_tag_colors(&self) -> Option<Vec<crate::tags::TagColor>> {
+        self.split_view.as_ref()?.grid().selected_tag_colors()
+    }
+
+    /// `path`'s tags may have changed: the grid reads them again when its cell is next in view.
+    /// Called for every file whose tags may have moved, in either mode, so the grid is current
+    /// when browse mode comes back. No-op if the split view isn't built.
+    #[cfg(target_os = "macos")]
+    pub fn grid_tags_changed(&self, path: &std::path::Path) {
+        if let Some(split) = &self.split_view {
+            split.grid().tags_changed(path);
+        }
     }
 
     /// Drain queued grid-thumbnail completions into the collection view's cells. No-op if the split

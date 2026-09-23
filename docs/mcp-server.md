@@ -76,6 +76,9 @@ both a text confirmation and a `state` field with the current app state as JSON.
   `read_progress` is how full the read progress bar under the "Loading…" overlay is, `0.0` to `1.0`, or `null` when no
   bar is drawn. Null is the normal case: a file that reads inside the overlay's 150 ms delay never shows one.
 
+  `browse_grid_selected_tags` is the tag dot colors the browse grid's selected cell shows (`["red", "blue"]`), or `null`
+  without a grid selection. Always `null` off macOS.
+
   `full_decodes` counts every full decode since launch, neighbors and browse-mode warming included. Tests read it before
   and after a change to tell whether an image was decoded again.
 
