@@ -1384,33 +1384,49 @@ impl App {
     }
 
     /// Handle a coalesced filesystem change for `folder`. When `folder` is the active (watched)
-    /// folder, re-scan it OFF the main thread (a slow SMB folder must never block here — the shared
-    /// `folder_scan::FolderScanner` does every directory read) and finish in `apply_folder_rescan`
-    /// once the scan posts back as `FolderScanned`. `modified` paths are evicted from the image and
-    /// preview caches right away (cheap, no I/O) so nothing stale is served; a modified
-    /// currently-displayed image is re-decoded after the re-scan lands.
+    /// folder, each modified file is first sorted by what changed (`crate::file_stamp`): its stamp
+    /// now against the stamps our caches recorded when they read it.
+    ///
+    /// - **Only metadata** (a Finder tag, a `chmod`): the tags are refreshed and nothing else
+    ///   happens. The decode, the thumbnails, and the previews are all still the file's content.
+    /// - **Content, or no way to tell**: evicted from the image and preview caches right away
+    ///   (cheap, no I/O) so nothing stale is served; a modified currently-displayed image is
+    ///   re-decoded after the re-scan lands.
+    ///
+    /// The folder is re-scanned OFF the main thread (a slow SMB folder must never block here — the
+    /// shared `folder_scan::FolderScanner` does every directory read) only when its listing may
+    /// have moved or some file's content did, and the change finishes in `apply_folder_rescan`
+    /// once the scan posts back as `FolderScanned`.
     ///
     /// **Routing.** One `FolderChanged` can match two roles, and BOTH fire:
     /// - the **active (image-list) folder** (the grid's listed folder in browse, the current
-    ///   image's folder in image mode) → evict caches + re-scan off-thread (`apply_folder_rescan`
-    ///   updates the grid and/or `dir_list`);
+    ///   image's folder in image mode) → the above (`apply_folder_rescan` updates the grid and/or
+    ///   `dir_list`);
     /// - a **watched tree folder** (a currently-expanded tree node) → re-scan its subdirectories so
-    ///   the tree reloads (`reload_tree_node`). A folder can be both the listed folder and an
-    ///   expanded node, so neither branch is `else` to the other.
+    ///   the tree reloads (`reload_tree_node`), when its listing may have moved. A folder can be
+    ///   both the listed folder and an expanded node, so neither branch is `else` to the other.
     ///
     /// A change matching neither role is ignored (we only watch what's on screen).
-    pub(crate) fn handle_folder_changed(&mut self, folder: &Path, modified: &[PathBuf]) {
+    pub(crate) fn handle_folder_changed(
+        &mut self,
+        folder: &Path,
+        modified: &[crate::folder_watch::ModifiedFile],
+        listing_changed: bool,
+    ) {
         let is_active = self
             .watched_folder
             .as_deref()
             .is_some_and(|watched| crate::paths::same_path(watched, folder));
 
         // ── Tree-structure watch: an expanded tree node changed → reload its subdirectories. ──
+        // The tree shows folders only, and a folder coming or going always moves the listing, so
+        // a change that's all in-place modifies has nothing for it.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if self
-            .watched_tree_folders
-            .iter()
-            .any(|p| crate::paths::same_path(p, folder))
+        if listing_changed
+            && self
+                .watched_tree_folders
+                .iter()
+                .any(|p| crate::paths::same_path(p, folder))
         {
             log::debug!(
                 "Watched tree folder changed: {} — re-scanning subdirs",
@@ -1422,24 +1438,48 @@ impl App {
         if !is_active {
             return;
         }
+
+        let mut content_changed: Vec<PathBuf> = Vec::new();
+        for file in modified {
+            let freshness =
+                crate::file_stamp::freshness(&self.recorded_stamps(&file.path), file.stamp);
+            if freshness == crate::file_stamp::Freshness::Unchanged {
+                log::debug!("Only the metadata of {} changed", file.path.display());
+            } else {
+                content_changed.push(file.path.clone());
+            }
+            // Either way the tags may have moved: a re-save can drop them as easily as Finder
+            // can set them.
+            self.note_tags_changed(&file.path);
+        }
+        // A save by rename replaces the file on screen without it ever being `modified`.
+        if listing_changed && let Some(current) = self.tag_target() {
+            self.note_tags_changed(&current);
+        }
+
+        if !listing_changed && content_changed.is_empty() {
+            self.update_shared_state();
+            return;
+        }
         log::debug!(
-            "Active folder changed: {} ({} modified) — re-scanning off-thread",
+            "Active folder changed: {} ({} of {} modified changed content, listing changed: \
+             {listing_changed}) — re-scanning off-thread",
             folder.display(),
+            content_changed.len(),
             modified.len()
         );
 
-        // Evict modified paths from the image cache so a re-decode picks up fresh bytes. Cheap,
-        // no I/O — safe inline.
-        for path in modified {
+        // Evict content-changed paths from the image cache so a re-decode picks up fresh bytes.
+        // Cheap, no I/O — safe inline.
+        for path in &content_changed {
             self.navigation.image_cache.remove(path);
-        }
-        for path in modified {
             self.previews.forget_path(path);
         }
 
-        // Stash the modified set so `apply_folder_rescan` knows which paths to re-decode/repaint
-        // once the off-thread listing returns.
-        self.pending_modified = modified.to_vec();
+        // Stash the changed set so `apply_folder_rescan` knows which paths to re-decode/repaint
+        // once the off-thread listing returns. Added to, not replaced: a second change can land
+        // before the first one's re-scan does.
+        self.pending_modified.extend(content_changed);
 
         // Re-scan off the main thread; the result arrives as `AppCommand::FolderScanned`, where
         // `apply_folder_rescan` diffs it against the live list. The scanner is the app's one
@@ -1447,6 +1487,24 @@ impl App {
         // folder would freeze the UI.
         self.pending_rescan = Some(folder.to_path_buf());
         self.request_folder_scan(folder.to_path_buf());
+        // The tags noted above show now, not when the re-scan lands.
+        self.update_shared_state();
+    }
+
+    /// The stamps our caches recorded when they read `path`: its decode in the image cache, and
+    /// its thumbnail in the browse grid. Empty when neither holds it. The preview cache and its
+    /// dimensions keep no stamp, which is why an empty answer counts as a content change.
+    fn recorded_stamps(&self, path: &Path) -> Vec<crate::file_stamp::FileStamp> {
+        #[cfg_attr(target_os = "linux", allow(unused_mut))] // Linux has no grid.
+        let mut stamps: Vec<_> = self
+            .navigation
+            .image_cache
+            .stamp(path)
+            .into_iter()
+            .collect();
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        stamps.extend(self.browser.grid_thumbnail_stamp(path));
+        stamps
     }
 
     /// Apply a completed off-thread re-scan to the live `DirectoryList`. Diffs the fresh list
@@ -1536,7 +1594,7 @@ impl App {
         let modified = std::mem::take(&mut self.pending_modified);
         let current_path_modified = current
             .as_ref()
-            .is_some_and(|c| modified.iter().any(|m| m == c));
+            .is_some_and(|c| modified.iter().any(|m| crate::paths::same_path(m, c)));
 
         let diff =
             crate::navigation::folder_diff::diff_folder(&old, images, sort_by, current.as_deref());

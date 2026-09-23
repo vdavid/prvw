@@ -376,12 +376,15 @@ pub enum AppCommand {
     // ── File watching (live folder sync) ─────────────────────────────
     /// A watched folder changed on disk. Posted by the `folder_watch` worker after it
     /// coalesces a ~150 ms burst of raw `notify` events into one event per affected folder.
-    /// The consumer re-scans `folder` off the main thread (adds/removes are discovered by the
-    /// re-scan, so they aren't listed here) and reloads `modified` (paths flagged `Modify`) so a
-    /// re-saved image re-decodes. See `crate::folder_watch`.
+    /// `modified` are the files changed in place, each stamped as of the report; the consumer
+    /// compares the stamps against its caches to tell a re-save (evict, re-decode) from a
+    /// metadata-only change like a tag (refresh the tags, keep the pixels). It re-scans `folder`
+    /// off the main thread when `listing_changed` (adds/removes are discovered by the re-scan, so
+    /// they aren't listed here) or when a file's content changed. See `crate::folder_watch`.
     FolderChanged {
         folder: PathBuf,
-        modified: Vec<PathBuf>,
+        modified: Vec<crate::folder_watch::ModifiedFile>,
+        listing_changed: bool,
     },
     /// A folder scan finished. The single result of every directory read in the app (see
     /// `crate::folder_scan`): `App::handle_folder_scanned` routes it to whoever is waiting on that

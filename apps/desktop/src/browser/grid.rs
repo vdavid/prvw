@@ -71,6 +71,7 @@ use objc2_foundation::{
 use super::grid_model::{self, GridModel};
 use super::grid_scheduler::Scheduler;
 use super::thumbnail_cache::{self, GRID_THUMBNAIL_PX, ThumbnailCache};
+use crate::file_stamp::FileStamp;
 use crate::navigation::SortBy;
 use crate::previews::quicklook::{self, RequestTable};
 use crate::previews::request::SubmitRequest;
@@ -351,6 +352,10 @@ struct GridDataSourceIvars {
     /// Generated thumbnails as `NSImage`, keyed by folder index. AppKit owns the bitmaps; this map
     /// keeps them alive while resident and drops them on eviction.
     images: RefCell<HashMap<usize, Retained<objc2_app_kit::NSImage>>>,
+    /// The stamp of the file each thumbnail in `images` was generated from, keyed the same way and
+    /// dropped with it. Live sync reads it to keep a thumbnail across a tag write
+    /// (`crate::file_stamp`).
+    stamps: RefCell<HashMap<usize, FileStamp>>,
     /// QL request worker for grid thumbnails — a second path into the shared `quicklookd` cache.
     requests: RequestTable,
     /// Whether the grid pane is the focused pane, mirrored from `browser::State::focused_pane` by
@@ -451,6 +456,7 @@ impl GridDataSource {
             scheduler: RefCell::new(Scheduler::new(max_parallel)),
             cache: RefCell::new(ThumbnailCache::new()),
             images: RefCell::new(HashMap::new()),
+            stamps: RefCell::new(HashMap::new()),
             requests: RequestTable::new(
                 || crate::commands::AppCommand::BrowseThumbnailsAvailable,
                 "prvw-gridgen",
@@ -736,7 +742,7 @@ impl BrowseGrid {
             super::grid_preselect_index(model.images(), preselect)
         };
         // New folder: clear generated images + reseed the scheduler/cache from scratch.
-        self.data_source.ivars().images.borrow_mut().clear();
+        self.clear_thumbnails();
         let initial_visible = grid_model::clamp_visible_range(0..first_screen_count(), len);
         self.data_source
             .ivars()
@@ -791,7 +797,7 @@ impl BrowseGrid {
         // map/cache are keyed by index, which shifts on add/remove, so a targeted drop would be
         // fragile; the clear-and-repump is cheap — thumbnails come from the shared QL cache.)
         let _ = modified; // The full clear below covers modified paths too.
-        self.data_source.ivars().images.borrow_mut().clear();
+        self.clear_thumbnails();
         let initial_visible = grid_model::clamp_visible_range(0..first_screen_count(), len);
         self.data_source
             .ivars()
@@ -906,6 +912,12 @@ impl BrowseGrid {
                         .images
                         .borrow_mut()
                         .insert(delivery.index, image);
+                    let mut stamps = self.data_source.ivars().stamps.borrow_mut();
+                    match delivery.stamp {
+                        Some(stamp) => stamps.insert(delivery.index, stamp),
+                        None => stamps.remove(&delivery.index),
+                    };
+                    drop(stamps);
                     self.data_source
                         .ivars()
                         .scheduler
@@ -951,11 +963,30 @@ impl BrowseGrid {
             return;
         }
         let mut images = self.data_source.ivars().images.borrow_mut();
+        let mut stamps = self.data_source.ivars().stamps.borrow_mut();
         let mut scheduler = self.data_source.ivars().scheduler.borrow_mut();
         for &idx in evicted {
             images.remove(&idx);
+            stamps.remove(&idx);
             scheduler.uncache(idx);
         }
+    }
+
+    /// Drop every generated thumbnail, with the stamps that describe them.
+    fn clear_thumbnails(&self) {
+        self.data_source.ivars().images.borrow_mut().clear();
+        self.data_source.ivars().stamps.borrow_mut().clear();
+    }
+
+    /// The stamp of the file `path`'s thumbnail was generated from, when the grid is showing one.
+    pub fn thumbnail_stamp(&self, path: &std::path::Path) -> Option<FileStamp> {
+        let index = self.data_source.ivars().model.borrow().index_of(path)?;
+        self.data_source
+            .ivars()
+            .stamps
+            .borrow()
+            .get(&index)
+            .copied()
     }
 
     /// Select `index` programmatically and optionally scroll it to visible. Keeps the model and the

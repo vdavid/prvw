@@ -225,6 +225,8 @@ fn worker_loop(
             continue;
         }
 
+        // Before the read, so a write racing it leaves the stamp stale rather than the pixels.
+        let stamp = crate::file_stamp::FileStamp::read(&job.path);
         let route = route_for(&job.path, HAS_SYSTEM_THUMBNAILS);
         // Guarded, because two of the three routes run a parser on numbers the file supplies and
         // a corrupt neighbour would otherwise take this worker down for the session
@@ -253,6 +255,7 @@ fn worker_loop(
                 request_id: job.request_id,
                 folder_generation: job.folder_generation,
                 result,
+                stamp,
             },
             &job.proxy,
             wake,

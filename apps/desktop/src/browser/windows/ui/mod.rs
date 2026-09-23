@@ -346,6 +346,12 @@ impl BrowseUi {
         with_ui(grid::selected_path).flatten()
     }
 
+    /// The stamp of the file `path`'s grid thumbnail was generated from, when one is resident.
+    #[must_use]
+    pub fn thumbnail_stamp(&self, path: &std::path::Path) -> Option<crate::file_stamp::FileStamp> {
+        with_ui(|ui| grid::thumbnail_stamp(ui, path)).flatten()
+    }
+
     /// The grid's selected index, if any.
     #[must_use]
     pub fn selected_index(&self) -> Option<usize> {

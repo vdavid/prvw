@@ -167,6 +167,12 @@ impl State {
         });
         self.by_path.insert(PathPolicy::HOST.key(path), tags);
     }
+
+    /// Drop what's cached for `path`, so the next [`State::ensure`] reads it again. For a file
+    /// that isn't on screen: re-reading it now would be an attribute call nobody is waiting on.
+    pub fn forget(&mut self, path: &Path) {
+        self.by_path.remove(&PathPolicy::HOST.key(path));
+    }
 }
 
 #[cfg(test)]

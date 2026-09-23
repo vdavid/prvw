@@ -304,17 +304,32 @@ re-read it triggers rides the shared `crate::folder_scan` worker. This is the im
 
 **Flow.** `App::retarget_active_folder_watch` watches the current image's folder (unwatching the previous one) on every
 active-folder change: launch, `OpenFile`, browse reveal (`reveal_selected_image`), and a re-scan that empties the
-folder. A coalesced `AppCommand::FolderChanged { folder, modified }` arrives on the main thread;
-`App::handle_folder_changed` evicts the `modified` paths from `image_cache` (`ImageCache::remove`) and the preview cache
-(`previews::forget_path`), then asks the shared `folder_scan::FolderScanner` to re-read the folder (never `read_dir`
-inline — a slow SMB folder must not block the loop) and notes it in `App.pending_rescan`. The result returns as
-`AppCommand::FolderScanned`, which `App::handle_folder_scanned` routes to `App::apply_folder_rescan`.
+folder. A coalesced `AppCommand::FolderChanged { folder, modified, listing_changed }` arrives on the main thread, each
+modified file carrying a `FileStamp` (size + mtime) the watcher thread took. `App::handle_folder_changed` sorts each one
+by `file_stamp::freshness`: its stamp now against the ones our caches recorded when they read it
+(`App::recorded_stamps`: the decode's, from `ImageCache::stamp`, and the grid thumbnail's).
+
+- **Unchanged** (a Finder tag, a `chmod`): the tags are refreshed (`App::note_tags_changed`) and that's all. No
+  eviction, no re-decode, and no re-scan unless the listing moved too.
+- **Changed, or Unknown** (nothing stamped to compare): evicted from `image_cache` (`ImageCache::remove`) and the
+  preview cache (`previews::forget_path`), and remembered in `App.pending_modified`.
+
+When the listing may have moved or some content changed, it asks the shared `folder_scan::FolderScanner` to re-read the
+folder (never `read_dir` inline — a slow SMB folder must not block the loop) and notes it in `App.pending_rescan`. The
+result returns as `AppCommand::FolderScanned`, which `App::handle_folder_scanned` routes to `App::apply_folder_rescan`.
+
+**Decision: the stamp decides, never the event kind.** FSEvents coalesces flags, so an "extended attribute" event can
+hide a content write in the same burst, and Windows reports every in-place write as an unspecific modify. A decode's
+stamp is taken from the open handle **before** its first byte is read (`decoding::read_file_cancellable`): a write
+racing the read then makes a fresh decode look stale (one extra decode), never a stale one look fresh.
+`crate::file_stamp`'s module docs have the rest, including the one change it can't see (a same-size rewrite within one
+mtime tick).
 
 **Applying the diff** (`apply_folder_rescan` → pure `folder_diff::diff_folder`):
 
 - **`Unchanged`** — adds/removes shifted around the current image; rebuild the list via `DirectoryList::from_sorted`
-  keeping the current image **by path** (the same invariant as `set_sort_by`). If a modified path is the displayed
-  image, re-decode it via `refresh_current_after_modify` (cache was evicted → fresh bytes through the normal
+  keeping the current image **by path** (the same invariant as `set_sort_by`). If a content-changed path is the
+  displayed image, re-decode it via `refresh_current_after_modify` (cache was evicted → fresh bytes through the normal
   `prioritize_target` path).
 - **`Navigate { index }`** — the current image was deleted; land on the next surviving image (or the new last if it was
   last) via `display_after_delete` (instant from cache, else the async placeholder path).

@@ -561,6 +561,16 @@ impl State {
         selection_changed
     }
 
+    /// The stamp of the file `path`'s grid thumbnail was generated from, when the grid shows one.
+    /// Live sync's evidence that a thumbnail survives a metadata-only change.
+    #[cfg(target_os = "macos")]
+    pub fn grid_thumbnail_stamp(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<crate::file_stamp::FileStamp> {
+        self.split_view.as_ref()?.grid().thumbnail_stamp(path)
+    }
+
     /// Drain queued grid-thumbnail completions into the collection view's cells. No-op if the split
     /// view isn't built.
     #[cfg(target_os = "macos")]
@@ -759,6 +769,16 @@ impl State {
             self.focused_pane = Some(PaneSide::Grid);
         }
         self.sync_native(window);
+    }
+
+    /// The stamp of the file `path`'s grid thumbnail was generated from, when one is resident.
+    /// Live sync's evidence that a thumbnail survives a metadata-only change.
+    #[cfg(target_os = "windows")]
+    pub fn grid_thumbnail_stamp(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<crate::file_stamp::FileStamp> {
+        self.browse_ui.as_ref()?.thumbnail_stamp(path)
     }
 
     /// Drain queued thumbnail completions into the grid's image list.

@@ -327,7 +327,11 @@ The FSEvents watcher (`crate::folder_watch`) feeds previews two ways:
 - **Modify.** `State::forget_path(path)` drops the cached preview + scheduler `cached` entry + dim cache for that path
   so a later request regenerates it. quicklookd and the Windows shell both key their on-disk caches on file
   content/mtime, so a fresh request after the edit yields fresh pixels — we only need to evict OUR in-memory copy.
-  Called from `App::handle_folder_changed` for each `Modify`-flagged path.
+  Called from `App::handle_folder_changed` for each modified path whose content changed, or whose change it can't
+  classify. A metadata-only change (a Finder tag) keeps the preview (`crate::file_stamp`).
+- **Stamps.** Both generators stat the file on their worker thread just before generating and hand the
+  `file_stamp::FileStamp` back on the `Delivery`. The browse grid keeps it beside each thumbnail as evidence for that
+  classification; `previews::State` doesn't keep one, which is why an unstamped file counts as changed.
 
 ## Future work
 

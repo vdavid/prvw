@@ -44,8 +44,10 @@ mod read_progress;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
+
+use crate::file_stamp::FileStamp;
 
 use dispatch::Backend;
 use orientation::{apply_orientation_bytes, parse_exif_orientation};
@@ -108,6 +110,10 @@ pub struct DecodedImage {
     /// which carries it across the channel) doesn't grow by ~360 B per
     /// instance.
     pub exif: Option<Box<ExifMetadata>>,
+    /// The file's size and mtime from just before its bytes were read, so live folder sync can
+    /// tell whether this decode is still the file's content (`crate::file_stamp`). `None` for an
+    /// image that didn't come from [`load_image`] (placeholders, test images).
+    pub stamp: Option<FileStamp>,
 }
 
 impl DecodedImage {
@@ -120,6 +126,7 @@ impl DecodedImage {
             height,
             pixels: PixelBuffer::Rgba8(rgba),
             exif: None,
+            stamp: None,
         }
     }
 
@@ -132,6 +139,7 @@ impl DecodedImage {
             height,
             pixels: PixelBuffer::Rgba16F(half_rgba),
             exif: None,
+            stamp: None,
         }
     }
 }
@@ -185,7 +193,7 @@ pub fn load_image(
     log::debug!("Loading {}", path.display());
     let start = Instant::now();
 
-    let bytes = read_file_cancellable(path, cancelled, read_progress)?;
+    let (bytes, stamp) = read_file_cancellable(path, cancelled, read_progress)?;
     if cancelled.load(Ordering::Relaxed) {
         return Err("cancelled".into());
     }
@@ -202,10 +210,24 @@ pub fn load_image(
         raw_flags,
         edr_headroom,
         salvage,
-    );
+    )
+    .map(|mut image| {
+        image.stamp = stamp;
+        FULL_DECODES.fetch_add(1, Ordering::Relaxed);
+        image
+    });
 
     log_result(&result, ext, backend, path, start);
     result
+}
+
+/// How many times [`load_image`] has decoded a file since launch. A QA signal: `/state` reports
+/// it as `full_decodes`, so a test can tell "the image was decoded again" from "it wasn't".
+static FULL_DECODES: AtomicU64 = AtomicU64::new(0);
+
+/// See [`FULL_DECODES`].
+pub fn full_decodes() -> u64 {
+    FULL_DECODES.load(Ordering::Relaxed)
 }
 
 /// Check if a file extension is a supported image format.
@@ -350,15 +372,20 @@ fn finalize(mut img: DecodedImage, orientation: u16) -> DecodedImage {
 ///
 /// `progress`, when given, learns the file's length up front and then climbs a chunk at a time, so
 /// the main thread can draw an honest read bar under the "Loading…" overlay.
+///
+/// Also returns the file's [`FileStamp`], from the open handle's metadata **before** the first
+/// byte is read: a write racing the read then leaves the stamp older than the file, never newer,
+/// so live sync re-decodes rather than keeping stale pixels (`crate::file_stamp`).
 fn read_file_cancellable(
     path: &Path,
     cancelled: &AtomicBool,
     progress: Option<Arc<ReadProgress>>,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, Option<FileStamp>), String> {
     use std::io::Read;
     use std::sync::mpsc;
 
-    let (tx, rx) = mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
+    type ReadResult = Result<(Vec<u8>, Option<FileStamp>), String>;
+    let (tx, rx) = mpsc::sync_channel::<ReadResult>(1);
     let path_for_thread = path.to_path_buf();
     let cancelled_for_thread = Arc::new(AtomicBool::new(false));
     // Clone the flag the caller owns into an Arc the thread can poll between
@@ -374,22 +401,22 @@ fn read_file_cancellable(
                     .map_err(|e| format!("{}: {e}", crate::paths::for_display(&path_for_thread)))?;
                 // Only publish a total we actually learned. Metadata that won't answer leaves the
                 // progress handle at "unknown", and the caller draws no bar instead of a stuck one.
-                let size = match file.metadata() {
+                let (size, stamp) = match file.metadata() {
                     Ok(metadata) => {
                         let size = metadata.len();
                         if let Some(progress) = &progress {
                             progress.set_total(size);
                         }
-                        size as usize
+                        (size as usize, Some(FileStamp::from_metadata(&metadata)))
                     }
-                    Err(_) => 0,
+                    Err(_) => (0, None),
                 };
                 let mut buf = Vec::with_capacity(size);
                 let mut chunk = vec![0u8; READ_CHUNK_BYTES];
                 let chunk_delay = read_progress::read_delay();
                 loop {
                     if thread_cancelled.load(Ordering::Relaxed) {
-                        return Err::<Vec<u8>, String>("cancelled".into());
+                        return Err::<_, String>("cancelled".into());
                     }
                     if let Some(delay) = chunk_delay {
                         std::thread::sleep(delay);
@@ -408,7 +435,7 @@ fn read_file_cancellable(
                 if let Some(progress) = &progress {
                     progress.finish();
                 }
-                Ok(buf)
+                Ok((buf, stamp))
             })();
             // Send may fail if the caller abandoned us — silently drop.
             let _ = tx.send(result);
@@ -597,6 +624,9 @@ mod tests {
         let exif = img.exif.as_deref().expect("the decode must carry the EXIF");
         assert_eq!(exif.camera_make.as_deref(), Some("PrvwTest"));
         assert_eq!(exif.camera_model.as_deref(), Some("Camera 9000"));
+        // And the stamp of the bytes it came from, which live sync compares against.
+        assert!(img.stamp.is_some());
+        assert_eq!(img.stamp, FileStamp::read(&path));
     }
 
     /// The other half of the contract: a format with no EXIF segment comes back with `None`,
@@ -971,11 +1001,16 @@ mod read_tests {
         std::fs::write(&path, &payload).unwrap();
 
         let progress = Arc::new(ReadProgress::new());
-        let bytes =
+        let (bytes, stamp) =
             read_file_cancellable(&path, &AtomicBool::new(false), Some(Arc::clone(&progress)))
                 .expect("the file reads");
 
         assert_eq!(bytes.len(), payload.len());
+        assert_eq!(
+            stamp,
+            FileStamp::read(&path),
+            "the read stamps what it read"
+        );
         assert_eq!(progress.total_bytes(), Some(payload.len() as u64));
         assert_eq!(progress.bytes_read(), payload.len() as u64);
         assert_eq!(progress.fraction(), Some(1.0));

@@ -54,6 +54,7 @@ use windows::core::PCWSTR;
 use crate::browser::grid_model::{self, GridModel};
 use crate::browser::grid_scheduler::Scheduler;
 use crate::browser::thumbnail_cache::ThumbnailCache;
+use crate::file_stamp::FileStamp;
 use crate::navigation::SortBy;
 use crate::paths::PathPolicy;
 use crate::previews::generator::RequestTable;
@@ -93,6 +94,10 @@ pub(super) struct GridState {
     slots: HashMap<usize, i32>,
     /// Slots nothing is using. Claimed on arrival, returned on eviction.
     free_slots: Vec<i32>,
+    /// The stamp of the file each resident thumbnail was generated from, keyed like `slots` and
+    /// released with it. Live sync reads it to keep a thumbnail across a metadata-only change
+    /// (`crate::file_stamp`).
+    stamps: HashMap<usize, FileStamp>,
     /// One slot's side in device pixels, which is also what a thumbnail is generated at.
     slot_side: u32,
     /// The background workers: generating thumbnails, and measuring the selected image for the
@@ -177,6 +182,7 @@ pub(super) fn create(
         images,
         slots: HashMap::new(),
         free_slots: (0..SLOTS as i32).rev().collect(),
+        stamps: HashMap::new(),
         slot_side,
         requests: RequestTable::new(
             || crate::commands::AppCommand::BrowseThumbnailsAvailable,
@@ -244,6 +250,12 @@ pub(super) fn selected_path(ui: &Ui) -> Option<PathBuf> {
 /// The selected index, if any.
 pub(super) fn selected_index(ui: &Ui) -> Option<usize> {
     ui.grid_state.model.selected()
+}
+
+/// The stamp of the file `path`'s thumbnail was generated from, when one is resident.
+pub(super) fn thumbnail_stamp(ui: &Ui, path: &Path) -> Option<FileStamp> {
+    let index = ui.grid_state.model.index_of(path)?;
+    ui.grid_state.stamps.get(&index).copied()
 }
 
 /// Every image in the folder, in display order.
@@ -503,6 +515,10 @@ pub(super) fn thumbnails_available() {
                 background,
             );
             if write_slot(ui.grid_state.images, slot, side, &canvas) {
+                match delivery.stamp {
+                    Some(stamp) => ui.grid_state.stamps.insert(delivery.index, stamp),
+                    None => ui.grid_state.stamps.remove(&delivery.index),
+                };
                 ui.grid_state.scheduler.mark_ready(delivery.index);
                 ui.grid_state
                     .cache
@@ -583,6 +599,7 @@ fn release_slots(state: &mut GridState, evicted: &[usize]) {
         if let Some(slot) = state.slots.remove(index) {
             state.free_slots.push(slot);
         }
+        state.stamps.remove(index);
         state.scheduler.uncache(*index);
     }
 }

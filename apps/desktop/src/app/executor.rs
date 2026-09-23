@@ -499,8 +499,12 @@ impl App {
                 crate::settings::sync_custom_dcp_dir(dir.as_deref());
                 self.apply_custom_dcp_dir_change(dir.as_deref());
             }
-            AppCommand::FolderChanged { folder, modified } => {
-                self.handle_folder_changed(&folder, &modified);
+            AppCommand::FolderChanged {
+                folder,
+                modified,
+                listing_changed,
+            } => {
+                self.handle_folder_changed(&folder, &modified, listing_changed);
             }
             AppCommand::FolderScanned {
                 folder,

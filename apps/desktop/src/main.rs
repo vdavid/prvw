@@ -25,6 +25,7 @@ mod chrome;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod clipboard;
 mod commands;
+mod file_stamp;
 mod folder_scan;
 mod folder_watch;
 mod input;

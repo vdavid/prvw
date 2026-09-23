@@ -144,6 +144,9 @@ Explorer sets to suppress it.
   cell's text and image as it draws.
 - **Thumbnails come from `previews::generator`**, which on Windows reads Explorer's own `thumbcache_*.db` through
   `IShellItemImageFactory`. A folder Explorer has visited paints from cache rather than from a decode.
+- **Each resident thumbnail keeps its `FileStamp`** (`GridState::stamps`, released with its slot), the generator's stat
+  from just before it read the file. Live sync reads it through `BrowseUi::thumbnail_stamp` to tell a metadata-only
+  change from a re-save, the same evidence the macOS grid gives (`crate::file_stamp`).
 
 **Decision: a fixed pool of image list slots, recycled by hand.** **Why:** an `HIMAGELIST` can't remove an image without
 renumbering every image after it, and eviction is the whole point of the byte-budget cache. The list is created at a

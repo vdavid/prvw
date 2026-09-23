@@ -15,6 +15,7 @@ src/
 ├── clipboard.rs             The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`), pure and testable anywhere
 ├── commands.rs              AppCommand enum + global EventLoopProxy
 ├── folder_scan.rs           The one off-thread directory reader (images + subdirs, dedupe, progress) shared by image mode, both browse grids and trees, and live sync
+├── file_stamp.rs            A file's size + mtime, and whether a reported change touched its content or only its metadata
 ├── folder_watch.rs          Live folder sync: notify/FSEvents watcher + pure debounce/coalescer
 ├── input.rs                 Maps keys/QA keys → AppCommand
 ├── launch.rs                What Prvw is asked to open, by argument or by drop (waiting vs. empty window)

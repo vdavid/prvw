@@ -88,6 +88,17 @@ impl GridModel {
         &self.images
     }
 
+    /// Where `path` sits in the grid, under the host's path rules (`crate::paths`): the watcher
+    /// and the grid's own listing needn't spell a file the same way. A linear scan, which is fine
+    /// for the handful of paths a change reports. Linux has no grid to look anything up in.
+    #[must_use]
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    pub fn index_of(&self, path: &Path) -> Option<usize> {
+        self.images
+            .iter()
+            .position(|image| crate::paths::same_path(image, path))
+    }
+
     /// The selected grid index, or `None` when the grid is empty.
     #[must_use]
     pub fn selected(&self) -> Option<usize> {
@@ -329,5 +340,13 @@ mod tests {
         assert_eq!(imgs.len(), 2);
         assert_eq!(imgs[0], p("a.jpg"));
         assert_eq!(imgs[1], p("b.jpg"));
+    }
+
+    #[test]
+    fn index_of_finds_a_file_in_display_order() {
+        let mut m = GridModel::new(SortBy::Name);
+        m.set_images(vec![p("b.jpg"), p("a.jpg")]);
+        assert_eq!(m.index_of(&p("b.jpg")), Some(1));
+        assert_eq!(m.index_of(&p("c.jpg")), None);
     }
 }

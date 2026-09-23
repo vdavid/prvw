@@ -246,6 +246,7 @@ fn worker_submit(
                 request_id,
                 folder_generation,
                 result: Err(()),
+                stamp: None,
             },
             &proxy,
             wake,
@@ -256,6 +257,9 @@ fn worker_submit(
         width: size_pt,
         height: size_pt,
     };
+    // Here on the worker, before quicklookd reads the file: a write racing the generation then
+    // leaves the stamp stale rather than the pixels.
+    let stamp = crate::file_stamp::FileStamp::read(&path);
     unsafe {
         let ns_path = NSString::from_str(path_str);
         let url: Retained<NSURL> = NSURL::fileURLWithPath(&ns_path);
@@ -314,6 +318,7 @@ fn worker_submit(
                         request_id,
                         folder_generation,
                         result,
+                        stamp,
                     },
                     &proxy_for_block,
                     wake,

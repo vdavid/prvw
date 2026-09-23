@@ -254,6 +254,9 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "queued_nav": queued_nav,
         "read_progress": s.read_progress,
         "tags": tags,
+        // Read live rather than snapshotted: it's a process-wide counter, and a test asking
+        // "was that decoded again?" wants the answer as of now.
+        "full_decodes": crate::decoding::full_decodes(),
         "cache_indices": s.cache_indices,
         "window_x": s.window_x,
         "window_y": s.window_y,

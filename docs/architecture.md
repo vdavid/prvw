@@ -19,8 +19,9 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | `chrome.rs`                 | What colour every Win32 window of ours paints: theme, surface, ink, and the high-contrast rule        |
 | `clipboard.rs`              | The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`)                   |
 | `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                                                           |
+| `file_stamp.rs`             | A file's size + mtime, recorded at read time: tells a re-save from a metadata-only change (a tag)     |
 | `folder_scan.rs`            | The one off-thread directory reader: images + subdirs per pass, per-folder dedupe, live progress      |
-| `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce                                  |
+| `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce, stamps what changed in place    |
 | `input.rs`                  | Maps keys and QA keys to `AppCommand`                                                                 |
 | `launch.rs`                 | What Prvw is asked to open, by argument or by drop: wait for a file, a folder's images, nothing       |
 | `logging.rs`                | `env_logger` setup, and where a console-less Windows launch writes instead                            |

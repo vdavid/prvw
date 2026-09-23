@@ -447,6 +447,14 @@ the shared QuickLook cache). A changed selection re-warms via `warm_browse_selec
 image-mode `dir_list` when the folder is the open image's folder, so synced modes stay coherent (see
 `navigation/CLAUDE.md` → "Live folder sync (image mode)").
 
+**A metadata-only change doesn't re-scan, so the grid keeps its thumbnails.** Each thumbnail keeps the `FileStamp` its
+generator took (`GridDataSourceIvars::stamps`, read through `BrowseGrid::thumbnail_stamp`), and that's part of the
+evidence `App::handle_folder_changed` weighs: a Finder tag on a visible file leaves its stamp alone, so nothing is
+cleared. A file with no thumbnail yet has no stamp, counts as changed, and re-scans the way every change used to.
+
+The tree only reloads for a change whose `listing_changed` is set: folders come and go only through creates, removes,
+and renames, never through an in-place modify.
+
 **Tree (folder-structure watch).** Roots are watched for the window's life (`App::watch_tree_roots`, called when the
 split view is first built). Each folder is watched on expand (`outlineViewItemDidExpand:` →
 `AppCommand::BrowseTreeFolderExpanded` → `App::watch_tree_folder`) and unwatched on collapse

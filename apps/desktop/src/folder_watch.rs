@@ -8,8 +8,12 @@
 //! bulk copy fires hundreds of creates. So a dedicated coalescer thread debounces them
 //! (`COALESCE_WINDOW`, ~150 ms of quiet) and emits ONE `AppCommand::FolderChanged` per affected
 //! folder. Adds/removes are left for the consumer's re-scan to discover (robust against
-//! rename-saves); only in-place modifications ride along in `modified` so a re-saved image
-//! re-decodes (`raw_events_from` says why a rename isn't one). The post crosses to the main thread
+//! rename-saves), and `listing_changed` says whether any happened; only in-place modifications
+//! ride along in `modified` (`raw_events_from` says why a rename isn't one). Each carries a
+//! `FileStamp` taken on this thread, because the event kind can't say whether the bytes changed
+//! (FSEvents coalesces its flags) and the consumer's caches can: see `crate::file_stamp`. So a
+//! Finder tag write reaches the consumer as a modify with an unchanged stamp, which refreshes the
+//! tags without a re-decode or a re-scan. The post crosses to the main thread
 //! via the global `EventLoopProxy`, never blocking it. No tokio — `std::thread` + channels, the
 //! same pattern as `navigation::preloader`.
 //!
@@ -37,6 +41,7 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 use winit::event_loop::EventLoopProxy;
 
 use crate::commands::AppCommand;
+use crate::file_stamp::FileStamp;
 
 /// Quiet period after the last raw event before a folder's coalesced change is emitted. Long
 /// enough to fold an editor's temp-write-rename save and a burst of bulk-copy events into one
@@ -48,10 +53,23 @@ pub const COALESCE_WINDOW: Duration = Duration::from_millis(150);
 pub struct FolderChange {
     /// The watched folder that changed.
     pub folder: PathBuf,
-    /// Paths inside `folder` that changed in place (content or metadata). The consumer evicts
-    /// these from its caches and re-decodes them. Sorted + deduped. Adds, removes, and renames are
-    /// NOT here — the consumer's re-scan discovers those.
+    /// Paths inside `folder` that changed in place (content or metadata). Sorted + deduped. Adds,
+    /// removes, and renames are NOT here — the consumer's re-scan discovers those.
     pub modified: Vec<PathBuf>,
+    /// Whether anything besides an in-place change happened in `folder` (a create, a remove, a
+    /// rename, or an event the backend couldn't classify), so its listing may be different now.
+    /// False means the same files are there: only `modified` needs looking at.
+    pub listing_changed: bool,
+}
+
+/// One file that changed in place, as the consumer receives it: the path and its
+/// [`FileStamp`] as of the report (`None` when it wouldn't stat, say because it's already gone).
+/// The consumer compares the stamp against the one each of its caches recorded when it read the
+/// file, which is how a tag write is told apart from a re-save (`crate::file_stamp`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModifiedFile {
+    pub path: PathBuf,
+    pub stamp: Option<FileStamp>,
 }
 
 /// A raw filesystem event reduced to what the coalescer needs: the affected path and whether it
@@ -72,10 +90,19 @@ pub struct RawEvent {
 /// thread decides when to flush, which keeps this unit-testable.
 #[derive(Debug, Default)]
 pub struct Coalescer {
-    /// Per-folder accumulator: the set of in-place-modified paths seen since the last flush. A
-    /// folder present here (even with an empty set) has a pending change to emit. `BTreeMap` keeps
-    /// the flush order deterministic, which the tests rely on.
-    pending: BTreeMap<PathBuf, std::collections::BTreeSet<PathBuf>>,
+    /// Per-folder accumulator since the last flush. A folder present here (even with nothing
+    /// modified) has a pending change to emit. `BTreeMap` keeps the flush order deterministic,
+    /// which the tests rely on.
+    pending: BTreeMap<PathBuf, PendingFolder>,
+}
+
+/// What one folder has seen since the last flush.
+#[derive(Debug, Default)]
+struct PendingFolder {
+    /// The in-place-modified paths.
+    modified: BTreeSet<PathBuf>,
+    /// Whether any other kind of event arrived. See [`FolderChange::listing_changed`].
+    listing_changed: bool,
 }
 
 impl Coalescer {
@@ -91,9 +118,11 @@ impl Coalescer {
         let Some(folder) = event.path.parent().map(Path::to_path_buf) else {
             return;
         };
-        let modified = self.pending.entry(folder).or_default();
+        let pending = self.pending.entry(folder).or_default();
         if event.is_modify {
-            modified.insert(event.path);
+            pending.modified.insert(event.path);
+        } else {
+            pending.listing_changed = true;
         }
     }
 
@@ -108,9 +137,10 @@ impl Coalescer {
     pub fn flush(&mut self) -> Vec<FolderChange> {
         std::mem::take(&mut self.pending)
             .into_iter()
-            .map(|(folder, modified)| FolderChange {
+            .map(|(folder, pending)| FolderChange {
                 folder,
-                modified: modified.into_iter().collect(),
+                modified: pending.modified.into_iter().collect(),
+                listing_changed: pending.listing_changed,
             })
             .collect()
     }
@@ -241,14 +271,16 @@ fn watch_loop(
                 if !coalescer.is_empty() {
                     for change in coalescer.flush() {
                         log::debug!(
-                            "Folder changed: {} ({} modified)",
+                            "Folder changed: {} ({} modified, listing changed: {})",
                             change.folder.display(),
-                            change.modified.len()
+                            change.modified.len(),
+                            change.listing_changed
                         );
                         if proxy
                             .send_event(AppCommand::FolderChanged {
                                 folder: change.folder,
-                                modified: change.modified,
+                                modified: stamp_modified(change.modified),
+                                listing_changed: change.listing_changed,
                             })
                             .is_err()
                         {
@@ -265,6 +297,19 @@ fn watch_loop(
             }
         }
     }
+}
+
+/// Stat each modified path, here on the watcher thread, so the main thread can tell a content
+/// change from a metadata-only one without touching the disk (a share answers a `stat` in a
+/// network round trip). Taken after the burst went quiet, so it sees the file as the burst left it.
+fn stamp_modified(paths: Vec<PathBuf>) -> Vec<ModifiedFile> {
+    paths
+        .into_iter()
+        .map(|path| ModifiedFile {
+            stamp: FileStamp::read(&path),
+            path,
+        })
+        .collect()
 }
 
 /// Apply every queued watch/unwatch request. Errors are logged, not fatal — a folder that vanished
@@ -421,6 +466,30 @@ mod tests {
             path: PathBuf::from(path),
             is_modify: false,
         }
+    }
+
+    /// A tag write is an in-place change and nothing else, so the folder's listing can't have
+    /// moved: the consumer needs no re-scan.
+    #[test]
+    fn modifies_alone_leave_the_listing_alone() {
+        let mut c = Coalescer::new();
+        c.ingest(modify("/photos/a.jpg"));
+        c.ingest(modify("/photos/b.jpg"));
+        let changes = c.flush();
+        assert_eq!(changes.len(), 1);
+        assert!(!changes[0].listing_changed);
+    }
+
+    /// Anything that isn't an in-place change (a create, a remove, a rename) may have moved the
+    /// listing, even when it arrives beside modifies.
+    #[test]
+    fn any_other_event_marks_the_listing_changed() {
+        let mut c = Coalescer::new();
+        c.ingest(modify("/photos/a.jpg"));
+        c.ingest(touch("/photos/new.jpg"));
+        let changes = c.flush();
+        assert!(changes[0].listing_changed);
+        assert_eq!(changes[0].modified, vec![PathBuf::from("/photos/a.jpg")]);
     }
 
     #[test]

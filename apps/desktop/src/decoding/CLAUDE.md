@@ -34,7 +34,11 @@ the renderer.
     no timeout, so an in-thread flag check does nothing until the kernel unblocks the syscall. The caller is never
     blocked. It also fills in an optional `ReadProgress` handle (file length from metadata, then a byte count per
     `READ_CHUNK_BYTES` chunk), which is what the "Loading…" overlay's read bar draws — see `navigation/CLAUDE.md`.
-    `PRVW_READ_DELAY_MS` pauses it before every chunk so tests can watch the bar climb.
+    `PRVW_READ_DELAY_MS` pauses it before every chunk so tests can watch the bar climb. The same metadata call, made on
+    the open handle before the first read, becomes `DecodedImage::stamp`, which live sync compares against the file
+    later to tell a re-save from a tag write (`crate::file_stamp`). Before the read, never after: a racing write then
+    leaves the stamp older than the pixels, which costs a re-decode rather than hiding a change.
+  - `full_decodes()` counts every `load_image` success; `/state` reports it for tests.
   - `run_decode_cancellable` wraps the JPEG and generic decodes (RAW self-cancels between stages, so it stays inline).
     Trade-off: an abandoned decode burns CPU to completion (bounded; only on cancellation of a large in-flight decode),
     in exchange for the serial preload worker never blocking on a huge image the user has already navigated past — for

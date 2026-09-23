@@ -292,6 +292,77 @@ fn toggling_the_last_tag_off_removes_the_attribute() {
     );
 }
 
+/// Finder's red tag, the way Finder writes it: a binary plist holding `["Red\n6"]`.
+const RED_TAG_PLIST: &str = "62706C6973743030A101555265640A36080A0000000000000101000000000000000200000000000000000000000000000010";
+
+/// Write a tag attribute from outside the app, the way Finder would.
+fn write_tag_attribute(path: &std::path::Path, hex: &str) {
+    let status = std::process::Command::new("/usr/bin/xattr")
+        .args(["-wx", TAGS_XATTR, hex])
+        .arg(path)
+        .status()
+        .expect("run xattr");
+    assert!(status.success());
+}
+
+fn full_decodes(state: &serde_json::Value) -> u64 {
+    state["full_decodes"].as_u64().expect("full_decodes")
+}
+
+/// A tag set outside the app shows up on the image on screen without a relaunch, and without
+/// decoding the image again: the file's bytes didn't change, only its metadata did.
+#[test]
+fn a_tag_set_in_finder_shows_up_without_a_re_decode() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let image = dir.path().join("photo.png");
+    e2e::fixtures::create_fixture_image(&image);
+
+    let app = TestApp::start_with_image(&image);
+    let wait = Duration::from_secs(10);
+    let untagged = app.wait_for_state(wait, |s| state_tags(s).is_some());
+    assert_eq!(state_tags(&untagged), tags_of(&[]));
+    app.wait_for_watch(dir.path());
+    let decodes = full_decodes(&app.get_state());
+    assert!(decodes >= 1, "the image on screen was decoded");
+
+    write_tag_attribute(&image, RED_TAG_PLIST);
+    let tagged = app.wait_for_state(wait, |s| state_tags(s).is_some_and(|t| !t.is_empty()));
+    assert_eq!(state_tags(&tagged), tags_of(&[("Red", Some("red"))]));
+
+    // Give a re-decode, if one was coming, time to land.
+    std::thread::sleep(Duration::from_millis(1_000));
+    assert_eq!(
+        full_decodes(&app.get_state()),
+        decodes,
+        "a metadata-only change must not decode the image again"
+    );
+}
+
+/// Our own toggle writes the same attribute, so the watcher reports it too. That report must not
+/// decode the image again either. Events arrive in order, so once a later outside write has shown
+/// up, the toggle's own report has been handled.
+#[test]
+fn toggling_a_tag_does_not_re_decode_the_image() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let image = dir.path().join("photo.png");
+    e2e::fixtures::create_fixture_image(&image);
+
+    let app = TestApp::start_with_image(&image);
+    let wait = Duration::from_secs(10);
+    app.wait_for_state(wait, |s| state_tags(s).is_some());
+    app.wait_for_watch(dir.path());
+    let decodes = full_decodes(&app.get_state());
+
+    app.post("/key", "5");
+    app.wait_for_state(wait, |s| state_tags(s).is_some_and(|t| t.len() == 1));
+
+    write_tag_attribute(&image, RED_TAG_PLIST);
+    let red = app.wait_for_state(wait, |s| state_tags(s) == tags_of(&[("Red", Some("red"))]));
+    assert_eq!(state_tags(&red), tags_of(&[("Red", Some("red"))]));
+    std::thread::sleep(Duration::from_millis(1_000));
+    assert_eq!(full_decodes(&app.get_state()), decodes);
+}
+
 /// Browse mode shows no single image, so there's nothing to tag: `/state` says so, and a digit
 /// that reaches the app leaves the file alone.
 #[test]

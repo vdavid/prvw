@@ -43,13 +43,29 @@ impl App {
         }
     }
 
-    /// Re-read `path`'s tags from disk and bring everything that shows them up to date: the
-    /// dots, the Tags menu's checkmarks, and `/state`. The one call to make whenever a file's
-    /// tags may have changed, whoever changed them.
+    /// Bring everything that shows `path`'s tags up to date: the dots, the Tags menu's
+    /// checkmarks, and `/state`. The one call to make whenever a file's tags may have changed,
+    /// whoever changed them.
     pub(crate) fn refresh_tags(&mut self, path: &Path) {
-        self.tags.refresh(path);
-        self.request_redraw();
+        self.note_tags_changed(path);
         self.update_shared_state();
+    }
+
+    /// [`Self::refresh_tags`] without publishing the state snapshot, for a caller handling a
+    /// batch of files that publishes once at the end. The image on screen is re-read right away
+    /// (one attribute call) and redrawn; any other file's cached tags are dropped, so they're read
+    /// when it next comes on screen instead of now, on the main thread, for a file nobody is
+    /// looking at (a Finder tag spree on a share would otherwise cost a round trip per file).
+    pub(super) fn note_tags_changed(&mut self, path: &Path) {
+        let on_screen = self
+            .tag_target()
+            .is_some_and(|target| crate::paths::same_path(&target, path));
+        if on_screen {
+            self.tags.refresh(path);
+            self.request_redraw();
+        } else {
+            self.tags.forget(path);
+        }
     }
 
     /// Toggle `color` on the image on screen. A write that doesn't land is logged and changes

@@ -1,5 +1,6 @@
 use crate::commands::AppCommand;
 use crate::decoding::{self, DecodedImage, RawPipelineFlags, ReadProgress};
+use crate::file_stamp::FileStamp;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -311,6 +312,13 @@ impl ImageCache {
 
     pub fn contains(&self, path: &Path) -> bool {
         self.entries.contains_key(path)
+    }
+
+    /// The stamp of the bytes `path`'s cached decode was made from, when it's cached and the
+    /// decode recorded one. Live sync compares it against the file's stamp now to tell a re-save
+    /// from a metadata-only change (`crate::file_stamp`).
+    pub fn stamp(&self, path: &Path) -> Option<FileStamp> {
+        self.entries.get(path)?.image.stamp
     }
 
     /// Remove entries outside the hot window around the current position.

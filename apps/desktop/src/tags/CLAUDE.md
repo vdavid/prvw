@@ -16,9 +16,9 @@ is triage: tag while viewing, then find the tagged files in Finder's sidebar and
 - An image paints → `finalize_display` → `load_current_tags` reads its tags once (`State::ensure`, one `getxattr`).
 - A digit or a Tags menu click → `AppCommand::ToggleTag(color)` → `App::toggle_tag` → `tags::toggle_color` (read,
   change, write) → `App::refresh_tags` (re-read, redraw, `update_shared_state`, which also re-ticks the Tags menu).
-- **`App::refresh_tags(path)` is the one call for "this file's tags may have changed"**, whoever changed them. Anything
-  that learns of an outside change (the folder watcher, a future browse-grid tagger) calls it and everything that shows
-  tags follows.
+- **`App::refresh_tags(path)` is the one call for "this file's tags may have changed"**, whoever changed them, and
+  everything that shows tags follows. `note_tags_changed` is the same without publishing `/state`, for a caller handling
+  a batch (the folder watcher) that publishes once at the end.
 
 ## Decision: the disk is the source of truth
 
@@ -60,11 +60,20 @@ which reads lossily on both paths.
   converted from sRGB to linear light, since the surface is an sRGB format and the pill shader writes linear.
 - Up to 14 pills per frame, which is why the renderer's pill pool is 48 (`render/CLAUDE.md`).
 
+## Tags set outside Prvw
+
+A tag Finder sets (or anything else that writes the attribute) arrives through live folder sync: `folder_watch` reports
+the file as modified, its size and mtime haven't moved, so `App::handle_folder_changed` calls it a metadata-only change
+(`crate::file_stamp`) and calls `note_tags_changed` instead of evicting anything. Our own toggle comes back the same
+way, a moment after its own re-read, and changes nothing. Neither decodes the image again. `note_tags_changed` re-reads
+the image on screen right away and forgets every other file's cached tags, so they're read when that file next comes on
+screen rather than on the main thread for a file nobody's looking at.
+
+This only reaches files in the watched folder, which is the one on screen. It also assumes the attribute write leaves
+mtime alone. That holds on APFS (`file_stamp`'s `an_extended_attribute_write_keeps_the_stamp` pins it); an SMB server
+hasn't been checked, and one that does bump mtime costs a re-decode per tag, which is what every tag cost before.
+
 ## Gotchas
 
-- **Writing a tag touches the file's metadata**, and `folder_watch` reports that as a modification, so the image gets
-  evicted and decoded again after every toggle. Harmless but wasteful; the watcher is where to fix it.
-- **Tags are read once per image and cached.** A tag set in Finder while Prvw has the image open doesn't show until
-  something calls `App::refresh_tags` for it.
 - **Browse mode has no tag target.** `tag_target` is `None` there, the Tags menu greys out, and `/state` reports
   `tags: null`. The digits belong to the focused pane.

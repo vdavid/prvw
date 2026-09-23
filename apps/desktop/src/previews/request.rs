@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use winit::event_loop::EventLoopProxy;
 
 use crate::commands::AppCommand;
+use crate::file_stamp::FileStamp;
 use crate::previews::scheduler::RequestId;
 
 /// A ready preview: raw RGBA8, row-packed (no padding), premultiplied alpha.
@@ -35,6 +36,9 @@ pub struct Delivery {
     pub request_id: RequestId,
     pub folder_generation: u64,
     pub result: Result<PreviewPixels, ()>,
+    /// The file's stamp from just before the generator read it, on the generator's own thread, so
+    /// a cache of these pixels can later tell a re-save from a tag write (`crate::file_stamp`).
+    pub stamp: Option<FileStamp>,
 }
 
 /// Arguments for a generator's `submit`.
