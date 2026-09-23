@@ -256,9 +256,9 @@ item's shortcut column, exactly like `H` and `E`.
 Windows one, and the argument doesn't get weaker for being made about Command. So `SlideshowToggle` carries no key
 equivalent on either platform, and `MenuItemKey::hint` paints `S` into the macOS title the way `Fullscreen` shows `F`.
 
-**Ctrl+0 stays Actual size**, matching macOS and matching browsers, even though the bare `0` key means Fit to window and
-the bare `1` means Actual size. That inconsistency is inherited from the macOS design and this is not the place to fix
-it.
+**Ctrl+0 stays Actual size**, matching macOS and matching browsers, even though the bare `0` key means Fit to window.
+Only a bare `0` fits: with a modifier held, `input::key_to_command` never reads it as the bare key. The bare digits 1–9
+carry no zoom binding.
 
 ### Two Windows-only presentation details the registry has to accommodate
 

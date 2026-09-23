@@ -151,8 +151,9 @@ two lines in a very narrow window, which `AdjustWindowRectEx` is documented not 
 Deliberate, and it matches the scope decision in `docs/specs/cross-platform-plan.md` (M8: no regressions, no parity
 work). Nothing that worked on Linux stopped working, because the menu bar never attached there.
 
-Still reachable, all through `input::key_to_command`: previous/next, first/last, zoom in/out, fit to window, actual
-size, fullscreen, histogram, Exif info, loop navigation, slideshow speed, and exit.
+Still reachable, all through `input::key_to_command`: previous/next, first/last, zoom in/out, fit to window, actual size
+(Ctrl+0, the menu's own shortcut, which `input` serves where no bar is up), fullscreen, histogram, Exif info, loop
+navigation, slideshow speed, and exit.
 
 Lost with the menu, and worth restoring when Linux gets a spec of its own:
 

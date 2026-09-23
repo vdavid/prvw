@@ -51,6 +51,15 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
     if command_modifier(modifiers) && matches!(key, Key::Character("o") | Key::Character("O")) {
         return Some(AppCommand::ShowOpenDialog);
     }
+    // Actual size, the same way: the menu's ⌘0 / Ctrl+0, served here where no bar is up.
+    if command_modifier(modifiers) && key == Key::Character("0") {
+        return Some(AppCommand::ActualSize);
+    }
+    // Bare `0` fits to window. Only bare: any modifier makes it someone else's shortcut, and a
+    // ⌘0 falling through to here would undo the Actual size it asked for.
+    if key == Key::Character("0") {
+        return bare.then_some(AppCommand::FitToWindow);
+    }
     match key {
         // Navigation (user input → debounced so a wheel spin coalesces).
         // `;` / `'` sit under the right hand next to the speed keys `[` / `]`.
@@ -83,8 +92,6 @@ pub fn key_to_command(key: Key<&str>, modifiers: &ModifiersState) -> Option<AppC
         // Zoom
         Key::Character("=" | "+") => Some(AppCommand::ZoomIn),
         Key::Character("-") => Some(AppCommand::ZoomOut),
-        Key::Character("0") => Some(AppCommand::FitToWindow),
-        Key::Character("1") => Some(AppCommand::ActualSize),
 
         _ => None,
     }
@@ -127,7 +134,6 @@ pub fn qa_key_to_command(key_name: &str) -> Option<AppCommand> {
         "+" | "=" => Some(AppCommand::ZoomIn),
         "-" => Some(AppCommand::ZoomOut),
         "0" => Some(AppCommand::FitToWindow),
-        "1" => Some(AppCommand::ActualSize),
         "h" | "H" => Some(AppCommand::ToggleHistogram),
         "e" | "E" => Some(AppCommand::ToggleExifInfo),
         "l" | "L" => Some(AppCommand::ToggleLoopNavigation),
@@ -197,6 +203,56 @@ mod tests {
     fn browse_mode_leaves_s_to_the_focused_pane() {
         assert!(browse_key_to_command(Key::Character("s"), &bare()).is_none());
         assert!(browse_qa_key_to_command("s").is_none());
+    }
+
+    /// The platform's command modifier plus `0` is Actual size (⌘0 on macOS, Ctrl+0 elsewhere).
+    /// The menu bar takes it first where there is one; this is what serves Linux.
+    #[test]
+    fn command_0_is_actual_size() {
+        let command = if cfg!(target_os = "macos") {
+            ModifiersState::SUPER
+        } else {
+            ModifiersState::CONTROL
+        };
+        assert!(matches!(
+            key_to_command(Key::Character("0"), &command),
+            Some(AppCommand::ActualSize)
+        ));
+    }
+
+    /// Bare `0` fits to window. With a modifier held it isn't a bare press, so it must never
+    /// fit: that's how a ⌘0 that reached winit would undo the Actual size it asked for.
+    #[test]
+    fn only_a_bare_0_fits_to_window() {
+        assert!(matches!(
+            key_to_command(Key::Character("0"), &bare()),
+            Some(AppCommand::FitToWindow)
+        ));
+        for modifiers in [
+            ModifiersState::SUPER,
+            ModifiersState::CONTROL,
+            ModifiersState::ALT,
+            ModifiersState::SHIFT,
+        ] {
+            assert!(!matches!(
+                key_to_command(Key::Character("0"), &modifiers),
+                Some(AppCommand::FitToWindow)
+            ));
+        }
+    }
+
+    /// Bare digits 1–9 are free (Finder tags will take 1–7), with or without a modifier.
+    #[test]
+    fn digits_1_to_9_are_unbound() {
+        for digit in ["1", "2", "3", "4", "5", "6", "7", "8", "9"] {
+            for modifiers in [bare(), ModifiersState::SUPER, ModifiersState::CONTROL] {
+                assert!(
+                    key_to_command(Key::Character(digit), &modifiers).is_none(),
+                    "{digit} with {modifiers:?} is bound"
+                );
+            }
+            assert!(qa_key_to_command(digit).is_none(), "QA {digit} is bound");
+        }
     }
 
     /// The QA table is the real keyboard's twin, so a binding that lands in one lands in both.
