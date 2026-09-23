@@ -2,12 +2,12 @@
 
 Not a feature. This is the runtime scaffolding every feature plugs into.
 
-| File              | Purpose                                                          |
-| ----------------- | ---------------------------------------------------------------- |
-| `app.rs`          | `App` struct, `App::new`, `ApplicationHandler` impl              |
-| `executor.rs`     | `App::execute_command`: single dispatcher for every `AppCommand` |
-| `shared_state.rs` | `SharedAppState` snapshot + `App::update_shared_state` writer    |
-| `tags_hook.rs`    | Finder tags glue: `tag_target`, `toggle_tag`, `refresh_tags`     |
+| File              | Purpose                                                                            |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| `app.rs`          | `App` struct, `App::new`, `ApplicationHandler` impl                                |
+| `executor.rs`     | `App::execute_command`: single dispatcher for every `AppCommand`                   |
+| `shared_state.rs` | `SharedAppState` snapshot + `App::update_shared_state` writer                      |
+| `tags_hook.rs`    | Finder tags glue: `tag_target`, `toggle_tag`, `refresh_tags` / `note_tags_changed` |
 
 ## App's fields
 
