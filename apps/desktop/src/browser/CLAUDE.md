@@ -550,9 +550,6 @@ semantic `NSColor`s (light/dark adapt automatically). Tweak these, not magic num
   11 (small system font, `secondaryLabelColor`, centered, single-line middle-truncation), `CELL_SPACING` 16 (inter-cell,
   both axes), `SECTION_INSET_PT` 14 (inset inside the gallery surface). The cell container is a `FlippedView` so the
   stack reads top-down.
-- **Gotcha: set text alignment with `NSTextAlignment::Center` / `::Right`, never a raw number.** AppKit's values differ
-  by ABI: on Apple silicon `2` is right, not center. The grid label was right-aligned for a long time because of
-  `NSTextAlignment(2)`.
 - **Selection ring** (`grid.rs`): `SELECTION_CORNER_RADIUS` 8, `SELECTION_FOCUSED_ALPHA` 0.85 (softens the focused
   accent fill). Focus model is unchanged: focused pane → `selectedContentBackgroundColor` (accent), unfocused →
   `unemphasizedSelectedContentBackgroundColor` (gray), driven by `gridPaneIsFocused` (see "Selection emphasis follows

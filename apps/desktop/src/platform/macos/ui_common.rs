@@ -115,7 +115,7 @@ pub(crate) fn make_label(
     label.setSelectable(false);
     label.setBordered(false);
     label.setDrawsBackground(false);
-    label.setAlignment(NSTextAlignment(2)); // NSTextAlignmentCenter = 2
+    label.setAlignment(NSTextAlignment::Center);
     label
 }
 
@@ -131,7 +131,7 @@ pub(crate) fn make_bold_label(
     label.setSelectable(false);
     label.setBordered(false);
     label.setDrawsBackground(false);
-    label.setAlignment(NSTextAlignment(2));
+    label.setAlignment(NSTextAlignment::Center);
     label
 }
 
@@ -177,7 +177,7 @@ pub(crate) fn make_link(
         label.setSelectable(true); // Must be selectable for links to work
         label.setBordered(false);
         label.setDrawsBackground(false);
-        label.setAlignment(NSTextAlignment(2));
+        label.setAlignment(NSTextAlignment::Center);
         let _: () = msg_send![&*label, setAllowsEditingTextAttributes: true];
 
         // Add a tracking area so the pointing hand cursor shows on hover.

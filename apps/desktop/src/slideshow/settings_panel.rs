@@ -128,7 +128,7 @@ pub(crate) fn build(
     slider_min_width.setActive(true);
 
     let value_label = make_label(&seconds_label(seconds), 12.0, mtm);
-    value_label.setAlignment(NSTextAlignment(1)); // NSTextAlignmentRight
+    value_label.setAlignment(NSTextAlignment::Right);
     value_label.setTextColor(Some(&NSColor::secondaryLabelColor()));
     unsafe {
         let _: () = msg_send![&*value_label, setTranslatesAutoresizingMaskIntoConstraints: false];

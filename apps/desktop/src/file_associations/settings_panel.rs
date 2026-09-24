@@ -399,7 +399,7 @@ fn make_mixed_pill(mtm: MainThreadMarker) -> Retained<NSTextField> {
     pill.setSelectable(false);
     pill.setBordered(false);
     pill.setTextColor(Some(&NSColor::secondaryLabelColor()));
-    pill.setAlignment(NSTextAlignment(2));
+    pill.setAlignment(NSTextAlignment::Center);
     unsafe {
         let _: () = msg_send![&*pill, setDrawsBackground: true];
         // A lightly tinted background so the pill reads as an indicator, not body text.

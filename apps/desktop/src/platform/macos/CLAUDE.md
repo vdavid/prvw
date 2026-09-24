@@ -78,6 +78,10 @@ fixture, because it's an ImageIO behaviour we rely on rather than one we control
 - **`define_class!` methods get an implicit `_cmd: Sel`.** For plain Rust helpers, put them in a separate `impl` block
   outside the macro.
 - **`msg_send!` return types must match ObjC exactly.** Mismatch → runtime panic.
+- **Text alignment: use `NSTextAlignment::Center` / `::Right`, never a raw number.** AppKit's values differ by ABI: on
+  Apple silicon `1` is center and `2` is right, the reverse of Intel. Every "centered" `NSTextAlignment(2)` label in the
+  app rendered right-aligned (the browse grid's filenames most visibly) until they moved to the named constants.
+  `NSTextAlignment(0)` (left) is the same on both, but prefer `::Left` in new code.
 - **ObjC method injection for Apple Events.** winit 0.30 registers its own `WinitApplicationDelegate` and panics if
   replaced. `open_handler::register()` uses `class_addMethod` to inject `application:openURLs:` AFTER `EventLoop::new()`
   but BEFORE `run_app()`. Later = too late (Apple Events fire during `finishLaunching`).
