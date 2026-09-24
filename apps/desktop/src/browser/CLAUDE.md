@@ -352,8 +352,8 @@ the way the native `didSelectItemsAtIndexPaths:` delegate does (so the open path
 ## The thumbnail grid
 
 `grid.rs` builds the right pane: an `NSCollectionView` (`NSCollectionViewFlowLayout`, vertical scroll) of fixed-size
-square cells (`CELL_PT`, see "Styling constants"), each a `GridItem` (an `NSCollectionViewItem` subclass with a
-proportionally-scaling `NSImageView` + a filename label). The grid uses a fixed cell size; a bottom slider to
+cells (`CELL_PT` × `CELL_HEIGHT_PT`, see "Styling constants"), each a `GridItem` (an `NSCollectionViewItem` subclass
+with a proportionally-scaling `NSImageView` + a filename label). The grid uses a fixed cell size; a bottom slider to
 live-resize cells is deferred (see "Deferred work + known limitations"). The grid sits on a rounded gallery surface (see
 `split_view.rs`).
 
@@ -430,11 +430,11 @@ previews. The worker delivers RGBA8 (`cg_image_to_rgba8`); the grid's consumptio
 
 ### Tag dots (macOS, display only)
 
-Each cell shows its file's Finder tag colors as overlapping dots before the filename, Finder icon-view style
-(`TagDotsView`, found again through its fixed `NSView.tag`; `label_row` centers dots + name as a group and squeezes a
-long name, never the dots). Same size, overlap, and palette as the image-mode dots (`tags::overlay::DOT_SIZE` /
-`DOT_STEP`, `TagColor::srgb`), each dot ringed in `controlBackgroundColor` so overlaps separate. The grid never sets
-tags.
+Each cell shows its file's Finder tag colors as overlapping dots on their own row between the thumbnail and the
+filename, left-aligned with the thumbnail's left edge (`TagDotsView`, found again through its fixed `NSView.tag`). The
+row is reserved in every cell, tagged or not, so the centered label never moves or shrinks and cell rows stay aligned
+when tags land. Same size, overlap, and palette as the image-mode dots (`tags::overlay::DOT_SIZE` / `DOT_STEP`,
+`TagColor::srgb`), each dot ringed in `controlBackgroundColor` so overlaps separate. The grid never sets tags.
 
 - **Reads never run on the main thread.** `BrowseGrid::pump_visible_range` also asks `GridTags::take_requests` for the
   cells in the visible range (plus margin) that don't know their tags, and queues them on `TagReader`. Results come back
@@ -544,11 +544,15 @@ by the `live_sync_browse_grid_*` integration tests and the pure `select_after_re
 The look is tuned via named constants so it's easy to refine; values are logical points unless noted. All colors are
 semantic `NSColor`s (light/dark adapt automatically). Tweak these, not magic numbers buried in calls.
 
-- **Grid cells** (`grid.rs`): `CELL_PT` 168 (cell side), `CELL_IMAGE_PT` 140 (centered square thumbnail),
-  `CELL_LABEL_PT` 18 + `CELL_IMAGE_LABEL_GAP_PT` 6 (filename label below), `CELL_LABEL_FONT_PT` 11 (small system font,
-  `secondaryLabelColor`, single-line middle-truncation), `CELL_SPACING` 16 (inter-cell, both axes), `SECTION_INSET_PT`
-  14 (inset inside the gallery surface). The cell container is a `FlippedView` so the thumbnail-on-top / label-below
-  layout reads top-down.
+- **Grid cells** (`grid.rs`): `CELL_PT` 168 wide × `CELL_HEIGHT_PT` 176 tall, top to bottom: `CELL_IMAGE_PT` 140
+  (centered square thumbnail), `CELL_IMAGE_TAGS_GAP_PT` 2, `CELL_TAGS_ROW_PT` 12 (the tag dot row: one 10pt dot plus its
+  ring), `CELL_TAGS_LABEL_GAP_PT` 1, `CELL_LABEL_PT` 18 (filename label), `CELL_BOTTOM_PAD_PT` 4. `CELL_LABEL_FONT_PT`
+  11 (small system font, `secondaryLabelColor`, centered, single-line middle-truncation), `CELL_SPACING` 16 (inter-cell,
+  both axes), `SECTION_INSET_PT` 14 (inset inside the gallery surface). The cell container is a `FlippedView` so the
+  stack reads top-down.
+- **Gotcha: set text alignment with `NSTextAlignment::Center` / `::Right`, never a raw number.** AppKit's values differ
+  by ABI: on Apple silicon `2` is right, not center. The grid label was right-aligned for a long time because of
+  `NSTextAlignment(2)`.
 - **Selection ring** (`grid.rs`): `SELECTION_CORNER_RADIUS` 8, `SELECTION_FOCUSED_ALPHA` 0.85 (softens the focused
   accent fill). Focus model is unchanged: focused pane → `selectedContentBackgroundColor` (accent), unfocused →
   `unemphasizedSelectedContentBackgroundColor` (gray), driven by `gridPaneIsFocused` (see "Selection emphasis follows

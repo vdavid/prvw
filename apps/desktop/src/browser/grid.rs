@@ -81,22 +81,42 @@ use crate::tags::TagColor;
 // ─── Styling constants (tweak these for the gallery look) ───────────────────
 // All in logical points. The cell-size slider is a later phase; these tune the
 // fixed ~160pt gallery so it reads like Finder/Photos. The cell is a vertical stack:
-// a square thumbnail on top, the filename label below.
+// a square thumbnail on top, a row for the tag dots, then the filename label.
 
-/// Cell side in points. A sensible fixed gallery size; the live-resize slider is a later phase.
+/// Cell width in points. A sensible fixed gallery size; the live-resize slider is a later phase.
 const CELL_PT: f64 = 168.0;
 // `CELL_IMAGE_PT` / `CELL_LABEL_PT` are only referenced from `GridItem::loadView`, an AppKit
 // override — `GridItem` is instantiated by the collection view (via `makeItemWithIdentifier:`),
 // never constructed in Rust, so the dead-code lint can't see the use. Genuinely used at runtime.
-/// The image-view side inside a cell, leaving room below for the filename label.
+/// The image-view side inside a cell, leaving room below for the tag dots and filename label.
 #[allow(dead_code)]
 const CELL_IMAGE_PT: f64 = 140.0;
 /// Height reserved for the filename label under the thumbnail.
 #[allow(dead_code)]
 const CELL_LABEL_PT: f64 = 18.0;
-/// Vertical gap between the thumbnail and its filename label.
-#[allow(dead_code)]
-const CELL_IMAGE_LABEL_GAP_PT: f64 = 6.0;
+/// Vertical gap between the thumbnail and the tag dot row.
+const CELL_IMAGE_TAGS_GAP_PT: f64 = 2.0;
+/// Height of the tag dot row: one ringed dot. Reserved in every cell, tagged or not, so rows of
+/// cells stay aligned and a label doesn't move when its file's tags arrive.
+const CELL_TAGS_ROW_PT: f64 = crate::tags::overlay::DOT_SIZE as f64 + 2.0 * TAG_DOT_RING_PT;
+/// Vertical gap between the tag dot row and the filename label. The label's text sits a little
+/// below its frame's top, so a small gap already reads as air.
+const CELL_TAGS_LABEL_GAP_PT: f64 = 1.0;
+/// Room under the label, inside the selection fill.
+const CELL_BOTTOM_PAD_PT: f64 = 4.0;
+/// Top of the tag dot row, from the cell's top.
+const CELL_TAGS_Y: f64 = CELL_IMAGE_PT + CELL_IMAGE_TAGS_GAP_PT;
+/// Top of the filename label, from the cell's top.
+const CELL_LABEL_Y: f64 = CELL_TAGS_Y + CELL_TAGS_ROW_PT + CELL_TAGS_LABEL_GAP_PT;
+/// Cell height in points: thumbnail, tag dot row, label, and a little padding.
+const CELL_HEIGHT_PT: f64 = CELL_LABEL_Y + CELL_LABEL_PT + CELL_BOTTOM_PAD_PT;
+// Thumbnail, dot row, and label stack without touching, and all seven dots fit the row.
+const _: () = assert!(CELL_TAGS_Y > CELL_IMAGE_PT);
+const _: () = assert!(CELL_LABEL_Y > CELL_TAGS_Y + CELL_TAGS_ROW_PT);
+const _: () = assert!(
+    crate::tags::overlay::DOT_SIZE as f64 + 6.0 * crate::tags::overlay::DOT_STEP as f64
+        <= CELL_IMAGE_PT
+);
 /// Filename label point size (small system font, like Finder icon-view labels).
 #[allow(dead_code)]
 const CELL_LABEL_FONT_PT: f64 = 11.0;
@@ -132,11 +152,6 @@ const PREFETCH_MARGIN: usize = 24;
 /// the way Finder's icon view does. The dot size and overlap are the image-mode dots'
 /// (`tags::overlay`), so both read as the same thing.
 const TAG_DOT_RING_PT: f64 = 1.0;
-/// Space between a cell's tag dots and its filename.
-const TAG_DOTS_LABEL_GAP_PT: f64 = 3.0;
-/// What a filename label needs beyond its text's intrinsic width so a short name isn't
-/// truncated to "…" (the text field cell's own inset, both sides).
-const LABEL_CELL_SLACK_PT: f64 = 6.0;
 /// `NSView.tag` of a cell's dot view, which is how a cell finds it again (`viewWithTag:`).
 const TAG_DOTS_VIEW_TAG: NSInteger = 0x7461_6773; // "tags"
 
@@ -185,9 +200,10 @@ struct TagDotsIvars {
 }
 
 define_class!(
-    /// The overlapping tag dots before a cell's filename, Finder's icon-view style: one per
-    /// color, leftmost on top, each ringed in the gallery's color so overlaps read as separate
-    /// dots. Draws nothing without colors. Its `tag` is fixed so a cell can find it again.
+    /// The overlapping tag dots on their own row above a cell's filename, left-aligned with the
+    /// thumbnail: one per color, leftmost on top, each ringed in the gallery's color so overlaps
+    /// read as separate dots. Draws nothing without colors. Its `tag` is fixed so a cell can find
+    /// it again.
     // SAFETY: NSView subclass, no Drop. Main-thread only.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
@@ -248,53 +264,12 @@ impl TagDotsView {
     }
 }
 
-/// Where a cell's label row puts its tag dots and its filename, horizontally, in points.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct LabelRow {
-    dots_x: f64,
-    dots_width: f64,
-    label_x: f64,
-    label_width: f64,
-}
-
-/// Lay out the label row of a `cell_width` cell: the dots, a gap, then the filename, centered as
-/// a group the way Finder's icon view does. `text_width` is what the filename needs; a long one is
-/// squeezed (the label middle-truncates) so the dots always fit. No dots is the plain full-width
-/// centered label.
-fn label_row(cell_width: f64, text_width: f64, dots: usize) -> LabelRow {
-    if dots == 0 {
-        return LabelRow {
-            dots_x: 0.0,
-            dots_width: 0.0,
-            label_x: 0.0,
-            label_width: cell_width,
-        };
-    }
-    let dot = f64::from(crate::tags::overlay::DOT_SIZE);
-    let step = f64::from(crate::tags::overlay::DOT_STEP);
-    let dots_width = 2.0 * TAG_DOT_RING_PT + dot + (dots - 1) as f64 * step;
-    let label_width = text_width
-        .min(cell_width - dots_width - TAG_DOTS_LABEL_GAP_PT)
-        .max(0.0);
-    let total = dots_width + TAG_DOTS_LABEL_GAP_PT + label_width;
-    let dots_x = ((cell_width - total) / 2.0).max(0.0);
-    LabelRow {
-        dots_x,
-        dots_width,
-        label_x: dots_x + dots_width + TAG_DOTS_LABEL_GAP_PT,
-        label_width,
-    }
-}
-
-/// Show `colors` as `item`'s tag dots and lay its label row out around them. Cheap when nothing
-/// changed, so it's safe to call on every cell configure.
+/// Show `colors` as `item`'s tag dots. The dot row has a fixed place in the cell, so nothing else
+/// moves. Cheap when nothing changed, so it's safe to call on every cell configure.
 fn show_tag_dots(item: &NSCollectionViewItem, colors: &[TagColor]) {
     let view: Option<Retained<NSView>> = unsafe { msg_send![item, view] };
-    let (Some(view), Some(label)) = (view, item.textField()) else {
-        return;
-    };
     let Some(dots) = view
-        .viewWithTag(TAG_DOTS_VIEW_TAG)
+        .and_then(|view| view.viewWithTag(TAG_DOTS_VIEW_TAG))
         .and_then(|dots| dots.downcast::<TagDotsView>().ok())
     else {
         return;
@@ -302,21 +277,6 @@ fn show_tag_dots(item: &NSCollectionViewItem, colors: &[TagColor]) {
     if *dots.ivars().colors.borrow() != colors {
         *dots.ivars().colors.borrow_mut() = colors.to_vec();
         dots.setNeedsDisplay(true);
-    }
-    // The intrinsic width is the text's own, and a field exactly that wide still truncates it:
-    // its cell draws inside a small inset on each side.
-    let text_width = label.intrinsicContentSize().width.ceil() + LABEL_CELL_SLACK_PT;
-    let row = label_row(CELL_PT, text_width, colors.len());
-    let label_y = CELL_IMAGE_PT + CELL_IMAGE_LABEL_GAP_PT;
-    unsafe {
-        let _: () = msg_send![&*label, setFrame: NSRect::new(
-            NSPoint::new(row.label_x, label_y),
-            NSSize::new(row.label_width, CELL_LABEL_PT),
-        )];
-        let _: () = msg_send![&*dots, setFrame: NSRect::new(
-            NSPoint::new(row.dots_x, label_y),
-            NSSize::new(row.dots_width, CELL_LABEL_PT),
-        )];
     }
     dots.setHidden(colors.is_empty());
 }
@@ -345,7 +305,10 @@ define_class!(
             // Flipped container (Y=0 at top) so the thumbnail-on-top, label-below layout reads
             // top-down like the visual order, matching the rest of our AppKit UI.
             let container = FlippedView::new_as_nsview(mtm);
-            let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CELL_PT, CELL_PT));
+            let frame = NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(CELL_PT, CELL_HEIGHT_PT),
+            );
             unsafe {
                 let _: () = msg_send![&*container, setFrame: frame];
                 let _: () = msg_send![&*container, setWantsLayer: true];
@@ -371,11 +334,13 @@ define_class!(
             label.setDrawsBackground(false);
             label.setEditable(false);
             label.setSelectable(false);
-            label.setAlignment(objc2_app_kit::NSTextAlignment(2)); // center
+            // The named constant, never a raw number: AppKit's alignment values differ by ABI
+            // (on Apple silicon, 2 is right).
+            label.setAlignment(objc2_app_kit::NSTextAlignment::Center);
             label.setTextColor(Some(&NSColor::secondaryLabelColor()));
             label.setFont(Some(&objc2_app_kit::NSFont::systemFontOfSize(CELL_LABEL_FONT_PT)));
             let label_frame = NSRect::new(
-                NSPoint::new(0.0, CELL_IMAGE_PT + CELL_IMAGE_LABEL_GAP_PT),
+                NSPoint::new(0.0, CELL_LABEL_Y),
                 NSSize::new(CELL_PT, CELL_LABEL_PT),
             );
             unsafe {
@@ -386,10 +351,17 @@ define_class!(
             }
             container.addSubview(&label);
 
-            // Tag dots before the filename, hidden until the cell has tags (`show_tag_dots`
-            // positions both).
+            // Tag dots on their own row between the thumbnail and the filename, hidden until the
+            // cell has tags. Offset left by the ring so the first dot's color lines up with the
+            // thumbnail's left edge.
             let dots = TagDotsView::new(mtm);
             dots.setHidden(true);
+            unsafe {
+                let _: () = msg_send![&*dots, setFrame: NSRect::new(
+                    NSPoint::new((CELL_PT - CELL_IMAGE_PT) / 2.0 - TAG_DOT_RING_PT, CELL_TAGS_Y),
+                    NSSize::new(CELL_IMAGE_PT + 2.0 * TAG_DOT_RING_PT, CELL_TAGS_ROW_PT),
+                )];
+            }
             container.addSubview(&dots);
 
             unsafe {
@@ -712,7 +684,7 @@ impl BrowseGrid {
         unsafe {
             // Flow layout: fixed item size, vertical scroll, comfortable spacing.
             let layout = NSCollectionViewFlowLayout::new(mtm);
-            layout.setItemSize(NSSize::new(CELL_PT, CELL_PT));
+            layout.setItemSize(NSSize::new(CELL_PT, CELL_HEIGHT_PT));
             layout.setMinimumLineSpacing(CELL_SPACING);
             layout.setMinimumInteritemSpacing(CELL_SPACING);
             layout.setScrollDirection(NSCollectionViewScrollDirection::Vertical);
@@ -1318,44 +1290,5 @@ mod tests {
     // The grid's pure logic (model, sort, selection, empty detection, visible-range clamping) is
     // tested in `grid_model`, and its tags in `grid_tags`. The `NSCollectionView` view wiring here
     // is covered by the smoke run + live QA. No headless test seam exists for the objc2 plumbing.
-    use super::*;
-
-    #[test]
-    fn no_dots_is_the_plain_full_width_label() {
-        let row = label_row(CELL_PT, 40.0, 0);
-        assert_eq!(row.label_x, 0.0);
-        assert_eq!(row.label_width, CELL_PT);
-        assert_eq!(row.dots_width, 0.0);
-    }
-
-    /// A short name: dots, gap, name, centered together.
-    #[test]
-    fn dots_and_a_short_name_are_centered_as_a_group() {
-        let row = label_row(CELL_PT, 40.0, 2);
-        let right = row.label_x + row.label_width;
-        assert_eq!(row.label_width, 40.0);
-        assert_eq!(
-            row.label_x,
-            row.dots_x + row.dots_width + TAG_DOTS_LABEL_GAP_PT
-        );
-        assert!(
-            (row.dots_x - (CELL_PT - right)).abs() < 1e-9,
-            "equal margins: {row:?}"
-        );
-        // Two overlapping dots are narrower than two side by side.
-        let dot = f64::from(crate::tags::overlay::DOT_SIZE);
-        assert!(row.dots_width < 2.0 * dot + 2.0 * TAG_DOT_RING_PT);
-    }
-
-    /// A long name gives way to the dots, which never slide off the cell.
-    #[test]
-    fn a_long_name_is_squeezed_so_the_dots_fit() {
-        let row = label_row(CELL_PT, 500.0, 7);
-        assert_eq!(row.dots_x, 0.0);
-        assert!(
-            (row.label_x + row.label_width - CELL_PT).abs() < 1e-9,
-            "{row:?}"
-        );
-        assert!(row.label_width > 0.0);
-    }
+    // The cell layout's stacking is asserted at compile time next to its constants.
 }
