@@ -5,6 +5,42 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] - 2026-09-24
+
+Finder color tags: tag photos with a single key while you flip through them.
+
+### Added
+
+- **Tag photos with Finder's color tags on macOS.** Press `1`–`7` to toggle red, orange, yellow, green, blue, purple, or
+  gray on the current image; its tags show as small dots in the bottom-left corner, and a new Tags menu ticks them.
+  They're real Finder tags, so Finder finds them and keeps your other tags as they are
+  ([2d7fe89f](https://github.com/vdavid/prvw/commit/2d7fe89f))
+- The browse grid shows each photo's tag dots on a row above its name, read in the background so a big folder on a
+  network share stays responsive ([6933a6e2](https://github.com/vdavid/prvw/commit/6933a6e2),
+  [0f1e87fa](https://github.com/vdavid/prvw/commit/0f1e87fa))
+
+### Changed
+
+- A tag change, from Prvw or from Finder, only refreshes the dots now instead of decoding the image again. Prvw compares
+  the file's size and modification time to tell a metadata change from a real edit
+  ([4d9c9562](https://github.com/vdavid/prvw/commit/4d9c9562))
+- The bare `1` key no longer means actual size (it tags red now); use ⌘0. A `0` with a modifier held no longer fits to
+  window ([a2ca4477](https://github.com/vdavid/prvw/commit/a2ca4477))
+
+### Fixed
+
+- Actual size (⌘0) works again on a small image that "Enlarge small images" had blown up, in fullscreen or with auto-fit
+  off. The zoom floor clamped 100% straight back to the enlarged size, so the shortcut seemed to do nothing
+  ([9ce79574](https://github.com/vdavid/prvw/commit/9ce79574))
+- Centered labels are centered on Apple silicon. AppKit's alignment values differ by CPU, so browse-grid filenames and a
+  few Settings labels came out right-aligned ([8f28c4d1](https://github.com/vdavid/prvw/commit/8f28c4d1),
+  [0f1e87fa](https://github.com/vdavid/prvw/commit/0f1e87fa))
+
+### Non-app
+
+- Move the check runner's log out of the home folder into `~/.local/share/check-runner/prvw/`
+  ([8c83d198](https://github.com/vdavid/prvw/commit/8c83d198))
+
 ## [0.16.1] - 2026-09-03
 
 ### Fixed
