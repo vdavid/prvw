@@ -31,21 +31,19 @@ AVIF is out of scope here, but the design is built so it plugs straight in later
 - **Crates:** `ultrahdr-core` for the gain-map math and metadata, never `ultrahdr-rs` (see "Dependencies").
 - **Order:** this whole spec lands before AVIF.
 
-## Decisions waiting for David
+## Decisions made with the spec (David, 2026-10-13)
 
-These have a recommended default, and the milestones are ordered so nothing blocks on them until M5. Ask David before
-starting M5; record the answer here.
+David picked 1(a) and 2(a). The alternatives stay listed so the reasoning survives.
 
-1. **Where the HDR switch lives.** Today it's Settings → RAW → "HDR / EDR output" (`raw.hdr_output`,
-   `RawPipelineFlags::hdr_output`). After this spec it governs every format.
-   - (a) **Recommended:** move it to Settings → Color as "HDR output", key `color.hdr_output`, migrating the old key on
-     load. Rename internals to match (principle 4 in `AGENTS.md`), update the parity registry (`parity/setting_keys.rs`)
-     and the Windows settings model (`settings/windows/model.rs`).
+1. **Where the HDR switch lives: (a), move it to Settings → Color.** Today it's Settings → RAW → "HDR / EDR output"
+   (`raw.hdr_output`, `RawPipelineFlags::hdr_output`). After this spec it governs every format.
+   - (a) **Chosen:** move it to Settings → Color as "HDR output", key `color.hdr_output`, migrating the old key on load.
+     Rename internals to match (principle 4 in `AGENTS.md`), update the parity registry (`parity/setting_keys.rs`) and
+     the Windows settings model (`settings/windows/model.rs`).
    - (b) Keep it in the RAW panel and widen its meaning. Cheaper, but the label then lies.
-2. **How far 16-bit SDR precision goes** (M1).
-   - (a) **Recommended for M1:** keep the 8-bit SDR surface. The 16-bit buffer removes the double rounding (decode then
-     transform), which is where the visible banding comes from. Output still quantizes to 8 bits once, like any SDR
-     image.
+2. **How far 16-bit SDR precision goes (M1): (a), keep the 8-bit surface for now.**
+   - (a) **Chosen:** keep the 8-bit SDR surface. The 16-bit buffer removes the double rounding (decode then transform),
+     which is where the visible banding comes from. Output still quantizes to 8 bits once, like any SDR image.
    - (b) Later, if a gradient test on the XDR panel still shows banding: switch the surface to `Rgba16Float` while a
      16-bit image is on screen, so more than 8 bits reach the compositor. That needs the shader to output
      display-encoded values on a float surface whose layer colorspace is the display ICC, which is new surface plumbing.
@@ -364,8 +362,28 @@ TDD per the house rule: write each test first and see it fail for the right reas
     against real files locally, without committing them: David's Pixel photos
     `~/Downloads/takeout-unique-samples/photo-27 [Photos from 2025] PXL_20250219_153250675.jpg` and
     `photo-28 [...] PXL_20251008_104424078.jpg` (both Ultra HDR v1 XMP with MPF, verified 2026-10-13; these are personal
-    photos, ❌ never commit them). Ask David for iPhone HDR exports (one HEIC-origin JPEG export, one ISO 21496-1 export
-    from iOS 18+).
+    photos, ❌ never commit them).
+  - **iPhone samples** (original camera JPEGs on Wikimedia Commons, which keeps uploads byte for byte; gain maps
+    confirmed with ImageIO's `CGImageSourceCopyAuxiliaryDataInfoAtIndex` on 2026-10-13). Download them locally for the
+    real-file check; committing one needs its license honored (attribution, and share-alike for the CC BY-SA ones), so
+    ask David first.
+    - Apple flavor only (maker-note headroom, `urn:com:apple:photo:2020:aux:hdrgainmap` map at half resolution, no ISO
+      metadata), iPhone 14 Plus, 4032×3024, 3.0 MB, CC BY-SA 4.0:
+      https://commons.wikimedia.org/wiki/File:About_iPhone_15_Pro_Max_Natural_Titanium.jpg (file:
+      https://upload.wikimedia.org/wikipedia/commons/2/23/About_iPhone_15_Pro_Max_Natural_Titanium.jpg)
+    - Apple flavor only, a second one from the same phone, CC BY-SA 4.0:
+      https://commons.wikimedia.org/wiki/File:Back_view_of_iPhone_14_Pro_Max_Deep_Purple.jpg (file:
+      https://upload.wikimedia.org/wikipedia/commons/c/cb/Back_view_of_iPhone_14_Pro_Max_Deep_Purple.jpg)
+    - Apple and ISO 21496-1 maps both present (iOS 18+ writes both), iPhone 16e, 4284×5712 portrait, 3.9 MB, CC BY 4.0:
+      https://commons.wikimedia.org/wiki/File:IPhone_15_pro_model.jpg (file:
+      https://upload.wikimedia.org/wikipedia/commons/e/e3/IPhone_15_pro_model.jpg)
+    - Apple and ISO 21496-1, iPhone Air, 776×776, 306 KB (small enough to be a committed fixture if David agrees), CC
+      BY-SA 4.0: https://commons.wikimedia.org/wiki/File:IPhone_16_Pro_Super_Retina_XDR_OLED_Display_(100X_Mag.).jpg
+      (file:
+      https://upload.wikimedia.org/wikipedia/commons/5/51/IPhone_16_Pro_Super_Retina_XDR_OLED_Display_%28100X_Mag.%29.jpg)
+    - The file names name the phone in the picture, not the camera: trust the EXIF `Model` above.
+    - Both flavors in one file is the case to get right: prefer the ISO 21496-1 metadata when present (section 4's
+      order), and check the result against the Apple-only reading of the same file.
   - libultrahdr's repo has small test images under an Apache-2.0 license. If one is small enough (< 100 KB), committing
     it with a line in `tests/fixtures/README.md` is a good second, independent source.
   - Optional macOS oracle: ImageIO decodes gain-map JPEGs to HDR (`kCGImageSourceDecodeRequest` =
@@ -409,7 +427,8 @@ Linux simply never activates HDR).
   the cache on a magnitude-only change, headroom polling, and the `/state` fields plus the QA headroom override.
 - **M3: Gain-map JPEGs** (section 4), Ultra HDR XMP first, then ISO 21496-1, then Apple.
 - **M4: PQ/HLG PNGs and float TIFFs** (section 5), with the CPU SDR fallback.
-- **M5: The setting** (needs David's answer to decision 1), docs, and the hand-off to David for QA.
+- **M5: The setting** (decision 1(a): move it to Settings → Color as "HDR output"), docs, and the hand-off to David for
+  QA.
 
 ## Dependencies
 
