@@ -1,5 +1,7 @@
 # HDR images: gain maps, PQ/HLG, float, and 16-bit
 
+Tracking issue: https://github.com/vdavid/prvw/issues/5
+
 Goal: show every HDR still Prvw can open the way the file intends, on every display, and stop losing precision on 16-bit
 SDR files. Today only camera RAW reaches the EDR/HDR surface. Everything else is decoded to 8-bit, color-managed into
 the display profile, and anything above SDR white is gone before the GPU sees it.
