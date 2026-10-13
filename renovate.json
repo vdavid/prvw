@@ -1,15 +1,43 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "schedule": ["before 6am on Monday"],
   "minimumReleaseAge": "3 days",
-  "vulnerabilityAlerts": {
-    "minimumReleaseAge": "3 days"
-  },
+  "customManagers": [
+    {
+      "description": "The Go analyzers the check runner installs are pinned as `@vX.Y.Z` string literals inside `EnsureGoTool(...)` calls, so no built-in manager sees them. `packageName` captures the module root (`honnef.co/go/tools`) because the goproxy 404s on a package path, while `depName` keeps the full install path so `autoReplaceStringTemplate` can write the line back verbatim. The first argument is `ctx.RootDir`, an identifier, so it's matched as `[^,]+`; a regex expecting a quoted string there matches nothing.",
+      "customType": "regex",
+      "managerFilePatterns": ["scripts/check/checks/*.go"],
+      "matchStrings": [
+        "EnsureGoTool\\(\\s*[^,]+,\\s*\"[^\"]*\",\\s*\"(?<depName>(?<packageName>[^\"@]+?)(?:/cmd/[^\"@/]+)?)@(?<currentValue>v[^\"]+)\""
+      ],
+      "autoReplaceStringTemplate": "{{{depName}}}@{{{newValue}}}",
+      "datasourceTemplate": "go",
+      "depTypeTemplate": "check-tool"
+    },
+    {
+      "description": "`cargo-audit` is installed at a pinned `--version` inside the check file.",
+      "customType": "regex",
+      "managerFilePatterns": ["scripts/check/checks/desktop-rust-cargo-audit.go"],
+      "matchStrings": ["\"cargo-audit\", \"--version\", \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "cargo-audit",
+      "datasourceTemplate": "crate",
+      "depTypeTemplate": "check-tool"
+    },
+    {
+      "description": "CI downloads a prebuilt `cargo-nextest` by version (`get.nexte.st/<version>/<platform>`), in all three test jobs.",
+      "customType": "regex",
+      "managerFilePatterns": [".github/workflows/*.yml"],
+      "matchStrings": ["get\\.nexte\\.st/(?<currentValue>[0-9][^/]*)/"],
+      "depNameTemplate": "cargo-nextest",
+      "datasourceTemplate": "crate",
+      "depTypeTemplate": "check-tool"
+    }
+  ],
   "packageRules": [
     {
       "description": "Non-major updates: group and auto-merge weekly",
-      "matchUpdateTypes": ["minor", "patch", "digest", "pin"],
+      "matchUpdateTypes": ["minor", "patch", "digest", "pin", "pinDigest"],
       "groupName": "non-major updates",
       "automerge": true
     },
@@ -18,6 +46,45 @@
       "matchUpdateTypes": ["major"],
       "schedule": ["before 6am on the first day of the month"],
       "automerge": false
+    },
+    {
+      "description": "The check runner's pinned tools, plus the Go toolchain they're built with, land together. staticcheck has to read the export data of the Go that `.mise.toml` pins (Go 1.27.2 needed staticcheck 2026.2.2), so moving one without the other turns the `staticcheck` check red. Not automerged, for the same reason: a tool bump can re-flag tracked source.",
+      "matchDepTypes": ["check-tool"],
+      "groupName": "Go toolchain and check tools",
+      "automerge": false
+    },
+    {
+      "description": "The Go pin in `.mise.toml` rides with the check tools above.",
+      "matchManagers": ["mise"],
+      "matchDepNames": ["go"],
+      "groupName": "Go toolchain and check tools",
+      "automerge": false
+    },
+    {
+      "description": "Docker images are pinned by digest (`FROM image:tag@sha256:...`), so a tag that upstream re-points can't change what we build. Digest refreshes and non-major tag bumps land as one weekly PR that automerges on green CI; majors still wait for review.",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "matchUpdateTypes": ["patch", "minor", "pin", "digest", "pinDigest"],
+      "groupName": "docker images",
+      "automerge": true
+    },
+    {
+      "description": "Security fixes skip the weekly schedule and the groups, and auto-merge on green CI.",
+      "matchCategories": ["security"],
+      "schedule": ["at any time"],
+      "automerge": true,
+      "groupName": null
     }
-  ]
+  ],
+  "dockerfile": {
+    "pinDigests": true
+  },
+  "docker-compose": {
+    "pinDigests": true
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"],
+    "automerge": true,
+    "minimumReleaseAge": "3 days"
+  }
 }
