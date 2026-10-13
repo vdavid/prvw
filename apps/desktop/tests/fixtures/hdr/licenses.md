@@ -14,3 +14,10 @@ Every file in this directory is listed here with its source, license, and the at
   https://creativecommons.org/licenses/by-sa/4.0/
 - **Attribution**: this entry. Any modified version of the image (a crop, a re-encode) has to stay under CC BY-SA 4.0
   and say what changed. The license covers this file only, not the code that reads it.
+
+## `ultra-hdr-xmp-64x48.jpg`, `ultra-hdr-xmp-orientation-6.jpg`, `iso-21496-64x48.jpg`, `apple-64x48.jpg`
+
+- **Source**: generated for this repo by `apps/desktop/examples/make-hdr-fixtures.rs` from synthetic ramps. No
+  third-party content; the Display P3 profile in `iso-21496-64x48.jpg` is the one `moxcms` builds from the published
+  primaries.
+- **License**: the repo's own, like the code that writes them.

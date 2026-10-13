@@ -34,6 +34,9 @@
 mod dispatch;
 mod dng_opcodes;
 pub mod exif_metadata;
+// Wired into `jpeg::decode` by the next commit (HDR M3).
+#[allow(dead_code)]
+mod gain_map;
 mod generic;
 mod jpeg;
 mod orientation;
