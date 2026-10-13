@@ -22,5 +22,5 @@
 # The manager only extracts an exact version, though. Put `stable` back and it skips the file as
 # `invalid-version`, leaving nothing to update, so the pin is what turns the updates on.
 [toolchain]
-channel = "1.98.0"
+channel = "1.99.0"
 components = ["clippy", "rustfmt"]
