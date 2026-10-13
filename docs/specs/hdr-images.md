@@ -415,10 +415,9 @@ Linux simply never activates HDR).
 
 - **M0: Groundwork.**
   - Add `ultrahdr-core` (see "Dependencies").
-  - Add a license guard check to the Go runner (`scripts/check/checks/`): run `cargo metadata --format-version 1` and
-    fail on any package whose license expression has no permissive alternative (fail on AGPL, GPL, LGPL, SSPL, or
-    BUSL-only). imazen publishes several useful crates as `AGPL-3.0-only OR LicenseRef-Imazen-Commercial`, and one
-    default feature is enough to pull them in.
+  - Make sure a license check catches copyleft crates. imazen publishes several useful crates as
+    `AGPL-3.0-only OR LicenseRef-Imazen-Commercial`, and one default feature is enough to pull them in. The repo's
+    `cargo-deny` check (`deny.toml`) does this (see "Findings").
   - Investigate and fill in "Findings": headroom (potential vs current, per platform), crossfade surface behavior,
     whether `ultrahdr-core` or `zencodec` still parse XMP and MPF, whether `png` 0.18.1's encoder writes `cICP`.
 - **M1: 16-bit SDR PNG/TIFF** (section 6). Introduces `PixelEncoding` with only `DisplaySdr` and `LinearHdrDisplay`, so
@@ -583,8 +582,7 @@ Filled in by the implementing agent during M0 and later. Date each entry.
   site. The renderer still picks the texture format from storage only; mode 0 covers `DisplaySdr` in both storages with
   no shader change. A `DisplaySdr` f16 image on the EDR surface (only reachable mid-crossfade) shows linearized display
   values as linear P3, like an 8-bit SDR one does today.
-- **2026-10-13, license guard (M0).** It reads `cargo tree`, not `cargo metadata`: metadata and `Cargo.lock` list
-  `zentone`, because `ultrahdr-core`'s `std` feature names it weakly (`zentone?/std`), though cargo never builds it. The
-  tree already held three non-permissive crates, now accepted exceptions bound to their license strings: `rawler`
-  (LGPL-2.1), `lensfun` (LGPL-3.0-or-later), and `nom-exif` (no expression; its license file is MIT). See
-  `scripts/check/CLAUDE.md`.
+- **2026-10-14, license check (M0): `cargo-deny` covers it, so there's no HDR-specific guard.** `Cargo.lock` lists
+  the AGPL `zentone`, because `ultrahdr-core`'s `std` feature names it weakly (`zentone?/std`), though cargo never
+  builds it. `cargo-deny` resolves features the way the build does: it passes with `features = ["std"]`, and with
+  `"tonemap"` added it fails on `zentone`'s `AGPL-3.0-only OR LicenseRef-Imazen-Commercial` (both verified 2026-10-14).
