@@ -8,7 +8,7 @@ license = "BUSL-1.1"
 [dependencies]
 winit = "0.30.13"
 wgpu = "30.0.1"
-pollster = "0.4.0"
+pollster = "1.0.1"
 image = "0.25.10"
 zune-jpeg = "0.5.15"
 zune-core = "0.5.3"
@@ -24,10 +24,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.152"
 base64 = "0.23.1"
 nom-exif = { version = "3.8.0", default-features = false }
-rawler = "0.7.2"
-multiversion = "0.8.0"
+rawler = "0.8.0"
+multiversion = "0.9.0"
 lensfun = "0.7.0"
-zstd = "0.13.3"
+zstd = "0.14.2"
 glyphon = "0.12.0"
 half = "2.7.1"
 alphanumeric-sort = "1.5.8"
@@ -226,7 +226,7 @@ plist = { version = "1.10.1", default-features = false }
 # workspace-root Cargo.toml — Cargo ignores `[profile.*]` in member manifests.
 
 [build-dependencies]
-zstd = "0.13.3"
+zstd = "0.14.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"
