@@ -9,7 +9,7 @@
     "check": "./scripts/check.sh"
   },
   "devDependencies": {
-    "oxfmt": "^0.46.0"
+    "oxfmt": "^0.72.0"
   },
   "engines": {
     "pnpm": ">=12"
