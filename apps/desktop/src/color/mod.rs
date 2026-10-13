@@ -5,6 +5,7 @@ pub mod chroma_denoise;
 pub mod clarity;
 pub mod dcp;
 pub mod delta_e;
+pub mod hdr;
 pub mod highlight_recovery;
 pub mod lens_correction;
 pub mod profiles;

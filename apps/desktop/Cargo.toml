@@ -31,6 +31,11 @@ lensfun = "0.7.0"
 zstd = "0.14.2"
 glyphon = "0.12.0"
 half = "2.7.1"
+# Gain-map math and metadata for HDR JPEGs (`color::hdr`, `docs/specs/hdr-images.md`). Apache-2.0.
+# Pinned exactly and wrapped behind `color::hdr`, because it's pre-1.0 and renames between minors.
+# `default-features = false` is load-bearing: the default `tonemap` feature (and `resize`) pull in
+# `zentone` and `zenresize`, which are AGPL. The `license-guard` check fails if one slips in.
+ultrahdr-core = { version = "=0.6.0", default-features = false, features = ["std"] }
 alphanumeric-sort = "1.5.8"
 notify = "8.2.0"
 # The native "Open an image" picker behind File → Open. MIT. Default features are
