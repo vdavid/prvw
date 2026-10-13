@@ -94,6 +94,8 @@ This is a monorepo:
   - `style-guide.md` - Writing, code, and design style rules
   - `design-principles.md` - Product design values
   - `mcp-server.md` - MCP/QA server tool and resource reference
+  - `security.md` - Supply chain: the three-day window, what's pinned where, advisory scans, workflow hardening. Read it
+    before adding a dependency, a tool install, or a workflow step
   - `specs/` - Feature specs and plans
 - Feature-level docs live in **colocated `CLAUDE.md` files** next to the code.
 
