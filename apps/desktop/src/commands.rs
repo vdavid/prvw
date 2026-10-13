@@ -138,7 +138,7 @@ impl AppCommand {
             | AppCommand::TakeScreenshot(_)
             | AppCommand::Sync(_)
             | AppCommand::PreloaderProgress => Internal,
-            AppCommand::DisplayChanged => Internal,
+            AppCommand::DisplayChanged | AppCommand::SetDisplayHdrOverride(_) => Internal,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             AppCommand::PreviewsAvailable => Internal,
             // The browse screen's own event wiring: tree and grid callbacks, background
@@ -415,6 +415,12 @@ pub enum AppCommand {
     /// `WM_DISPLAYCHANGE`, which is a monitor arriving or leaving, a resolution change, or a
     /// profile re-associated in place.
     DisplayChanged,
+
+    /// QA hook (`POST /display-hdr`): stand in for the display's HDR answer, since CI displays
+    /// have none. Replaces the whole override; a `None` field reads the real display again. Acted
+    /// on exactly like a real reading, so a headroom-only change re-decodes nothing and a
+    /// capability flip re-decodes the image on screen.
+    SetDisplayHdrOverride(crate::render::display_hdr::DisplayHdrOverride),
 
     /// Files were dropped on the window (or handed over by the QA server's `/drop`). The
     /// executor classifies them with `launch::classify_open_request` and opens what it finds:

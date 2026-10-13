@@ -57,10 +57,55 @@ impl DisplayHdr {
     }
 }
 
+/// What the QA server can force in place of the display's own answer, field by field. CI displays
+/// have no HDR, so this is how a test drives the headroom and capability paths.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DisplayHdrOverride {
+    pub capable: Option<bool>,
+    pub headroom_now: Option<f32>,
+}
+
+impl DisplayHdrOverride {
+    /// The measured state with every overridden field replaced. A forced headroom is held to at
+    /// least 1.0, like a measured one.
+    pub fn apply(self, measured: DisplayHdr) -> DisplayHdr {
+        DisplayHdr {
+            capable: self.capable.unwrap_or(measured.capable),
+            headroom_now: self
+                .headroom_now
+                .filter(|headroom| headroom.is_finite())
+                .map_or(measured.headroom_now, |headroom| headroom.max(1.0)),
+        }
+    }
+}
+
+/// How often the current headroom is re-read while an HDR image is on screen. Neither macOS nor
+/// Windows sends a notification for a brightness or SDR-white-level change, so this is a poll.
+/// Half a second is what "the highlights adapt as you drag the brightness slider" needs, and one
+/// `display_hdr_info` read per tick costs microseconds on macOS and an adapter walk on Windows.
+pub const HEADROOM_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Whether the current headroom moved enough to be worth a redraw: more than 1% either way.
 /// macOS reports the value with float noise, and a redraw per tick of noise is idle cost.
 pub fn headroom_moved(old: f32, new: f32) -> bool {
     (new - old).abs() > old.abs() * 0.01
+}
+
+/// When the headroom poll should next fire, given whether it should run at all and when it was
+/// last due. Stopping drops the deadline; starting, or a deadline that has passed, schedules one
+/// [`HEADROOM_POLL`] from `now`.
+pub fn next_headroom_poll(
+    should_poll: bool,
+    due: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Option<std::time::Instant> {
+    if !should_poll {
+        return None;
+    }
+    match due {
+        Some(due) if due > now => Some(due),
+        _ => Some(now + HEADROOM_POLL),
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +219,66 @@ mod tests {
         assert_eq!(
             DisplayHdr::from_info(&wgpu::DisplayHdrInfo::default()),
             DisplayHdr::SDR
+        );
+    }
+
+    #[test]
+    fn an_empty_override_changes_nothing() {
+        let measured = DisplayHdr {
+            capable: true,
+            headroom_now: 3.0,
+        };
+        assert_eq!(DisplayHdrOverride::default().apply(measured), measured);
+    }
+
+    #[test]
+    fn an_override_replaces_only_the_fields_it_sets() {
+        let forced = DisplayHdrOverride {
+            capable: None,
+            headroom_now: Some(4.0),
+        };
+        assert_eq!(
+            forced.apply(DisplayHdr::SDR),
+            DisplayHdr {
+                capable: false,
+                headroom_now: 4.0
+            }
+        );
+        let forced = DisplayHdrOverride {
+            capable: Some(true),
+            headroom_now: Some(0.5),
+        };
+        assert_eq!(
+            forced.apply(DisplayHdr::SDR),
+            DisplayHdr {
+                capable: true,
+                headroom_now: 1.0
+            }
+        );
+    }
+
+    #[test]
+    fn the_poll_stops_when_it_shouldnt_run() {
+        let now = std::time::Instant::now();
+        assert_eq!(
+            next_headroom_poll(false, Some(now + HEADROOM_POLL), now),
+            None
+        );
+        assert_eq!(next_headroom_poll(false, None, now), None);
+    }
+
+    #[test]
+    fn the_poll_keeps_a_pending_deadline_and_reschedules_a_passed_one() {
+        let now = std::time::Instant::now();
+        let pending = now + std::time::Duration::from_millis(200);
+        assert_eq!(next_headroom_poll(true, Some(pending), now), Some(pending));
+        assert_eq!(
+            next_headroom_poll(true, None, now),
+            Some(now + HEADROOM_POLL)
+        );
+        assert_eq!(
+            next_headroom_poll(true, Some(now), now),
+            Some(now + HEADROOM_POLL)
         );
     }
 

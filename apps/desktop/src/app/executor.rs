@@ -527,6 +527,9 @@ impl App {
             AppCommand::DisplayChanged => {
                 self.handle_display_changed();
             }
+            AppCommand::SetDisplayHdrOverride(display_hdr_override) => {
+                self.set_display_hdr_override(display_hdr_override);
+            }
             AppCommand::CopyImage => {
                 let current = self
                     .navigation

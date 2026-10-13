@@ -20,7 +20,7 @@ use crate::pixels::{
     Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
     to_logical_size,
 };
-use crate::render::display_hdr::{self, DisplayHdr};
+use crate::render::display_hdr::{self, DisplayHdr, DisplayHdrOverride};
 use crate::render::{progress_bar, renderer, text};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::updater;
@@ -188,12 +188,19 @@ pub(crate) struct App {
     /// renderer exists. Refreshed on `AppCommand::DisplayChanged`, on a move to
     /// another monitor, and by the headroom poll while an HDR image is on screen.
     pub(crate) display_hdr: DisplayHdr,
-    /// True when the currently-displayed image needs the EDR surface
-    /// (`PixelEncoding::is_hdr`). Combined with `raw_flags.hdr_output` and
-    /// `display_hdr.capable`, this determines whether the wgpu surface should be
+    /// What the currently-displayed image's pixels mean, `None` before the
+    /// first one. Its `is_hdr()`, combined with `raw_flags.hdr_output` and
+    /// `display_hdr.capable`, determines whether the wgpu surface should be
     /// configured for EDR output. Only RAW decodes produce HDR buffers today, so
-    /// this flips back to `false` whenever a JPEG / PNG / WebP / etc. loads.
-    pub(crate) current_image_is_hdr: bool,
+    /// it reads SDR again whenever a JPEG / PNG / WebP / etc. loads.
+    pub(crate) current_image_encoding: Option<decoding::EncodingKind>,
+    /// The QA server's stand-in for the display's HDR answer, for test machines
+    /// whose displays have none. Empty unless a test set it.
+    pub(crate) display_hdr_override: DisplayHdrOverride,
+    /// When the headroom poll next reads the display. `Some` only while
+    /// `want_edr_surface()` holds and the window is visible, so an SDR image
+    /// never wakes the loop for it.
+    pub(crate) headroom_poll_due: Option<Instant>,
 
     // ── Runtime input / rendering ───────────────────────────────────
     pub(crate) modifiers: ModifiersState,
@@ -338,7 +345,9 @@ impl App {
             title_bar: initial_settings.title_bar,
             raw_flags: initial_settings.raw,
             display_hdr: DisplayHdr::SDR,
-            current_image_is_hdr: false,
+            current_image_encoding: None,
+            display_hdr_override: DisplayHdrOverride::default(),
+            headroom_poll_due: None,
             modifiers: ModifiersState::empty(),
             drag_start: None,
             pending_drops: Vec::new(),
@@ -1858,15 +1867,15 @@ impl App {
         // First pass: inspect the cached image enough to reconfigure the
         // surface (can't hold an `image_cache` borrow while calling
         // `prepare_display`, which needs `&mut self`).
-        let Some((iw, ih, is_hdr)) = self
+        let Some((iw, ih, encoding)) = self
             .navigation
             .image_cache
             .get(&path)
-            .map(|img| (img.width, img.height, img.encoding.is_hdr()))
+            .map(|img| (img.width, img.height, img.encoding.kind()))
         else {
             return false;
         };
-        self.prepare_display(iw, ih, is_hdr);
+        self.prepare_display(iw, ih, encoding);
 
         // Only crossfade when the surface size is unchanged: a window resize
         // (auto-fit on a differently-sized image) would render the outgoing
@@ -1939,10 +1948,15 @@ impl App {
     /// Without this, a preview shown as a placeholder ended up at whatever
     /// zoom the previous image left behind (often 1:1, looking like a
     /// crop of the wrong picture).
-    fn prepare_display(&mut self, source_width: u32, source_height: u32, is_hdr: bool) {
+    fn prepare_display(
+        &mut self,
+        source_width: u32,
+        source_height: u32,
+        encoding: decoding::EncodingKind,
+    ) {
         let offset = self.content_offset_y();
         self.navigation.current_image_size = Some((source_width, source_height));
-        self.current_image_is_hdr = is_hdr;
+        self.current_image_encoding = Some(encoding);
         self.apply_edr_surface_state();
 
         if self.zoom.auto_fit
@@ -1980,7 +1994,7 @@ impl App {
     /// without a dir_list — nothing to cache into, so upload directly.
     fn display_decoded_direct(&mut self, image: &decoding::DecodedImage) {
         self.navigation.current_image_size = Some((image.width, image.height));
-        self.current_image_is_hdr = image.encoding.is_hdr();
+        self.current_image_encoding = Some(image.encoding.kind());
         let offset = self.content_offset_y();
         self.apply_edr_surface_state();
         let renderer = self.renderer.as_mut().unwrap();
@@ -2672,6 +2686,10 @@ impl App {
         if self.scan_status_needs_polling() {
             candidates.push(Instant::now() + folder_scan::STATUS_POLL);
         }
+        // Headroom poll: only ever set while an HDR image is on screen (`poll_display_headroom`).
+        if let Some(due) = self.headroom_poll_due {
+            candidates.push(due);
+        }
         match candidates.into_iter().min() {
             Some(t) => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
@@ -2927,7 +2945,7 @@ impl App {
         let (sw, sh) = dims
             .or(self.navigation.current_image_size)
             .unwrap_or((image.width, image.height));
-        self.prepare_display(sw, sh, false);
+        self.prepare_display(sw, sh, decoding::EncodingKind::DisplaySdr);
         if let Some(renderer) = &mut self.renderer {
             renderer.set_image(&image);
         }
@@ -3748,7 +3766,7 @@ impl App {
         }
         if let Some(dir) = &self.navigation.dir_list {
             let path = dir.current().to_path_buf();
-            // `display_image` updates `current_image_is_hdr` and calls
+            // `display_image` updates `current_image_encoding` and calls
             // `apply_edr_surface_state`, so the surface picks up the new
             // `hdr_output` flag through the re-decode.
             self.display_image(&path);
@@ -3767,12 +3785,53 @@ impl App {
         self.raw_flags.hdr_output && self.display_hdr.capable
     }
 
-    /// What the display can do with HDR. [`DisplayHdr::SDR`] until the renderer exists to ask.
-    /// See [`DisplayHdr::from_info`] for what each platform means by the two numbers.
+    /// What the display can do with HDR, with any QA override applied. [`DisplayHdr::SDR`] until
+    /// the renderer exists to ask. See [`DisplayHdr::from_info`] for what each platform means by
+    /// the two numbers.
     fn query_display_hdr(&self) -> DisplayHdr {
-        self.renderer
+        let measured = self
+            .renderer
             .as_ref()
-            .map_or(DisplayHdr::SDR, renderer::Renderer::display_hdr)
+            .map_or(DisplayHdr::SDR, renderer::Renderer::display_hdr);
+        self.display_hdr_override.apply(measured)
+    }
+
+    /// Replace the QA override (`POST /display-hdr`) and act on it exactly as on a real reading,
+    /// so a test drives the same paths a brightness change or a display swap would.
+    pub(crate) fn set_display_hdr_override(&mut self, display_hdr_override: DisplayHdrOverride) {
+        self.display_hdr_override = display_hdr_override;
+        if self.refresh_display_hdr() {
+            self.redisplay_current();
+        }
+        self.apply_edr_surface_state();
+        self.update_shared_state();
+    }
+
+    /// The headroom poll, from `about_to_wait`: re-read the display every
+    /// [`display_hdr::HEADROOM_POLL`] while an HDR image is on screen in a visible window, because
+    /// neither platform announces a brightness change. With an SDR image up it schedules nothing,
+    /// so an idle viewer never wakes for it, and a reading that didn't move draws nothing.
+    fn poll_display_headroom(&mut self) {
+        let visible = self
+            .window
+            .as_ref()
+            .and_then(|window| window.is_visible())
+            .unwrap_or(true);
+        let should_poll = visible && self.want_edr_surface();
+        let now = Instant::now();
+        if should_poll && self.headroom_poll_due.is_some_and(|due| now >= due) {
+            let before = self.display_hdr;
+            let measured = self.query_display_hdr();
+            if self.adopt_display_hdr(measured) {
+                self.redisplay_current();
+                self.apply_edr_surface_state();
+            }
+            if self.display_hdr != before {
+                self.update_shared_state();
+            }
+        }
+        self.headroom_poll_due =
+            display_hdr::next_headroom_poll(should_poll, self.headroom_poll_due, now);
     }
 
     /// Re-read the display and adopt the answer. Returns `true` when HDR decoding flipped, which
@@ -3866,7 +3925,10 @@ impl App {
     /// currently-displayed image is actually an HDR decode. When any flips,
     /// call `apply_edr_surface_state`.
     pub(crate) fn want_edr_surface(&self) -> bool {
-        self.hdr_active() && self.current_image_is_hdr
+        self.hdr_active()
+            && self
+                .current_image_encoding
+                .is_some_and(decoding::EncodingKind::is_hdr)
     }
 
     /// Reconfigure the wgpu surface and the `CAMetalLayer` to match
@@ -4266,6 +4328,10 @@ impl ApplicationHandler<AppCommand> for App {
 
         // Crossfade animation: ramp the fade factor each frame until done.
         self.drive_crossfade();
+
+        // The display's current headroom, while an HDR image is up. A change is one uniform
+        // write and a redraw, never a decode.
+        self.poll_display_headroom();
 
         // "Loading…" overlay: reveal it once the pending image has outlived the delay, hide it the
         // moment the image lands. Only a change asks for a redraw, so an idle wait stays idle.

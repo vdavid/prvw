@@ -643,6 +643,16 @@ impl Renderer {
         DisplayHdr::from_info(&info)
     }
 
+    /// Whether the surface is in EDR mode right now (`Rgba16Float`).
+    pub fn is_edr_surface(&self) -> bool {
+        self.config.format == wgpu::TextureFormat::Rgba16Float
+    }
+
+    /// Whether this adapter and surface can present an EDR surface at all. Captured at init.
+    pub fn hdr_surface_supported(&self) -> bool {
+        self.hdr_surface_supported
+    }
+
     /// Tell the renderer which profile the pixels it's handed have been transformed into, so the
     /// colourspace it re-asserts after a reconfigure is the current one. `App::apply_icc_settings`
     /// and `resumed()` are the callers.

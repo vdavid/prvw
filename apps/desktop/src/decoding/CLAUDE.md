@@ -60,7 +60,7 @@ orientation, and hand a `DecodedImage` off to the renderer.
 - **ICC profile first, pixels second.** See the gotcha below.
 - **Storage and meaning are separate fields.** `PixelBuffer` says how the pixels are stored (`Rgba8` or `Rgba16F`),
   `PixelEncoding` what they mean: `DisplaySdr` (display-ICC-encoded SDR, either storage) or `LinearHdrDisplay` (linear
-  light in `HdrDisplaySpace::for_host()`, `Rgba16F` only, RAW HDR). `PixelEncoding::is_hdr()` is the "needs the EDR
+  light in `HdrDisplaySpace::for_host()`, `Rgba16F` only, RAW HDR). `EncodingKind::is_hdr()` is the "needs the EDR
   surface" question, so never infer HDR from `Rgba16F`. Each legal pair has its own constructor (`from_rgba8`,
   `from_display_sdr_rgba16f`, `from_linear_hdr_rgba16f`), and `finalize` re-checks `PixelEncoding::accepts` in debug
   builds. M2–M4 of `docs/specs/hdr-images.md` add `GainMapped` and `SceneLinear`.
@@ -208,7 +208,7 @@ hdr_active = flags.hdr_output && hdr_display
 macOS, HDR mode on in Windows; `render::display_hdr::DisplayHdr::from_info` reads it). **Decoders never see the current
 headroom.** It moves with screen brightness on macOS, and a decode that read it would have to re-run on every tweak; the
 shader takes it per frame instead (`render/CLAUDE.md`). `App` also tracks `current_image_is_hdr` (from
-`PixelEncoding::is_hdr()`), and `App::want_edr_surface` fuses all three inputs (flag, capability, image-is-HDR) to flip
+`EncodingKind::is_hdr()`), and `App::want_edr_surface` fuses all three inputs (flag, capability, image-is-HDR) to flip
 the window's surface between SDR and EDR modes per decode.
 
 Once inside `raw::decode`, `hdr_active` gates four different behaviors:

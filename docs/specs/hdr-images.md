@@ -586,3 +586,44 @@ Filled in by the implementing agent during M0 and later. Date each entry.
   AGPL `zentone`, because `ultrahdr-core`'s `std` feature names it weakly (`zentone?/std`), though cargo never builds
   it. `cargo-deny` resolves features the way the build does: it passes with `features = ["std"]`, and with `"tonemap"`
   added it fails on `zentone`'s `AGPL-3.0-only OR LicenseRef-Imazen-Commercial` (both verified 2026-10-14).
+- **2026-10-14, M2: what the two headrooms read in practice.** Debug build on the MBP's XDR panel, a RAW on screen with
+  the EDR layer on, polled every 500 ms for eight seconds: `potential` 16.0 and `current` 1.2 on every read, `reference`
+  `None`, and wgpu's `coarse.high_dynamic_range` `Some(true)` (derived from `current > 1.0`). An SDR JPEG made one read
+  at launch and none after, so the poll costs nothing while no HDR image is up. The session ran unattended, so nobody
+  moved the brightness slider; David's QA step 2 is the first real test of the live update.
+- **2026-10-14, M2 deviations from the design.**
+  - One query, not two: `Renderer::display_hdr() -> DisplayHdr { capable, headroom_now }`, because on Windows every
+    `display_hdr_info` call walks the adapter's outputs, and the two numbers should come from the same read. The
+    per-platform reading is the pure `DisplayHdr::from_info`, tested from any host.
+  - Decoders take `hdr_display: bool` (the capability) in place of `edr_headroom: f32`. The magnitude was only ever a
+    `> 1.0` gate, and Windows' capability isn't a number at all.
+  - The QA override is `POST /display-hdr` (`{"capable", "headroom_now"}`, both optional), not an env var: the E2E test
+    has to change the headroom three times in one run. `/state` also reports `want_edr_surface`, `edr_surface`, and
+    `hdr_surface_supported`, which is what "the surface follows `want_edr_surface()`" needs to be asserted on a GPU that
+    can't present EDR.
+  - `EncodingKind` is the payload-free tag of `PixelEncoding` (identical until M3), and `App` tracks it for the image on
+    screen in place of `current_image_is_hdr`. `PixelEncoding::kind()`, `EncodingKind::is_hdr()`, `shader_mode()`, and
+    `name()` are exhaustive matches.
+  - `ImageParams` holds only `mode` for now; M3 appends its fields. The Rust reference for modes 0 and 1 is
+    `color::hdr::fragment::shade`, where M3's mode 2 and M4's mode 3 go too.
+  - Fixed on the way: a display change or a monitor move that flipped HDR without changing the ICC profile cleared the
+    cache but left the old decode on screen. It now re-decodes the image on screen (`App::redisplay_current`), and
+    `apply_icc_settings` reports whether it already did, so nothing decodes twice. The launch loop from the 2026-10-13
+    finding ("current reads 1.0, RAW decodes SDR") is gone with the gate on potential.
+- **2026-10-14, M2 for M3: the layout mode 2 plugs into.**
+  - Group 0: 0 transform (`TransformUniform`, vertex + fragment), 1 image texture, 2 the shared linear sampler, 3 gain
+    map (`texture_2d<f32>`, filterable; today a shared 1×1 `Rgba8Unorm` placeholder), 4 `ImageParams` uniform
+    (`{ mode: u32, _pad: [u32; 3] }`, one 16-byte buffer per image, created in `ImagePipeline::upload`). Group 1: 0
+    `FrameUniform { headroom_now: f32, _pad: [f32; 3] }`, one buffer, written by `Renderer::set_headroom_now`.
+  - Mode 2: add `ShaderMode::GainMap = 2` and its `shade` branch in `color/hdr/fragment.rs`, a `case 2u` in
+    `shader.wgsl`'s `shade` (it already receives `uv`), and the gain-map fields at the end of both `ImageParams` structs
+    (vec4-aligned: per-channel log2 min/max, gamma, offsets, capacity; two 3×3 matrices as three `vec4`s each). Give
+    `GpuImage` an `Option<wgpu::Texture>` for the map, created in `upload` from the `GainMapped` payload and destroyed
+    in `GpuImage::destroy`, and bind it at 3 in `ImagePipeline::bind` in place of the placeholder. The crossfade carries
+    the whole `GpuImage`, so the outgoing image keeps its map and mode with no further change.
+  - A parity case: build a one-row `DecodedImage` (`strip_rgba8` / `strip_f16` in `image_pipeline.rs`'s `gpu_parity`, or
+    a new helper that also builds the map), and call `assert_matches_reference(&image, &[1.0, 2.0, 8.0])`. The harness
+    computes the texture sample per storage and runs `shade`; a mode that samples the map needs the reference to sample
+    it the same way (the Shepard-vs-bilinear question from the M0 kernel finding). The tests are verified to catch a
+    clip: a mode-1 shader clamped at 1.0 fails with `GPU 1 vs reference 2`.
+  - Screenshots already bind a group 1 pinned at headroom 1.0, so mode 2 screenshots as its SDR rendition for free.

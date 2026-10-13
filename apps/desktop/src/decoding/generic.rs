@@ -273,7 +273,7 @@ mod tests {
         assert!(matches!(image.pixels, PixelBuffer::Rgba16F(_)));
         assert_eq!(image.encoding, PixelEncoding::DisplaySdr);
         assert!(
-            !image.encoding.is_hdr(),
+            !image.encoding.kind().is_hdr(),
             "16-bit SDR must not ask for the EDR surface"
         );
     }

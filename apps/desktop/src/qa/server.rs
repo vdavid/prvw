@@ -174,6 +174,7 @@ fn handle_request(
             http::handle_post_window_geometry(stream, proxy, &body, state)
         }
         ("POST", "/scroll-zoom") => http::handle_post_scroll_zoom(stream, proxy, &body, state),
+        ("POST", "/display-hdr") => http::handle_post_display_hdr(stream, proxy, &body, state),
         ("POST", "/zoom-in") => http::handle_post_zoom_in(stream, proxy, state),
         ("POST", "/zoom-out") => http::handle_post_zoom_out(stream, proxy, state),
         ("POST", "/refresh") => http::handle_post_refresh(stream, proxy, state),
@@ -258,6 +259,12 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         // Read live rather than snapshotted: it's a process-wide counter, and a test asking
         // "was that decoded again?" wants the answer as of now.
         "full_decodes": crate::decoding::full_decodes(),
+        "pixel_encoding": s.pixel_encoding,
+        "hdr_capable": s.hdr_capable,
+        "headroom_now": s.headroom_now,
+        "want_edr_surface": s.want_edr_surface,
+        "edr_surface": s.edr_surface,
+        "hdr_surface_supported": s.hdr_surface_supported,
         "cache_indices": s.cache_indices,
         "window_x": s.window_x,
         "window_y": s.window_y,

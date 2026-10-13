@@ -125,6 +125,20 @@ pub struct SharedAppState {
     /// file's order), as the grid last read them. `None` without a grid selection, and always
     /// `None` off macOS, whose grids show no tags.
     pub browse_grid_selected_tags: Option<Vec<String>>,
+    /// What the image on screen's pixels mean (`EncodingKind::name`: `"display_sdr"`,
+    /// `"linear_hdr_display"`), or `None` before the first image.
+    pub pixel_encoding: Option<&'static str>,
+    /// Whether the display can show HDR at all (potential headroom), QA override applied.
+    pub hdr_capable: bool,
+    /// The display's current headroom over SDR white, QA override applied.
+    pub headroom_now: f32,
+    /// `App::want_edr_surface`: whether the surface should be in EDR mode right now.
+    pub want_edr_surface: bool,
+    /// Whether it is: the surface format is `Rgba16Float`. Differs from `want_edr_surface` only on
+    /// a GPU that can't present an HDR surface (`hdr_surface_supported` false).
+    pub edr_surface: bool,
+    /// Whether this adapter and surface can present `Rgba16Float` as scRGB at all.
+    pub hdr_surface_supported: bool,
 }
 
 /// One Finder tag, flattened for the QA snapshot.
@@ -226,6 +240,12 @@ impl Default for SharedAppState {
             read_progress: None,
             tags: None,
             browse_grid_selected_tags: None,
+            pixel_encoding: None,
+            hdr_capable: false,
+            headroom_now: 1.0,
+            want_edr_surface: false,
+            edr_surface: false,
+            hdr_surface_supported: false,
         }
     }
 }
@@ -333,6 +353,16 @@ impl App {
             delta: q.delta,
         });
         state.read_progress = self.read_progress;
+        state.pixel_encoding = self
+            .current_image_encoding
+            .map(crate::decoding::EncodingKind::name);
+        state.hdr_capable = self.display_hdr.capable;
+        state.headroom_now = self.display_hdr.headroom_now;
+        state.want_edr_surface = self.want_edr_surface();
+        if let Some(renderer) = &self.renderer {
+            state.edr_surface = renderer.is_edr_surface();
+            state.hdr_surface_supported = renderer.hdr_surface_supported();
+        }
         state.tags = self.current_tags().map(|tags| {
             tags.iter()
                 .map(|tag| TagSnapshot {

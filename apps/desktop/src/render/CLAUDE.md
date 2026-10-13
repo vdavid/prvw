@@ -85,11 +85,17 @@ read 1.0 at launch (full brightness) decoded RAWs as SDR until the next display 
 clears the cache when `capable` flips. Don't read wgpu's `coarse.high_dynamic_range` on macOS: wgpu derives it from the
 _current_ value there.
 
+**The headroom is polled, not announced.** Neither macOS nor Windows sends a notification for a brightness or
+SDR-white-level change, so `App::poll_display_headroom` re-reads the display every `display_hdr::HEADROOM_POLL` (500 ms)
+from `about_to_wait`, on the main thread (which `display_hdr_info` needs on Metal), and `schedule_wakeup` holds a
+`WaitUntil` for it. It runs only while `want_edr_surface()` holds and the window is visible, so an SDR image never wakes
+the loop, and a reading within 1% of the last (`display_hdr::headroom_moved`) draws nothing.
+
 ## The image texture follows storage, the surface follows meaning
 
 `ImagePipeline::upload` picks the texture format from `PixelBuffer` (`Rgba8` → `Rgba8UnormSrgb`, `Rgba16F` →
 `Rgba16Float`) and the shader mode from `PixelEncoding::shader_mode()`, while `App::want_edr_surface` reads
-`PixelEncoding::is_hdr()`. The two stopped meaning the same thing once 16-bit PNGs and TIFFs started arriving as
+`EncodingKind::is_hdr()`. The two stopped meaning the same thing once 16-bit PNGs and TIFFs started arriving as
 `Rgba16F` tagged `DisplaySdr`: those draw on the ordinary `Bgra8UnormSrgb` surface, never the EDR one. Their half-floats
 are the display-encoded values passed through the sRGB EOTF (`color::display_sdr`), so the surface's sRGB encode lands
 on the same bytes an `Rgba8UnormSrgb` texture would give, rounded to 8 bits once. Nothing in the shader knows the

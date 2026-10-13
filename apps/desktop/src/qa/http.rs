@@ -446,6 +446,28 @@ pub(super) fn handle_post_window_geometry(
     )
 }
 
+/// `POST /display-hdr` — stand in for the display's HDR answer: `{"capable": bool,
+/// "headroom_now": number}`, either field optional. The body replaces the whole override, and a
+/// missing or `null` field reads the real display again, so `{}` clears it.
+pub(super) fn handle_post_display_hdr(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    let parsed: Value = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {e}"))?;
+    let display_hdr_override = crate::render::display_hdr::DisplayHdrOverride {
+        capable: parsed["capable"].as_bool(),
+        headroom_now: parsed["headroom_now"].as_f64().map(|v| v as f32),
+    };
+    send_and_wait_http(
+        stream,
+        proxy,
+        AppCommand::SetDisplayHdrOverride(display_hdr_override),
+        state,
+    )
+}
+
 pub(super) fn handle_post_scroll_zoom(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,

@@ -135,10 +135,10 @@ impl App {
             .map(|d| (d.width, d.height))
             .unwrap_or((tw, th));
         // Same display pipeline the cached-image path uses. Source dims
-        // drive the zoom math; the preview is RGBA8 so `is_hdr=false` —
+        // drive the zoom math; the preview is RGBA8 display SDR —
         // the surface flips back to HDR when the primary RAW arrives
         // and `display_from_cache` re-prepares.
-        self.prepare_display(sw, sh, false);
+        self.prepare_display(sw, sh, crate::decoding::EncodingKind::DisplaySdr);
         let image = crate::decoding::DecodedImage::from_rgba8(tw, th, rgba);
         if let Some(renderer) = &mut self.renderer {
             renderer.set_image(&image);

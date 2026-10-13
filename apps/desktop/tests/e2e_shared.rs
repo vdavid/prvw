@@ -105,6 +105,91 @@ fn app_starts_and_loads_image() {
     assert!(state["image_height"].as_u64().unwrap() > 0);
 }
 
+// ── HDR display state ────────────────────────────────────────────────────────────────────────
+//
+// CI displays have no HDR, so these drive it through `POST /display-hdr`, the QA stand-in for the
+// display's answer. Neither the override nor what it exercises is forked per platform.
+
+fn full_decodes(state: &serde_json::Value) -> u64 {
+    state["full_decodes"].as_u64().expect("full_decodes")
+}
+
+/// The promise behind putting the headroom in a shader uniform: a brightness change (the current
+/// headroom moving) never decodes the image again, while the display gaining or losing HDR
+/// altogether does, because that changes what the decoders produce.
+#[test]
+fn a_headroom_change_does_not_re_decode_but_an_hdr_capability_flip_does() {
+    let Some(app) = SharedApp::start(&[]) else {
+        return;
+    };
+    let ready = app.wait_for_state(Duration::from_secs(10), |s| {
+        s["pixel_encoding"].as_str().is_some() && full_decodes(s) >= 1
+    });
+    assert_eq!(ready["pixel_encoding"], "display_sdr");
+    let capable = ready["hdr_capable"].as_bool().expect("hdr_capable");
+    let decodes = full_decodes(&ready);
+
+    for headroom in [2.0, 4.0, 1.5] {
+        let state = app.post_json(
+            "/display-hdr",
+            &serde_json::json!({ "capable": capable, "headroom_now": headroom }),
+        );
+        assert_eq!(state["headroom_now"].as_f64(), Some(headroom));
+        assert_eq!(
+            full_decodes(&state),
+            decodes,
+            "a headroom change at {headroom} must not decode the image again"
+        );
+    }
+
+    let flipped = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": !capable, "headroom_now": 1.5 }),
+    );
+    assert_eq!(flipped["hdr_capable"].as_bool(), Some(!capable));
+    assert!(
+        full_decodes(&flipped) > decodes,
+        "flipping HDR capability changes what the decoders produce, so the image is decoded again"
+    );
+    // An SDR image never asks for the EDR surface, whatever the display can do.
+    assert_eq!(flipped["want_edr_surface"], false);
+    assert_eq!(flipped["edr_surface"], false);
+}
+
+/// A RAW on a display that can show HDR develops to linear HDR and asks for the EDR surface; the
+/// surface follows unless the GPU can't present one.
+#[test]
+fn a_raw_on_an_hdr_display_decodes_to_linear_hdr_and_the_surface_follows() {
+    let raw = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/raw/synthetic-bayer-128.dng");
+    let Some(app) = SharedApp::start_with_image(&[], &raw) else {
+        return;
+    };
+    app.wait_for_state(Duration::from_secs(20), |s| {
+        s["pixel_encoding"].as_str().is_some()
+    });
+
+    let sdr = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": false, "headroom_now": 1.0 }),
+    );
+    assert_eq!(sdr["pixel_encoding"], "display_sdr");
+    assert_eq!(sdr["want_edr_surface"], false);
+    assert_eq!(sdr["edr_surface"], false);
+
+    let hdr = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": true, "headroom_now": 4.0 }),
+    );
+    assert_eq!(hdr["hdr_capable"], true);
+    assert_eq!(hdr["pixel_encoding"], "linear_hdr_display");
+    assert_eq!(hdr["want_edr_surface"], true);
+    let supported = hdr["hdr_surface_supported"]
+        .as_bool()
+        .expect("hdr_surface_supported");
+    assert_eq!(hdr["edr_surface"].as_bool(), Some(supported));
+}
+
 #[test]
 fn window_geometry_changes_size() {
     let Some(app) = SharedApp::start(&[]) else {

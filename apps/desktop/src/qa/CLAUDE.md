@@ -49,7 +49,7 @@ every platform (layer 3 of the parity harness, `docs/specs/cross-platform-plan.m
 
 - `tests/e2e/` — the harness. `TestApp` spawns the binary and talks to this server, `fixtures` generates the images,
   `shared` holds the gate. Compiles everywhere.
-- `tests/e2e_shared.rs` — the platform-neutral core, 41 tests. No `cfg` anywhere in it.
+- `tests/e2e_shared.rs` — the platform-neutral core. No `cfg` anywhere in it.
 - `tests/e2e_macos.rs` — nine tests for macOS window-system and filesystem facts: browse mode's arrow keys, the AppKit
   fullscreen round trip, `screenshot_window`, and Finder tags (which read the attribute back off the file with
   `/usr/bin/xattr`).
@@ -101,6 +101,16 @@ macOS. `tests/e2e/mod.rs` carries the full caveat list.
 - **`full_decodes` in `/state`** counts every `decoding::load_image` success since launch, read live rather than from
   the snapshot. A test that wants "this change did NOT decode the image again" reads it before and after, in a one-image
   folder so no neighbor preload moves it (`a_tag_set_in_finder_shows_up_without_a_re_decode`).
+- **HDR in `/state`**: `pixel_encoding` (the image on screen's `EncodingKind::name`, `"display_sdr"` or
+  `"linear_hdr_display"`, `null` before the first image), `hdr_capable` and `headroom_now` (`App::display_hdr`, override
+  applied), `want_edr_surface`, `edr_surface` (the surface really is `Rgba16Float`), and `hdr_surface_supported` (the
+  GPU can present one at all; `edr_surface` only lags `want_edr_surface` when it can't).
+- **`POST /display-hdr`** stands in for the display's HDR answer, because CI displays have none:
+  `{"capable": bool, "headroom_now": number}`. The body replaces the whole override, and a missing or `null` field reads
+  the real display again (`{}` clears it). `AppCommand::SetDisplayHdrOverride` acts on it exactly like a real reading,
+  so a headroom-only change writes the shader uniform and re-decodes nothing, while a capability flip re-decodes the
+  image on screen. `a_headroom_change_does_not_re_decode_but_an_hdr_capability_flip_does` reads `full_decodes` around
+  both. The headroom poll reads through the override too, so a forced value holds.
 - **`GET /parity`** serves the whole parity table (settings, menu items, commands, each platform's status and any
   `NotApplicable` reason) from `parity::report`. It answers the same on every host, because the registries carry no
   `#[cfg]`.

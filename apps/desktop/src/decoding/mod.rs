@@ -110,21 +110,53 @@ pub enum PixelEncoding {
     LinearHdrDisplay,
 }
 
-impl PixelEncoding {
+/// Which [`PixelEncoding`] an image has, without its payload: the tag the app
+/// keeps about the image on screen and reports in `/state`. Identical to
+/// `PixelEncoding` until M3 and M4 give variants payloads (a gain map, tone-map
+/// parameters), which is when holding the whole encoding stops being cheap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EncodingKind {
+    DisplaySdr,
+    LinearHdrDisplay,
+}
+
+impl EncodingKind {
     /// Whether an image in this encoding needs the EDR surface.
     pub fn is_hdr(self) -> bool {
         match self {
-            PixelEncoding::DisplaySdr => false,
-            PixelEncoding::LinearHdrDisplay => true,
+            EncodingKind::DisplaySdr => false,
+            EncodingKind::LinearHdrDisplay => true,
         }
     }
 
     /// The fragment-shader branch that draws an image in this encoding.
     pub fn shader_mode(self) -> ShaderMode {
         match self {
-            PixelEncoding::DisplaySdr => ShaderMode::DisplaySdr,
-            PixelEncoding::LinearHdrDisplay => ShaderMode::LinearHdrDisplay,
+            EncodingKind::DisplaySdr => ShaderMode::DisplaySdr,
+            EncodingKind::LinearHdrDisplay => ShaderMode::LinearHdrDisplay,
         }
+    }
+
+    /// The name `/state` reports.
+    pub fn name(self) -> &'static str {
+        match self {
+            EncodingKind::DisplaySdr => "display_sdr",
+            EncodingKind::LinearHdrDisplay => "linear_hdr_display",
+        }
+    }
+}
+
+impl PixelEncoding {
+    pub fn kind(self) -> EncodingKind {
+        match self {
+            PixelEncoding::DisplaySdr => EncodingKind::DisplaySdr,
+            PixelEncoding::LinearHdrDisplay => EncodingKind::LinearHdrDisplay,
+        }
+    }
+
+    /// The fragment-shader branch that draws an image in this encoding.
+    pub fn shader_mode(self) -> ShaderMode {
+        self.kind().shader_mode()
     }
 
     /// Whether this encoding can be stored in `pixels`. `DecodedImage`'s
@@ -768,8 +800,8 @@ mod tests {
         assert!(PixelEncoding::LinearHdrDisplay.accepts(&halfs));
         assert!(!PixelEncoding::LinearHdrDisplay.accepts(&bytes));
 
-        assert!(!PixelEncoding::DisplaySdr.is_hdr());
-        assert!(PixelEncoding::LinearHdrDisplay.is_hdr());
+        assert!(!PixelEncoding::DisplaySdr.kind().is_hdr());
+        assert!(PixelEncoding::LinearHdrDisplay.kind().is_hdr());
 
         for image in [
             DecodedImage::from_rgba8(1, 1, vec![0; 4]),
@@ -785,6 +817,7 @@ mod tests {
         assert!(
             !DecodedImage::from_display_sdr_rgba16f(1, 1, vec![0; 4])
                 .encoding
+                .kind()
                 .is_hdr()
         );
     }
