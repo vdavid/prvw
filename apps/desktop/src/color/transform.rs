@@ -29,19 +29,87 @@ pub fn transform_icc(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
 ) {
+    let Some((source, target, options)) =
+        prepare_transform(source_icc, target_icc, use_relative_colorimetric)
+    else {
+        return;
+    };
+    let transform: std::sync::Arc<dyn InPlaceTransformExecutor<u8> + Send + Sync> =
+        match source.create_in_place_transform_8bit(Layout::Rgba, &target, options) {
+            Ok(t) => t,
+            Err(e) => {
+                log::debug!("Skipping ICC transform: couldn't create transform ({e})");
+                return;
+            }
+        };
+    let transform = BuiltTransform {
+        executor: transform.as_ref(),
+        source: &source,
+        target: &target,
+        use_relative_colorimetric,
+        label: "ICC",
+    };
+    transform.run(rgba, probe_lattice(), NEGLIGIBLE_DELTA.into());
+}
+
+/// The 16-bit sibling of [`transform_icc`], for 16-bit PNGs and TIFFs: same
+/// skips, same silence on malformed profiles. Transforming at 16 bits is what
+/// keeps a smooth 16-bit gradient smooth, because the only rounding to 8 bits
+/// left is the one the display surface does.
+pub fn transform_icc_16bit(
+    rgba: &mut [u16],
+    source_icc: &[u8],
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
+) {
+    let Some((source, target, options)) =
+        prepare_transform(source_icc, target_icc, use_relative_colorimetric)
+    else {
+        return;
+    };
+    let transform: std::sync::Arc<dyn InPlaceTransformExecutor<u16> + Send + Sync> =
+        match source.create_in_place_transform_16bit(Layout::Rgba, &target, options) {
+            Ok(t) => t,
+            Err(e) => {
+                log::debug!("Skipping 16-bit ICC transform: couldn't create transform ({e})");
+                return;
+            }
+        };
+    let transform = BuiltTransform {
+        executor: transform.as_ref(),
+        source: &source,
+        target: &target,
+        use_relative_colorimetric,
+        label: "16-bit ICC",
+    };
+    // One 8-bit step is 257 16-bit steps (255 × 257 = 65535).
+    transform.run(
+        rgba,
+        probe_lattice_16bit(),
+        u32::from(NEGLIGIBLE_DELTA) * 257,
+    );
+}
+
+/// The checks every in-place ICC transform starts with: color management on,
+/// profiles not byte-equal, both parseable. `None` means "leave the pixels".
+fn prepare_transform(
+    source_icc: &[u8],
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
+) -> Option<(ColorProfile, ColorProfile, TransformOptions)> {
     if target_icc.is_empty() {
-        return; // ICC color management is disabled
+        return None; // ICC color management is disabled
     }
     if profiles_match(source_icc, target_icc) {
         log::debug!("Source and target ICC profiles match, skipping transform");
-        return;
+        return None;
     }
 
     let source = match ColorProfile::new_from_slice(source_icc) {
         Ok(p) => p,
         Err(e) => {
             log::debug!("Skipping ICC transform: couldn't parse source profile ({e})");
-            return;
+            return None;
         }
     };
 
@@ -49,7 +117,7 @@ pub fn transform_icc(
         Ok(p) => p,
         Err(e) => {
             log::debug!("Skipping ICC transform: couldn't parse target profile ({e})");
-            return;
+            return None;
         }
     };
 
@@ -62,38 +130,50 @@ pub fn transform_icc(
         rendering_intent: intent,
         ..TransformOptions::default()
     };
-    let transform: std::sync::Arc<dyn InPlaceTransformExecutor<u8> + Send + Sync> =
-        match source.create_in_place_transform_8bit(Layout::Rgba, &target, options) {
-            Ok(t) => t,
-            Err(e) => {
-                log::debug!("Skipping ICC transform: couldn't create transform ({e})");
-                return;
-            }
+    Some((source, target, options))
+}
+
+/// A built in-place RGBA transform plus what its log line names.
+struct BuiltTransform<'a, T> {
+    executor: &'a (dyn InPlaceTransformExecutor<T> + Send + Sync),
+    source: &'a ColorProfile,
+    target: &'a ColorProfile,
+    use_relative_colorimetric: bool,
+    label: &'a str,
+}
+
+impl<T: Copy + Default + Into<u32>> BuiltTransform<'_, T> {
+    /// Run the transform over `rgba`, unless probing it over `lattice` shows
+    /// it can't move a channel by more than `tolerance` (see
+    /// [`transform_is_negligible`]).
+    fn run(&self, rgba: &mut [T], lattice: &[T], tolerance: u32) {
+        if transform_is_negligible(self.executor, lattice, tolerance) {
+            log::debug!(
+                "Source and target ICC profiles describe the same colors, skipping transform"
+            );
+            return;
+        }
+
+        let start = Instant::now();
+        if let Err(e) = self.executor.transform(rgba) {
+            log::debug!("{} transform failed: {e}", self.label);
+            return;
+        }
+        let pixel_count = rgba.len() / 4;
+        let source_desc = profile_description(self.source);
+        let target_desc = profile_description(self.target);
+        let intent_name = if self.use_relative_colorimetric {
+            "relative"
+        } else {
+            "perceptual"
         };
-
-    if transform_is_negligible(transform.as_ref()) {
-        log::debug!("Source and target ICC profiles describe the same colors, skipping transform");
-        return;
+        let pixel_count_fmt = format_with_separators(pixel_count);
+        log::debug!(
+            "{} transform: {source_desc} -> {target_desc}, {intent_name} ({pixel_count_fmt} pixels) in {}ms",
+            self.label,
+            start.elapsed().as_millis()
+        );
     }
-
-    let start = Instant::now();
-    if let Err(e) = transform.transform(rgba) {
-        log::debug!("ICC transform failed: {e}");
-        return;
-    }
-    let pixel_count = rgba.len() / 4;
-    let source_desc = profile_description(&source);
-    let target_desc = profile_description(&target);
-    let intent_name = if use_relative_colorimetric {
-        "relative"
-    } else {
-        "perceptual"
-    };
-    let pixel_count_fmt = format_with_separators(pixel_count);
-    log::debug!(
-        "ICC transform: {source_desc} -> {target_desc}, {intent_name} ({pixel_count_fmt} pixels) in {}ms",
-        start.elapsed().as_millis()
-    );
 }
 
 /// Transform f32 RGB pixels from a source `ColorProfile` into a target ICC
@@ -216,9 +296,22 @@ fn probe_lattice() -> &'static [u8] {
     })
 }
 
-/// True if the transform can't move any probe channel by more than
-/// [`NEGLIGIBLE_DELTA`], meaning running it over the real image would burn time
-/// to change nothing a viewer could see.
+/// [`probe_lattice`] widened to 16 bits (`v * 257`, so 255 lands on 65535),
+/// for probing a 16-bit transform at the same points.
+fn probe_lattice_16bit() -> &'static [u16] {
+    static LATTICE: OnceLock<Vec<u16>> = OnceLock::new();
+    LATTICE.get_or_init(|| {
+        probe_lattice()
+            .iter()
+            .map(|&v| u16::from(v) * 257)
+            .collect()
+    })
+}
+
+/// True if the transform can't move any `lattice` channel by more than
+/// `tolerance` ([`NEGLIGIBLE_DELTA`] at the lattice's bit depth), meaning
+/// running it over the real image would burn time to change nothing a viewer
+/// could see.
 ///
 /// [`profiles_match`] alone isn't enough, because two encodings of the same
 /// color space aren't byte-equal. macOS tags exports with a 3,144-byte sRGB
@@ -233,17 +326,20 @@ fn probe_lattice() -> &'static [u8] {
 /// comparison would. It costs ~11 µs, against a transform that already had to
 /// be built. Genuinely different profiles aren't close to the threshold: system
 /// sRGB to Display P3 moves a probe channel by 105.
-fn transform_is_negligible(transform: &(dyn InPlaceTransformExecutor<u8> + Send + Sync)) -> bool {
-    let reference = probe_lattice();
-    let mut probe = reference.to_vec();
+fn transform_is_negligible<T: Copy + Default + Into<u32>>(
+    transform: &(dyn InPlaceTransformExecutor<T> + Send + Sync),
+    lattice: &[T],
+    tolerance: u32,
+) -> bool {
+    let mut probe = lattice.to_vec();
     if transform.transform(&mut probe).is_err() {
         // Let the real call report the failure with the pixel count in hand.
         return false;
     }
-    reference
+    lattice
         .iter()
         .zip(probe.iter())
-        .all(|(a, b)| a.abs_diff(*b) <= NEGLIGIBLE_DELTA)
+        .all(|(&a, &b)| a.into().abs_diff(b.into()) <= tolerance)
 }
 
 /// Extract a human-readable description from an ICC profile, for logging.
@@ -449,6 +545,55 @@ mod tests {
             [146, 0, 0, 255],
             "Adobe RGB to sRGB is a real conversion and must run"
         );
+    }
+
+    /// The 16-bit transform lands on the same known values as the 8-bit one,
+    /// widened: 8-bit `v` is 16-bit `v * 257`.
+    #[test]
+    fn adobe_rgb_to_srgb_known_values_at_16_bits() {
+        let mut pixels: Vec<u16> = [146u16, 0, 0, 255, 0, 147, 0, 255, 0, 0, 146, 128]
+            .iter()
+            .map(|&v| v * 257)
+            .collect();
+        transform_icc_16bit(&mut pixels, ADOBE_RGB_ICC, srgb_icc(), false);
+        let expected: [u16; 12] = [172, 0, 0, 255, 0, 148, 0, 255, 0, 0, 150, 128];
+        for (i, (&got, &want)) in pixels.iter().zip(expected.iter()).enumerate() {
+            let want = want * 257;
+            assert!(
+                got.abs_diff(want) <= 257,
+                "sample {i}: got {got}, expected {want} within one 8-bit step"
+            );
+        }
+        assert_eq!(pixels[11], 128 * 257, "alpha must be preserved exactly");
+    }
+
+    /// The negligible skip works at 16 bits too: an sRGB-to-sRGB transform
+    /// between two encodings leaves every sample exactly as it was.
+    #[test]
+    fn equivalent_srgb_encodings_skip_the_16_bit_transform() {
+        let table_srgb = table_trc_srgb_icc();
+        let mut pixels: [u16; 8] = [
+            51_400, 25_700, 12_850, 65_535, 3_084, 51_400, 61_680, 32_896,
+        ];
+        let original = pixels;
+        transform_icc_16bit(&mut pixels, &table_srgb, srgb_icc(), false);
+        assert_eq!(pixels, original);
+    }
+
+    #[test]
+    fn malformed_source_is_noop_at_16_bits() {
+        let mut pixel: [u16; 4] = [51_400, 25_700, 12_850, 65_535];
+        let original = pixel;
+        transform_icc_16bit(&mut pixel, b"not a real ICC profile", srgb_icc(), false);
+        assert_eq!(pixel, original);
+    }
+
+    #[test]
+    fn probe_lattice_16bit_spans_the_full_range() {
+        let lattice = probe_lattice_16bit();
+        assert_eq!(lattice.len(), probe_lattice().len());
+        assert!(lattice.contains(&0));
+        assert!(lattice.contains(&65_535));
     }
 
     #[test]

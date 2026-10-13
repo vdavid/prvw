@@ -62,11 +62,12 @@ pub use raw_flags::{
     MIDTONE_ANCHOR_RANGE, SATURATION_BOOST_RANGE, SHARPEN_AMOUNT_RANGE,
 };
 
-/// Pixel-buffer variants. `Rgba8` is `[r, g, b, a, r, g, b, a, …]` in sRGB
-/// gamma-encoded bytes — the common case. `Rgba16F` is `[r, g, b, a, r, …]`
+/// How the pixels are stored. `Rgba8` is `[r, g, b, a, r, g, b, a, …]`, one
+/// byte per channel — the common case. `Rgba16F` is `[r, g, b, a, r, …]`
 /// where every element is the IEEE 754 half-precision float bit pattern
-/// stored as `u16` (use the `half` crate to convert to `f32`). Half-float
-/// RGBA is only produced by the RAW decoder when HDR output is active.
+/// stored as `u16` (use the `half` crate to convert to `f32`). Storage says
+/// nothing about meaning: [`PixelEncoding`] does, and a half-float buffer can
+/// be plain SDR (a 16-bit PNG) as well as HDR (a RAW develop).
 pub enum PixelBuffer {
     Rgba8(Vec<u8>),
     Rgba16F(Vec<u16>),
@@ -91,11 +92,53 @@ impl PixelBuffer {
             PixelBuffer::Rgba16F(v) => v.len() * 2,
         }
     }
+}
 
-    /// True when the backing storage is RGBA16F (half-float).
-    pub fn is_hdr(&self) -> bool {
-        matches!(self, PixelBuffer::Rgba16F(_))
+/// What the numbers in a [`PixelBuffer`] mean. The renderer and the surface
+/// choice read this, never the storage variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelEncoding {
+    /// Display-encoded SDR: values are in the display's ICC profile. For
+    /// `Rgba8`, the bytes as-is. For `Rgba16F`, the display-encoded value
+    /// passed through the sRGB EOTF, so the texture's `Rgba16Float` sample plus
+    /// the sRGB surface encode lands on the same display-encoded value an
+    /// `Rgba8UnormSrgb` texture would (`color::display_sdr`).
+    DisplaySdr,
+    /// Linear light in `color::profiles::HdrDisplaySpace::for_host()`, 1.0 =
+    /// SDR white. Only `Rgba16F`. RAW HDR output.
+    LinearHdrDisplay,
+}
+
+impl PixelEncoding {
+    /// Whether an image in this encoding needs the EDR surface.
+    pub fn is_hdr(self) -> bool {
+        match self {
+            PixelEncoding::DisplaySdr => false,
+            PixelEncoding::LinearHdrDisplay => true,
+        }
     }
+
+    /// Whether this encoding can be stored in `pixels`. `DecodedImage`'s
+    /// constructors only build pairs this accepts.
+    pub fn accepts(self, pixels: &PixelBuffer) -> bool {
+        match (self, pixels) {
+            (PixelEncoding::DisplaySdr, PixelBuffer::Rgba8(_) | PixelBuffer::Rgba16F(_)) => true,
+            (PixelEncoding::LinearHdrDisplay, PixelBuffer::Rgba16F(_)) => true,
+            (PixelEncoding::LinearHdrDisplay, PixelBuffer::Rgba8(_)) => false,
+        }
+    }
+}
+
+/// What precision [`load_image`] may hand back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputDepth {
+    /// Whatever the source carries: RGBA8 for 8-bit sources, half-float for
+    /// 16-bit sources and HDR. What the viewer asks for.
+    Native,
+    /// Always `PixelBuffer::Rgba8` + `PixelEncoding::DisplaySdr`, and HDR off
+    /// whatever the headroom says. For consumers that can only carry bytes:
+    /// the clipboard, a printer, the preview cache.
+    Rgba8,
 }
 
 /// Decoded image data ready for GPU upload.
@@ -103,6 +146,8 @@ pub struct DecodedImage {
     pub width: u32,
     pub height: u32,
     pub pixels: PixelBuffer,
+    /// What `pixels` means. Always a pair [`PixelEncoding::accepts`].
+    pub encoding: PixelEncoding,
     /// Curated subset of the file's EXIF metadata, used by the EXIF info
     /// overlay. `None` for formats without EXIF (PNG, GIF, WebP without an
     /// EXIF chunk, BMP) and for files where every interesting field came
@@ -116,28 +161,48 @@ pub struct DecodedImage {
     pub stamp: Option<FileStamp>,
 }
 
+/// One constructor per legal storage-and-encoding pair, so a decoder can't
+/// build an illegal one. [`finalize`] re-checks with [`PixelEncoding::accepts`]
+/// in debug builds, since the fields stay public.
 impl DecodedImage {
-    /// Build an RGBA8 image with no EXIF attached. Kept around so the JPEG /
-    /// PNG / WebP / etc. paths don't have to know the `PixelBuffer` enum
-    /// exists. Callers that have EXIF should mutate `.exif` after.
+    /// Build a display-encoded SDR RGBA8 image with no EXIF attached. Kept
+    /// around so the JPEG / PNG / WebP / etc. paths don't have to know the
+    /// `PixelBuffer` enum exists. Callers that have EXIF should mutate `.exif`
+    /// after.
     pub fn from_rgba8(width: u32, height: u32, rgba: Vec<u8>) -> Self {
         Self {
             width,
             height,
             pixels: PixelBuffer::Rgba8(rgba),
+            encoding: PixelEncoding::DisplaySdr,
             exif: None,
             stamp: None,
         }
     }
 
-    /// Build an RGBA16F image. Used by `decoding::raw` when HDR output is
-    /// active. `half_rgba` is 4 × width × height `u16`s in RGBA order, each
-    /// element an IEEE 754 half-precision bit pattern.
-    pub fn from_rgba16f(width: u32, height: u32, half_rgba: Vec<u16>) -> Self {
+    /// Build a display-encoded SDR half-float image: a 16-bit source after its
+    /// ICC transform, linearized by `color::display_sdr`. `half_rgba` is
+    /// 4 × width × height `u16`s in RGBA order, each an IEEE 754
+    /// half-precision bit pattern.
+    pub fn from_display_sdr_rgba16f(width: u32, height: u32, half_rgba: Vec<u16>) -> Self {
         Self {
             width,
             height,
             pixels: PixelBuffer::Rgba16F(half_rgba),
+            encoding: PixelEncoding::DisplaySdr,
+            exif: None,
+            stamp: None,
+        }
+    }
+
+    /// Build a linear-light HDR half-float image. Used by `decoding::raw` when
+    /// HDR output is active. Same layout as [`Self::from_display_sdr_rgba16f`].
+    pub fn from_linear_hdr_rgba16f(width: u32, height: u32, half_rgba: Vec<u16>) -> Self {
+        Self {
+            width,
+            height,
+            pixels: PixelBuffer::Rgba16F(half_rgba),
+            encoding: PixelEncoding::LinearHdrDisplay,
             exif: None,
             stamp: None,
         }
@@ -176,6 +241,10 @@ pub type SalvageSink = Box<dyn FnOnce(DecodedImage) + Send>;
 /// means "SDR only, clip highlights at display-white". Anything above
 /// `1.0` combined with `raw_flags.hdr_output == true` triggers the
 /// `RGBA16F` output path for RAW files.
+///
+/// `depth` is [`OutputDepth::Native`] for the viewer. [`OutputDepth::Rgba8`]
+/// promises an 8-bit SDR buffer whatever the source and the headroom, for the
+/// callers that can only carry bytes.
 #[allow(clippy::too_many_arguments)] // Decode knobs, all independent; a struct would just move them
 pub fn load_image(
     path: &Path,
@@ -184,9 +253,15 @@ pub fn load_image(
     use_relative_colorimetric: bool,
     raw_flags: RawPipelineFlags,
     edr_headroom: f32,
+    depth: OutputDepth,
     salvage: Option<SalvageSink>,
     read_progress: Option<Arc<ReadProgress>>,
 ) -> Result<DecodedImage, String> {
+    // An 8-bit caller gets SDR: the RAW develop reads a headroom of 1.0 as "HDR off".
+    let edr_headroom = match depth {
+        OutputDepth::Native => edr_headroom,
+        OutputDepth::Rgba8 => 1.0,
+    };
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
@@ -209,6 +284,7 @@ pub fn load_image(
         use_relative_colorimetric,
         raw_flags,
         edr_headroom,
+        depth,
         salvage,
     )
     .map(|mut image| {
@@ -279,6 +355,7 @@ fn decode_with(
     use_relative_colorimetric: bool,
     raw_flags: RawPipelineFlags,
     edr_headroom: f32,
+    depth: OutputDepth,
     salvage: Option<SalvageSink>,
 ) -> Result<DecodedImage, String> {
     match backend {
@@ -304,8 +381,13 @@ fn decode_with(
             let owned_path = path.to_path_buf();
             let owned_icc = target_icc.to_vec();
             run_decode_cancellable(cancelled, salvage, move || {
-                let mut img =
-                    generic::decode(&owned_path, bytes, &owned_icc, use_relative_colorimetric)?;
+                let mut img = generic::decode(
+                    &owned_path,
+                    bytes,
+                    &owned_icc,
+                    use_relative_colorimetric,
+                    depth,
+                )?;
                 img.exif = exif;
                 Ok(finalize(img, orientation))
             })
@@ -343,6 +425,11 @@ fn decode_with(
 /// on the underlying `u16` slice directly, treating each "pixel" as a
 /// 4-element block (one per RGBA channel).
 fn finalize(mut img: DecodedImage, orientation: u16) -> DecodedImage {
+    debug_assert!(
+        img.encoding.accepts(&img.pixels),
+        "{:?} in the wrong storage",
+        img.encoding
+    );
     let (old_w, old_h) = (img.width, img.height);
     let (new_w, new_h) = match &mut img.pixels {
         PixelBuffer::Rgba8(bytes) => apply_orientation_bytes(old_w, old_h, bytes, orientation, 4),
@@ -553,7 +640,11 @@ fn log_result(
                 Backend::Raw => format!("{} via rawler", ext.to_uppercase()),
                 Backend::Generic => ext.to_uppercase(),
             };
-            let hdr_label = if image.pixels.is_hdr() { " [HDR]" } else { "" };
+            let hdr_label = match (&image.pixels, image.encoding) {
+                (_, PixelEncoding::LinearHdrDisplay) => " [HDR]",
+                (PixelBuffer::Rgba16F(_), PixelEncoding::DisplaySdr) => " [16-bit SDR]",
+                (PixelBuffer::Rgba8(_), PixelEncoding::DisplaySdr) => "",
+            };
             log::info!(
                 "Decoded {format_name}{hdr_label}: {}x{} ({decoded_size}) in {}ms",
                 image.width,
@@ -616,6 +707,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0,
+            OutputDepth::Native,
             None,
             None,
         )
@@ -647,12 +739,110 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0,
+            OutputDepth::Native,
             None,
             None,
         )
         .expect("decode should succeed");
 
         assert!(img.exif.is_none(), "a PNG has no EXIF to attach");
+    }
+
+    /// The storage-and-encoding pairs, and which of them asks for the EDR
+    /// surface. A half-float buffer is not HDR by itself.
+    #[test]
+    fn pixel_encoding_pairs_and_hdr_meaning() {
+        let bytes = PixelBuffer::Rgba8(vec![0; 4]);
+        let halfs = PixelBuffer::Rgba16F(vec![0; 4]);
+        assert!(PixelEncoding::DisplaySdr.accepts(&bytes));
+        assert!(PixelEncoding::DisplaySdr.accepts(&halfs));
+        assert!(PixelEncoding::LinearHdrDisplay.accepts(&halfs));
+        assert!(!PixelEncoding::LinearHdrDisplay.accepts(&bytes));
+
+        assert!(!PixelEncoding::DisplaySdr.is_hdr());
+        assert!(PixelEncoding::LinearHdrDisplay.is_hdr());
+
+        for image in [
+            DecodedImage::from_rgba8(1, 1, vec![0; 4]),
+            DecodedImage::from_display_sdr_rgba16f(1, 1, vec![0; 4]),
+            DecodedImage::from_linear_hdr_rgba16f(1, 1, vec![0; 4]),
+        ] {
+            assert!(
+                image.encoding.accepts(&image.pixels),
+                "{:?}",
+                image.encoding
+            );
+        }
+        assert!(
+            !DecodedImage::from_display_sdr_rgba16f(1, 1, vec![0; 4])
+                .encoding
+                .is_hdr()
+        );
+    }
+
+    fn write_16_bit_png(path: &Path) {
+        let samples: Vec<u16> = (0..64u16 * 4).map(|i| i * 251).collect();
+        image::ImageBuffer::<image::Rgba<u16>, _>::from_raw(8, 8, samples)
+            .expect("dimensions")
+            .save(path)
+            .expect("write 16-bit PNG");
+    }
+
+    fn load_at(path: &Path, edr_headroom: f32, depth: OutputDepth) -> DecodedImage {
+        load_image(
+            path,
+            &AtomicBool::new(false),
+            color::srgb_icc_bytes(),
+            false,
+            RawPipelineFlags::default(),
+            edr_headroom,
+            depth,
+            None,
+            None,
+        )
+        .expect("decode should succeed")
+    }
+
+    /// Through the whole `load_image` path: the viewer gets 16-bit SDR
+    /// half-floats, and the byte consumers (clipboard, print, previews) get
+    /// RGBA8 for the same file.
+    #[test]
+    fn load_image_depth_picks_the_storage_of_a_16_bit_png() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("sixteen.png");
+        write_16_bit_png(&path);
+
+        let native = load_at(&path, 4.0, OutputDepth::Native);
+        assert!(matches!(native.pixels, PixelBuffer::Rgba16F(_)));
+        assert_eq!(native.encoding, PixelEncoding::DisplaySdr);
+
+        let bytes = load_at(&path, 4.0, OutputDepth::Rgba8);
+        let PixelBuffer::Rgba8(rgba) = &bytes.pixels else {
+            panic!("OutputDepth::Rgba8 must return bytes");
+        };
+        assert_eq!(rgba.len(), 8 * 8 * 4);
+        assert_eq!(bytes.encoding, PixelEncoding::DisplaySdr);
+    }
+
+    /// A RAW develop on an HDR display is the one decode tagged
+    /// `LinearHdrDisplay`, and `OutputDepth::Rgba8` turns HDR off for it
+    /// whatever the headroom says.
+    #[test]
+    fn load_image_tags_raw_hdr_and_rgba8_depth_turns_it_off() {
+        let raw_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/raw/synthetic-bayer-128.dng");
+        assert!(
+            RawPipelineFlags::default().hdr_output,
+            "the test needs HDR on"
+        );
+
+        let hdr = load_at(&raw_path, 4.0, OutputDepth::Native);
+        assert!(matches!(hdr.pixels, PixelBuffer::Rgba16F(_)));
+        assert_eq!(hdr.encoding, PixelEncoding::LinearHdrDisplay);
+
+        let sdr = load_at(&raw_path, 4.0, OutputDepth::Rgba8);
+        assert!(matches!(sdr.pixels, PixelBuffer::Rgba8(_)));
+        assert_eq!(sdr.encoding, PixelEncoding::DisplaySdr);
     }
 
     /// `run_decode_cancellable` must free the caller within ~10 ms of the
@@ -810,21 +1000,62 @@ mod tests {
 
             let noop = AtomicBool::new(false);
             // One warm-up pass each.
-            let _ = load_image(path, &noop, &target, false, flags_off, 1.0, None, None);
-            let _ = load_image(path, &noop, &target, false, flags_on, 1.0, None, None);
+            let _ = load_image(
+                path,
+                &noop,
+                &target,
+                false,
+                flags_off,
+                1.0,
+                OutputDepth::Native,
+                None,
+                None,
+            );
+            let _ = load_image(
+                path,
+                &noop,
+                &target,
+                false,
+                flags_on,
+                1.0,
+                OutputDepth::Native,
+                None,
+                None,
+            );
 
             let iters = 3;
             let mut off_ms: u128 = 0;
             for _ in 0..iters {
                 let t = Instant::now();
-                let _ =
-                    load_image(path, &noop, &target, false, flags_off, 1.0, None, None).unwrap();
+                let _ = load_image(
+                    path,
+                    &noop,
+                    &target,
+                    false,
+                    flags_off,
+                    1.0,
+                    OutputDepth::Native,
+                    None,
+                    None,
+                )
+                .unwrap();
                 off_ms += t.elapsed().as_millis();
             }
             let mut on_ms: u128 = 0;
             for _ in 0..iters {
                 let t = Instant::now();
-                let _ = load_image(path, &noop, &target, false, flags_on, 1.0, None, None).unwrap();
+                let _ = load_image(
+                    path,
+                    &noop,
+                    &target,
+                    false,
+                    flags_on,
+                    1.0,
+                    OutputDepth::Native,
+                    None,
+                    None,
+                )
+                .unwrap();
                 on_ms += t.elapsed().as_millis();
             }
             println!(
@@ -851,6 +1082,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0, // SDR headroom — keep the fixture path RGBA8 for golden diffs
+            OutputDepth::Native,
             None,
             None,
         )
@@ -872,6 +1104,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0, // SDR headroom — keep the fixture path RGBA8 for golden diffs
+            OutputDepth::Native,
             None,
             None,
         )
@@ -905,6 +1138,7 @@ mod tests {
             false,
             RawPipelineFlags::default(),
             1.0,
+            OutputDepth::Native,
             None,
             None,
         )

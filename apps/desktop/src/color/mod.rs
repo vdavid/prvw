@@ -5,6 +5,7 @@ pub mod chroma_denoise;
 pub mod clarity;
 pub mod dcp;
 pub mod delta_e;
+pub mod display_sdr;
 pub mod hdr;
 pub mod highlight_recovery;
 pub mod lens_correction;
@@ -15,7 +16,9 @@ pub mod tone_curve;
 mod transform;
 
 pub use profiles::linear_rec2020_profile;
-pub use transform::{profiles_match, srgb_icc_bytes, transform_f32_with_profile, transform_icc};
+pub use transform::{
+    profiles_match, srgb_icc_bytes, transform_f32_with_profile, transform_icc, transform_icc_16bit,
+};
 
 pub mod display_profile;
 #[cfg(target_os = "macos")]

@@ -1766,6 +1766,7 @@ impl App {
             self.color.relative_col,
             self.raw_flags,
             self.edr_headroom,
+            decoding::OutputDepth::Native,
             None, // Synchronous path — never cancelled, so nothing to salvage.
             None, // Nor is there an overlay up to show a read bar on.
         );
@@ -1856,7 +1857,7 @@ impl App {
             .navigation
             .image_cache
             .get(&path)
-            .map(|img| (img.width, img.height, img.pixels.is_hdr()))
+            .map(|img| (img.width, img.height, img.encoding.is_hdr()))
         else {
             return false;
         };
@@ -1894,7 +1895,7 @@ impl App {
         // pay zero cost; toggling it on later computes lazily from the
         // cached `DecodedImage` (see `ToggleHistogram` arm in `executor.rs`).
         let new_histogram = if self.histogram.visible {
-            Some(histogram::compute::compute(&image.pixels))
+            Some(histogram::compute::compute(&image.pixels, image.encoding))
         } else {
             None
         };
@@ -1974,7 +1975,7 @@ impl App {
     /// without a dir_list — nothing to cache into, so upload directly.
     fn display_decoded_direct(&mut self, image: &decoding::DecodedImage) {
         self.navigation.current_image_size = Some((image.width, image.height));
-        self.current_image_is_hdr = image.pixels.is_hdr();
+        self.current_image_is_hdr = image.encoding.is_hdr();
         let offset = self.content_offset_y();
         self.apply_edr_surface_state();
         let renderer = self.renderer.as_mut().unwrap();
@@ -1994,7 +1995,7 @@ impl App {
         renderer.set_image(image);
         // Lazy compute: skip histogram work when the panel is hidden.
         self.histogram.data = if self.histogram.visible {
-            Some(histogram::compute::compute(&image.pixels))
+            Some(histogram::compute::compute(&image.pixels, image.encoding))
         } else {
             None
         };

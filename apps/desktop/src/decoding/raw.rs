@@ -748,7 +748,7 @@ pub(super) fn decode(
         timings.mark("hdr_diag_f16");
         timings.summary(path);
         return Ok((
-            DecodedImage::from_rgba16f(width, height, half_rgba),
+            DecodedImage::from_linear_hdr_rgba16f(width, height, half_rgba),
             orientation,
             raw_metadata,
         ));

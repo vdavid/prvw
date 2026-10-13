@@ -1,11 +1,13 @@
 //! Histogram counts from a decoded `PixelBuffer`.
 //!
-//! 256 bins per channel. RGBA8 takes the top byte directly. RGBA16F clamps to
-//! [0, 1] and quantizes via `(x * 255).round()`. Above-1.0 EDR samples land in
-//! bin 255, which is the right thing for a viewer histogram (they show as
-//! clipped highlights).
+//! 256 bins per channel. RGBA8 takes the top byte directly. RGBA16F depends on what it
+//! means. `DisplaySdr` half-floats are linearized display-encoded values, so they
+//! go back through the sRGB OETF and bin exactly like the bytes they stand for.
+//! `LinearHdrDisplay` clamps to [0, 1] and quantizes via `(x * 255).round()`.
+//! Above-1.0 EDR samples land in bin 255, which is the right thing for a viewer
+//! histogram (they show as clipped highlights).
 
-use crate::decoding::PixelBuffer;
+use crate::decoding::{PixelBuffer, PixelEncoding};
 use half::f16;
 use rayon::prelude::*;
 
@@ -53,10 +55,16 @@ impl HistogramData {
 
 /// Compute RGB histograms for a decoded image. Single allocation, single
 /// pass. Splits across rayon threads for >4 MP buffers.
-pub fn compute(pixels: &PixelBuffer) -> HistogramData {
-    let mut hist = match pixels {
-        PixelBuffer::Rgba8(bytes) => compute_rgba8(bytes),
-        PixelBuffer::Rgba16F(halfs) => compute_rgba16f(halfs),
+pub fn compute(pixels: &PixelBuffer, encoding: PixelEncoding) -> HistogramData {
+    let mut hist = match (pixels, encoding) {
+        (PixelBuffer::Rgba8(bytes), _) => compute_rgba8(bytes),
+        // Linearized display-encoded values: back through the OETF, or they bin dark.
+        (PixelBuffer::Rgba16F(halfs), PixelEncoding::DisplaySdr) => {
+            compute_rgba16f(halfs, display_sdr_bin)
+        }
+        (PixelBuffer::Rgba16F(halfs), PixelEncoding::LinearHdrDisplay) => {
+            compute_rgba16f(halfs, quantize_half)
+        }
     };
     hist.finalize();
     hist
@@ -90,31 +98,35 @@ fn rgba8_chunk(bytes: &[u8]) -> HistogramData {
     hist
 }
 
-fn compute_rgba16f(halfs: &[u16]) -> HistogramData {
+fn compute_rgba16f(halfs: &[u16], bin: fn(u16) -> usize) -> HistogramData {
     let pixel_count = halfs.len() / 4;
     if pixel_count >= PARALLEL_THRESHOLD {
         let chunk_pixels = pixel_count.div_ceil(rayon::current_num_threads().max(1));
         let chunk_halfs = chunk_pixels * 4;
         halfs
             .par_chunks(chunk_halfs)
-            .map(rgba16f_chunk)
+            .map(|chunk| rgba16f_chunk(chunk, bin))
             .reduce(HistogramData::empty, |mut a, b| {
                 a.merge(&b);
                 a
             })
     } else {
-        rgba16f_chunk(halfs)
+        rgba16f_chunk(halfs, bin)
     }
 }
 
-fn rgba16f_chunk(halfs: &[u16]) -> HistogramData {
+fn rgba16f_chunk(halfs: &[u16], bin: fn(u16) -> usize) -> HistogramData {
     let mut hist = HistogramData::empty();
     for px in halfs.as_chunks::<4>().0 {
-        hist.r[quantize_half(px[0])] += 1;
-        hist.g[quantize_half(px[1])] += 1;
-        hist.b[quantize_half(px[2])] += 1;
+        hist.r[bin(px[0])] += 1;
+        hist.g[bin(px[1])] += 1;
+        hist.b[bin(px[2])] += 1;
     }
     hist
+}
+
+fn display_sdr_bin(bits: u16) -> usize {
+    usize::from(crate::color::display_sdr::display_sdr_f16_to_u8(bits))
 }
 
 fn quantize_half(bits: u16) -> usize {
@@ -136,7 +148,7 @@ mod tests {
             128, 64, 200, 255, //
             255, 0, 128, 255, //
         ];
-        let hist = compute(&PixelBuffer::Rgba8(bytes));
+        let hist = compute(&PixelBuffer::Rgba8(bytes), PixelEncoding::DisplaySdr);
 
         assert_eq!(hist.r[0], 1);
         assert_eq!(hist.r[128], 1);
@@ -167,7 +179,10 @@ mod tests {
             halfs.push(f16::from_f32(b).to_bits());
             halfs.push(f16::from_f32(1.0).to_bits());
         }
-        let hist = compute(&PixelBuffer::Rgba16F(halfs));
+        let hist = compute(
+            &PixelBuffer::Rgba16F(halfs),
+            PixelEncoding::LinearHdrDisplay,
+        );
 
         // 0.5 * 255 = 127.5 → rounds to 128.
         assert_eq!(hist.r[0], 1);
@@ -182,9 +197,26 @@ mod tests {
         assert_eq!(hist.b[255], 1);
     }
 
+    /// A 16-bit SDR image stores linearized half-floats, so binning them
+    /// as-is would skew the histogram dark. Every 8-bit level, stored the way
+    /// the 16-bit decode stores it, must land in the same bin it does as RGBA8.
+    #[test]
+    fn display_sdr_half_floats_bin_like_the_bytes_they_stand_for() {
+        let bytes: Vec<u8> = (0..=255u8).flat_map(|v| [v, v / 2, 255 - v, 255]).collect();
+        let mut halfs: Vec<u16> = bytes.iter().map(|&b| u16::from(b) * 257).collect();
+        crate::color::display_sdr::rgba16_to_display_sdr_f16_inplace(&mut halfs);
+
+        let from_bytes = compute(&PixelBuffer::Rgba8(bytes), PixelEncoding::DisplaySdr);
+        let from_halfs = compute(&PixelBuffer::Rgba16F(halfs), PixelEncoding::DisplaySdr);
+        assert_eq!(from_halfs.r, from_bytes.r);
+        assert_eq!(from_halfs.g, from_bytes.g);
+        assert_eq!(from_halfs.b, from_bytes.b);
+        assert_eq!(from_halfs.max_count, from_bytes.max_count);
+    }
+
     #[test]
     fn empty_buffer_is_safe() {
-        let hist = compute(&PixelBuffer::Rgba8(Vec::new()));
+        let hist = compute(&PixelBuffer::Rgba8(Vec::new()), PixelEncoding::DisplaySdr);
         assert_eq!(hist.max_count, 0);
         assert!(hist.r.iter().all(|&c| c == 0));
     }

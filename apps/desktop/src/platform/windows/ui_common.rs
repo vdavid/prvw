@@ -32,13 +32,14 @@ pub(crate) fn decode_srgb(
         relative_colorimetric,
         raw_flags,
         1.0,
+        decoding::OutputDepth::Rgba8,
         None,
         None,
     )
     .ok()?;
     match decoded.pixels {
         PixelBuffer::Rgba8(rgba) => Some((decoded.width, decoded.height, rgba)),
-        // Unreachable with an SDR headroom, and worth a line rather than a silent skip if the
+        // Unreachable with `OutputDepth::Rgba8`, and worth a line rather than a silent skip if the
         // decoder's contract ever changes.
         PixelBuffer::Rgba16F(_) => {
             log::warn!(

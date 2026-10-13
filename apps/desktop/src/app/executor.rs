@@ -232,8 +232,10 @@ impl App {
                         && let Some(dir) = self.navigation.dir_list.as_ref()
                         && let Some(image) = self.navigation.image_cache.peek(dir.current())
                     {
-                        self.histogram.data =
-                            Some(crate::histogram::compute::compute(&image.pixels));
+                        self.histogram.data = Some(crate::histogram::compute::compute(
+                            &image.pixels,
+                            image.encoding,
+                        ));
                     }
                 } else {
                     self.histogram.hover_bin = None;

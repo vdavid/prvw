@@ -758,6 +758,7 @@ impl Preloader {
                 use_relative_colorimetric,
                 raw_flags,
                 edr_headroom,
+                decoding::OutputDepth::Native,
                 Some(salvage_sink),
                 Some(Arc::clone(&read_progress)),
             ) {
@@ -870,7 +871,11 @@ mod tests {
     }
 
     fn make_hdr_image(width: u32, height: u32) -> DecodedImage {
-        DecodedImage::from_rgba16f(width, height, vec![0u16; (width * height * 4) as usize])
+        DecodedImage::from_linear_hdr_rgba16f(
+            width,
+            height,
+            vec![0u16; (width * height * 4) as usize],
+        )
     }
 
     fn test_path(index: usize) -> PathBuf {

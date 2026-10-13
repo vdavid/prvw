@@ -277,7 +277,7 @@ fn produce(route: &Route, path: &Path, pixels: u32) -> Option<PreviewPixels> {
             // Not cancellable: the epoch check either side of this call is the whole
             // cancellation story here, and `load_image`'s flag would need a per-job `AtomicBool`
             // to say anything more. RAW never reaches this arm, so `raw_flags` can't matter and
-            // the SDR headroom keeps the result `Rgba8`.
+            // the 8-bit depth keeps the result `Rgba8`, the only shape the preview cache carries.
             let decoded = decoding::load_image(
                 path,
                 &AtomicBool::new(false),
@@ -285,6 +285,7 @@ fn produce(route: &Route, path: &Path, pixels: u32) -> Option<PreviewPixels> {
                 false,
                 RawPipelineFlags::default(),
                 1.0,
+                decoding::OutputDepth::Rgba8,
                 None,
                 None,
             )
@@ -314,8 +315,8 @@ fn system_thumbnail(shell_path: &str, pixels: u32) -> Option<PreviewPixels> {
 /// memory to look the same.
 fn downscale(decoded: decoding::DecodedImage, pixels: u32) -> Option<PreviewPixels> {
     let PixelBuffer::Rgba8(rgba) = decoded.pixels else {
-        // Only a RAW develop with HDR headroom returns half-floats, and neither route asks for
-        // one. Worth a line rather than a silent skip if that contract ever changes.
+        // Neither route can return half-floats: `OutputDepth::Rgba8` rules them out. Worth a line
+        // rather than a silent skip if that contract ever changes.
         log::warn!("Preview: got a half-float buffer, which the preview cache can't carry");
         return None;
     };
