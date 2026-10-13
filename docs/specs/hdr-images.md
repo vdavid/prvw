@@ -582,7 +582,7 @@ Filled in by the implementing agent during M0 and later. Date each entry.
   site. The renderer still picks the texture format from storage only; mode 0 covers `DisplaySdr` in both storages with
   no shader change. A `DisplaySdr` f16 image on the EDR surface (only reachable mid-crossfade) shows linearized display
   values as linear P3, like an 8-bit SDR one does today.
-- **2026-10-14, license check (M0): `cargo-deny` covers it, so there's no HDR-specific guard.** `Cargo.lock` lists
-  the AGPL `zentone`, because `ultrahdr-core`'s `std` feature names it weakly (`zentone?/std`), though cargo never
-  builds it. `cargo-deny` resolves features the way the build does: it passes with `features = ["std"]`, and with
-  `"tonemap"` added it fails on `zentone`'s `AGPL-3.0-only OR LicenseRef-Imazen-Commercial` (both verified 2026-10-14).
+- **2026-10-14, license check (M0): `cargo-deny` covers it, so there's no HDR-specific guard.** `Cargo.lock` lists the
+  AGPL `zentone`, because `ultrahdr-core`'s `std` feature names it weakly (`zentone?/std`), though cargo never builds
+  it. `cargo-deny` resolves features the way the build does: it passes with `features = ["std"]`, and with `"tonemap"`
+  added it fails on `zentone`'s `AGPL-3.0-only OR LicenseRef-Imazen-Commercial` (both verified 2026-10-14).
