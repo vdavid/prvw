@@ -186,9 +186,9 @@ pub fn set_layer_colorspace(window: &Window, icc_bytes: &[u8]) {
 /// management is off), pass an empty slice — the colorspace is left
 /// whatever it was.
 ///
-/// `headroom_now` is only logged. It's the caller's `App::edr_headroom`
+/// `headroom_now` is only logged. It's the caller's `App::display_hdr`
 /// rather than a fresh query, so the diagnostic below can't disagree with
-/// the number the decode path actually ran on.
+/// the number the shader is running on.
 pub fn set_layer_edr_state(
     window: &Window,
     edr_active: bool,

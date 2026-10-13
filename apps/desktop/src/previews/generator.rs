@@ -284,7 +284,7 @@ fn produce(route: &Route, path: &Path, pixels: u32) -> Option<PreviewPixels> {
                 crate::color::srgb_icc_bytes(),
                 false,
                 RawPipelineFlags::default(),
-                1.0,
+                false,
                 decoding::OutputDepth::Rgba8,
                 None,
                 None,

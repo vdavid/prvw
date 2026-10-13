@@ -3,15 +3,16 @@
 Not a feature. This is the GPU rendering scaffolding. Features like `zoom` (which owns `ViewState`) plug transforms into
 the renderer's uniform buffer via `crate::zoom::view::TransformUniform`.
 
-| File              | Purpose                                                                                          |
-| ----------------- | ------------------------------------------------------------------------------------------------ |
-| `gpu.rs`          | Which backend and which adapter this platform asks wgpu for, as a pure policy                    |
-| `renderer.rs`     | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback    |
-| _(HDR)_           | `display_hdr_headroom` and `configure_surface` live in `renderer.rs`; see the two sections below |
-| `text.rs`         | `glyphon`-based text layout and rendering for the overlay pill                                   |
-| `progress_bar.rs` | Pure layout for the read progress bar under the "Loading…" overlay: three overlay pills          |
-| `shader.wgsl`     | Image-quad vertex/fragment shader with a 2D affine transform                                     |
-| `overlay.wgsl`    | Rounded-rect pill shader for the title overlay                                                   |
+| File              | Purpose                                                                                       |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| `gpu.rs`          | Which backend and which adapter this platform asks wgpu for, as a pure policy                 |
+| `display_hdr.rs`  | `DisplayHdr { capable, headroom_now }` read out of wgpu's `DisplayHdrInfo`, pure and testable |
+| `renderer.rs`     | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback |
+| _(HDR)_           | `display_hdr` and `configure_surface` live in `renderer.rs`; see the sections below           |
+| `text.rs`         | `glyphon`-based text layout and rendering for the overlay pill                                |
+| `progress_bar.rs` | Pure layout for the read progress bar under the "Loading…" overlay: three overlay pills       |
+| `shader.wgsl`     | Image-quad vertex/fragment shader with a 2D affine transform                                  |
+| `overlay.wgsl`    | Rounded-rect pill shader for the title overlay                                                |
 
 ## Decision: the backend is pinned per platform, with a wider fallback
 
@@ -66,11 +67,22 @@ Three things have to agree, and only one of them is a compile error if it doesn'
 `hdr_surface_supported` asks for the format _and_ the colour space together, because a surface offering one without the
 other would take the configure and then clamp everything at display white.
 
-`Renderer::display_hdr_headroom` is the one query for "how much brighter than SDR white can this display go", on every
-platform, through `Surface::display_hdr_info`. macOS reports a live multiplier (`NSScreen`'s
-`maximumExtendedDynamicRangeColorComponentValue`); Windows reports absolute nits through DXGI and the multiplier is the
-panel peak over the OS's SDR white level, which is exactly `1.0` when the user hasn't switched that display into HDR
-mode. On macOS the headroom is ours to use; on Windows it is ours to respect.
+## Decision: potential headroom decides HDR, current headroom only feeds the shader
+
+`Renderer::display_hdr` is the one query, on every platform, through `Surface::display_hdr_info`, and it answers two
+questions that must not be conflated (`display_hdr.rs`):
+
+- **`capable`** (can this display show HDR at all?) decides HDR decodes and the EDR surface. macOS: `NSScreen`'s
+  `maximumPotentialExtendedDynamicRangeColorComponentValue` above 1.0 (wgpu's `DisplayHeadroom::potential`). Windows:
+  `coarse.high_dynamic_range == Some(true)`, which wgpu sets from the output's DXGI colour space, so "HDR mode on".
+- **`headroom_now`** (how much brighter than SDR white right now?) is wgpu's `tone_map_headroom()`: `NSScreen`'s live
+  `maximumExtendedDynamicRangeColorComponentValue` on macOS, panel peak over SDR white on Windows.
+
+**Why:** the current headroom moves with brightness, ambient light, and battery on macOS, and with the SDR brightness
+slider on Windows. Gating decodes on it meant every tweak flushed the cache and re-decoded, and a Mac that happened to
+read 1.0 at launch (full brightness) decoded RAWs as SDR until the next display change. `App::adopt_display_hdr` only
+clears the cache when `capable` flips. Don't read wgpu's `coarse.high_dynamic_range` on macOS: wgpu derives it from the
+_current_ value there.
 
 ## The image texture follows storage, the surface follows meaning
 

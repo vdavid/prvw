@@ -1,3 +1,4 @@
+use super::display_hdr::DisplayHdr;
 use super::gpu::GpuPolicy;
 use super::text::{GlyphonRenderer, StandalonePill, TextBlock};
 use crate::decoding::{DecodedImage, PixelBuffer};
@@ -727,27 +728,16 @@ impl Renderer {
         );
     }
 
-    /// How much brighter than SDR white the display behind this surface can go, as a multiplier.
-    /// `1.0` means no headroom, and the RAW decoder stays on its 8-bit path.
-    ///
-    /// One question, two very different answers underneath, which is why it comes from wgpu rather
-    /// than from each platform's own API. macOS reports a live multiplier (`NSScreen`'s
-    /// `maximumExtendedDynamicRangeColorComponentValue`), which moves with brightness, ambient
-    /// light, and battery. Windows reports absolute nits through DXGI, and the multiplier is the
-    /// panel's peak over the level the OS maps SDR white to; when the user hasn't switched that
-    /// display into HDR mode, Windows says so outright and the answer is exactly `1.0`.
-    ///
-    /// That difference is behavioural, not a bug: on macOS the headroom is ours to use, and on
-    /// Windows it is ours to respect.
+    /// Whether the display behind this surface can show HDR at all, and how much brighter than SDR
+    /// white it goes right now. One read answers both, because on Windows each read walks the
+    /// adapter's outputs. [`DisplayHdr::from_info`] says which field means what on each platform.
     ///
     /// **Gotcha:** on Metal this reads main-thread-only AppKit objects and answers "nothing known"
     /// off the main thread. Call it from the event loop.
-    pub fn display_hdr_headroom(&self) -> f32 {
+    pub fn display_hdr(&self) -> DisplayHdr {
         let info = self.surface.display_hdr_info(&self.adapter);
-        log::debug!("Display HDR info: {info:?}");
-        info.tone_map_headroom()
-            .filter(|headroom| headroom.is_finite() && *headroom >= 1.0)
-            .unwrap_or(1.0)
+        log::trace!("Display HDR info: {info:?}");
+        DisplayHdr::from_info(&info)
     }
 
     /// Tell the renderer which profile the pixels it's handed have been transformed into, so the

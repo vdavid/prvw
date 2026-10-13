@@ -65,10 +65,9 @@ orientation, and hand a `DecodedImage` off to the renderer.
   `from_display_sdr_rgba16f`, `from_linear_hdr_rgba16f`), and `finalize` re-checks `PixelEncoding::accepts` in debug
   builds. M2–M4 of `docs/specs/hdr-images.md` add `GainMapped` and `SceneLinear`.
 - **`OutputDepth::Rgba8` is for consumers that can only carry bytes.** The Windows clipboard and print
-  (`platform/windows/ui_common.rs`) and the preview generator pass it. It forces the headroom to 1.0 (so RAW develops
-  SDR) and keeps 16-bit sources on the 8-bit path, so those callers get exactly what they got before 16-bit decoding
-  existed. The viewer passes `OutputDepth::Native`. macOS copy and print re-read through ImageIO and never call
-  `load_image`.
+  (`platform/windows/ui_common.rs`) and the preview generator pass it. It forces `hdr_display` off (so RAW develops SDR)
+  and keeps 16-bit sources on the 8-bit path, so those callers get exactly what they got before 16-bit decoding existed.
+  The viewer passes `OutputDepth::Native`. macOS copy and print re-read through ImageIO and never call `load_image`.
 
 ## 16-bit SDR PNGs and TIFFs
 
@@ -178,7 +177,7 @@ anchor. Cost and numbers: `docs/specs/hdr-images.md` Findings, 2026-10-14. Float
    `color::profiles::HdrDisplaySpace` owns that decision and `color/CLAUDE.md` argues it. HDR brightness gain
    (`flags.hdr_gain`, default 2.0) multiplies the buffer before the matrix to push scene-white content into the EDR
    headroom. Without it, HDR output reads timidly SDR-bright rather than "HDR-bright" against Preview. 7b. **Phase 5:
-   HDR branch.** If the caller's `edr_headroom > 1.0` and `flags.hdr_output == true`, skip the `[0, 1]` clamp and
+   HDR branch.** If the caller's `hdr_display` and `flags.hdr_output` are both true, skip the `[0, 1]` clamp and
    quantise the f32 buffer into `PixelBuffer::Rgba16F` (half-floats via the `half` crate), preserving values above 1.0
    for the EDR-capable compositor. Sharpening still fires on this branch via `color::sharpen::sharpen_rgba16f_inplace`
    (same luminance-only unsharp mask as the 8-bit path, computed in f32 with no `[0, 1]` clamp so above-white highlights
@@ -202,14 +201,15 @@ ICC file.
 Whether a given decode lands in HDR or SDR is decided once, up front, in `raw::decode`:
 
 ```
-hdr_active = flags.hdr_output && edr_headroom > 1.0
+hdr_active = flags.hdr_output && hdr_display
 ```
 
-`edr_headroom` is threaded in from `app.rs`, which gets it from `render::renderer::Renderer::display_hdr_headroom`:
-`NSScreen`'s EDR multiplier on macOS, DXGI's panel-peak-over-SDR-white ratio on Windows, `1.0` (no headroom) anywhere
-the display isn't in an HDR mode. `App` also tracks `current_image_is_hdr` (from `PixelEncoding::is_hdr()`) so the
-window's `CAMetalLayer` can be flipped between SDR and EDR modes per-decode. `edr_should_be_active` fuses all three
-inputs (flag, headroom, image-is-HDR).
+`hdr_display` is `App::display_hdr.capable`: whether the display can show HDR at all (potential headroom above 1.0 on
+macOS, HDR mode on in Windows; `render::display_hdr::DisplayHdr::from_info` reads it). **Decoders never see the current
+headroom.** It moves with screen brightness on macOS, and a decode that read it would have to re-run on every tweak; the
+shader takes it per frame instead (`render/CLAUDE.md`). `App` also tracks `current_image_is_hdr` (from
+`PixelEncoding::is_hdr()`), and `App::want_edr_surface` fuses all three inputs (flag, capability, image-is-HDR) to flip
+the window's surface between SDR and EDR modes per decode.
 
 Once inside `raw::decode`, `hdr_active` gates four different behaviors:
 
@@ -223,8 +223,8 @@ Once inside `raw::decode`, `hdr_active` gates four different behaviors:
 4. **Output format.** `rec2020_to_rgba16f` (preserving above-1.0) vs `rec2020_to_rgba8` (clamp + quantize). Sharpening /
    clarity pick the f16 or 8-bit variant to match.
 
-The renderer side observes the same decision via `App::edr_should_be_active` and calls
-`color::display_profile::apply_edr_state` to flip the `CAMetalLayer` between
+The renderer side observes the same decision via `App::want_edr_surface` and calls
+`color::display_profile::set_layer_edr_state` to flip the `CAMetalLayer` between
 `kCGColorSpaceExtendedLinearDisplayP3 + RGBA16Float` (HDR) and the user's display ICC + `BGRA8Unorm_sRGB` (SDR). Two
 diagnostic peak-value log lines (`peak linear value` pre-conversion, `peak post-ICC` post-conversion, plus `peak f16` on
 the HDR-output summary line) make the decision audit-able without a debugger. If HDR looks wrong, the logs tell you

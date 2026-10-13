@@ -190,16 +190,16 @@ impl StageTimings {
 ///
 /// The buffer comes out as:
 /// - `PixelBuffer::Rgba16F` when `flags.hdr_output == true` **and**
-///   `edr_headroom > 1.0` — the display can show highlights above white,
+///   `hdr_display` — the display can show highlights above white,
 ///   so we shape the filmic shoulder toward the EDR peak and quantise to
 ///   IEEE 754 half-floats.
 /// - `PixelBuffer::Rgba8` otherwise — identical output to Phase 4 for SDR
 ///   displays or when the user has opted out via the Settings toggle.
 ///
-/// `edr_headroom` is how much brighter than SDR white the display can go, as a
-/// multiplier: `NSScreen`'s `maximumExtendedDynamicRangeColorComponentValue` on
-/// macOS, DXGI's peak-over-SDR-white ratio on Windows, both through
-/// `crate::render::renderer::Renderer::display_hdr_headroom`.
+/// `hdr_display` is whether the display can show HDR at all (its potential
+/// headroom, `crate::render::display_hdr::DisplayHdr::capable`). The develop
+/// never reads the current headroom: the shoulder peak is fixed, so a
+/// brightness change can't make the same file develop differently.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode(
     path: &Path,
@@ -208,7 +208,7 @@ pub(super) fn decode(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
     mut flags: RawPipelineFlags,
-    edr_headroom: f32,
+    hdr_display: bool,
 ) -> Result<(DecodedImage, u16, Option<rawler::decoders::RawMetadata>), String> {
     let mut timings = StageTimings::new();
     // Defend against hand-edited settings.json with out-of-range knob
@@ -220,7 +220,7 @@ pub(super) fn decode(
     // display actually has headroom above display-white. SDR displays
     // always fall through to the legacy RGBA8 path so we stay bit-identical
     // to Phase 4 there.
-    let hdr_active = flags.hdr_output && edr_headroom > 1.0;
+    let hdr_active = flags.hdr_output && hdr_display;
     let peak = if hdr_active {
         // Cap at the user-facing 4× asymptote. Letting the shoulder track
         // the reported headroom would swing the image every time macOS
@@ -742,7 +742,7 @@ pub(super) fn decode(
                 })
                 .reduce(|| 0.0_f32, f32::max);
             log::info!(
-                "RAW HDR output: {width}x{height} RGBA16F, peak f16 {peak_half:.2}, shoulder peak {peak:.1}, headroom {edr_headroom:.2}"
+                "RAW HDR output: {width}x{height} RGBA16F, peak f16 {peak_half:.2}, shoulder peak {peak:.1}"
             );
         }
         timings.mark("hdr_diag_f16");
@@ -1487,7 +1487,7 @@ fn skip_unknown_opcode(label: &str, opcode: &Opcode, path: &Path) {
 mod tests {
     use super::*;
 
-    /// Test-only wrapper around `decode` that hard-codes EDR headroom to 1.0.
+    /// Test-only wrapper around `decode` that hard-codes an SDR display.
     /// Tests run in SDR mode so every output lands in `PixelBuffer::Rgba8`,
     /// matching Phase 4's pipeline bit-for-bit. The HDR-specific path is
     /// covered by `tone_curve.rs` unit tests + the Phase 5 smoke docs.
@@ -1499,7 +1499,7 @@ mod tests {
         use_rel: bool,
         flags: RawPipelineFlags,
     ) -> Result<(DecodedImage, u16), String> {
-        decode(path, bytes, cancelled, target_icc, use_rel, flags, 1.0)
+        decode(path, bytes, cancelled, target_icc, use_rel, flags, false)
             .map(|(img, orientation, _meta)| (img, orientation))
     }
 

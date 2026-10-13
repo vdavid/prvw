@@ -20,6 +20,7 @@ use crate::pixels::{
     Logical, from_logical_pos, from_logical_size, from_physical_size, to_logical_pos,
     to_logical_size,
 };
+use crate::render::display_hdr::{self, DisplayHdr};
 use crate::render::{progress_bar, renderer, text};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::updater;
@@ -180,17 +181,17 @@ pub(crate) struct App {
     /// default is all-true; the Settings → RAW panel flips individual
     /// stages off for transparency and diagnostics.
     pub(crate) raw_flags: crate::decoding::RawPipelineFlags,
-    /// Current EDR (extended dynamic range) headroom of the active display
-    /// (Phase 5). `1.0` on SDR displays — the decoder produces RGBA8 like
-    /// Phase 4. Values above `1.0` switch the RAW decoder into its
-    /// `RGBA16F` + filmic-4×-shoulder path so HDR highlights survive to the
-    /// renderer. Refreshed on `AppCommand::DisplayChanged` and whenever a
-    /// new display is queried.
-    pub(crate) edr_headroom: f32,
-    /// True when the currently-displayed image's pixel buffer is `Rgba16F`
-    /// (Phase 5.1). Combined with `raw_flags.hdr_output` and a non-unity
-    /// `edr_headroom`, this determines whether the wgpu surface should be
-    /// configured for EDR output. Only RAW decodes produce HDR buffers, so
+    /// What the active display can do with HDR: whether it can show HDR at all
+    /// (`capable`, which decides HDR decodes and the EDR surface, and clears the
+    /// cache when it flips) and its headroom right now (`headroom_now`, which only
+    /// feeds the shader's per-frame uniform). `DisplayHdr::SDR` until the
+    /// renderer exists. Refreshed on `AppCommand::DisplayChanged`, on a move to
+    /// another monitor, and by the headroom poll while an HDR image is on screen.
+    pub(crate) display_hdr: DisplayHdr,
+    /// True when the currently-displayed image needs the EDR surface
+    /// (`PixelEncoding::is_hdr`). Combined with `raw_flags.hdr_output` and
+    /// `display_hdr.capable`, this determines whether the wgpu surface should be
+    /// configured for EDR output. Only RAW decodes produce HDR buffers today, so
     /// this flips back to `false` whenever a JPEG / PNG / WebP / etc. loads.
     pub(crate) current_image_is_hdr: bool,
 
@@ -336,7 +337,7 @@ impl App {
             tags: crate::tags::State::default(),
             title_bar: initial_settings.title_bar,
             raw_flags: initial_settings.raw,
-            edr_headroom: 1.0,
+            display_hdr: DisplayHdr::SDR,
             current_image_is_hdr: false,
             modifiers: ModifiersState::empty(),
             drag_start: None,
@@ -674,14 +675,17 @@ impl App {
             self.color.monitors.moved_to(monitor);
         }
 
-        // Query the display's EDR headroom. 1.0 on SDR displays (so the
-        // RAW decoder stays on the Phase 4 RGBA8 path, bit-identical).
-        // XDR and OLED displays return >1.0 which promotes RAWs to the
-        // RGBA16F + filmic-4×-shoulder path.
-        self.edr_headroom = self.query_edr_headroom();
-        log::info!("Display EDR headroom: {:.2}", self.edr_headroom);
-        let hdr_active = self.raw_flags.hdr_output && self.edr_headroom > 1.0;
-        self.navigation.image_cache.set_hdr_mode(hdr_active);
+        // Ask the display what it can do with HDR. An SDR display keeps the
+        // RAW decoder on the Phase 4 RGBA8 path, bit-identical. XDR, OLED, and
+        // Windows HDR-mode displays promote RAWs to the RGBA16F +
+        // filmic-4×-shoulder path, whatever their headroom happens to be now.
+        self.display_hdr = self.query_display_hdr();
+        log::info!(
+            "Display HDR: capable {}, headroom now {:.2}",
+            self.display_hdr.capable,
+            self.display_hdr.headroom_now
+        );
+        self.navigation.image_cache.set_hdr_mode(self.hdr_active());
         #[cfg(target_os = "macos")]
         {
             if !self.color.display_icc.is_empty() {
@@ -760,7 +764,7 @@ impl App {
             self.color.display_icc.clone(),
             self.color.relative_col,
             self.raw_flags,
-            self.edr_headroom,
+            self.display_hdr.capable,
             self.event_loop_proxy.clone(),
         ));
 
@@ -1765,7 +1769,7 @@ impl App {
             &self.color.display_icc,
             self.color.relative_col,
             self.raw_flags,
-            self.edr_headroom,
+            self.display_hdr.capable,
             decoding::OutputDepth::Native,
             None, // Synchronous path — never cancelled, so nothing to salvage.
             None, // Nor is there an overlay up to show a read bar on.
@@ -3684,16 +3688,17 @@ impl App {
     }
 
     /// Recompute the effective display ICC, update the layer colorspace, flush cache, and re-decode.
-    /// Called when either ICC toggle changes.
-    fn apply_icc_settings(&mut self) {
+    /// Called when either ICC toggle changes. Returns `true` when the profile changed, which
+    /// re-decoded the image on screen.
+    fn apply_icc_settings(&mut self) -> bool {
         let new_icc = if let Some(win) = &self.window {
             self.effective_display_icc(win)
         } else {
-            return;
+            return false;
         };
 
         if color::profiles_match(&self.color.display_icc, &new_icc) {
-            return; // No change
+            return false; // No change
         }
 
         self.color.display_icc = new_icc;
@@ -3712,10 +3717,8 @@ impl App {
         if let Some(preloader) = &mut self.navigation.preloader {
             preloader.set_display_icc(self.color.display_icc.clone());
         }
-        if let Some(dir) = &self.navigation.dir_list {
-            let path = dir.current().to_path_buf();
-            self.display_image(&path);
-        }
+        self.redisplay_current();
+        true
     }
 
     /// Flush the image cache, update the preloader, and re-decode the current image.
@@ -3737,8 +3740,7 @@ impl App {
     /// and HDR (1 GB) so the preload count stays constant when the user
     /// flips `hdr_output`.
     pub(crate) fn apply_raw_flag_change(&mut self) {
-        let hdr_active = self.raw_flags.hdr_output && self.edr_headroom > 1.0;
-        self.navigation.image_cache.set_hdr_mode(hdr_active);
+        self.navigation.image_cache.set_hdr_mode(self.hdr_active());
         self.navigation.image_cache.clear();
         if let Some(preloader) = &mut self.navigation.preloader {
             preloader.set_raw_flags(self.raw_flags);
@@ -3757,35 +3759,72 @@ impl App {
         }
     }
 
-    /// How much headroom above SDR white the display can show right now. `1.0` (no headroom, so
-    /// the RAW decoder stays on its 8-bit path) until the renderer exists to ask. See
-    /// [`renderer::Renderer::display_hdr_headroom`] for what each platform means by the number.
-    fn query_edr_headroom(&self) -> f32 {
-        self.renderer
-            .as_ref()
-            .map_or(1.0, renderer::Renderer::display_hdr_headroom)
+    /// Whether decodes produce HDR right now: the user hasn't opted out and the display can show
+    /// it. The one place both inputs meet; the RAW decoder computes the same thing from the two
+    /// values the preloader hands it.
+    fn hdr_active(&self) -> bool {
+        self.raw_flags.hdr_output && self.display_hdr.capable
     }
 
-    /// Re-read the display's headroom and, when it moved, re-tune everything downstream of it: the
-    /// decoder's output depth, the cache's memory budget, and the cache's contents (every buffer
-    /// in it was decoded for the old headroom).
-    fn refresh_edr_headroom(&mut self) {
-        let new_headroom = self.query_edr_headroom();
-        if (new_headroom - self.edr_headroom).abs() <= 1e-3 {
-            return;
+    /// What the display can do with HDR. [`DisplayHdr::SDR`] until the renderer exists to ask.
+    /// See [`DisplayHdr::from_info`] for what each platform means by the two numbers.
+    fn query_display_hdr(&self) -> DisplayHdr {
+        self.renderer
+            .as_ref()
+            .map_or(DisplayHdr::SDR, renderer::Renderer::display_hdr)
+    }
+
+    /// Re-read the display and adopt the answer. Returns `true` when HDR decoding flipped, which
+    /// cleared the cache: the caller re-decodes the image on screen.
+    fn refresh_display_hdr(&mut self) -> bool {
+        let measured = self.query_display_hdr();
+        self.adopt_display_hdr(measured)
+    }
+
+    /// Take a new reading of the display, and re-tune what depends on each half of it.
+    ///
+    /// A **headroom** change is cheap by design: it's stored for the shader, and nothing decoded
+    /// is touched. A **capability** flip changes what the decoders produce, so it retunes the
+    /// preloader and, when that flips `hdr_active`, the cache's budget and contents: every buffer
+    /// in it was decoded for the other answer. Returns `true` in that last case.
+    fn adopt_display_hdr(&mut self, measured: DisplayHdr) -> bool {
+        let was_active = self.hdr_active();
+        let old = self.display_hdr;
+        if display_hdr::headroom_moved(old.headroom_now, measured.headroom_now) {
+            log::debug!(
+                "Display headroom now: {:.2} -> {:.2}",
+                old.headroom_now,
+                measured.headroom_now
+            );
+            self.display_hdr.headroom_now = measured.headroom_now;
         }
-        log::info!(
-            "EDR headroom changed: {:.2} -> {:.2}",
-            self.edr_headroom,
-            new_headroom
-        );
-        self.edr_headroom = new_headroom;
-        if let Some(preloader) = &mut self.navigation.preloader {
-            preloader.set_edr_headroom(new_headroom);
+        if measured.capable != old.capable {
+            log::info!(
+                "Display HDR capable: {} -> {}",
+                old.capable,
+                measured.capable
+            );
+            self.display_hdr.capable = measured.capable;
+            if let Some(preloader) = &mut self.navigation.preloader {
+                preloader.set_hdr_display(measured.capable);
+            }
         }
-        let hdr_active = self.raw_flags.hdr_output && new_headroom > 1.0;
-        self.navigation.image_cache.set_hdr_mode(hdr_active);
+        let active = self.hdr_active();
+        if active == was_active {
+            return false;
+        }
+        self.navigation.image_cache.set_hdr_mode(active);
         self.navigation.image_cache.clear();
+        true
+    }
+
+    /// Decode the image on screen again, from the file. For the changes that invalidate what the
+    /// cache holds without anything else re-decoding.
+    fn redisplay_current(&mut self) {
+        if let Some(dir) = &self.navigation.dir_list {
+            let path = dir.current().to_path_buf();
+            self.display_image(&path);
+        }
     }
 
     /// Re-read the display profile when a move put the window on a different monitor, and do
@@ -3805,20 +3844,24 @@ impl App {
             return;
         }
         log::debug!("The window is on a different display, so its colour profile is re-read");
-        // The new display may have different headroom, too: a laptop panel with HDR switched on
-        // and an external SDR monitor is an ordinary Windows desk.
-        self.refresh_edr_headroom();
-        self.apply_icc_settings();
+        // The new display may differ in HDR, too: a laptop panel with HDR switched on and an
+        // external SDR monitor is an ordinary Windows desk.
+        let hdr_flipped = self.refresh_display_hdr();
+        let redisplayed = self.apply_icc_settings();
+        if hdr_flipped && !redisplayed {
+            self.redisplay_current();
+        }
         self.apply_edr_surface_state();
     }
 
     /// Single source of truth for "should the wgpu surface run in EDR mode
     /// right now?" All three inputs must hold: the user hasn't opted out,
-    /// the display advertises EDR headroom, and the currently-displayed
-    /// image is actually an HDR decode. When any flips, call
-    /// `apply_edr_surface_state`.
+    /// the display can show HDR (potential headroom, not the current one, so
+    /// a brightness change never flips the surface), and the
+    /// currently-displayed image is actually an HDR decode. When any flips,
+    /// call `apply_edr_surface_state`.
     pub(crate) fn want_edr_surface(&self) -> bool {
-        self.raw_flags.hdr_output && self.edr_headroom > 1.0 && self.current_image_is_hdr
+        self.hdr_active() && self.current_image_is_hdr
     }
 
     /// Reconfigure the wgpu surface and the `CAMetalLayer` to match
@@ -3841,7 +3884,7 @@ impl App {
                 win,
                 want_hdr,
                 &self.color.display_icc,
-                self.edr_headroom,
+                self.display_hdr.headroom_now,
             );
         }
 
@@ -3865,10 +3908,9 @@ impl App {
         }
     }
 
-    /// Re-query the display ICC profile + EDR headroom and re-decode the
-    /// current image if either changed. EDR headroom moves with display
-    /// switches and with macOS brightness changes, so we refresh it here on
-    /// every `DisplayChanged` event.
+    /// Re-query the display ICC profile + HDR state and re-decode the
+    /// current image if the profile changed or HDR decoding flipped. A
+    /// headroom-only change re-decodes nothing: it's a shader input.
     ///
     /// The two platforms reach this from opposite directions. macOS is told
     /// the window changed screens (`NSWindowDidChangeScreenNotification`).
@@ -3880,12 +3922,14 @@ impl App {
     fn handle_display_changed(&mut self) {
         log::debug!("Display changed, re-evaluating ICC + EDR");
         self.color.monitors.forget();
-        self.refresh_edr_headroom();
-        self.apply_icc_settings();
-        // `apply_icc_settings` re-decodes, which goes through `display_image`
-        // and thus `apply_edr_surface_state`. If nothing changed (same
-        // display, same ICC), still confirm the surface state matches the
-        // latest headroom.
+        let hdr_flipped = self.refresh_display_hdr();
+        let redisplayed = self.apply_icc_settings();
+        if hdr_flipped && !redisplayed {
+            self.redisplay_current();
+        }
+        // A re-decode goes through `display_image` and thus
+        // `apply_edr_surface_state`. If nothing changed (same display, same
+        // ICC), still confirm the surface state matches the latest reading.
         self.apply_edr_surface_state();
     }
 

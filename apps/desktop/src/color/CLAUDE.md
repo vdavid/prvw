@@ -86,6 +86,12 @@ Two events re-run it, and they are not the same event:
   (`DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`, linear BT.709) and nothing else, and there is no Display P3 swapchain
   colour space at all. So `HdrDisplaySpace::for_host()` picks the matrix. Getting it wrong is invisible to the compiler
   and invisible on an SDR display, which is why it's data with a test per platform.
+- **HDR has two display inputs, and only one of them reaches a decoder.** _Potential_ headroom ("can this display show
+  HDR at all?", `DisplayHdr::capable`) decides whether a decode produces HDR, so flipping it clears the cache. _Current_
+  headroom ("how much brighter than SDR white right now?", `DisplayHdr::headroom_now`) moves with brightness and only
+  feeds the shader's per-frame uniform. RAW's develop never read the magnitude anyway (its shoulder peak is a fixed 4×),
+  and the gain-map and PQ/HLG modes apply it on the GPU, so a brightness change never re-decodes. `render/CLAUDE.md` has
+  the per-platform reading.
 - **Perceptual intent by default.** "Relative colorimetric" toggle is opt-in for photographers comparing specific color
   values.
 - **Parametric + default wrapper pattern (Phase 2.5b).** `tone_curve.rs` and `sharpen.rs` both expose a parametric entry

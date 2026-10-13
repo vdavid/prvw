@@ -136,7 +136,7 @@ pub enum OutputDepth {
     /// 16-bit sources and HDR. What the viewer asks for.
     Native,
     /// Always `PixelBuffer::Rgba8` + `PixelEncoding::DisplaySdr`, and HDR off
-    /// whatever the headroom says. For consumers that can only carry bytes:
+    /// whatever the display can do. For consumers that can only carry bytes:
     /// the clipboard, a printer, the preview cache.
     Rgba8,
 }
@@ -236,11 +236,11 @@ pub type SalvageSink = Box<dyn FnOnce(DecodedImage) + Send>;
 /// then the byte count per chunk. The preloader hands one in for the image the user is waiting on
 /// so the "Loading…" overlay can draw a read bar. Pass `None` everywhere else.
 ///
-/// `edr_headroom` is the peak-white headroom the display can show (from
-/// [`crate::render::renderer::Renderer::display_hdr_headroom`]). `1.0`
-/// means "SDR only, clip highlights at display-white". Anything above
-/// `1.0` combined with `raw_flags.hdr_output == true` triggers the
-/// `RGBA16F` output path for RAW files.
+/// `hdr_display` says the display can show HDR at all (its _potential_
+/// headroom, [`crate::render::display_hdr::DisplayHdr::capable`]). Combined
+/// with `raw_flags.hdr_output == true` it triggers the `RGBA16F` output path
+/// for RAW files. Decoders never read the _current_ headroom: it moves with
+/// screen brightness, and the shader applies it per frame instead.
 ///
 /// `depth` is [`OutputDepth::Native`] for the viewer. [`OutputDepth::Rgba8`]
 /// promises an 8-bit SDR buffer whatever the source and the headroom, for the
@@ -252,15 +252,15 @@ pub fn load_image(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
     raw_flags: RawPipelineFlags,
-    edr_headroom: f32,
+    hdr_display: bool,
     depth: OutputDepth,
     salvage: Option<SalvageSink>,
     read_progress: Option<Arc<ReadProgress>>,
 ) -> Result<DecodedImage, String> {
-    // An 8-bit caller gets SDR: the RAW develop reads a headroom of 1.0 as "HDR off".
-    let edr_headroom = match depth {
-        OutputDepth::Native => edr_headroom,
-        OutputDepth::Rgba8 => 1.0,
+    // An 8-bit caller gets SDR, whatever the display can do.
+    let hdr_display = match depth {
+        OutputDepth::Native => hdr_display,
+        OutputDepth::Rgba8 => false,
     };
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
@@ -283,7 +283,7 @@ pub fn load_image(
         target_icc,
         use_relative_colorimetric,
         raw_flags,
-        edr_headroom,
+        hdr_display,
         depth,
         salvage,
     )
@@ -354,7 +354,7 @@ fn decode_with(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
     raw_flags: RawPipelineFlags,
-    edr_headroom: f32,
+    hdr_display: bool,
     depth: OutputDepth,
     salvage: Option<SalvageSink>,
 ) -> Result<DecodedImage, String> {
@@ -406,7 +406,7 @@ fn decode_with(
                 target_icc,
                 use_relative_colorimetric,
                 raw_flags,
-                edr_headroom,
+                hdr_display,
             )?;
             img.exif = exif_via_nom
                 .or_else(|| raw_metadata.as_ref().and_then(parse_raw_exif))
@@ -706,7 +706,7 @@ mod tests {
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),
-            1.0,
+            false,
             OutputDepth::Native,
             None,
             None,
@@ -738,7 +738,7 @@ mod tests {
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),
-            1.0,
+            false,
             OutputDepth::Native,
             None,
             None,
@@ -788,14 +788,14 @@ mod tests {
             .expect("write 16-bit PNG");
     }
 
-    fn load_at(path: &Path, edr_headroom: f32, depth: OutputDepth) -> DecodedImage {
+    fn load_at(path: &Path, hdr_display: bool, depth: OutputDepth) -> DecodedImage {
         load_image(
             path,
             &AtomicBool::new(false),
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),
-            edr_headroom,
+            hdr_display,
             depth,
             None,
             None,
@@ -812,11 +812,11 @@ mod tests {
         let path = dir.path().join("sixteen.png");
         write_16_bit_png(&path);
 
-        let native = load_at(&path, 4.0, OutputDepth::Native);
+        let native = load_at(&path, true, OutputDepth::Native);
         assert!(matches!(native.pixels, PixelBuffer::Rgba16F(_)));
         assert_eq!(native.encoding, PixelEncoding::DisplaySdr);
 
-        let bytes = load_at(&path, 4.0, OutputDepth::Rgba8);
+        let bytes = load_at(&path, true, OutputDepth::Rgba8);
         let PixelBuffer::Rgba8(rgba) = &bytes.pixels else {
             panic!("OutputDepth::Rgba8 must return bytes");
         };
@@ -826,7 +826,7 @@ mod tests {
 
     /// A RAW develop on an HDR display is the one decode tagged
     /// `LinearHdrDisplay`, and `OutputDepth::Rgba8` turns HDR off for it
-    /// whatever the headroom says.
+    /// whatever the display can do.
     #[test]
     fn load_image_tags_raw_hdr_and_rgba8_depth_turns_it_off() {
         let raw_path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -836,11 +836,11 @@ mod tests {
             "the test needs HDR on"
         );
 
-        let hdr = load_at(&raw_path, 4.0, OutputDepth::Native);
+        let hdr = load_at(&raw_path, true, OutputDepth::Native);
         assert!(matches!(hdr.pixels, PixelBuffer::Rgba16F(_)));
         assert_eq!(hdr.encoding, PixelEncoding::LinearHdrDisplay);
 
-        let sdr = load_at(&raw_path, 4.0, OutputDepth::Rgba8);
+        let sdr = load_at(&raw_path, true, OutputDepth::Rgba8);
         assert!(matches!(sdr.pixels, PixelBuffer::Rgba8(_)));
         assert_eq!(sdr.encoding, PixelEncoding::DisplaySdr);
     }
@@ -1006,7 +1006,7 @@ mod tests {
                 &target,
                 false,
                 flags_off,
-                1.0,
+                false,
                 OutputDepth::Native,
                 None,
                 None,
@@ -1017,7 +1017,7 @@ mod tests {
                 &target,
                 false,
                 flags_on,
-                1.0,
+                false,
                 OutputDepth::Native,
                 None,
                 None,
@@ -1033,7 +1033,7 @@ mod tests {
                     &target,
                     false,
                     flags_off,
-                    1.0,
+                    false,
                     OutputDepth::Native,
                     None,
                     None,
@@ -1050,7 +1050,7 @@ mod tests {
                     &target,
                     false,
                     flags_on,
-                    1.0,
+                    false,
                     OutputDepth::Native,
                     None,
                     None,
@@ -1081,7 +1081,7 @@ mod tests {
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),
-            1.0, // SDR headroom — keep the fixture path RGBA8 for golden diffs
+            false, // SDR display — keep the fixture path RGBA8 for golden diffs
             OutputDepth::Native,
             None,
             None,
@@ -1103,7 +1103,7 @@ mod tests {
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),
-            1.0, // SDR headroom — keep the fixture path RGBA8 for golden diffs
+            false, // SDR display — keep the fixture path RGBA8 for golden diffs
             OutputDepth::Native,
             None,
             None,
@@ -1137,7 +1137,7 @@ mod tests {
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),
-            1.0,
+            false,
             OutputDepth::Native,
             None,
             None,
