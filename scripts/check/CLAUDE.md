@@ -36,27 +36,27 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 
 ## Key files
 
-| File                                   | Purpose                                                                             |
-| -------------------------------------- | ----------------------------------------------------------------------------------- |
-| `main.go`                              | Entry point: flags, root dir, check selection, runner delegation                    |
-| `runner.go`                            | Parallel executor: goroutine pool, dependency graph, TTY status line                |
-| `checks/common.go`                     | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`)           |
-| `checks/common_unix.go`                | Process-group setup and tree kill on macOS and Linux                                |
-| `checks/common_windows.go`             | The same, via job objects, on Windows                                               |
-| `checks/walk.go`                       | `findFiles` / `countFiles`: the file counting every check does                      |
-| `console_{windows,other}.go`           | `prepareConsole()`: UTF-8 and ANSI on the Windows console                           |
-| `checks/registry.go`                   | `AllChecks`: canonical ordered list, lookup and validation functions                |
-| `checks/go-tools.go`                   | `EnsureGoTool`: version-pinned Go analyzers, installed into `target/check-go-tools` |
-| `checks/desktop-rust-*.go`             | Rust checks (rustfmt, clippy, cargo-test, cargo-audit, parity, cross-checks)        |
-| `checks/desktop-macos-availability.go` | ObjC selector/class use vs. the `LSMinimumSystemVersion` floor                      |
-| `checks/windows-installer.go`          | The Windows installer's generated registry include, plus two facts about `prvw.nsi` |
-| `checks/oxfmt.go`                      | Monorepo-wide formatter (oxfmt, prettier-compatible)                                |
-| `checks/website-*.go`                  | Website checks (eslint, typecheck, build)                                           |
+| File                                   | Purpose                                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------------------ |
+| `main.go`                              | Entry point: flags, root dir, check selection, runner delegation                     |
+| `runner.go`                            | Parallel executor: goroutine pool, dependency graph, TTY status line                 |
+| `checks/common.go`                     | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`)            |
+| `checks/common_unix.go`                | Process-group setup and tree kill on macOS and Linux                                 |
+| `checks/common_windows.go`             | The same, via job objects, on Windows                                                |
+| `checks/walk.go`                       | `findFiles` / `countFiles`: the file counting every check does                       |
+| `console_{windows,other}.go`           | `prepareConsole()`: UTF-8 and ANSI on the Windows console                            |
+| `checks/registry.go`                   | `AllChecks`: canonical ordered list, lookup and validation functions                 |
+| `checks/go-tools.go`                   | `EnsureGoTool`: version-pinned Go analyzers, installed into `target/check-go-tools`  |
+| `checks/desktop-rust-*.go`             | Rust checks (rustfmt, clippy, cargo-test, cargo-audit, parity, cross-checks)         |
+| `checks/desktop-macos-availability.go` | ObjC selector/class use vs. the `LSMinimumSystemVersion` floor                       |
+| `checks/windows-installer.go`          | The Windows installer's generated registry include, plus two facts about `prvw.nsi`  |
+| `checks/oxfmt.go`                      | Monorepo-wide formatter (oxfmt, prettier-compatible)                                 |
+| `checks/website-*.go`                  | Website checks (eslint, typecheck, build)                                            |
 | `checks/scripts-go-*.go`               | Go checks (gofmt, vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests) |
-| `checks/conflict-markers.go`           | Unresolved merge conflict markers in source and docs                                |
-| `stats.go`                             | CSV stats logging (`~/.local/share/check-runner/prvw/check-log.csv`)                |
-| `colors.go`                            | ANSI color constants                                                                |
-| `utils.go`                             | `findRootDir()` (walks up until `AGENTS.md` is found)                               |
+| `checks/conflict-markers.go`           | Unresolved merge conflict markers in source and docs                                 |
+| `stats.go`                             | CSV stats logging (`~/.local/share/check-runner/prvw/check-log.csv`)                 |
+| `colors.go`                            | ANSI color constants                                                                 |
+| `utils.go`                             | `findRootDir()` (walks up until `AGENTS.md` is found)                                |
 
 ## Adding a new check
 
@@ -77,13 +77,13 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 
 ## Apps and checks
 
-| App     | Tech      | Checks                                                                                                              |
-| ------- | --------- | ------------------------------------------------------------------------------------------------------------------- |
-| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                                     |
+| App     | Tech      | Checks                                                                                                                           |
+| ------- | --------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                                                  |
 | Desktop | Rust      | rustfmt, clippy, cargo-test, cargo-audit, parity, installer, macos-availability, windows-cross + linux-cross (both slow, opt-in) |
-| Website | Astro     | eslint, typecheck, build                                                                                            |
-| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests                                         |
-| Other   | -         | changelog-commit-links, conflict-markers                                                                            |
+| Website | Astro     | eslint, typecheck, build                                                                                                         |
+| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests                                                      |
+| Other   | -         | changelog-commit-links, conflict-markers                                                                                         |
 
 ## The conflict-marker check
 
@@ -133,12 +133,12 @@ picture.
   through the custom manager in `renovate.json`.
 - **staticcheck and Go move together.** Go 1.27.2 changed the export data format, and only staticcheck 2026.2.2
   (`v0.8.2`) reads it. So `.mise.toml` pins Go to an exact patch release and staticcheck to a build that reads it;
-  bumping one without the other fails the `staticcheck` check. Renovate groups the two for that reason. Today's pin is
-  a pseudo-version (a 2026-10-09 commit, the one Cmdr pins), because 2026.2.2 was inside the three-day window when Go
+  bumping one without the other fails the `staticcheck` check. Renovate groups the two for that reason. Today's pin is a
+  pseudo-version (a 2026-10-09 commit, the one Cmdr pins), because 2026.2.2 was inside the three-day window when Go
   1.27.2 had to land, and staying on 1.27.1 would have failed `govulncheck` on eight stdlib advisories.
-- **`cargo-audit`** (nickname `cargo-audit`) checks `Cargo.lock` against the RustSec database: a vulnerability fails,
-  an unmaintained or unsound warning warns. `cargoAuditIgnoredAdvisories` holds the accepted ones, each with why it
-  doesn't reach the shipped app and when to drop it. `cargo-audit` itself installs at a pinned `--version`.
+- **`cargo-audit`** (nickname `cargo-audit`) checks `Cargo.lock` against the RustSec database: a vulnerability fails, an
+  unmaintained or unsound warning warns. `cargoAuditIgnoredAdvisories` holds the accepted ones, each with why it doesn't
+  reach the shipped app and when to drop it. `cargo-audit` itself installs at a pinned `--version`.
 - **`govulncheck`** (nickname `govulncheck`) is the Go twin, and only flags advisories our code actually calls into. An
   advisory whose fix is under three days old can't be adopted yet, so it warns, and turns red three days after it
   becomes adoptable.

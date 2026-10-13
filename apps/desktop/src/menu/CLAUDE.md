@@ -34,9 +34,9 @@ came from. It buys nothing, because muda can only attach a menu bar with `init_f
 `gtk::Window`. Dropping it took 476 lines out of `Cargo.lock`.
 
 **Gotcha:** `default-features = false` alone doesn't work. muda gates its whole Linux backend behind the `gtk3` and
-`gtk4` features with no fallback, so the crate itself fails to compile there (`E0432: unresolved import
-self::platform`). It has to leave the Linux target entirely, which is what the `cfg(any(...))` dependency section in
-`Cargo.toml` does.
+`gtk4` features with no fallback, so the crate itself fails to compile there
+(`E0432: unresolved import self::platform`). It has to leave the Linux target entirely, which is what the
+`cfg(any(...))` dependency section in `Cargo.toml` does.
 
 ## Decision: state flows one way, settings to menu
 
