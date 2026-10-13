@@ -11,26 +11,26 @@ wgpu = "30.0.1"
 pollster = "0.4.0"
 image = "0.25.10"
 zune-jpeg = "0.5.15"
-zune-core = "0.5.1"
-moxcms = { version = "0.9.0", features = ["in_place"] }
-rayon = "1.11.0"
-log = "0.4.29"
-env_logger = "0.11.10"
-chrono = "0.4.44"
-clap = { version = "4.6.0", features = ["derive"] }
-bytemuck = { version = "1.25.0", features = ["derive"] }
-bytemuck_derive = "1.10.2"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+zune-core = "0.5.3"
+moxcms = { version = "0.9.1", features = ["in_place"] }
+rayon = "1.12.0"
+log = "0.4.34"
+env_logger = "0.11.11"
+chrono = "0.4.45"
+clap = { version = "4.6.7", features = ["derive"] }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+bytemuck_derive = "1.12.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.152"
 base64 = "0.23.1"
-nom-exif = { version = "3.6.2", default-features = false }
+nom-exif = { version = "3.8.0", default-features = false }
 rawler = "0.7.2"
 multiversion = "0.8.0"
-lensfun = { git = "https://github.com/vdavid/lensfun-rs", rev = "ae65ed6" }
+lensfun = "0.7.0"
 zstd = "0.13.3"
 glyphon = "0.12.0"
-half = "2.7"
-alphanumeric-sort = "1.5.6"
+half = "2.7.1"
+alphanumeric-sort = "1.5.8"
 notify = "8.2.0"
 # The native "Open an image" picker behind File → Open. MIT. Default features are
 # `xdg-portal` + `wayland`, both Linux-only; `gtk3` is opt-in in 0.17, so the GTK chain M0
@@ -52,7 +52,7 @@ muda = { version = "0.19.3", default-features = false }
 # where `rustls` would pull `aws-lc-sys` and with it a NASM assembler that neither this Mac nor
 # `cargo xwin` has. No download path on this platform, so the 30-second client is all of it.
 # MIT OR Apache-2.0.
-reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "native-tls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "native-tls"] }
 # Process RSS (`diagnostics`), installed RAM (`platform`), the console attach behind
 # `windows_subsystem = "windows"` (`platform::windows`), the system UI font name
 # (`render::text`), the monitor work area (`window`), the wheel and double-click preferences
@@ -101,7 +101,7 @@ windows = { version = "0.62.2", features = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # `sysconf(_SC_PAGESIZE)`, to turn `/proc/self/statm` pages into bytes.
-libc = "0.2"
+libc = "0.2.190"
 # The file picker's Linux backend: the XDG desktop portal, which works under Flatpak and
 # Snap and needs no toolkit. The Wayland default feature is deliberately left off — it only
 # supplies a parent-window handle, and it would pull `libwayland-client` back in.
@@ -111,9 +111,9 @@ rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] 
 # The updater's manifest fetch and DMG download. `rustls` here means `aws-lc-rs`, which builds
 # on a Mac without help; the Windows target asks for a different backend, and Linux publishes no
 # builds to check against, so it gets no HTTP client at all.
-reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json", "rustls"] }
-libc = "0.2"
-objc2 = "0.6"
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "rustls"] }
+libc = "0.2.190"
+objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3", features = [
   "NSAffineTransform",
   "NSApplication",
@@ -233,4 +233,4 @@ tempfile = "3.27.0"
 little_exif = "0.6.23"
 # The E2E harness talks plain HTTP to `127.0.0.1` (`qa/server.rs`), so it needs no TLS
 # provider. Keeping it TLS-free is what lets non-macOS targets skip `aws-lc-sys`.
-reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json"] }
