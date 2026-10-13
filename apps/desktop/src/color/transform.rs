@@ -19,6 +19,18 @@ pub fn srgb_icc_bytes() -> &'static [u8] {
     })
 }
 
+/// Display P3 ICC profile bytes, generated once by `moxcms` like [`srgb_icc_bytes`]. The working
+/// space of a gain-mapped JPEG's base (`docs/specs/hdr-images.md`, section 4): it uses the sRGB
+/// transfer curve, so an `Rgba8UnormSrgb` texture hands the shader linear Display P3.
+pub fn display_p3_icc_bytes() -> &'static [u8] {
+    static P3: OnceLock<Vec<u8>> = OnceLock::new();
+    P3.get_or_init(|| {
+        ColorProfile::new_display_p3()
+            .encode()
+            .expect("moxcms' Display P3 profile always encodes cleanly")
+    })
+}
+
 /// Transform RGBA8 pixels from a source ICC profile to a target ICC profile, in-place.
 /// Skips the transform when the profiles are byte-equal, and again when the
 /// built transform turns out to be a no-op (see [`transform_is_negligible`]).

@@ -10,7 +10,41 @@ pub mod xmp;
 
 use std::ops::Range;
 
-use crate::color::hdr::gain_map::{GainMapParams, GainMapSource};
+use crate::color::hdr::fragment::GainMapInputs;
+use crate::color::hdr::gain_map::{GainMapParams, GainMapSource, GainMapSpaces, MapView};
+
+/// A gain-mapped image's map and everything the shader's mode 2 needs to apply it. Rides on
+/// `PixelEncoding::GainMapped`, so the cache, the crossfade, and the renderer all carry it with
+/// the base pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GainMapPayload {
+    pub width: u32,
+    pub height: u32,
+    /// The map's raw values, RGBA8, a single-channel map replicated into R, G, and B. Data, not
+    /// color: never color-managed. Turned with the base by the same EXIF orientation.
+    pub rgba: Vec<u8>,
+    pub params: GainMapParams,
+    pub source: GainMapSource,
+    pub spaces: GainMapSpaces,
+}
+
+impl GainMapPayload {
+    /// The shader inputs for a base of `image_size`.
+    pub fn inputs(&self, image_size: [u32; 2]) -> GainMapInputs<'_> {
+        GainMapInputs {
+            params: self.params,
+            map: MapView {
+                width: self.width,
+                height: self.height,
+                rgba: &self.rgba,
+            },
+            image_size,
+            p3_to_app: self.spaces.p3_to_app,
+            app_to_display: self.spaces.app_to_display,
+            p3_to_display: self.spaces.p3_to_display,
+        }
+    }
+}
 
 /// What the primary image's own headers say, as `zune-jpeg` parsed them.
 pub struct PrimaryHeaders<'a> {

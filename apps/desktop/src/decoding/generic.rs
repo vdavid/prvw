@@ -188,7 +188,7 @@ mod tests {
     /// The display-encoded `[0, 1]` values a decode stands for, whichever
     /// storage it chose.
     fn display_encoded(image: &DecodedImage) -> Vec<f32> {
-        match (&image.pixels, image.encoding) {
+        match (&image.pixels, &image.encoding) {
             (PixelBuffer::Rgba8(bytes), PixelEncoding::DisplaySdr) => {
                 bytes.iter().map(|&b| f32::from(b) / 255.0).collect()
             }
@@ -206,7 +206,9 @@ mod tests {
                     ]
                 })
                 .collect(),
-            (_, PixelEncoding::LinearHdrDisplay) => panic!("a 16-bit PNG is never HDR"),
+            (_, PixelEncoding::LinearHdrDisplay | PixelEncoding::GainMapped(_)) => {
+                panic!("a 16-bit PNG is never HDR")
+            }
         }
     }
 

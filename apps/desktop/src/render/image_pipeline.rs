@@ -561,11 +561,13 @@ mod gpu_parity {
     /// Relative error under 1%, or absolute under 1e-3 near black (section 8's bounds).
     fn assert_matches_reference(image: &DecodedImage, headrooms: &[f32]) {
         let mode = image.encoding.shader_mode();
+        let inputs = image.encoding.shader_inputs(image.width, image.height);
         for &headroom_now in headrooms {
             let got = render(image, headroom_now);
             let frame = FrameInputs { headroom_now };
             for (i, (got, sample)) in got.iter().zip(sampled(image)).enumerate() {
-                let want = shade(mode, sample, frame);
+                let uv = [(i as f32 + 0.5) / image.width as f32, 0.5];
+                let want = shade(&inputs, sample, uv, frame);
                 for c in 0..3 {
                     let error = (got[c] - want[c]).abs();
                     assert!(

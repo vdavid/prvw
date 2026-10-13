@@ -234,7 +234,7 @@ impl App {
                     {
                         self.histogram.data = Some(crate::histogram::compute::compute(
                             &image.pixels,
-                            image.encoding,
+                            &image.encoding,
                         ));
                     }
                 } else {

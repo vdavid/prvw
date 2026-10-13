@@ -1909,7 +1909,7 @@ impl App {
         // pay zero cost; toggling it on later computes lazily from the
         // cached `DecodedImage` (see `ToggleHistogram` arm in `executor.rs`).
         let new_histogram = if self.histogram.visible {
-            Some(histogram::compute::compute(&image.pixels, image.encoding))
+            Some(histogram::compute::compute(&image.pixels, &image.encoding))
         } else {
             None
         };
@@ -2014,7 +2014,7 @@ impl App {
         renderer.set_image(image);
         // Lazy compute: skip histogram work when the panel is hidden.
         self.histogram.data = if self.histogram.visible {
-            Some(histogram::compute::compute(&image.pixels, image.encoding))
+            Some(histogram::compute::compute(&image.pixels, &image.encoding))
         } else {
             None
         };

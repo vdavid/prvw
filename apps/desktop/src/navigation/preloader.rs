@@ -391,8 +391,9 @@ impl ImageCache {
 fn image_memory_cost(image: &DecodedImage) -> usize {
     // Respect whichever `PixelBuffer` variant the decoder produced. RGBA8
     // is 4 bytes per pixel (every non-RAW format + SDR RAW); RGBA16F is 8
-    // bytes per pixel (HDR RAW output).
+    // bytes per pixel (HDR RAW output). A gain map adds its own bytes.
     image.width as usize * image.height as usize * image.pixels.bytes_per_pixel()
+        + image.encoding.extra_bytes()
 }
 
 /// Serial image preloader backed by a dedicated OS thread.

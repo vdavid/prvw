@@ -17,7 +17,8 @@ mod transform;
 
 pub use profiles::linear_rec2020_profile;
 pub use transform::{
-    profiles_match, srgb_icc_bytes, transform_f32_with_profile, transform_icc, transform_icc_16bit,
+    display_p3_icc_bytes, profiles_match, srgb_icc_bytes, transform_f32_with_profile,
+    transform_icc, transform_icc_16bit,
 };
 
 pub mod display_profile;

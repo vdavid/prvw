@@ -55,16 +55,20 @@ impl HistogramData {
 
 /// Compute RGB histograms for a decoded image. Single allocation, single
 /// pass. Splits across rayon threads for >4 MP buffers.
-pub fn compute(pixels: &PixelBuffer, encoding: PixelEncoding) -> HistogramData {
+pub fn compute(pixels: &PixelBuffer, encoding: &PixelEncoding) -> HistogramData {
     let mut hist = match (pixels, encoding) {
+        // A gain-mapped image's histogram is its SDR base's, in Display P3.
         (PixelBuffer::Rgba8(bytes), _) => compute_rgba8(bytes),
         // Linearized display-encoded values: back through the OETF, or they bin dark.
         (PixelBuffer::Rgba16F(halfs), PixelEncoding::DisplaySdr) => {
             compute_rgba16f(halfs, display_sdr_bin)
         }
-        (PixelBuffer::Rgba16F(halfs), PixelEncoding::LinearHdrDisplay) => {
-            compute_rgba16f(halfs, quantize_half)
-        }
+        // Gain-mapped half-floats are an illegal pair (`PixelEncoding::accepts`); binned as
+        // linear rather than panicking in a UI path.
+        (
+            PixelBuffer::Rgba16F(halfs),
+            PixelEncoding::LinearHdrDisplay | PixelEncoding::GainMapped(_),
+        ) => compute_rgba16f(halfs, quantize_half),
     };
     hist.finalize();
     hist
@@ -148,7 +152,7 @@ mod tests {
             128, 64, 200, 255, //
             255, 0, 128, 255, //
         ];
-        let hist = compute(&PixelBuffer::Rgba8(bytes), PixelEncoding::DisplaySdr);
+        let hist = compute(&PixelBuffer::Rgba8(bytes), &PixelEncoding::DisplaySdr);
 
         assert_eq!(hist.r[0], 1);
         assert_eq!(hist.r[128], 1);
@@ -181,7 +185,7 @@ mod tests {
         }
         let hist = compute(
             &PixelBuffer::Rgba16F(halfs),
-            PixelEncoding::LinearHdrDisplay,
+            &PixelEncoding::LinearHdrDisplay,
         );
 
         // 0.5 * 255 = 127.5 → rounds to 128.
@@ -206,8 +210,8 @@ mod tests {
         let mut halfs: Vec<u16> = bytes.iter().map(|&b| u16::from(b) * 257).collect();
         crate::color::display_sdr::rgba16_to_display_sdr_f16_inplace(&mut halfs);
 
-        let from_bytes = compute(&PixelBuffer::Rgba8(bytes), PixelEncoding::DisplaySdr);
-        let from_halfs = compute(&PixelBuffer::Rgba16F(halfs), PixelEncoding::DisplaySdr);
+        let from_bytes = compute(&PixelBuffer::Rgba8(bytes), &PixelEncoding::DisplaySdr);
+        let from_halfs = compute(&PixelBuffer::Rgba16F(halfs), &PixelEncoding::DisplaySdr);
         assert_eq!(from_halfs.r, from_bytes.r);
         assert_eq!(from_halfs.g, from_bytes.g);
         assert_eq!(from_halfs.b, from_bytes.b);
@@ -216,7 +220,7 @@ mod tests {
 
     #[test]
     fn empty_buffer_is_safe() {
-        let hist = compute(&PixelBuffer::Rgba8(Vec::new()), PixelEncoding::DisplaySdr);
+        let hist = compute(&PixelBuffer::Rgba8(Vec::new()), &PixelEncoding::DisplaySdr);
         assert_eq!(hist.max_count, 0);
         assert!(hist.r.iter().all(|&c| c == 0));
     }

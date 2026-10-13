@@ -34,8 +34,6 @@
 mod dispatch;
 mod dng_opcodes;
 pub mod exif_metadata;
-// Wired into `jpeg::decode` by the next commit (HDR M3).
-#[allow(dead_code)]
 mod gain_map;
 mod generic;
 mod jpeg;
@@ -50,8 +48,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
-use crate::color::hdr::fragment::ShaderMode;
+use crate::color::hdr::fragment::{ImageInputs, ShaderMode};
 use crate::file_stamp::FileStamp;
+
+pub use gain_map::GainMapPayload;
 
 use dispatch::Backend;
 use orientation::{apply_orientation_bytes, parse_exif_orientation};
@@ -100,7 +100,7 @@ impl PixelBuffer {
 
 /// What the numbers in a [`PixelBuffer`] mean. The renderer and the surface
 /// choice read this, never the storage variant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PixelEncoding {
     /// Display-encoded SDR: values are in the display's ICC profile. For
     /// `Rgba8`, the bytes as-is. For `Rgba16F`, the display-encoded value
@@ -111,16 +111,21 @@ pub enum PixelEncoding {
     /// Linear light in `color::profiles::HdrDisplaySpace::for_host()`, 1.0 =
     /// SDR white. Only `Rgba16F`. RAW HDR output.
     LinearHdrDisplay,
+    /// An SDR base in Display P3 (sRGB transfer, so an `Rgba8UnormSrgb`
+    /// texture hands the shader linear P3), plus the gain map the shader
+    /// applies at the display's current headroom. Only `Rgba8`. Gain-map JPEGs
+    /// on an HDR display.
+    GainMapped(Box<GainMapPayload>),
 }
 
 /// Which [`PixelEncoding`] an image has, without its payload: the tag the app
-/// keeps about the image on screen and reports in `/state`. Identical to
-/// `PixelEncoding` until M3 and M4 give variants payloads (a gain map, tone-map
-/// parameters), which is when holding the whole encoding stops being cheap.
+/// keeps about the image on screen and reports in `/state`, cheap to copy
+/// where the encoding itself carries a gain map.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EncodingKind {
     DisplaySdr,
     LinearHdrDisplay,
+    GainMapped,
 }
 
 impl EncodingKind {
@@ -128,7 +133,7 @@ impl EncodingKind {
     pub fn is_hdr(self) -> bool {
         match self {
             EncodingKind::DisplaySdr => false,
-            EncodingKind::LinearHdrDisplay => true,
+            EncodingKind::LinearHdrDisplay | EncodingKind::GainMapped => true,
         }
     }
 
@@ -137,6 +142,7 @@ impl EncodingKind {
         match self {
             EncodingKind::DisplaySdr => ShaderMode::DisplaySdr,
             EncodingKind::LinearHdrDisplay => ShaderMode::LinearHdrDisplay,
+            EncodingKind::GainMapped => ShaderMode::GainMap,
         }
     }
 
@@ -145,30 +151,53 @@ impl EncodingKind {
         match self {
             EncodingKind::DisplaySdr => "display_sdr",
             EncodingKind::LinearHdrDisplay => "linear_hdr_display",
+            EncodingKind::GainMapped => "gain_mapped",
         }
     }
 }
 
 impl PixelEncoding {
-    pub fn kind(self) -> EncodingKind {
+    pub fn kind(&self) -> EncodingKind {
         match self {
             PixelEncoding::DisplaySdr => EncodingKind::DisplaySdr,
             PixelEncoding::LinearHdrDisplay => EncodingKind::LinearHdrDisplay,
+            PixelEncoding::GainMapped(_) => EncodingKind::GainMapped,
         }
     }
 
     /// The fragment-shader branch that draws an image in this encoding.
-    pub fn shader_mode(self) -> ShaderMode {
+    pub fn shader_mode(&self) -> ShaderMode {
         self.kind().shader_mode()
+    }
+
+    /// The per-image inputs the shader's branch reads, for an image of
+    /// `width` × `height`: what the GPU parity tests feed the Rust reference.
+    #[cfg_attr(not(test), allow(dead_code))] // Only the reference consumes these, see `fragment`.
+    pub fn shader_inputs(&self, width: u32, height: u32) -> ImageInputs<'_> {
+        match self {
+            PixelEncoding::DisplaySdr => ImageInputs::DisplaySdr,
+            PixelEncoding::LinearHdrDisplay => ImageInputs::LinearHdrDisplay,
+            PixelEncoding::GainMapped(map) => ImageInputs::GainMap(map.inputs([width, height])),
+        }
+    }
+
+    /// The gain map's bytes, which the cache counts on top of the base's.
+    pub fn extra_bytes(&self) -> usize {
+        match self {
+            PixelEncoding::DisplaySdr | PixelEncoding::LinearHdrDisplay => 0,
+            PixelEncoding::GainMapped(map) => map.rgba.len(),
+        }
     }
 
     /// Whether this encoding can be stored in `pixels`. `DecodedImage`'s
     /// constructors only build pairs this accepts.
-    pub fn accepts(self, pixels: &PixelBuffer) -> bool {
+    pub fn accepts(&self, pixels: &PixelBuffer) -> bool {
         match (self, pixels) {
             (PixelEncoding::DisplaySdr, PixelBuffer::Rgba8(_) | PixelBuffer::Rgba16F(_)) => true,
             (PixelEncoding::LinearHdrDisplay, PixelBuffer::Rgba16F(_)) => true,
             (PixelEncoding::LinearHdrDisplay, PixelBuffer::Rgba8(_)) => false,
+            (PixelEncoding::GainMapped(_), PixelBuffer::Rgba8(_)) => true,
+            (PixelEncoding::GainMapped(_), PixelBuffer::Rgba16F(_)) => false,
         }
     }
 }
@@ -247,6 +276,19 @@ impl DecodedImage {
             height,
             pixels: PixelBuffer::Rgba16F(half_rgba),
             encoding: PixelEncoding::LinearHdrDisplay,
+            exif: None,
+            stamp: None,
+        }
+    }
+
+    /// Build a gain-mapped image: an RGBA8 base already in Display P3, plus
+    /// its map. Used by `decoding::jpeg` when HDR is active.
+    pub fn from_gain_mapped(width: u32, height: u32, rgba: Vec<u8>, map: GainMapPayload) -> Self {
+        Self {
+            width,
+            height,
+            pixels: PixelBuffer::Rgba8(rgba),
+            encoding: PixelEncoding::GainMapped(Box::new(map)),
             exif: None,
             stamp: None,
         }
@@ -412,9 +454,16 @@ fn decode_with(
             // path) let the closure be `'static`.
             let owned_path = path.to_path_buf();
             let owned_icc = target_icc.to_vec();
+            // Same gate as RAW's: the gain map is only ever read when the result can be shown.
+            let hdr_active = raw_flags.hdr_output && hdr_display;
             run_decode_cancellable(cancelled, salvage, move || {
-                let mut img =
-                    jpeg::decode(&owned_path, bytes, &owned_icc, use_relative_colorimetric)?;
+                let mut img = jpeg::decode(
+                    &owned_path,
+                    bytes,
+                    &owned_icc,
+                    use_relative_colorimetric,
+                    hdr_active,
+                )?;
                 img.exif = exif;
                 Ok(finalize(img, orientation))
             })
@@ -481,6 +530,11 @@ fn finalize(mut img: DecodedImage, orientation: u16) -> DecodedImage {
             orientation::apply_orientation_u16(old_w, old_h, halfs, orientation, 4)
         }
     };
+    // The gain map turns with its base, or the gain lands on the wrong pixels.
+    if let PixelEncoding::GainMapped(map) = &mut img.encoding {
+        (map.width, map.height) =
+            apply_orientation_bytes(map.width, map.height, &mut map.rgba, orientation, 4);
+    }
     if (new_w, new_h) != (old_w, old_h) {
         log::debug!(
             "Applied rotation: orientation {orientation} ({old_w}x{old_h} -> {new_w}x{new_h})"
@@ -684,8 +738,9 @@ fn log_result(
                 Backend::Raw => format!("{} via rawler", ext.to_uppercase()),
                 Backend::Generic => ext.to_uppercase(),
             };
-            let hdr_label = match (&image.pixels, image.encoding) {
+            let hdr_label = match (&image.pixels, &image.encoding) {
                 (_, PixelEncoding::LinearHdrDisplay) => " [HDR]",
+                (_, PixelEncoding::GainMapped(_)) => " [gain map]",
                 (PixelBuffer::Rgba16F(_), PixelEncoding::DisplaySdr) => " [16-bit SDR]",
                 (PixelBuffer::Rgba8(_), PixelEncoding::DisplaySdr) => "",
             };
@@ -888,6 +943,352 @@ mod tests {
         let sdr = load_at(&raw_path, true, OutputDepth::Rgba8);
         assert!(matches!(sdr.pixels, PixelBuffer::Rgba8(_)));
         assert_eq!(sdr.encoding, PixelEncoding::DisplaySdr);
+    }
+
+    fn hdr_fixture(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/hdr")
+            .join(name)
+    }
+
+    fn gain_map_of(image: &DecodedImage) -> &GainMapPayload {
+        match &image.encoding {
+            PixelEncoding::GainMapped(map) => map,
+            other => panic!("expected a gain map, got {other:?}"),
+        }
+    }
+
+    /// Every flavor, on a display that can show HDR: an RGBA8 base plus its map, tagged with
+    /// the metadata it came from.
+    #[test]
+    fn gain_map_jpegs_on_an_hdr_display_decode_gain_mapped() {
+        use crate::color::hdr::gain_map::GainMapSource;
+        for (name, source, base, map) in [
+            (
+                "ultra-hdr-xmp-64x48.jpg",
+                GainMapSource::UltraHdrXmp,
+                (64, 48),
+                (16, 12),
+            ),
+            (
+                "iso-21496-64x48.jpg",
+                GainMapSource::Iso21496,
+                (64, 48),
+                (16, 12),
+            ),
+            ("apple-64x48.jpg", GainMapSource::Apple, (64, 48), (16, 12)),
+            (
+                "iphone-air-gain-map-776.jpg",
+                GainMapSource::Iso21496,
+                (776, 776),
+                (388, 388),
+            ),
+        ] {
+            let image = load_at(&hdr_fixture(name), true, OutputDepth::Native);
+            assert!(matches!(image.pixels, PixelBuffer::Rgba8(_)), "{name}");
+            assert_eq!((image.width, image.height), base, "{name}");
+            assert!(image.encoding.kind().is_hdr(), "{name}");
+            assert_eq!(
+                image
+                    .encoding
+                    .shader_inputs(image.width, image.height)
+                    .mode(),
+                image.encoding.shader_mode()
+            );
+            let payload = gain_map_of(&image);
+            assert_eq!(payload.source, source, "{name}");
+            assert_eq!((payload.width, payload.height), map, "{name}");
+            assert_eq!(
+                image.encoding.extra_bytes(),
+                (map.0 * map.1 * 4) as usize,
+                "the cache counts the map's bytes"
+            );
+        }
+    }
+
+    /// The promise for SDR displays, HDR off, and byte consumers: a gain-map JPEG decodes
+    /// exactly like the plain JPEG its primary image is, byte for byte.
+    #[test]
+    fn a_gain_map_jpeg_without_hdr_is_its_plain_primary() {
+        let path = hdr_fixture("ultra-hdr-xmp-64x48.jpg");
+        let file = std::fs::read(&path).expect("fixture");
+        let map_at = file
+            .windows(2)
+            .rposition(|w| w == [0xFF, 0xD8])
+            .expect("the appended map starts with SOI");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let primary_only = dir.path().join("primary.jpg");
+        std::fs::write(&primary_only, &file[..map_at]).expect("write");
+        let PixelBuffer::Rgba8(plain) = load_at(&primary_only, false, OutputDepth::Native).pixels
+        else {
+            panic!("a JPEG decodes to bytes");
+        };
+
+        let hdr_off = RawPipelineFlags {
+            hdr_output: false,
+            ..RawPipelineFlags::default()
+        };
+        for image in [
+            load_at(&path, false, OutputDepth::Native),
+            load_at(&path, true, OutputDepth::Rgba8),
+            load_image(
+                &path,
+                &AtomicBool::new(false),
+                color::srgb_icc_bytes(),
+                false,
+                hdr_off,
+                true,
+                OutputDepth::Native,
+                None,
+                None,
+            )
+            .expect("decode"),
+        ] {
+            assert_eq!(image.encoding, PixelEncoding::DisplaySdr);
+            let PixelBuffer::Rgba8(bytes) = &image.pixels else {
+                panic!("SDR JPEG decodes to bytes");
+            };
+            assert!(bytes == &plain, "an SDR decode must not change by a byte");
+        }
+    }
+
+    /// Orientation 6 turns the base 90° clockwise, and the map with it: the fixture's map is
+    /// brightest top-left, which lands top-right. And it's the same map as the upright fixture's,
+    /// turned.
+    #[test]
+    fn the_gain_map_turns_with_its_base() {
+        let upright = load_at(
+            &hdr_fixture("ultra-hdr-xmp-64x48.jpg"),
+            true,
+            OutputDepth::Native,
+        );
+        let turned = load_at(
+            &hdr_fixture("ultra-hdr-xmp-orientation-6.jpg"),
+            true,
+            OutputDepth::Native,
+        );
+        assert_eq!((turned.width, turned.height), (48, 64));
+        let map = gain_map_of(&turned);
+        assert_eq!((map.width, map.height), (12, 16));
+        let at = |x: u32, y: u32| map.rgba[((y * map.width + x) * 4) as usize];
+        let brightest = (0..map.height)
+            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
+            .max_by_key(|&(x, y)| at(x, y))
+            .expect("texels");
+        assert_eq!(brightest, (11, 0));
+
+        let mut expected = gain_map_of(&upright).rgba.clone();
+        orientation::apply_orientation_bytes(16, 12, &mut expected, 6, 4);
+        assert!(expected == map.rgba);
+    }
+
+    /// For every EXIF orientation, each map texel still sits over the 2×2 block of base pixels
+    /// it described before the turn. Base pixels and map texels both carry their block's id.
+    #[test]
+    fn the_gain_map_follows_every_orientation() {
+        use crate::color::hdr::gain_map::{GainMapSpaces, IDENTITY};
+        let (w, h) = (8u32, 4u32);
+        let id = |bx: u32, by: u32| (by * (w / 2) + bx) as u8 * 10;
+        let base: Vec<u8> = (0..h)
+            .flat_map(|y| (0..w).flat_map(move |x| [id(x / 2, y / 2), 0, 0, 255]))
+            .collect();
+        let map: Vec<u8> = (0..h / 2)
+            .flat_map(|y| (0..w / 2).flat_map(move |x| [id(x, y), 0, 0, 255]))
+            .collect();
+        let params = crate::color::hdr::gain_map::GainMapParams {
+            channels: [Default::default(); 3],
+            base_headroom: 0.0,
+            alternate_headroom: 1.0,
+            use_base_color_space: true,
+        };
+        for orientation in 1..=8u16 {
+            let image = finalize(
+                DecodedImage::from_gain_mapped(
+                    w,
+                    h,
+                    base.clone(),
+                    GainMapPayload {
+                        width: w / 2,
+                        height: h / 2,
+                        rgba: map.clone(),
+                        params,
+                        source: crate::color::hdr::gain_map::GainMapSource::Iso21496,
+                        spaces: GainMapSpaces {
+                            p3_to_app: IDENTITY,
+                            app_to_display: IDENTITY,
+                            p3_to_display: IDENTITY,
+                        },
+                    },
+                ),
+                orientation,
+            );
+            let payload = gain_map_of(&image);
+            assert_eq!(
+                (payload.width * 2, payload.height * 2),
+                (image.width, image.height),
+                "orientation {orientation}"
+            );
+            let PixelBuffer::Rgba8(base) = &image.pixels else {
+                unreachable!()
+            };
+            for y in 0..image.height {
+                for x in 0..image.width {
+                    let pixel = base[((y * image.width + x) * 4) as usize];
+                    let texel = payload.rgba[(((y / 2) * payload.width + x / 2) * 4) as usize];
+                    assert_eq!(pixel, texel, "orientation {orientation} at ({x}, {y})");
+                }
+            }
+        }
+    }
+
+    /// The real iPhone file through the whole decode, then the Rust reference of mode 2 against
+    /// `ultrahdr_core::gainmap::apply_gainmap` on the original bytes: mean relative error under
+    /// 0.5% (spec section 8). The base is Display P3 already, so the P3 working space leaves its
+    /// bytes alone and the two see the same input.
+    #[test]
+    fn the_iphone_gain_map_matches_upstream_apply_gainmap() {
+        use crate::color::hdr::gain_map;
+        use ultrahdr_core::{ColorPrimaries, GainMap, PixelFormat, TransferFunction, Unstoppable};
+
+        let path = hdr_fixture("iphone-air-gain-map-776.jpg");
+        let image = load_at(&path, true, OutputDepth::Native);
+        let payload = gain_map_of(&image);
+        let PixelBuffer::Rgba8(base) = &image.pixels else {
+            unreachable!()
+        };
+
+        let file = std::fs::read(&path).expect("fixture");
+        let mut decoder = zune_jpeg::JpegDecoder::new_with_options(
+            std::io::Cursor::new(file.as_slice()),
+            zune_core::options::DecoderOptions::new_fast()
+                .jpeg_set_out_colorspace(zune_core::colorspace::ColorSpace::RGBA),
+        );
+        let original = decoder.decode().expect("decode");
+        assert!(original == *base, "a P3 base is left as it is");
+
+        let sdr = ultrahdr_core::pixel_buffer_from_vec(
+            original,
+            image.width,
+            image.height,
+            PixelFormat::Rgba8,
+            ColorPrimaries::DisplayP3,
+            TransferFunction::Srgb,
+        )
+        .expect("base buffer");
+        let single: Vec<u8> = payload.rgba.chunks(4).map(|t| t[0]).collect();
+        let map = GainMap {
+            width: payload.width,
+            height: payload.height,
+            channels: 1,
+            data: single,
+        };
+        let headroom = 4.0;
+        let out = ultrahdr_core::gainmap::apply_gainmap(
+            &sdr,
+            &map,
+            &crate::color::hdr::to_upstream(&payload.params),
+            headroom,
+            ultrahdr_core::HdrOutputFormat::LinearFloat,
+            Unstoppable,
+        )
+        .expect("upstream apply");
+        let slice = out.as_slice();
+        let (stride, bytes) = (slice.stride(), slice.as_strided_bytes());
+
+        let inputs = payload.inputs([image.width, image.height]);
+        let w = gain_map::weight(headroom, &payload.params);
+        let (mut sum, mut n) = (0.0f64, 0u32);
+        for y in 0..image.height {
+            for x in 0..image.width {
+                let i = ((y * image.width + x) * 4) as usize;
+                let linear = [0, 1, 2].map(|c| {
+                    let v = f32::from(base[i + c]) / 255.0;
+                    if v <= 0.04045 {
+                        v / 12.92
+                    } else {
+                        ((v + 0.055) / 1.055).powf(2.4)
+                    }
+                });
+                let uv = [
+                    (x as f32 + 0.5) / image.width as f32,
+                    (y as f32 + 0.5) / image.height as f32,
+                ];
+                let gain =
+                    gain_map::sample_gain(&inputs.map, inputs.image_size, uv, &inputs.params, w);
+                let ours = gain_map::apply(
+                    gain_map::mul(&inputs.p3_to_app, linear),
+                    gain,
+                    &inputs.params,
+                );
+                for (c, ours) in ours.into_iter().enumerate() {
+                    let at = y as usize * stride + x as usize * 16 + c * 4;
+                    let want = f32::from_le_bytes(bytes[at..at + 4].try_into().expect("f32"));
+                    sum += f64::from((ours - want).abs() / want.abs().max(1e-3));
+                    n += 1;
+                }
+            }
+        }
+        let mean = sum / f64::from(n);
+        assert!(mean < 0.005, "mean relative error {mean:e}");
+    }
+
+    /// Spec section 9's budget: a gain-map decode on an HDR display costs at most 1.3× the SDR
+    /// decode of the same file. Takes the file from `PRVW_GAIN_MAP_SAMPLE` (a real 12 MP camera
+    /// JPEG lives outside the repo). Run in release:
+    /// `PRVW_GAIN_MAP_SAMPLE=/path/to.jpg cargo test --release --bin prvw gain_map_decode_perf -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn gain_map_decode_perf() {
+        let Ok(sample) = std::env::var("PRVW_GAIN_MAP_SAMPLE") else {
+            println!("set PRVW_GAIN_MAP_SAMPLE to a gain-map JPEG");
+            return;
+        };
+        let path = Path::new(&sample);
+        // A P3 display target makes the SDR path's transform free for a P3 base; `srgb` makes it
+        // a real one, which is the gain-map path's advantage, since its P3 target stays free.
+        let target = match std::env::var("PRVW_PERF_TARGET").as_deref() {
+            Ok("srgb") => color::srgb_icc_bytes().to_vec(),
+            _ => color::display_p3_icc_bytes().to_vec(),
+        };
+        let decode = |hdr_display: bool| {
+            let start = Instant::now();
+            let image = load_image(
+                path,
+                &AtomicBool::new(false),
+                &target,
+                false,
+                RawPipelineFlags::default(),
+                hdr_display,
+                OutputDepth::Native,
+                None,
+                None,
+            )
+            .expect("decode");
+            (start.elapsed().as_secs_f64() * 1e3, image)
+        };
+        let median = |hdr_display: bool| {
+            let _ = decode(hdr_display);
+            let mut times: Vec<f64> = (0..7).map(|_| decode(hdr_display).0).collect();
+            times.sort_by(f64::total_cmp);
+            times[3]
+        };
+        let (_, sdr) = decode(false);
+        let (_, hdr) = decode(true);
+        assert_eq!(sdr.encoding, PixelEncoding::DisplaySdr);
+        assert_eq!(hdr.encoding.kind(), EncodingKind::GainMapped);
+        let (sdr_ms, hdr_ms) = (median(false), median(true));
+        let sdr_bytes = sdr.pixels.byte_len();
+        let hdr_bytes = hdr.pixels.byte_len() + hdr.encoding.extra_bytes();
+        println!(
+            "{}x{}: SDR {sdr_ms:.1} ms, gain map {hdr_ms:.1} ms ({:.2}x); memory {:.1} MB vs \
+             {:.1} MB ({:+.1}%)",
+            sdr.width,
+            sdr.height,
+            hdr_ms / sdr_ms,
+            sdr_bytes as f64 / 1e6,
+            hdr_bytes as f64 / 1e6,
+            (hdr_bytes as f64 / sdr_bytes as f64 - 1.0) * 100.0
+        );
     }
 
     /// `run_decode_cancellable` must free the caller within ~10 ms of the
