@@ -13,27 +13,72 @@
 //! - Group 1, per frame, one for the whole renderer: 0 [`FrameUniform`]. A headroom change writes
 //!   this one buffer; nothing per image is touched.
 
-use crate::color::hdr::fragment::ShaderMode;
-use crate::decoding::{DecodedImage, PixelBuffer};
+use crate::color::hdr::gain_map::Mat3;
+use crate::decoding::{DecodedImage, PixelBuffer, PixelEncoding};
 use wgpu::util::DeviceExt;
 
-/// Group 0, binding 4: which shader branch draws this image, and (from M3 on) that branch's
-/// parameters. Appending fields is how a mode gets its inputs; keep the WGSL struct in step.
+/// Group 0, binding 4: which shader branch draws this image, and that branch's parameters.
+/// Appending fields is how a mode gets its inputs; keep the WGSL struct in step. Every field is
+/// 16 bytes or a multiple, so the `repr(C)` layout is the uniform's.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ImageParams {
     pub mode: u32,
     pub _pad: [u32; 3],
+    /// Mode 2, per channel in `xyz`: log2 gain at map value 0 and 1, the map gamma, and the
+    /// two offsets (`color::hdr::gain_map::ChannelParams`).
+    pub gain_min: [f32; 4],
+    pub gain_max: [f32; 4],
+    pub gamma: [f32; 4],
+    pub base_offset: [f32; 4],
+    pub alternate_offset: [f32; 4],
+    /// Mode 2: `x` the base rendition's headroom, `y` the alternate's, both log2.
+    pub headroom: [f32; 4],
+    /// Mode 2's matrices, one row per `vec4` (`xyz` used): `GainMapSpaces`.
+    pub p3_to_app: [[f32; 4]; 3],
+    pub app_to_display: [[f32; 4]; 3],
+    pub p3_to_display: [[f32; 4]; 3],
 }
 
 impl ImageParams {
-    pub fn for_mode(mode: ShaderMode) -> Self {
+    pub fn for_encoding(encoding: &PixelEncoding) -> Self {
+        let mut params = Self::zeroed_with_mode(encoding.shader_mode() as u32);
+        match encoding {
+            PixelEncoding::DisplaySdr | PixelEncoding::LinearHdrDisplay => {}
+            PixelEncoding::GainMapped(map) => {
+                let p = &map.params;
+                let per_channel = |f: fn(&crate::color::hdr::gain_map::ChannelParams) -> f32| {
+                    [f(&p.channels[0]), f(&p.channels[1]), f(&p.channels[2]), 0.0]
+                };
+                params.gain_min = per_channel(|c| c.min);
+                params.gain_max = per_channel(|c| c.max);
+                params.gamma = per_channel(|c| c.gamma);
+                params.base_offset = per_channel(|c| c.base_offset);
+                params.alternate_offset = per_channel(|c| c.alternate_offset);
+                params.headroom = [p.base_headroom, p.alternate_headroom, 0.0, 0.0];
+                params.p3_to_app = rows(&map.spaces.p3_to_app);
+                params.app_to_display = rows(&map.spaces.app_to_display);
+                params.p3_to_display = rows(&map.spaces.p3_to_display);
+            }
+        }
+        params
+    }
+
+    fn zeroed_with_mode(mode: u32) -> Self {
         Self {
-            mode: mode as u32,
-            _pad: [0; 3],
+            mode,
+            ..bytemuck::Zeroable::zeroed()
         }
     }
 }
+
+fn rows(m: &Mat3) -> [[f32; 4]; 3] {
+    m.map(|[a, b, c]| [a, b, c, 0.0])
+}
+
+/// What `shader.wgsl` reads: its `ImageParams` must be exactly this size, or the GPU reads the
+/// wrong fields with no error anywhere.
+const _: () = assert!(std::mem::size_of::<ImageParams>() == 16 + 6 * 16 + 9 * 16);
 
 /// Group 1, binding 0: what every image on screen shares about the display.
 #[repr(C)]
@@ -58,13 +103,18 @@ impl FrameUniform {
 pub struct GpuImage {
     pub texture: wgpu::Texture,
     pub params: wgpu::Buffer,
+    /// The gain map, for a `GainMapped` image; every other image binds the placeholder.
+    pub gain_map: Option<wgpu::Texture>,
 }
 
 impl GpuImage {
-    /// Return the texture's memory now, not whenever the last reference drops.
+    /// Return the textures' memory now, not whenever the last reference drops.
     pub fn destroy(self) {
         self.texture.destroy();
         self.params.destroy();
+        if let Some(map) = self.gain_map {
+            map.destroy();
+        }
     }
 }
 
@@ -310,13 +360,39 @@ impl ImagePipeline {
             size,
         );
 
-        let mode = image.encoding.shader_mode();
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("image params uniform"),
-            contents: bytemuck::bytes_of(&ImageParams::for_mode(mode)),
+            contents: bytemuck::bytes_of(&ImageParams::for_encoding(&image.encoding)),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        GpuImage { texture, params }
+        let gain_map = match &image.encoding {
+            PixelEncoding::DisplaySdr | PixelEncoding::LinearHdrDisplay => None,
+            // `Rgba8Unorm`, not `Srgb`: the shader must read the map's raw values.
+            PixelEncoding::GainMapped(map) => Some(device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("gain map"),
+                    size: wgpu::Extent3d {
+                        width: map.width,
+                        height: map.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                &map.rgba,
+            )),
+        };
+        GpuImage {
+            texture,
+            params,
+            gain_map,
+        }
     }
 
     /// A group 0 bind group drawing `image` with the transform in `transform`.
@@ -330,6 +406,10 @@ impl ImagePipeline {
         let view = image
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let gain_map_view = image
+            .gain_map
+            .as_ref()
+            .map(|map| map.create_view(&wgpu::TextureViewDescriptor::default()));
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(label),
             layout: &self.image_layout,
@@ -348,7 +428,9 @@ impl ImagePipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::TextureView(&self.placeholder_gain_map),
+                    resource: wgpu::BindingResource::TextureView(
+                        gain_map_view.as_ref().unwrap_or(&self.placeholder_gain_map),
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
@@ -359,15 +441,15 @@ impl ImagePipeline {
     }
 }
 
-/// The GPU parity harness (`docs/specs/hdr-images.md`, section 8): render a strip of known texels
-/// through the real image pipeline into an `Rgba16Float` target at a forced headroom, read it
-/// back, and compare with `color::hdr::fragment::shade`.
+/// The GPU parity harness (`docs/specs/hdr-images.md`, section 8): render a small image of known
+/// texels through the real image pipeline into an `Rgba16Float` target at a forced headroom, read
+/// it back, and compare with `color::hdr::fragment::shade`.
 ///
-/// **Adding a case:** build a `DecodedImage` one pixel high (`strip_rgba8` / `strip_f16`, or a
-/// new helper for a new storage), pick the headrooms, and call `assert_matches_reference`. One row
-/// at exactly the target's width means every fragment lands on a texel centre, so bilinear
-/// filtering returns the texel itself and the comparison tests the colour math alone. A mode that
-/// samples a second texture (M3's gain map) needs its reference to sample the same way.
+/// **Adding a case:** build a `DecodedImage` (`strip_rgba8` / `strip_f16` / `gain_mapped`, or a
+/// new helper for a new storage), pick the headrooms, and call `assert_matches_reference`. The
+/// target is exactly the image's size, so every fragment lands on a texel centre, bilinear
+/// filtering returns the texel itself, and the comparison tests the colour math alone. The gain
+/// map is read with `textureLoad` at computed coordinates, which the reference mirrors.
 ///
 /// **Where it runs:** macOS (Metal) and Windows (DX12, WARP on a GPU-less runner) must have an
 /// adapter, and a missing one fails the test. Linux CI runners have no GPU and no software Vulkan
@@ -377,7 +459,8 @@ impl ImagePipeline {
 mod gpu_parity {
     use super::*;
     use crate::color::hdr::fragment::{FrameInputs, shade};
-    use crate::decoding::PixelEncoding;
+    use crate::color::hdr::gain_map::{ChannelParams, GainMapParams, GainMapSource, GainMapSpaces};
+    use crate::decoding::GainMapPayload;
     use crate::render::gpu::GpuPolicy;
     use crate::zoom::view::TransformUniform;
     use half::f16;
@@ -416,9 +499,8 @@ mod gpu_parity {
         );
     }
 
-    /// Render `image` (one row) at `headroom_now` and read back linear RGB per pixel.
+    /// Render `image` at `headroom_now` and read back linear RGB per pixel, row by row.
     fn render(image: &DecodedImage, headroom_now: f32) -> Vec<[f32; 3]> {
-        assert_eq!(image.height, 1, "the harness renders one-row strips");
         let (device, queue) = headless_gpu();
         let pipeline = ImagePipeline::new(&device, &queue);
         let format = wgpu::TextureFormat::Rgba16Float;
@@ -437,14 +519,15 @@ mod gpu_parity {
         let gpu_image = pipeline.upload(&device, &queue, image);
         let bind_group = pipeline.bind(&device, &gpu_image, &transform, "parity image");
 
-        let width = image.width;
+        let (width, height) = (image.width, image.height);
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("parity target"),
-            size: wgpu::Extent3d {
-                width,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
+            size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -456,7 +539,7 @@ mod gpu_parity {
         let bytes_per_row = (width * 8).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("parity readback"),
-            size: u64::from(bytes_per_row),
+            size: u64::from(bytes_per_row * height),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -496,14 +579,10 @@ mod gpu_parity {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
-                    rows_per_image: Some(1),
+                    rows_per_image: Some(height),
                 },
             },
-            wgpu::Extent3d {
-                width,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
+            size,
         );
         queue.submit([encoder.finish()]);
 
@@ -515,11 +594,12 @@ mod gpu_parity {
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("wait for the parity render");
         let mapped = slice.get_mapped_range().expect("read the parity readback");
-        let halves: &[u16] = bytemuck::cast_slice(&mapped[..(width * 8) as usize]);
-        halves
-            .as_chunks::<4>()
-            .0
-            .iter()
+        mapped
+            .chunks(bytes_per_row as usize)
+            .flat_map(|row| {
+                let halves: &[u16] = bytemuck::cast_slice(&row[..(width * 8) as usize]);
+                halves.as_chunks::<4>().0.to_vec()
+            })
             .map(|px| {
                 [
                     f16::from_bits(px[0]).to_f32(),
@@ -566,14 +646,18 @@ mod gpu_parity {
             let got = render(image, headroom_now);
             let frame = FrameInputs { headroom_now };
             for (i, (got, sample)) in got.iter().zip(sampled(image)).enumerate() {
-                let uv = [(i as f32 + 0.5) / image.width as f32, 0.5];
+                let (x, y) = (i as u32 % image.width, i as u32 / image.width);
+                let uv = [
+                    (x as f32 + 0.5) / image.width as f32,
+                    (y as f32 + 0.5) / image.height as f32,
+                ];
                 let want = shade(&inputs, sample, uv, frame);
                 for c in 0..3 {
                     let error = (got[c] - want[c]).abs();
                     assert!(
                         error < 1e-3 || error < want[c].abs() * 0.01,
-                        "{mode:?} at headroom {headroom_now}, pixel {i} channel {c}: GPU {} vs \
-                         reference {}",
+                        "{mode:?} at headroom {headroom_now}, pixel ({x}, {y}) channel {c}: GPU \
+                         {} vs reference {}",
                         got[c],
                         want[c]
                     );
@@ -593,6 +677,50 @@ mod gpu_parity {
             .flat_map(|&v| [v, v * 0.5, v * 0.25, 1.0])
             .map(|v| f16::from_f32(v).to_bits())
             .collect()
+    }
+
+    /// Neighbouring values that differ a lot, so a sampler that isn't the reference's shows.
+    fn noise(i: u32) -> u8 {
+        (i.wrapping_mul(2_654_435_761) >> 24) as u8
+    }
+
+    /// A 16×8 base over a 4×2 map, both busy, with per-channel parameters and the real color
+    /// conversions for an sRGB base (so `p3_to_app` and `app_to_display` aren't the identity).
+    fn gain_mapped() -> DecodedImage {
+        let (width, height, map_w, map_h) = (16u32, 8u32, 4u32, 2u32);
+        let base = (0..width * height * 4)
+            .map(|i| if i % 4 == 3 { 255 } else { noise(i) })
+            .collect();
+        let rgba = (0..map_w * map_h * 4)
+            .map(|i| if i % 4 == 3 { 255 } else { noise(i + 99) })
+            .collect();
+        let mut channels = [ChannelParams {
+            max: 2.0,
+            ..ChannelParams::default()
+        }; 3];
+        channels[1].gamma = 0.7;
+        channels[2].min = -0.5;
+        channels[2].max = 1.5;
+        channels[2].alternate_offset = 0.03;
+        let params = GainMapParams {
+            channels,
+            base_headroom: 0.0,
+            alternate_headroom: 2.0,
+            use_base_color_space: true,
+        };
+        DecodedImage::from_gain_mapped(
+            width,
+            height,
+            base,
+            GainMapPayload {
+                width: map_w,
+                height: map_h,
+                rgba,
+                params,
+                source: GainMapSource::Iso21496,
+                spaces: GainMapSpaces::new(crate::color::srgb_icc_bytes(), None, true),
+            },
+        )
     }
 
     const HEADROOMS: [f32; 3] = [1.0, 2.0, 8.0];
@@ -633,5 +761,47 @@ mod gpu_parity {
             DecodedImage::from_linear_hdr_rgba16f(values.len() as u32, 1, strip_f16(&values));
         assert_eq!(image.encoding, PixelEncoding::LinearHdrDisplay);
         assert_matches_reference(&image, &HEADROOMS);
+    }
+
+    /// The gain map on the GPU, per channel and between map texels, at three headrooms, and at
+    /// headrooms in between, where the weight is partial.
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "Linux CI runners have no GPU adapter; macOS and Windows run this"
+    )]
+    fn mode_2_matches_the_reference() {
+        let image = gain_mapped();
+        assert_eq!(image.encoding.shader_mode() as u32, 2);
+        assert_matches_reference(&image, &[1.0, 1.4, 2.0, 3.0, 8.0]);
+        let brightest = render(&image, 8.0)
+            .into_iter()
+            .flatten()
+            .fold(0.0f32, f32::max);
+        assert!(
+            brightest > 1.5,
+            "the gain must lift highlights: {brightest}"
+        );
+    }
+
+    /// At headroom 1 a gain-mapped image is its SDR base. On macOS, where the HDR display space
+    /// is Display P3 itself, that's the same bits mode 0 draws from the same texture.
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "Linux CI runners have no GPU adapter; macOS and Windows run this"
+    )]
+    fn mode_2_at_headroom_1_is_the_sdr_base() {
+        let image = gain_mapped();
+        assert_matches_reference(&image, &[1.0]);
+        if crate::color::profiles::HdrDisplaySpace::for_host()
+            == crate::color::profiles::HdrDisplaySpace::LinearDisplayP3
+        {
+            let PixelBuffer::Rgba8(base) = &image.pixels else {
+                unreachable!()
+            };
+            let plain = DecodedImage::from_rgba8(image.width, image.height, base.clone());
+            assert_eq!(render(&image, 1.0), render(&plain, 1.0));
+        }
     }
 }

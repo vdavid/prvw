@@ -28,9 +28,22 @@ struct ImageParams {
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
+    // Mode 2, per channel in xyz (`color::hdr::gain_map::ChannelParams`).
+    gain_min: vec4<f32>,
+    gain_max: vec4<f32>,
+    gamma: vec4<f32>,
+    base_offset: vec4<f32>,
+    alternate_offset: vec4<f32>,
+    // Mode 2: x the base rendition's headroom, y the alternate's, both log2.
+    headroom: vec4<f32>,
+    // Mode 2's matrices (`GainMapSpaces`), one row per vec4, xyz used.
+    p3_to_app: array<vec4<f32>, 3>,
+    app_to_display: array<vec4<f32>, 3>,
+    p3_to_display: array<vec4<f32>, 3>,
 };
 
-// The image's gain map, or a 1x1 placeholder. `Rgba8Unorm`, so samples are raw map values.
+// The image's gain map, or a 1x1 placeholder. `Rgba8Unorm`, so texels are raw map values. Read
+// with `textureLoad`, never the sampler: see `sample_gain`.
 @group(0) @binding(3)
 var t_gain_map: texture_2d<f32>;
 
@@ -53,6 +66,82 @@ var<uniform> frame: Frame;
 // every branch below. The GPU parity tests in `render/image_pipeline.rs` keep the two in step.
 const MODE_DISPLAY_SDR: u32 = 0u;
 const MODE_LINEAR_HDR_DISPLAY: u32 = 1u;
+const MODE_GAIN_MAP: u32 = 2u;
+
+// ── Mode 2: the gain map. Each function ports its namesake in `color::hdr::gain_map`. ──
+
+fn rows_times(m: array<vec4<f32>, 3>, v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(m[0].xyz, v), dot(m[1].xyz, v), dot(m[2].xyz, v));
+}
+
+// How much of the gain applies at the current headroom: `ultrahdr-core`'s `calculate_weight` for
+// an SDR base, libavif's formula for an HDR one.
+fn gain_weight() -> f32 {
+    let h = log2(max(frame.headroom_now, 1.0));
+    let base = image.headroom.x;
+    let alternate = image.headroom.y;
+    if base > alternate {
+        return clamp((h - base) / (alternate - base), 0.0, 1.0);
+    }
+    let lo = max(base, 0.0);
+    let hi = max(alternate, 0.0);
+    if hi <= lo {
+        return 1.0;
+    }
+    return clamp((h - lo) / (hi - lo), 0.0, 1.0);
+}
+
+// The linear gain one map texel stands for, per channel (`GainMapLut::new`'s formula).
+fn texel_gain(v: vec3<f32>, w: f32) -> vec3<f32> {
+    let gamma = image.gamma.xyz;
+    // pow(0, y) is undefined in WGSL even for y > 0, so a zero code stays zero explicitly.
+    let powed = select(pow(v, 1.0 / gamma), vec3<f32>(0.0), v <= vec3<f32>(0.0));
+    let use_gamma = (gamma != vec3<f32>(1.0)) & (gamma > vec3<f32>(0.0));
+    let recovery = select(v, powed, use_gamma);
+    let log2_gain = image.gain_min.xyz + recovery * (image.gain_max.xyz - image.gain_min.xyz);
+    return exp2(clamp(log2_gain * w, vec3<f32>(-30.0), vec3<f32>(30.0)));
+}
+
+// Shepard's inverse-distance weighting of the four neighbouring texels' linear gains, with the
+// map's texels top-left aligned to the image's pixels. Four `textureLoad`s, because hardware
+// bilinear filtering of the encoded values is a different function (spec Findings, M3).
+fn sample_gain(uv: vec2<f32>, w: f32) -> vec3<f32> {
+    let image_size = vec2<f32>(textureDimensions(t_diffuse));
+    let map_dims = textureDimensions(t_gain_map);
+    let pixel = max(uv * image_size - 0.5, vec2<f32>(0.0));
+    let at = pixel * vec2<f32>(map_dims) / image_size;
+    let f = floor(at);
+    let i0 = min(vec2<u32>(f), map_dims - 1u);
+    let i1 = min(i0 + 1u, map_dims - 1u);
+    let fr = at - f;
+
+    var weights = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    let d_tl = length(fr);
+    if d_tl != 0.0 {
+        // A neighbour clamped onto the same texel at the edge moves its distance, as
+        // `ultrahdr-core`'s edge tables do.
+        let far = fr - vec2<f32>(i1 - i0);
+        let d = vec4<f32>(d_tl, length(vec2<f32>(fr.x, far.y)), length(vec2<f32>(far.x, fr.y)), length(far));
+        let inverse = 1.0 / d;
+        weights = inverse / (inverse.x + inverse.y + inverse.z + inverse.w);
+    }
+    let tl = texel_gain(textureLoad(t_gain_map, vec2<u32>(i0.x, i0.y), 0).rgb, w);
+    let bl = texel_gain(textureLoad(t_gain_map, vec2<u32>(i0.x, i1.y), 0).rgb, w);
+    let tr = texel_gain(textureLoad(t_gain_map, vec2<u32>(i1.x, i0.y), 0).rgb, w);
+    let br = texel_gain(textureLoad(t_gain_map, vec2<u32>(i1.x, i1.y), 0).rgb, w);
+    return tl * weights.x + bl * weights.y + tr * weights.z + br * weights.w;
+}
+
+fn shade_gain_map(sdr: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let w = gain_weight();
+    // No gain at all: the base rendition as it is, with no offsets nudging it.
+    if w == 0.0 {
+        return rows_times(image.p3_to_display, sdr);
+    }
+    let x = rows_times(image.p3_to_app, sdr);
+    let y = (x + image.base_offset.xyz) * sample_gain(uv, w) - image.alternate_offset.xyz;
+    return rows_times(image.app_to_display, y);
+}
 
 // Full-screen quad vertices (two triangles), generated from vertex index.
 @vertex
@@ -104,8 +193,11 @@ fn shade(sample: vec4<f32>, uv: vec2<f32>) -> vec3<f32> {
         case MODE_DISPLAY_SDR, MODE_LINEAR_HDR_DISPLAY: {
             return sample.rgb;
         }
-        // 2u: gain map (M3), sampling `t_gain_map` at `uv` and weighting by
-        // `frame.headroom_now`. 3u: scene-linear tone map (M4) down to `frame.headroom_now`.
+        // A linear Display P3 base (sRGB texture decode) plus its gain map.
+        case MODE_GAIN_MAP: {
+            return shade_gain_map(sample.rgb, uv);
+        }
+        // 3u: scene-linear tone map (M4) down to `frame.headroom_now`.
         default: {
             return sample.rgb;
         }
