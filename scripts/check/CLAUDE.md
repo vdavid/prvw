@@ -47,7 +47,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | `console_{windows,other}.go`           | `prepareConsole()`: UTF-8 and ANSI on the Windows console                            |
 | `checks/registry.go`                   | `AllChecks`: canonical ordered list, lookup and validation functions                 |
 | `checks/go-tools.go`                   | `EnsureGoTool`: version-pinned Go analyzers, installed into `target/check-go-tools`  |
-| `checks/desktop-rust-*.go`             | Rust checks (rustfmt, clippy, cargo-test, cargo-audit, parity, cross-checks)         |
+| `checks/desktop-rust-*.go`             | Rust checks (rustfmt, clippy, cargo-test, cargo-audit, cargo-deny, parity, cross)    |
 | `checks/desktop-macos-availability.go` | ObjC selector/class use vs. the `LSMinimumSystemVersion` floor                       |
 | `checks/windows-installer.go`          | The Windows installer's generated registry include, plus two facts about `prvw.nsi`  |
 | `checks/oxfmt.go`                      | Monorepo-wide formatter (oxfmt, prettier-compatible)                                 |
@@ -65,7 +65,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 3. Return `Success("message")` on pass, `fmt.Errorf(...)` on fail, `Skipped("reason")` to skip.
 4. Run `./scripts/check.sh --go` to verify, then break the thing on purpose and watch it fail for the right reason.
 
-`checks/windows-installer.go` is the most recent one, and `checks/conflict-markers.go` the one before it.
+`checks/desktop-rust-cargo-deny.go` is the most recent one, and `checks/windows-installer.go` the one before it.
 
 ## Key patterns
 
@@ -77,13 +77,13 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 
 ## Apps and checks
 
-| App     | Tech      | Checks                                                                                                                           |
-| ------- | --------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                                                  |
-| Desktop | Rust      | rustfmt, clippy, cargo-test, cargo-audit, parity, installer, macos-availability, windows-cross + linux-cross (both slow, opt-in) |
-| Website | Astro     | eslint, typecheck, build                                                                                                         |
-| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests                                                      |
-| Other   | -         | changelog-commit-links, conflict-markers                                                                                         |
+| App     | Tech      | Checks                                                                                                                                       |
+| ------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                                                              |
+| Desktop | Rust      | rustfmt, clippy, cargo-test, cargo-audit, cargo-deny, parity, installer, macos-availability, windows-cross + linux-cross (both slow, opt-in) |
+| Website | Astro     | eslint, typecheck, build                                                                                                                     |
+| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests                                                                  |
+| Other   | -         | changelog-commit-links, conflict-markers                                                                                                     |
 
 ## The conflict-marker check
 
@@ -145,6 +145,16 @@ picture.
 - Both run in every local `./scripts/check.sh` and daily in `.github/workflows/advisories.yml`, so a new advisory for a
   dependency nobody touched still shows up within a day. They're deliberately not in `ci.yml`: a fresh advisory would
   turn every unrelated push red.
+- **`cargo-deny`** (nickname `cargo-deny`) is the opposite case: it checks licenses, sources, and wildcard requirements
+  against `deny.toml`, all of which depend only on the commit, so it gates in `ci.yml`'s Linux Rust job. It runs
+  `check bans licenses sources` and never `advisories`, which stay with cargo-audit (`deny.toml`'s header says why). It
+  installs `cargoDenyVersion` into the repo's `target/check-cargo-tools` and reinstalls when `--version` disagrees,
+  ignoring any `cargo-deny` on `PATH`, the way `EnsureGoTool` does. It parses the `--format json` stream to count, and
+  on failure reruns the human report at `--log-level error`, because the 30-odd duplicate-version warnings (warn-only in
+  `deny.toml`) would bury the one error that matters. A pass with duplicates is a warning listing their names.
+- **`[[licenses.clarify]]` hashes are cargo-deny's own**: xxHash32 (seed 0) of the license file after every line ending
+  is normalized to one `\n`, with a trailing `\n`. A raw-bytes hash of a CRLF file won't match, and a clarify that
+  doesn't match is skipped silently, so the crate falls back to its manifest license with no hint why.
 
 ## The parity check
 

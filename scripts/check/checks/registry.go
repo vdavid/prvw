@@ -84,6 +84,16 @@ var AllChecks = []CheckDefinition{
 		Run:       RunCargoAudit,
 	},
 	{
+		ID:          "desktop-rust-cargo-deny",
+		Nickname:    "cargo-deny",
+		DisplayName: "cargo-deny",
+		App:         AppDesktop,
+		Tech:        "🦀 Rust",
+		// Like cargo-audit, it reads `Cargo.lock` (plus `cargo metadata`) and compiles nothing.
+		DependsOn: nil,
+		Run:       RunCargoDeny,
+	},
+	{
 		ID:          "conflict-markers",
 		Nickname:    "conflicts",
 		DisplayName: "conflict markers",

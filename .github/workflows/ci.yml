@@ -50,6 +50,9 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain.toml'
+              - 'deny.toml'
+              # Its pinned version lives here, so a Renovate bump has to face the check.
+              - 'scripts/check/checks/desktop-rust-cargo-deny.go'
             website:
               - 'apps/website/**'
               - 'pnpm-lock.yaml'
@@ -96,9 +99,25 @@ jobs:
       - name: Install cargo-nextest
         run: curl -LsSf https://get.nexte.st/0.9.143/linux | tar zxf - -C "$HOME/.cargo/bin"
 
+      # The check `cargo install`s its pinned cargo-deny into `target/check-cargo-tools` when the
+      # binary is missing or the wrong version, which compiles for minutes. The version lives in the
+      # check file, so bumping it changes the key.
+      - name: Cache cargo-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/check-cargo-tools
+          key: ${{ runner.os }}-cargo-deny-${{ hashFiles('scripts/check/checks/desktop-rust-cargo-deny.go') }}
+
       - name: Build check tool
         run: go build -o check .
         working-directory: ./scripts/check
+
+      # Licenses, sources, and wildcard bans, against `deny.toml`. Only on this job: `deny.toml`
+      # lists every target platform, so one host resolves all three platforms' graphs. It gates
+      # because its inputs are `Cargo.lock` and `deny.toml` alone; advisories, which change daily,
+      # stay in `advisories.yml`.
+      - name: Run cargo-deny
+        run: ./scripts/check/check --check cargo-deny --ci
 
       - name: Check rustfmt
         run: ./scripts/check/check --check rustfmt --ci

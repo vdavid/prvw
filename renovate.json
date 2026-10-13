@@ -25,6 +25,15 @@
       "depTypeTemplate": "check-tool"
     },
     {
+      "description": "`cargo-deny` is installed at the version in the `cargoDenyVersion` constant inside the check file.",
+      "customType": "regex",
+      "managerFilePatterns": ["scripts/check/checks/desktop-rust-cargo-deny.go"],
+      "matchStrings": ["cargoDenyVersion = \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "cargo-deny",
+      "datasourceTemplate": "crate",
+      "depTypeTemplate": "check-tool"
+    },
+    {
       "description": "CI downloads a prebuilt `cargo-nextest` by version (`get.nexte.st/<version>/<platform>`), in all three test jobs.",
       "customType": "regex",
       "managerFilePatterns": [".github/workflows/*.yml"],

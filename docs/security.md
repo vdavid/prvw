@@ -25,15 +25,37 @@ three days. It applies everywhere:
   `helpers:pinGitHubActionDigests` keeps new ones pinned and bumps SHA and comment together.
 - **Docker images:** `FROM image:tag@sha256:...` in `apps/website/Dockerfile`; Renovate's `pinDigests` refreshes them.
 - **The check runner's tools:** Go analyzers through `EnsureGoTool(..., "module/cmd/x@vX.Y.Z")`, which refuses
-  `@latest`; `cargo-audit` at a pinned `--version`; CI's `cargo-nextest` by URL version; NSIS by `choco --version`.
-  Custom managers in `renovate.json` find the first three. `scripts/check/CLAUDE.md` § Pinned tools has the mechanics.
+  `@latest`; `cargo-audit` at a pinned `--version`; `cargo-deny` at the `cargoDenyVersion` constant; CI's
+  `cargo-nextest` by URL version; NSIS by `choco --version`. Custom managers in `renovate.json` find the first four.
+  `scripts/check/CLAUDE.md` § Pinned tools has the mechanics.
 - **Toolchains:** `rust-toolchain.toml` pins an exact Rust; `.mise.toml` pins Go, Node, and pnpm.
+
+## Licenses, sources, and version requirements
+
+`cargo-deny` checks the Rust workspace against `deny.toml` (nickname `cargo-deny`), in every local `./scripts/check.sh`
+and in `ci.yml`'s Linux Rust job, where it gates. It can gate because its inputs are `Cargo.lock` and `deny.toml` alone,
+so nothing changes under an untouched commit.
+
+- **Licenses:** an explicit allowlist of permissive licenses, because Prvw is BSL-1.1 and statically links every crate
+  into the binary it ships. Copyleft fails unless a per-crate `exceptions` entry says why it's fine. Today that's
+  `rawler` (LGPL-2.1-only) and `lensfun` (LGPL-3.0-or-later): Prvw's public source is what lets a user relink against a
+  modified copy, which is the obligation static linking brings. `[[licenses.clarify]]` pins a license where a crate's
+  manifest is ambiguous, keyed to the license file's hash.
+- **Every platform's graph:** `[graph] targets` lists the macOS, Windows, and Linux triples, so a Windows- or Linux-only
+  crate gets checked from a Mac too.
+- **What it can't see:** data under another license compiled into a crate. `lensfun` embeds the LensFun lens database,
+  which is CC-BY-SA-3.0 and needs attribution, and its manifest only names the code's license.
+- **Sources:** crates.io only. A git dependency or another registry fails until `deny.toml` allows it.
+- **Bans:** a `*` version requirement fails. Duplicate versions of one crate only warn, since they wait on upstream.
+- npm has no equivalent check yet, so a new npm package still needs its license read by hand.
 
 ## Advisory scanning
 
 - **`cargo-audit`** checks `Cargo.lock` against RustSec. Accepted advisories live in `cargoAuditIgnoredAdvisories`
   (`scripts/check/checks/desktop-rust-cargo-audit.go`), each with why it doesn't reach the shipped app and when to drop
-  it. ❌ Don't add one without that reasoning.
+  it. ❌ Don't add one without that reasoning. cargo-deny could check advisories too, and deliberately doesn't: keeping
+  them in a separate tool keeps the gating lane off the daily-changing database, and keeps cargo-audit's split between a
+  failing vulnerability and a warning-only unmaintained crate, which cargo-deny would make errors.
 - **`govulncheck`** checks the Go check runner, and only flags vulnerable code we actually call.
 - **`pnpm audit`** covers the website's npm graph, run by hand (no check wraps it yet); `overrides` in
   `pnpm-workspace.yaml` hold the forced fixes.

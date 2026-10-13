@@ -210,8 +210,11 @@ Verify a "no callers" against those before treating a symbol as dead.
 
 - ❌ NEVER use `git stash`, `git checkout`, `git reset`, or any git write operation unless explicitly asked. Multiple
   agents may be working simultaneously.
-- ❌ NEVER add dependencies without checking license compatibility and verifying the latest version from crates.io/npm.
-  Never trust training data for versions.
+- ❌ NEVER add dependencies without verifying the latest version from crates.io/npm. Never trust training data for
+  versions. For Rust crates, `./scripts/check.sh --check cargo-deny` checks licenses (across all three platforms'
+  graphs), sources, and wildcards against `deny.toml`, and CI gates on it. ❌ Don't widen its `allow` list or add an
+  exception to make a new crate pass: a copyleft license is David's call, and the exception gets a comment saying why.
+  npm packages still need a manual license check.
 - ❌ Don't ignore linter warnings. Fix them or justify with a comment.
 - We use [mise](https://mise.jdx.dev/) to manage tool versions (Go, Node, etc.), pinned in `.mise.toml`. Rust is managed
   by `rust-toolchain.toml` at repo root.

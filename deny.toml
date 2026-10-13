@@ -1,0 +1,104 @@
+# cargo-deny: what third-party code may enter the workspace (`apps/desktop`, `xtask`), by license,
+# by source, and by version shape. The `cargo-deny` check runs `cargo deny check bans licenses sources`
+# (`scripts/check/checks/desktop-rust-cargo-deny.go`), and CI gates on it. `docs/security.md` has the
+# wider picture. The standalone `benchmarks/*` crates have their own lockfiles, never ship, and
+# aren't covered.
+#
+# Advisories are deliberately not checked here. `cargo-audit` owns them (accepted list in
+# `desktop-rust-cargo-audit.go`) and runs daily in `advisories.yml`, because the RustSec database
+# changes under an untouched lockfile. Everything below is a pure function of `Cargo.lock` and this
+# file, so it can gate every push without a fresh advisory turning unrelated work red. Keeping the
+# two in separate tools keeps that line sharp: the gating lane never fetches the advisory database,
+# and cargo-audit keeps its fail-on-vulnerability, warn-on-unmaintained split, which cargo-deny
+# would flatten into errors.
+
+[graph]
+# Every platform Prvw builds for. Without this list cargo-deny resolves the graph for the host
+# only, so a Windows- or Linux-only dependency (which ships just the same) would never be looked at.
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]
+all-features = true
+
+[licenses]
+# Prvw is BSL-1.1 and ships a binary with every dependency statically linked into it, so the bar is
+# "can we ship this inside a source-available binary without its terms reaching our own code".
+# Permissive licenses pass; copyleft doesn't, except where an exception below says why it's fine.
+# An `OR` expression passes when any one side is on the list (`self_cell` is `Apache-2.0 OR
+# GPL-2.0-only`, and we take the Apache side).
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  # Apache-2.0 plus a permission that waives the attribution requirement for compiled output.
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  # Unicode's data license: permissive, attribution only (`icu_*`, `zerovec`, `unicode-ident`).
+  "Unicode-3.0",
+  # Public-domain dedications.
+  "CC0-1.0",
+  "Unlicense",
+]
+# A crate whose license is detected from file contents rather than declared must match its
+# canonical text closely, or it counts as unlicensed.
+confidence-threshold = 0.93
+exceptions = [
+  # Our own crates. They're never published, and Prvw's own license is the one everything above
+  # is measured against.
+  { crate = "prvw", allow = ["BUSL-1.1"] },
+  { crate = "xtask", allow = ["BUSL-1.1"] },
+  # The RAW decoder. LGPL is accepted because Prvw's source is public, which is what lets a user
+  # rebuild the binary against a modified `rawler` (LGPL-2.1 section 6), the obligation static
+  # linking puts on us. `docs/notes/lensfun-rs.md` § License records the reasoning. The
+  # identifier comes from the clarification below.
+  { crate = "rawler", allow = ["LGPL-2.1-only"] },
+  # Lens correction, David's own port of LensFun, which keeps upstream's license. Same reasoning
+  # as `rawler`. Its bundled lens database is
+  # CC-BY-SA-3.0 and compiled into the binary; that isn't in the crate's license field, so
+  # cargo-deny can't see it, and attribution is on us.
+  { crate = "lensfun", allow = ["LGPL-3.0-or-later"] },
+]
+
+# A clarification states a crate's license where its manifest doesn't say it cleanly. Each pins the
+# license file's hash (cargo-deny's xxHash32), so a release that changes the file stops matching and
+# the crate is judged from scratch again.
+
+# The manifest has `license-file = "LICENSE"` and no expression. The file is the MIT text.
+[[licenses.clarify]]
+crate = "nom-exif"
+expression = "MIT"
+license-files = [{ path = "LICENSE", hash = 0xc4978e87 }]
+
+# The manifest says `LGPL-2.1`, an identifier SPDX deprecated because it doesn't say whether later
+# versions apply. It reads as `-only`, the stricter of the two.
+[[licenses.clarify]]
+crate = "rawler"
+expression = "LGPL-2.1-only"
+license-files = [{ path = "LICENSE", hash = 0xb0aff759 }]
+
+[bans]
+# A `*` requirement lets any future release in, which is the hole the three-day window closes.
+# Path dependencies inside the workspace are exempt.
+wildcards = "deny"
+allow-wildcard-paths = true
+# Two versions of one crate cost build time and binary size, but they usually wait on an upstream
+# release (`multiversion` and `pollster` today), so this reports without failing.
+multiple-versions = "warn"
+highlight = "all"
+
+[sources]
+# Everything comes from crates.io. A git dependency or another registry skips the publish record,
+# the yank mechanism, and the three-day window, so it has to be added here on purpose.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
