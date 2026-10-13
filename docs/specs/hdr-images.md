@@ -367,8 +367,7 @@ TDD per the house rule: write each test first and see it fail for the right reas
     photos, ❌ never commit them).
   - **iPhone samples** (original camera JPEGs on Wikimedia Commons, which keeps uploads byte for byte; gain maps
     confirmed with ImageIO's `CGImageSourceCopyAuxiliaryDataInfoAtIndex` on 2026-10-13). Download them locally for the
-    real-file check; committing one needs its license honored (attribution, and share-alike for the CC BY-SA ones), so
-    ask David first.
+    real-file check. Only the iPhone Air one is committed (David agreed, 2026-10-13); don't commit the others.
     - Apple flavor only (maker-note headroom, `urn:com:apple:photo:2020:aux:hdrgainmap` map at half resolution, no ISO
       metadata), iPhone 14 Plus, 4032×3024, 3.0 MB, CC BY-SA 4.0:
       https://commons.wikimedia.org/wiki/File:About_iPhone_15_Pro_Max_Natural_Titanium.jpg (file:
@@ -379,15 +378,15 @@ TDD per the house rule: write each test first and see it fail for the right reas
     - Apple and ISO 21496-1 maps both present (iOS 18+ writes both), iPhone 16e, 4284×5712 portrait, 3.9 MB, CC BY 4.0:
       https://commons.wikimedia.org/wiki/File:IPhone_15_pro_model.jpg (file:
       https://upload.wikimedia.org/wikipedia/commons/e/e3/IPhone_15_pro_model.jpg)
-    - Apple and ISO 21496-1, iPhone Air, 776×776, 306 KB (small enough to be a committed fixture if David agrees), CC
-      BY-SA 4.0: https://commons.wikimedia.org/wiki/File:IPhone_16_Pro_Super_Retina_XDR_OLED_Display_(100X_Mag.).jpg
-      (file:
-      https://upload.wikimedia.org/wikipedia/commons/5/51/IPhone_16_Pro_Super_Retina_XDR_OLED_Display_%28100X_Mag.%29.jpg)
+    - Apple and ISO 21496-1, iPhone Air, 776×776, 306 KB, CC BY-SA 4.0. **Committed** as
+      `apps/desktop/tests/fixtures/hdr/iphone-air-gain-map-776.jpg`, with its attribution in `licenses.md` next to it.
+      Use it in the M3 tests: it's the one real-world gain-map file CI can see. Source:
+      https://commons.wikimedia.org/wiki/File:IPhone_16_Pro_Super_Retina_XDR_OLED_Display_(100X_Mag.).jpg
     - The file names name the phone in the picture, not the camera: trust the EXIF `Model` above.
     - Both flavors in one file is the case to get right: prefer the ISO 21496-1 metadata when present (section 4's
       order), and check the result against the Apple-only reading of the same file.
   - libultrahdr's repo has small test images under an Apache-2.0 license. If one is small enough (< 100 KB), committing
-    it with a line in `tests/fixtures/README.md` is a good second, independent source.
+    it with an entry in `apps/desktop/tests/fixtures/hdr/licenses.md` is a good second, independent source.
   - Optional macOS oracle: ImageIO decodes gain-map JPEGs to HDR (`kCGImageSourceDecodeRequest` =
     `kCGImageSourceDecodeToHDR`, macOS 15+). A throwaway Swift script reading a few pixel values gives an independent
     reference for the real-file check. Don't add it to the repo.
