@@ -4,7 +4,7 @@ Landing page for Prvw. Astro + Tailwind v4, statically built.
 
 ## Stack
 
-- **Astro 5.7** - static site generator
+- **Astro 7** - static site generator
 - **Tailwind v4** - CSS-first config in `src/styles/global.css`
 - Dev server port: **14829**
 
@@ -191,18 +191,18 @@ you add analytics tooling, preserve this property. The tracking script URL and w
 
 ## Gotchas
 
-- **Every `pnpm install` here uses `--ignore-scripts`; don't drop it.** Recent pnpm (10.16+ and all of 11.x) turns
-  un-approved dependency build scripts into a hard install error (`ERR_PNPM_IGNORED_BUILDS`), not the old warning. The
-  only deps that trip it are `esbuild` and `sharp`, which ship prebuilt binaries and don't need their postinstall
-  scripts for the Astro build (verified: identical `dist/`). A build-script allowlist (`onlyBuiltDependencies`, in
-  either `package.json` or `pnpm-workspace.yaml`) did _not_ reliably suppress the error in testing — `--ignore-scripts`
-  is the proven lever, and it's applied at all three install sites: `.github/workflows/ci.yml` (the `Website` job),
-  `apps/website/Dockerfile` (the deploy build), and `scripts/check/checks/common.go` (the check runner). Miss one and it
-  fails there only: a fresh CI install reddens the `Website` job (which gates `deploy-website`), and the Docker build
-  fails _after_ the webhook returns 2xx, so the site silently stays on the old version. It hides locally because
-  `check.sh` skips the install when `node_modules` already exists. The deploy image installs the exact pnpm that the root
-  `packageManager` field pins, with `npm install --global` (Node 25+ ships no corepack), because pnpm refuses to run
-  when its version doesn't match that field. See `docs/guides/releasing.md`.
+- **Every `pnpm install` here uses `--ignore-scripts`; don't drop it.** Recent pnpm (10.16 onward) turns un-approved
+  dependency build scripts into a hard install error (`ERR_PNPM_IGNORED_BUILDS`), not the old warning. The only deps
+  that trip it are `esbuild` and `sharp`, which ship prebuilt binaries and don't need their postinstall scripts for the
+  Astro build (verified: identical `dist/`). A build-script allowlist (`onlyBuiltDependencies`, in either `package.json`
+  or `pnpm-workspace.yaml`) did _not_ reliably suppress the error in testing — `--ignore-scripts` is the proven lever,
+  and it's applied at all three install sites: `.github/workflows/ci.yml` (the `Website` job), `apps/website/Dockerfile`
+  (the deploy build), and `scripts/check/checks/common.go` (the check runner). Miss one and it fails there only: a fresh
+  CI install reddens the `Website` job (which gates `deploy-website`), and the Docker build fails _after_ the webhook
+  returns 2xx, so the site silently stays on the old version. It hides locally because `check.sh` skips the install when
+  `node_modules` already exists. The deploy image installs the exact pnpm that the root `packageManager` field pins,
+  with `npm install --global` (Node 25+ ships no corepack), because pnpm refuses to run when its version doesn't match
+  that field. See `docs/guides/releasing.md`.
 - `site` must be set in `astro.config.mjs` for OG image URLs to work.
 - Don't hardcode colors. Use CSS variables from `global.css`.
 - In light mode, accent buttons use white text (`--color-accent-contrast: #ffffff`), not the dark background color.
