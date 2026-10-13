@@ -1,12 +1,12 @@
 # Build stage
-FROM node:22-alpine AS builder
+FROM node:26-alpine AS builder
 
 WORKDIR /app
 
-# Match the `packageManager` field in the root package.json. Corepack honors
-# that field over whatever we prepare here, so keep them aligned to avoid
-# surprises.
-RUN corepack enable && corepack prepare pnpm@11.22.0 --activate
+# Match the `packageManager` field in the root package.json (and the pin in
+# `.mise.toml`); pnpm refuses to run when its version doesn't match that field.
+# npm rather than corepack: Node 25+ no longer ships corepack.
+RUN npm install --global pnpm@12.11.2
 
 # Copy workspace config and lockfile
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./

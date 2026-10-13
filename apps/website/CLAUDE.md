@@ -200,10 +200,9 @@ you add analytics tooling, preserve this property. The tracking script URL and w
   `apps/website/Dockerfile` (the deploy build), and `scripts/check/checks/common.go` (the check runner). Miss one and it
   fails there only: a fresh CI install reddens the `Website` job (which gates `deploy-website`), and the Docker build
   fails _after_ the webhook returns 2xx, so the site silently stays on the old version. It hides locally because
-  `check.sh` skips the install when `node_modules` already exists. The deploy image runs pnpm 11 specifically (corepack
-  honors the root `packageManager` field over the `Dockerfile`'s `corepack prepare`). See `docs/guides/releasing.md`.
-- The `@ts-expect-error` in `astro.config.mjs` is for a Vite version mismatch between Astro and Tailwind. Doesn't affect
-  the build.
+  `check.sh` skips the install when `node_modules` already exists. The deploy image installs the exact pnpm that the root
+  `packageManager` field pins, with `npm install --global` (Node 25+ ships no corepack), because pnpm refuses to run
+  when its version doesn't match that field. See `docs/guides/releasing.md`.
 - `site` must be set in `astro.config.mjs` for OG image URLs to work.
 - Don't hardcode colors. Use CSS variables from `global.css`.
 - In light mode, accent buttons use white text (`--color-accent-contrast: #ffffff`), not the dark background color.

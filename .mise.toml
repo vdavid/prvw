@@ -7,9 +7,9 @@ node = "26"
 # stays consistent.
 #
 # Pin the exact version, kept in sync with `packageManager` in the root
-# `package.json` (and `corepack prepare` in `apps/website/Dockerfile`). A
-# floating `"11"` would drift to a newer 11.x than `packageManager`, and pnpm
+# `package.json` (and the `npm install --global pnpm` in `apps/website/Dockerfile`). A
+# floating `"12"` would drift to a newer 12.x than `packageManager`, and pnpm
 # refuses to run when its version doesn't match that field. Bump all three
 # together.
-"npm:pnpm" = "11.22.0"
+"npm:pnpm" = "12.11.2"
 # Rust is managed by rustup via rust-toolchain.toml

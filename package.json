@@ -1,7 +1,7 @@
 {
   "name": "prvw",
   "private": true,
-  "packageManager": "pnpm@11.22.0",
+  "packageManager": "pnpm@12.11.2",
   "scripts": {
     "preinstall": "npx only-allow pnpm",
     "dev:website": "pnpm --filter @prvw/website dev",
@@ -12,6 +12,6 @@
     "oxfmt": "^0.46.0"
   },
   "engines": {
-    "pnpm": ">=11"
+    "pnpm": ">=12"
   }
 }

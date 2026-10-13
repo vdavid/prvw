@@ -1,6 +1,11 @@
 packages:
   - apps/*
 
+# Don't install versions published less than 3 days ago (value is minutes), a guard
+# against 0-day publish-time attacks. pnpm defaults to 1 day; this holds for anyone
+# cloning the repo, whatever their global config says.
+minimumReleaseAge: 4320
+
 # pnpm 11 makes every package with an install script an explicit decision, and errors
 # out until it gets one. `sharp` (Astro's image service) and `esbuild` both ship prebuilt
 # binaries, so their build scripts aren't needed for the site build — the deploy image has
