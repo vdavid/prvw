@@ -1,0 +1,24 @@
+{
+  "comment": "Third-party material Prvw ships that no license field describes: data files committed here, and data compiled in through a crate under a license of its own. Shipping one? Credit it here in the same commit. `./scripts/check.sh --check third-party-notices` validates this list and merges it into THIRD-PARTY-NOTICES.md. Fields and rules: scripts/check/CLAUDE.md § The third-party notices check.",
+  "credits": [
+    {
+      "name": "LensFun lens database",
+      "author": "The LensFun contributors",
+      "license": "CC-BY-SA-3.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+      "url": "https://github.com/lensfun/lensfun/tree/master/data/db",
+      "changes": "None to the data. The `lensfun` crate compiles the XML files in, gzip-compressed, and reads them as published.",
+      "crate": "lensfun"
+    },
+    {
+      "name": "RawTherapee camera profiles",
+      "author": "Maciej Dworak, Lawrence Lee, Alberto Griggio, Thanatomanic, Morgan Hardwood, and other RawTherapee contributors",
+      "license": "LicenseRef-RawTherapee-DCP",
+      "license_url": "https://github.com/Beep6581/RawTherapee/tree/dev/rtdata/dcpprofiles",
+      "license_file": "apps/desktop/build-assets/dcps/LICENSE",
+      "url": "https://github.com/Beep6581/RawTherapee/tree/dev/rtdata/dcpprofiles",
+      "changes": "None to the profiles. The build compresses the `.dcp` files into one zstd bundle that the app reads at run time.",
+      "files": ["apps/desktop/build-assets/dcps"]
+    }
+  ]
+}

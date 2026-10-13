@@ -25,9 +25,9 @@ three days. It applies everywhere:
   `helpers:pinGitHubActionDigests` keeps new ones pinned and bumps SHA and comment together.
 - **Docker images:** `FROM image:tag@sha256:...` in `apps/website/Dockerfile`; Renovate's `pinDigests` refreshes them.
 - **The check runner's tools:** Go analyzers through `EnsureGoTool(..., "module/cmd/x@vX.Y.Z")`, which refuses
-  `@latest`; `cargo-audit` at a pinned `--version`; `cargo-deny` at the `cargoDenyVersion` constant; CI's
-  `cargo-nextest` by URL version; NSIS by `choco --version`. Custom managers in `renovate.json` find the first four.
-  `scripts/check/CLAUDE.md` § Pinned tools has the mechanics.
+  `@latest`; `cargo-audit` at a pinned `--version`; `cargo-deny` and `cargo-about` at the `cargoDenyVersion` and
+  `cargoAboutVersion` constants; CI's `cargo-nextest` by URL version; NSIS by `choco --version`. Custom managers in
+  `renovate.json` find all but NSIS. `scripts/check/CLAUDE.md` § Pinned tools has the mechanics.
 - **Toolchains:** `rust-toolchain.toml` pins an exact Rust; `.mise.toml` pins Go, Node, and pnpm.
 
 ## Licenses, sources, and version requirements
@@ -44,14 +44,33 @@ so nothing changes under an untouched commit.
 - **Every platform's graph:** `[graph] targets` lists the macOS, Windows, and Linux triples, so a Windows- or Linux-only
   crate gets checked from a Mac too.
 - **What it can't see:** data under another license compiled into a crate. `lensfun` embeds the LensFun lens database,
-  which is CC-BY-SA-3.0 and needs attribution, and its manifest only names the code's license.
+  which is CC-BY-SA-3.0 and needs attribution, and its manifest only names the code's license. The notices below credit
+  it by hand.
 - **Sources:** crates.io only. A git dependency or another registry fails until `deny.toml` allows it.
 - **Bans:** a `*` version requirement fails. So does a crate resolved in two versions, unless `[bans] skip` lists the
   old one with what pulls it in. The list is the exact set of known duplicates, all waiting on upstream: a new one fails
   until someone converges it (`cargo update -p <crate>@<old> --precise <ver>`) or lists it, and a listed one that
   upstream has since converged fails until its entry goes. Either way it's a decision, and the check stays silent in
   between. `deny.toml` § bans has the reasoning.
-- npm has no equivalent check yet, so a new npm package still needs its license read by hand.
+- npm has no equivalent check yet, so a new npm package still needs its license read by hand. The website is the only
+  npm consumer, and none of it ships in the app.
+
+## Third-party notices
+
+Allowing a license isn't the whole obligation: MIT, Apache, BSD, the LGPL, and CC BY-SA all want their text and
+copyright lines to travel with the binary. `THIRD-PARTY-NOTICES.md` at the repo root is that file, and it ships as
+`THIRD-PARTY-NOTICES.txt` in the `.app`'s `Resources/` (`scripts/build-and-sign.sh`) and the Windows install folder
+(`prvw.nsi`), beside `LICENSE.txt`. The About box links to the copy at the release's tag.
+
+- **Generated, never hand-edited:** the `third-party-notices` check runs cargo-about over the app crate, for the same
+  six targets and the same accepted licenses `deny.toml` lists, and merges in `third-party-vendored.json`: the material
+  no crate's license field describes (the LensFun database, the RawTherapee DCP profiles). Locally it rewrites the file;
+  in CI it fails when the committed copy is stale. `scripts/check/CLAUDE.md` § The third-party notices check has the
+  mechanics.
+- **Crates are listed without versions,** so a patch bump that adds no crate regenerates the same bytes and a Renovate
+  PR can still pass CI. A bump that pulls in a new crate does change the file, and needs a local run.
+- **The LGPL paragraph** at its top says what the two LGPL crates entitle a user to (rebuilding against a modified copy)
+  and where Prvw's source is, which is the reason `deny.toml` can accept them.
 
 ## Advisory scanning
 

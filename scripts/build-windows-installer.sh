@@ -129,6 +129,7 @@ makensis \
   -DPRVW_OUTFILE="$(to_native_path "$OUTFILE")" \
   -DPRVW_INSTALLER_DIR="$(to_native_path "$INSTALLER_DIR")" \
   -DPRVW_LICENSE="$(to_native_path "$PROJECT_ROOT/LICENSE")" \
+  -DPRVW_NOTICES="$(to_native_path "$PROJECT_ROOT/THIRD-PARTY-NOTICES.md")" \
   -DPRVW_ICON="$(to_native_path "$DESKTOP_DIR/resources/AppIcon.ico")" \
   "$(to_native_path "$INSTALLER_DIR/prvw.nsi")"
 

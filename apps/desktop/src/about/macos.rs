@@ -143,6 +143,12 @@ pub fn show_window(parent_ns_window: *const NSWindow) {
         mtm,
         &mut retained_views,
     );
+    let link_notices = make_link(
+        content.notices.label,
+        content.notices.url,
+        mtm,
+        &mut retained_views,
+    );
 
     let ok_button = make_close_button("Close", &window, mtm);
 
@@ -158,6 +164,7 @@ pub fn show_window(parent_ns_window: *const NSWindow) {
     let author_ref = unsafe { as_view::<NSTextField>(&author_label) };
     let link_web_ref = unsafe { as_view::<NSTextField>(&link_website) };
     let link_prod_ref = unsafe { as_view::<NSTextField>(&link_product) };
+    let link_notices_ref = unsafe { as_view::<NSTextField>(&link_notices) };
     let button_ref = unsafe { as_view::<NSButton>(&ok_button) };
 
     let views: Vec<&NSView> = vec![
@@ -168,6 +175,7 @@ pub fn show_window(parent_ns_window: *const NSWindow) {
         author_ref,
         link_web_ref,
         link_prod_ref,
+        link_notices_ref,
         button_ref,
     ];
 
@@ -175,7 +183,7 @@ pub fn show_window(parent_ns_window: *const NSWindow) {
 
     // Extra spacing after the icon and before the OK button
     stack.setCustomSpacing_afterView(12.0, icon_ref);
-    stack.setCustomSpacing_afterView(16.0, link_prod_ref);
+    stack.setCustomSpacing_afterView(16.0, link_notices_ref);
 
     // Set the stack as the window's content view with padding
     unsafe {
@@ -232,6 +240,7 @@ pub fn show_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(author_label) });
     retained_views.push(unsafe { Retained::cast_unchecked(link_website) });
     retained_views.push(unsafe { Retained::cast_unchecked(link_product) });
+    retained_views.push(unsafe { Retained::cast_unchecked(link_notices) });
     retained_views.push(unsafe { Retained::cast_unchecked(ok_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(esc_button) });
     retained_views.push(unsafe { Retained::cast_unchecked(stack) });

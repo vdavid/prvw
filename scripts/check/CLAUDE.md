@@ -36,27 +36,28 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 
 ## Key files
 
-| File                                   | Purpose                                                                              |
-| -------------------------------------- | ------------------------------------------------------------------------------------ |
-| `main.go`                              | Entry point: flags, root dir, check selection, runner delegation                     |
-| `runner.go`                            | Parallel executor: goroutine pool, dependency graph, TTY status line                 |
-| `checks/common.go`                     | Core types, shared utils (`RunCommand`, `runESLintCheck`)                            |
-| `checks/common_unix.go`                | Process-group setup and tree kill on macOS and Linux                                 |
-| `checks/common_windows.go`             | The same, via job objects, on Windows                                                |
-| `checks/walk.go`                       | `findFiles` / `countFiles`: the file counting every check does                       |
-| `console_{windows,other}.go`           | `prepareConsole()`: UTF-8 and ANSI on the Windows console                            |
-| `checks/registry.go`                   | `AllChecks`: canonical ordered list, lookup and validation functions                 |
-| `checks/go-tools.go`                   | `EnsureGoTool`: version-pinned Go analyzers, installed into `target/check-go-tools`  |
-| `checks/desktop-rust-*.go`             | Rust checks (rustfmt, clippy, cargo-test, cargo-audit, cargo-deny, parity, cross)    |
-| `checks/desktop-macos-availability.go` | ObjC selector/class use vs. the `LSMinimumSystemVersion` floor                       |
-| `checks/windows-installer.go`          | The Windows installer's generated registry include, plus two facts about `prvw.nsi`  |
-| `checks/oxfmt.go`                      | Monorepo-wide formatter (oxfmt, prettier-compatible)                                 |
-| `checks/website-*.go`                  | Website checks (eslint, typecheck, build)                                            |
-| `checks/scripts-go-*.go`               | Go checks (gofmt, vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests) |
-| `checks/conflict-markers.go`           | Unresolved merge conflict markers in source and docs                                 |
-| `stats.go`                             | CSV stats logging (`~/.local/share/check-runner/prvw/check-log.csv`)                 |
-| `colors.go`                            | ANSI color constants                                                                 |
-| `utils.go`                             | `findRootDir()` (walks up until `AGENTS.md` is found)                                |
+| File                                    | Purpose                                                                              |
+| --------------------------------------- | ------------------------------------------------------------------------------------ |
+| `main.go`                               | Entry point: flags, root dir, check selection, runner delegation                     |
+| `runner.go`                             | Parallel executor: goroutine pool, dependency graph, TTY status line                 |
+| `checks/common.go`                      | Core types, shared utils (`RunCommand`, `runESLintCheck`)                            |
+| `checks/common_unix.go`                 | Process-group setup and tree kill on macOS and Linux                                 |
+| `checks/common_windows.go`              | The same, via job objects, on Windows                                                |
+| `checks/walk.go`                        | `findFiles` / `countFiles`: the file counting every check does                       |
+| `console_{windows,other}.go`            | `prepareConsole()`: UTF-8 and ANSI on the Windows console                            |
+| `checks/registry.go`                    | `AllChecks`: canonical ordered list, lookup and validation functions                 |
+| `checks/go-tools.go`                    | `EnsureGoTool`: version-pinned Go analyzers, installed into `target/check-go-tools`  |
+| `checks/desktop-rust-*.go`              | Rust checks (rustfmt, clippy, cargo-test, cargo-audit, cargo-deny, parity, cross)    |
+| `checks/desktop-macos-availability.go`  | ObjC selector/class use vs. the `LSMinimumSystemVersion` floor                       |
+| `checks/windows-installer.go`           | The Windows installer's generated registry include, plus two facts about `prvw.nsi`  |
+| `checks/desktop-third-party-notices.go` | `THIRD-PARTY-NOTICES.md` from cargo-about, plus `third-party-vendored.{go,json}`     |
+| `checks/oxfmt.go`                       | Monorepo-wide formatter (oxfmt, prettier-compatible)                                 |
+| `checks/website-*.go`                   | Website checks (eslint, typecheck, build)                                            |
+| `checks/scripts-go-*.go`                | Go checks (gofmt, vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests) |
+| `checks/conflict-markers.go`            | Unresolved merge conflict markers in source and docs                                 |
+| `stats.go`                              | CSV stats logging (`~/.local/share/check-runner/prvw/check-log.csv`)                 |
+| `colors.go`                             | ANSI color constants                                                                 |
+| `utils.go`                              | `findRootDir()` (walks up until `AGENTS.md` is found)                                |
 
 ## Adding a new check
 
@@ -65,7 +66,8 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 3. Return `Success("message")` on pass, `fmt.Errorf(...)` on fail, `Skipped("reason")` to skip.
 4. Run `./scripts/check.sh --go` to verify, then break the thing on purpose and watch it fail for the right reason.
 
-`checks/desktop-rust-cargo-deny.go` is the most recent one, and `checks/windows-installer.go` the one before it.
+`checks/desktop-third-party-notices.go` is the most recent one, and `checks/desktop-rust-cargo-deny.go` the one before
+it.
 
 ## Key patterns
 
@@ -77,13 +79,13 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 
 ## Apps and checks
 
-| App     | Tech      | Checks                                                                                                                                       |
-| ------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                                                              |
-| Desktop | Rust      | rustfmt, clippy, cargo-test, cargo-audit, cargo-deny, parity, installer, macos-availability, windows-cross + linux-cross (both slow, opt-in) |
-| Website | Astro     | eslint, typecheck, build                                                                                                                     |
-| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests                                                                  |
-| Other   | -         | changelog-commit-links, conflict-markers                                                                                                     |
+| App     | Tech      | Checks                                                                                                                                                            |
+| ------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                                                                                   |
+| Desktop | Rust      | rustfmt, clippy, cargo-test, cargo-audit, cargo-deny, third-party-notices, parity, installer, macos-availability, windows-cross + linux-cross (both slow, opt-in) |
+| Website | Astro     | eslint, typecheck, build                                                                                                                                          |
+| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests                                                                                       |
+| Other   | -         | changelog-commit-links, conflict-markers                                                                                                                          |
 
 ## The conflict-marker check
 
@@ -157,6 +159,40 @@ picture.
 - **`[[licenses.clarify]]` hashes are cargo-deny's own**: xxHash32 (seed 0) of the license file after every line ending
   is normalized to one `\n`, with a trailing `\n`. A raw-bytes hash of a CRLF file won't match, and a clarify that
   doesn't match is skipped silently, so the crate falls back to its manifest license with no hint why.
+
+## The third-party notices check
+
+`desktop-third-party-notices` (nickname `third-party-notices`) regenerates `THIRD-PARTY-NOTICES.md`, the attribution
+file that ships beside the app (`docs/security.md` § Third-party notices). Locally it rewrites the file; `--ci` fails on
+any drift, and CI runs it in the Linux Rust job. A dependency change is the usual reason it moves.
+
+- **cargo-about does the harvesting**, at `cargoAboutVersion`, installed into `target/check-cargo-tools` like cargo-deny
+  and run from that path, never off `PATH`: a different build harvests license files by its own rules.
+- **Policy comes from `deny.toml`:** the accepted licenses are `[licenses] allow` in its order (cargo-about's preference
+  for an `OR`), then the exceptions' licenses, and the targets are `[graph] targets`. A second list here would drift.
+  Dev dependencies are left out, since they never ship; our own crates are `publish = false`, which `[private] ignore`
+  drops.
+- **`licenseClarifications`** pin the text for crates cargo-about can't read alone, each with a comment saying why, and
+  `verifyClarifications` checks the result rather than trusting the pin: cargo-about answers a stale checksum with a
+  warning and a silent fall back to scanning. A bump that rewrites a pinned file fails with the `shasum` command to
+  refresh it.
+- **Crate versions stay out of the file.** None of these licenses asks for one, and without them a patch bump
+  regenerates identical bytes, so a Renovate PR can pass CI. With them, every lockfile change made the committed copy
+  stale (Cmdr's desktop dependencies went off automerge for exactly that).
+- **A local run with no input changed skips cargo-about** (about 11 s): `target/check-cache/third-party-notices.sha256`
+  hashes `noticesInputs`, the credited files, and the notices file itself. Editing the generated file by hand counts as
+  a change. CI never reads the stamp.
+- **`THIRD-PARTY-NOTICES.md` is in `.oxfmtrc.json`'s `ignorePatterns`,** for the same reason as `docs/parity.md`.
+- **The Linux runner produces the same bytes as a Mac.** Verified once in a `rust:1-bookworm` container. If they ever
+  disagree, a crate with two candidate files for one license is the likely cause, and a clarification is the fix
+  (`miniz_oxide`'s is one).
+
+`third-party-vendored.json` credits what no license field describes. Each entry carries `name`, `author`, `license`,
+`license_url`, `url`, and `changes` (required even when nothing changed, so "as published" is a statement), plus where
+it ships: `files` (repo paths, folders allowed) and/or `crate` (a dependency it's compiled into). A `LicenseRef-`
+license needs a `license_file`, whose text is reproduced in full. Validation lists every problem at once: an empty
+field, a license outside `vendoredLicenses` (which catches a README spelling like `CC-BY-SA 3.0`), a duplicate name, a
+missing path, a crate gone from the graph, and any unknown field (so `licence_url` fails rather than reading as empty).
 
 ## The parity check
 

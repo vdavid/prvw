@@ -75,6 +75,12 @@ every platform.
 `window.rs` loads the icon back out of the running executable (`RT_GROUP_ICON` 1) for the title bar and taskbar, so
 resource id 1 is shared between the build script and the window code.
 
+Two text files travel with every copy, in the `.app`'s `Resources/` and beside the Windows exe: `LICENSE.txt` (BSL-1.1)
+and `THIRD-PARTY-NOTICES.txt`, which is the repo-root `THIRD-PARTY-NOTICES.md` that the `third-party-notices` check
+generates from the crate graph (`docs/security.md` § Third-party notices). Anything else third-party that ships as data,
+like the DCP profiles in `build-assets/dcps/`, needs a credit in `scripts/check/checks/third-party-vendored.json` in the
+same commit.
+
 `installer/windows/` wraps that exe in `PrvwSetup-<version>-x64.exe`. NSIS, because `makensis` is the one installer
 toolchain that compiles a Windows installer on a Mac; `scripts/build-windows-installer.sh` is the whole command, and
 `installer/windows/CLAUDE.md` has the decisions.

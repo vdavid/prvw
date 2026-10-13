@@ -32,6 +32,17 @@ is the kind of detail a ported app gets wrong.
 before it changes. So the asymmetry is deliberate and it's parked here rather than hidden: adding the line to macOS is
 one `make_label` in `macos.rs`, whenever he wants it.
 
+## Decision: the notices link opens the release's tag
+
+**Decision:** the last link, "Third-party notices", goes to `THIRD-PARTY-NOTICES.md` on GitHub at the `v<version>` tag
+(`NOTICES_URL`), on both platforms.
+
+**Why:** the licences are satisfied by the copy that ships beside the app (`THIRD-PARTY-NOTICES.txt` in the bundle's
+`Resources/` and the install folder), so the link only has to be the readable way in. A tag URL is a `&'static str` like
+every other link here, so it needs no runtime path lookup and no new open-a-file code on either platform, and it names
+exactly what that release shipped, where `main` would drift. A dev build between releases still points at the last tag,
+which is close enough for a link nobody needs to be legally exact.
+
 ## Decision: a plain popup, not a task dialog and not a dialog template
 
 **Decision:** `windows.rs` creates a `WS_POPUP | WS_CAPTION | WS_SYSMENU` window and its controls in code, then

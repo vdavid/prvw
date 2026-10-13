@@ -72,10 +72,10 @@ parent folder. Only `!include` breaks: `Icon` and the licence page reach their f
 separator, so three of the four paths worked and hid the fourth until a release run.
 
 So `prvw.nsi` builds no path of its own. `scripts/build-windows-installer.sh` passes `PRVW_INSTALLER_DIR`,
-`PRVW_LICENSE`, and `PRVW_ICON` beside `PRVW_EXE` and `PRVW_OUTFILE`, every one of them through the same `cygpath`
-helper, and the include is a bare file name against `!addincludedir`, so makensis joins the directory to the name
-itself. Keep it that way: a `${...}/...` anywhere in this file is the bug coming back. The `${__FILEDIR__}` defaults
-exist only for running makensis by hand with no script around it.
+`PRVW_LICENSE`, `PRVW_NOTICES`, and `PRVW_ICON` beside `PRVW_EXE` and `PRVW_OUTFILE`, every one of them through the same
+`cygpath` helper, and the include is a bare file name against `!addincludedir`, so makensis joins the directory to the
+name itself. Keep it that way: a `${...}/...` anywhere in this file is the bug coming back. The `${__FILEDIR__}`
+defaults exist only for running makensis by hand with no script around it.
 
 ## Gotcha: `$` is NSIS's escape character, in every kind of quote
 

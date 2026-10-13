@@ -85,6 +85,7 @@ struct Layout {
     license: [i32; 4],
     author_site: [i32; 4],
     website: [i32; 4],
+    notices: [i32; 4],
     close: [i32; 4],
     client_width: i32,
     client_height: i32,
@@ -141,6 +142,8 @@ impl Layout {
         let author_site = [body_left, y, body_width, Self::LINE];
         y += Self::LINE_STEP;
         let website = [body_left, y, body_width, Self::LINE];
+        y += Self::LINE_STEP;
+        let notices = [body_left, y, body_width, Self::LINE];
 
         y += Self::LINE + Self::GROUP_GAP;
         let close = [
@@ -159,6 +162,7 @@ impl Layout {
             license,
             author_site,
             website,
+            notices,
             close,
             client_width: Self::WIDTH,
             client_height: y + Self::BUTTON_HEIGHT + pad,
@@ -167,7 +171,7 @@ impl Layout {
 
     /// Every control's rectangle, for the checks that have to hold for all of them.
     #[cfg(test)]
-    fn rows(&self) -> [[i32; 4]; 9] {
+    fn rows(&self) -> [[i32; 4]; 10] {
         [
             self.icon,
             self.heading,
@@ -177,6 +181,7 @@ impl Layout {
             self.license,
             self.author_site,
             self.website,
+            self.notices,
             self.close,
         ]
     }
@@ -408,6 +413,13 @@ fn add_controls(
         WS_TABSTOP,
         ID_FIRST_LINK + 2,
         layout.website,
+    );
+    place(
+        WC_LINK,
+        &link_markup(content.notices.url, content.notices.label),
+        WS_TABSTOP,
+        ID_FIRST_LINK + 3,
+        layout.notices,
     );
     let close = place(
         w!("BUTTON"),
@@ -813,6 +825,7 @@ mod tests {
             layout.license,
             layout.author_site,
             layout.website,
+            layout.notices,
             layout.close,
         ];
         for pair in body.windows(2) {

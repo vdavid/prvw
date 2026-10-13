@@ -34,6 +34,15 @@
       "depTypeTemplate": "check-tool"
     },
     {
+      "description": "`cargo-about` is installed at the version in the `cargoAboutVersion` constant inside the notices check. A bump can change how license files are harvested, so it regenerates `THIRD-PARTY-NOTICES.md`, which the check fails on in CI until someone runs it locally.",
+      "customType": "regex",
+      "managerFilePatterns": ["scripts/check/checks/desktop-third-party-notices.go"],
+      "matchStrings": ["cargoAboutVersion = \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "cargo-about",
+      "datasourceTemplate": "crate",
+      "depTypeTemplate": "check-tool"
+    },
+    {
       "description": "CI downloads a prebuilt `cargo-nextest` by version (`get.nexte.st/<version>/<platform>`), in all three test jobs.",
       "customType": "regex",
       "managerFilePatterns": [".github/workflows/*.yml"],

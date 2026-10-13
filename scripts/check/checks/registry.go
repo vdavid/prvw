@@ -94,6 +94,16 @@ var AllChecks = []CheckDefinition{
 		Run:       RunCargoDeny,
 	},
 	{
+		ID:          "desktop-third-party-notices",
+		Nickname:    "third-party-notices",
+		DisplayName: "third-party notices",
+		App:         AppDesktop,
+		Tech:        "🦀 Rust",
+		// Reads `cargo metadata` and the crate sources, and compiles nothing.
+		DependsOn: nil,
+		Run:       RunThirdPartyNotices,
+	},
+	{
 		ID:          "conflict-markers",
 		Nickname:    "conflicts",
 		DisplayName: "conflict markers",

@@ -53,6 +53,10 @@ jobs:
               - 'deny.toml'
               # Its pinned version lives here, so a Renovate bump has to face the check.
               - 'scripts/check/checks/desktop-rust-cargo-deny.go'
+              # The notices generator, its pinned cargo-about, its hand-kept credits, and its output.
+              - 'scripts/check/checks/desktop-third-party-notices.go'
+              - 'scripts/check/checks/third-party-vendored.*'
+              - 'THIRD-PARTY-NOTICES.md'
             website:
               - 'apps/website/**'
               - 'pnpm-lock.yaml'
@@ -99,14 +103,20 @@ jobs:
       - name: Install cargo-nextest
         run: curl -LsSf https://get.nexte.st/0.9.143/linux | tar zxf - -C "$HOME/.cargo/bin"
 
-      # The check `cargo install`s its pinned cargo-deny into `target/check-cargo-tools` when the
-      # binary is missing or the wrong version, which compiles for minutes. The version lives in the
-      # check file, so bumping it changes the key.
-      - name: Cache cargo-deny
+      # The cargo-deny and third-party-notices checks `cargo install` their pinned cargo-deny and
+      # cargo-about into `target/check-cargo-tools` when a binary is missing or the wrong version,
+      # which compiles for minutes. The versions live in the two check files, so bumping either
+      # changes the key. The prefix restore keeps the tool that didn't move: each check reinstalls
+      # only when its own binary reports the wrong version.
+      - name: Cache cargo tools
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/check-cargo-tools
-          key: ${{ runner.os }}-cargo-deny-${{ hashFiles('scripts/check/checks/desktop-rust-cargo-deny.go') }}
+          key:
+            ${{ runner.os }}-cargo-tools-${{ hashFiles('scripts/check/checks/desktop-rust-cargo-deny.go',
+            'scripts/check/checks/desktop-third-party-notices.go') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-tools-
 
       - name: Build check tool
         run: go build -o check .
@@ -118,6 +128,12 @@ jobs:
       # stay in `advisories.yml`.
       - name: Run cargo-deny
         run: ./scripts/check/check --check cargo-deny --ci
+
+      # Fails if THIRD-PARTY-NOTICES.md doesn't match what the lockfile and the vendored credits
+      # generate. Only on this job, for the same reason as cargo-deny: it resolves all six target
+      # triples from one host. Local runs regenerate the file, so the fix is a local run.
+      - name: Check third-party notices
+        run: ./scripts/check/check --check third-party-notices --ci
 
       - name: Check rustfmt
         run: ./scripts/check/check --check rustfmt --ci

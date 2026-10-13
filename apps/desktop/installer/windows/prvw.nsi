@@ -23,20 +23,23 @@ SetCompressor /SOLID lzma
   !error "PRVW_OUTFILE isn't set: it's where the finished installer goes."
 !endif
 
-; The three paths below arrive from the build script in the host's own notation, and that matters:
+; The four paths below arrive from the build script in the host's own notation, and that matters:
 ; makensis splits a path on the host separator and only that one (`\` on Windows), so a path this
 ; file glued together out of `${__FILEDIR__}` and a `/` would carry both. `!include` resolves
 ; through a directory listing, so on a Windows host it would take everything after the last `\` as
 ; the file name and go looking for `windows/file-associations.nsh` inside the parent folder.
 ;
 ; The defaults are for running makensis by hand with no script around it. `${__FILEDIR__}` alone is
-; already in host notation, and the two relative ones reach their file through `fopen`, which takes
+; already in host notation, and the three relative ones reach their file through `fopen`, which takes
 ; either separator on either host.
 !ifndef PRVW_INSTALLER_DIR
   !define PRVW_INSTALLER_DIR "${__FILEDIR__}"
 !endif
 !ifndef PRVW_LICENSE
   !define PRVW_LICENSE "${__FILEDIR__}/../../../../LICENSE"
+!endif
+!ifndef PRVW_NOTICES
+  !define PRVW_NOTICES "${__FILEDIR__}/../../../../THIRD-PARTY-NOTICES.md"
 !endif
 !ifndef PRVW_ICON
   !define PRVW_ICON "${__FILEDIR__}/../../resources/AppIcon.ico"
@@ -166,6 +169,8 @@ Section "Prvw"
   SetOutPath "$INSTDIR"
   File "${PRVW_EXE}"
   File "/oname=LICENSE.txt" "${PRVW_LICENSE}"
+  ; Every licence and attribution the binary's dependencies ask to travel with it.
+  File "/oname=THIRD-PARTY-NOTICES.txt" "${PRVW_NOTICES}"
 
   CreateShortcut "$SMPROGRAMS\Prvw.lnk" "$INSTDIR\prvw.exe"
 
@@ -205,6 +210,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Prvw.lnk"
   Delete "$INSTDIR\prvw.exe"
   Delete "$INSTDIR\LICENSE.txt"
+  Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
   Delete "$INSTDIR\Uninstall Prvw.exe"
   ; Only if it's empty: someone may keep something of their own in there, and a viewer that
   ; deletes a folder it didn't fill is a viewer with a bad story to tell.

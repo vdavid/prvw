@@ -14,6 +14,15 @@ use crate::parity::Platform;
 /// than a page about it.
 const LICENSE_URL: &str = "https://github.com/vdavid/prvw/blob/main/LICENSE";
 
+/// The third-party notices for this exact release: the file at the version's tag. The same
+/// text ships beside the app (`THIRD-PARTY-NOTICES.txt`), which is what satisfies the licences;
+/// the link is the readable way in.
+const NOTICES_URL: &str = concat!(
+    "https://github.com/vdavid/prvw/blob/v",
+    env!("CARGO_PKG_VERSION"),
+    "/THIRD-PARTY-NOTICES.md"
+);
+
 /// One piece of clickable text.
 pub struct Link {
     pub label: &'static str,
@@ -67,6 +76,8 @@ pub struct AboutContent {
     pub author_site: Link,
     pub license: LicenseLine,
     pub website: Link,
+    /// The open-source crates and data Prvw ships, with their licences.
+    pub notices: Link,
 }
 
 impl AboutContent {
@@ -101,6 +112,10 @@ impl AboutContent {
                 label: "getprvw.com",
                 url: "https://getprvw.com",
             },
+            notices: Link {
+                label: "Third-party notices",
+                url: NOTICES_URL,
+            },
         }
     }
 
@@ -121,6 +136,7 @@ impl AboutContent {
             self.author_site.label.to_string(),
             self.license.plain(),
             self.website.label.to_string(),
+            self.notices.label.to_string(),
         ]
     }
 }
@@ -200,6 +216,7 @@ mod tests {
             &content.author_site,
             &content.license.link,
             &content.website,
+            &content.notices,
         ] {
             assert!(
                 link.url.starts_with("https://"),
@@ -209,6 +226,19 @@ mod tests {
             );
             assert!(!link.label.is_empty());
         }
+    }
+
+    /// The notices link opens the file as it was at this version's tag, so it lists what this
+    /// build ships rather than whatever `main` carries today.
+    #[test]
+    fn the_notices_link_points_at_this_versions_tag() {
+        assert_eq!(
+            AboutContent::host().notices.url,
+            format!(
+                "https://github.com/vdavid/prvw/blob/v{}/THIRD-PARTY-NOTICES.md",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
     }
 
     /// `docs/style-guide.md`, applied to the one milestone that is almost entirely copy. An em
