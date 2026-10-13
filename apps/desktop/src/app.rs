@@ -679,13 +679,14 @@ impl App {
         // RAW decoder on the Phase 4 RGBA8 path, bit-identical. XDR, OLED, and
         // Windows HDR-mode displays promote RAWs to the RGBA16F +
         // filmic-4×-shoulder path, whatever their headroom happens to be now.
-        self.display_hdr = self.query_display_hdr();
+        // Adopting it from `DisplayHdr::SDR` also writes the shader's headroom
+        // uniform and sets the cache budget; the cache is still empty here.
+        self.refresh_display_hdr();
         log::info!(
             "Display HDR: capable {}, headroom now {:.2}",
             self.display_hdr.capable,
             self.display_hdr.headroom_now
         );
-        self.navigation.image_cache.set_hdr_mode(self.hdr_active());
         #[cfg(target_os = "macos")]
         {
             if !self.color.display_icc.is_empty() {
@@ -3797,6 +3798,10 @@ impl App {
                 measured.headroom_now
             );
             self.display_hdr.headroom_now = measured.headroom_now;
+            if let Some(renderer) = &self.renderer {
+                renderer.set_headroom_now(measured.headroom_now);
+            }
+            self.request_redraw();
         }
         if measured.capable != old.capable {
             log::info!(

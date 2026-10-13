@@ -11,6 +11,7 @@
 
 pub mod display_hdr;
 pub mod gpu;
+pub mod image_pipeline;
 pub mod overlay_style;
 pub mod progress_bar;
 pub mod renderer;

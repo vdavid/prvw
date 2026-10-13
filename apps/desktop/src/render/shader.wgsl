@@ -21,6 +21,39 @@ var t_diffuse: texture_2d<f32>;
 @group(0) @binding(2)
 var s_diffuse: sampler;
 
+// Per-image (group 0, so a crossfade's outgoing image keeps its own). Rust side:
+// `render::image_pipeline::ImageParams`; append fields there and here together.
+struct ImageParams {
+    mode: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
+// The image's gain map, or a 1x1 placeholder. `Rgba8Unorm`, so samples are raw map values.
+@group(0) @binding(3)
+var t_gain_map: texture_2d<f32>;
+
+@group(0) @binding(4)
+var<uniform> image: ImageParams;
+
+// Per frame (group 1, one for the whole renderer). Rust side: `render::image_pipeline::FrameUniform`.
+struct Frame {
+    // The display's current headroom over SDR white, >= 1.0.
+    headroom_now: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+
+@group(1) @binding(0)
+var<uniform> frame: Frame;
+
+// Mode numbers mirror `color::hdr::fragment::ShaderMode`, which is also the Rust reference for
+// every branch below. The GPU parity tests in `render/image_pipeline.rs` keep the two in step.
+const MODE_DISPLAY_SDR: u32 = 0u;
+const MODE_LINEAR_HDR_DISPLAY: u32 = 1u;
+
 // Full-screen quad vertices (two triangles), generated from vertex index.
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
@@ -63,20 +96,37 @@ fn checkerboard(screen_pos: vec2<f32>) -> vec3<f32> {
     return select(vec3<f32>(0.4, 0.4, 0.4), vec3<f32>(0.25, 0.25, 0.25), checker == 0.0);
 }
 
+// The mode's colour math, before the mode-independent checkerboard and crossfade.
+fn shade(sample: vec4<f32>, uv: vec2<f32>) -> vec3<f32> {
+    switch image.mode {
+        // Display-encoded SDR (either storage) and linear HDR in the display's space: the
+        // texture's own decode already produced what the surface wants.
+        case MODE_DISPLAY_SDR, MODE_LINEAR_HDR_DISPLAY: {
+            return sample.rgb;
+        }
+        // 2u: gain map (M3), sampling `t_gain_map` at `uv` and weighting by
+        // `frame.headroom_now`. 3u: scene-linear tone map (M4) down to `frame.headroom_now`.
+        default: {
+            return sample.rgb;
+        }
+    }
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(t_diffuse, s_diffuse, input.tex_coords);
+    let shaded = shade(color, input.tex_coords);
     // `fade` is 1.0 in normal rendering. During a slideshow crossfade the
     // incoming image draws with fade < 1.0 so it alpha-blends over the
     // outgoing image (drawn first, fade = 1.0).
     let fade = transform.col1.z;
     var rgb: vec3<f32>;
     if color.a >= 1.0 {
-        rgb = color.rgb;
+        rgb = shaded;
     } else {
         // Composite image over the checkerboard for transparent regions.
         let bg = checkerboard(input.position.xy);
-        rgb = color.rgb * color.a + bg * (1.0 - color.a);
+        rgb = shaded * color.a + bg * (1.0 - color.a);
     }
     return vec4<f32>(rgb, fade);
 }

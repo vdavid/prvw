@@ -1,7 +1,8 @@
 use super::display_hdr::DisplayHdr;
 use super::gpu::GpuPolicy;
+use super::image_pipeline::{GpuImage, ImagePipeline};
 use super::text::{GlyphonRenderer, StandalonePill, TextBlock};
-use crate::decoding::{DecodedImage, PixelBuffer};
+use crate::decoding::DecodedImage;
 use crate::histogram::HistogramData;
 use crate::pixels::{Logical, Physical};
 use crate::zoom::view::TransformUniform;
@@ -46,14 +47,21 @@ const HISTOGRAM_BIN_COUNT: usize = 256 * 3;
 /// apiece, so headroom is free.
 const OVERLAY_POOL_SIZE: usize = 48;
 
-/// GPU state for an in-flight slideshow crossfade: the outgoing image's
-/// texture plus a bind group that samples it through `prev_uniform_buffer`
-/// (which holds the outgoing image's transform with fade = 1.0). The incoming
-/// image keeps using the renderer's main `bind_group` / `uniform_buffer`,
-/// whose fade factor ramps 0→1 via `set_crossfade`.
+/// An uploaded image and the group 0 bind group that draws it.
+struct BoundImage {
+    gpu: GpuImage,
+    bind_group: wgpu::BindGroup,
+}
+
+/// GPU state for an in-flight slideshow crossfade: the outgoing image (its
+/// texture and its own `ImageParams`, so it keeps its shader mode) bound
+/// through `prev_uniform_buffer`, which holds the outgoing image's transform
+/// with fade = 1.0. The incoming image keeps using the renderer's main
+/// `image` / `uniform_buffer`, whose fade factor ramps 0→1 via
+/// `set_crossfade`. Both draw with the same group 1, so both see the same
+/// headroom.
 struct CrossfadeState {
-    prev_texture: wgpu::Texture,
-    prev_bind_group: wgpu::BindGroup,
+    prev: BoundImage,
 }
 
 /// Owns all wgpu state: device, queue, surface, pipeline, texture, and uniform buffer.
@@ -79,21 +87,19 @@ pub struct Renderer {
     /// as a surface format. If `false`, `reconfigure_surface_format(true)`
     /// is a no-op — we stay SDR no matter what. Captured once at init.
     hdr_surface_supported: bool,
-    /// Cached shader modules. Pipeline rebuilds on format change reuse
-    /// these so we don't recompile WGSL on every EDR toggle.
-    image_shader: wgpu::ShaderModule,
+    /// The image quad's format-independent half: shader, layouts, sampler,
+    /// the per-frame uniform. Pipeline rebuilds on format change reuse it so
+    /// we don't recompile WGSL on every EDR toggle.
+    image_pipeline: ImagePipeline,
+    /// Cached shader module and layout for the overlay, also format-agnostic.
     overlay_shader: wgpu::ShaderModule,
-    /// Cached pipeline layouts — also format-agnostic.
-    image_pipeline_layout: wgpu::PipelineLayout,
     overlay_pipeline_layout: wgpu::PipelineLayout,
     render_pipeline: wgpu::RenderPipeline,
-    bind_group: Option<wgpu::BindGroup>,
-    /// The GPU texture backing the currently displayed image. Stored so we
-    /// can call `Texture::destroy()` when a new image loads — on macOS
-    /// (unified memory) the old texture's backing stays resident until
-    /// explicitly destroyed, which bloats RSS over a long session.
-    image_texture: Option<wgpu::Texture>,
-    bind_group_layout: wgpu::BindGroupLayout,
+    /// The currently displayed image. Its texture is destroyed explicitly
+    /// when a new image loads: on macOS (unified memory) the old texture's
+    /// backing stays resident until then, which bloats RSS over a long
+    /// session.
+    image: Option<BoundImage>,
     uniform_buffer: wgpu::Buffer,
     /// Separate transform uniform for the outgoing image during a crossfade.
     /// Holds the outgoing transform with fade = 1.0 so it draws opaque while
@@ -102,7 +108,6 @@ pub struct Renderer {
     /// In-flight crossfade, if any. `Some` only between `begin_crossfade` and
     /// `end_crossfade`.
     crossfade: Option<CrossfadeState>,
-    sampler: wgpu::Sampler,
     text_renderer: GlyphonRenderer,
     overlay_pipeline: wgpu::RenderPipeline,
     overlay_buffers: Vec<(wgpu::Buffer, wgpu::BindGroup)>,
@@ -123,51 +128,6 @@ pub struct Renderer {
     /// pushed in by [`Self::set_display_icc`]; like `scale_factor`, a copy that goes stale if
     /// nobody updates it. Empty when ICC colour management is off.
     display_icc: Vec<u8>,
-}
-
-/// Build the image-quad render pipeline against a specific surface format.
-/// Extracted so `reconfigure_surface_format` can rebuild on EDR transitions.
-fn build_image_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    layout: &wgpu::PipelineLayout,
-    format: wgpu::TextureFormat,
-) -> wgpu::RenderPipeline {
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("image pipeline"),
-        layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some("vs_main"),
-            buffers: &[],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                // Alpha blending (not REPLACE) so the slideshow crossfade can
-                // draw the incoming image at fade < 1.0 over the outgoing one.
-                // For a normal single image the fragment outputs alpha 1.0,
-                // which makes this identical to REPLACE over the transparent
-                // clear.
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            ..Default::default()
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    })
 }
 
 /// Build the histogram pipeline. Uses alpha blending so the bars composite
@@ -446,10 +406,7 @@ impl Renderer {
             surface_format
         );
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("image shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        });
+        let image_pipeline = ImagePipeline::new(&device, &queue);
 
         let initial_transform = TransformUniform {
             col0: [1.0, 0.0, 0.0, 1.0],
@@ -466,57 +423,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("image sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-            ..Default::default()
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("image bind group layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    // The vertex stage reads the transform; the fragment stage
-                    // reads the fade factor (col1.z) for the slideshow crossfade.
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-
-        let image_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("image pipeline layout"),
-                bind_group_layouts: &[Some(&bind_group_layout)],
-                immediate_size: 0,
-            });
-
-        let render_pipeline =
-            build_image_pipeline(&device, &shader, &image_pipeline_layout, surface_format);
+        let render_pipeline = image_pipeline.build(&device, surface_format);
 
         // Overlay pipeline for drawing semi-transparent rounded-rectangle pills behind text
         let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -679,18 +586,14 @@ impl Renderer {
             config,
             sdr_format: surface_format,
             hdr_surface_supported,
-            image_shader: shader,
+            image_pipeline,
             overlay_shader,
-            image_pipeline_layout,
             overlay_pipeline_layout,
             render_pipeline,
-            bind_group: None,
-            image_texture: None,
-            bind_group_layout,
+            image: None,
             uniform_buffer,
             prev_uniform_buffer,
             crossfade: None,
-            sampler,
             text_renderer,
             overlay_pipeline,
             overlay_buffers,
@@ -798,12 +701,7 @@ impl Renderer {
         self.config.format = target;
         self.configure_surface();
 
-        self.render_pipeline = build_image_pipeline(
-            &self.device,
-            &self.image_shader,
-            &self.image_pipeline_layout,
-            target,
-        );
+        self.render_pipeline = self.image_pipeline.build(&self.device, target);
         self.overlay_pipeline = build_overlay_pipeline(
             &self.device,
             &self.overlay_shader,
@@ -826,9 +724,9 @@ impl Renderer {
 
     /// Upload a decoded image as a GPU texture and create the bind group.
     ///
-    /// `PixelBuffer::Rgba8` uploads to `Rgba8UnormSrgb`. `PixelBuffer::Rgba16F`
-    /// uploads to `Rgba16Float` — the fragment shader samples it as
-    /// `vec4<f32>` either way, so the same shader works for both paths.
+    /// The texture format follows storage and the shader mode follows meaning;
+    /// `ImagePipeline::upload` has both. The fragment shader samples either
+    /// texture format as `vec4<f32>`.
     ///
     /// Phase 5.1: on EDR-capable displays, the surface itself is
     /// `Rgba16Float` (see `reconfigure_surface_format`) and
@@ -838,78 +736,26 @@ impl Renderer {
     /// quantise at the final blend — the wide-gamut cache still pays off
     /// for the tone-curve and ICC-transform stages upstream.
     pub fn set_image(&mut self, image: &DecodedImage) {
-        // Drop the bind group first (releases its TextureView ref) and then
-        // explicitly destroy the previous image texture so its GPU / unified-
+        // Explicitly destroy the previous image texture so its GPU / unified-
         // memory backing returns to the OS. Without this, Metal keeps the
         // old texture resident and long sessions balloon RSS by ~80 MB per
         // 20 MP image flipped through.
-        self.bind_group = None;
-        if let Some(old) = self.image_texture.take() {
-            old.destroy();
+        if let Some(old) = self.image.take() {
+            old.gpu.destroy();
         }
+        let gpu = self.image_pipeline.upload(&self.device, &self.queue, image);
+        let bind_group =
+            self.image_pipeline
+                .bind(&self.device, &gpu, &self.uniform_buffer, "image bind group");
+        self.image = Some(BoundImage { gpu, bind_group });
+    }
 
-        let texture_size = wgpu::Extent3d {
-            width: image.width,
-            height: image.height,
-            depth_or_array_layers: 1,
-        };
-        let (format, bytes_per_pixel) = match &image.pixels {
-            PixelBuffer::Rgba8(_) => (wgpu::TextureFormat::Rgba8UnormSrgb, 4u32),
-            PixelBuffer::Rgba16F(_) => (wgpu::TextureFormat::Rgba16Float, 8u32),
-        };
-
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("image texture"),
-            size: texture_size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let pixel_bytes: &[u8] = match &image.pixels {
-            PixelBuffer::Rgba8(v) => v.as_slice(),
-            PixelBuffer::Rgba16F(v) => bytemuck::cast_slice(v.as_slice()),
-        };
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            pixel_bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_pixel * image.width),
-                rows_per_image: Some(image.height),
-            },
-            texture_size,
-        );
-
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        self.bind_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("image bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        }));
-        self.image_texture = Some(texture);
+    /// Tell the shader the display's current headroom. One uniform write that
+    /// every image on screen shares; nothing is re-uploaded. The caller asks
+    /// for the redraw.
+    pub fn set_headroom_now(&self, headroom_now: f32) {
+        self.image_pipeline
+            .set_headroom_now(&self.queue, headroom_now);
     }
 
     /// Update the transform uniform buffer with the current view state.
@@ -920,7 +766,7 @@ impl Renderer {
 
     /// Whether an image is currently loaded (has a bind group to draw).
     pub fn has_image(&self) -> bool {
-        self.bind_group.is_some()
+        self.image.is_some()
     }
 
     /// Drop the currently-bound image so the next `render` draws nothing in the
@@ -931,15 +777,12 @@ impl Renderer {
     /// and no usable placeholder exists — the user sees clean black, never the
     /// previous image stretched to the new transform. No-op if no image is set.
     pub fn clear_image(&mut self) {
-        self.bind_group = None;
-        if let Some(old) = self.image_texture.take() {
-            old.destroy();
+        if let Some(old) = self.image.take() {
+            old.gpu.destroy();
         }
         // Any in-flight crossfade references the now-gone image; drop it too so
         // `render` doesn't blend against a destroyed outgoing texture.
-        if let Some(cf) = self.crossfade.take() {
-            cf.prev_texture.destroy();
-        }
+        self.end_crossfade();
     }
 
     /// Start a slideshow crossfade. Takes ownership of the currently-displayed
@@ -953,10 +796,8 @@ impl Renderer {
     /// transform is captured as-is and isn't recomputed for a new size.
     pub fn begin_crossfade(&mut self, prev_transform: &TransformUniform) {
         // Drop any crossfade still in flight (its prev texture).
-        if let Some(old) = self.crossfade.take() {
-            old.prev_texture.destroy();
-        }
-        let Some(prev_texture) = self.image_texture.take() else {
+        self.end_crossfade();
+        let Some(prev) = self.image.take() else {
             // No image to fade from — nothing to do.
             return;
         };
@@ -967,28 +808,19 @@ impl Renderer {
         self.queue
             .write_buffer(&self.prev_uniform_buffer, 0, bytemuck::bytes_of(&opaque));
 
-        let prev_view = prev_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let prev_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("crossfade prev bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.prev_uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&prev_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        });
+        // Rebound through the crossfade's own transform; the texture and its
+        // `ImageParams` (so its shader mode) come along unchanged.
+        let bind_group = self.image_pipeline.bind(
+            &self.device,
+            &prev.gpu,
+            &self.prev_uniform_buffer,
+            "crossfade prev bind group",
+        );
         self.crossfade = Some(CrossfadeState {
-            prev_texture,
-            prev_bind_group,
+            prev: BoundImage {
+                gpu: prev.gpu,
+                bind_group,
+            },
         });
     }
 
@@ -1007,7 +839,7 @@ impl Renderer {
     /// of the animation); the next `update_transform` restores a clean value.
     pub fn end_crossfade(&mut self) {
         if let Some(cf) = self.crossfade.take() {
-            cf.prev_texture.destroy();
+            cf.prev.gpu.destroy();
         }
     }
 
@@ -1123,7 +955,7 @@ impl Renderer {
         // here, drawn in the pass) so a reveal never shows the stale pre-browse
         // frame bleeding through the transparent clear. Skipped entirely when an
         // image IS bound (the image quad covers the area).
-        let black_fill_active = self.bind_group.is_none();
+        let black_fill_active = self.image.is_none();
         if black_fill_active {
             let offset_px = (content_offset_y.0 as f64 * self.scale_factor) as f32;
             let uniform = OverlayUniform {
@@ -1209,19 +1041,20 @@ impl Renderer {
             });
 
             // Draw image if loaded — confined to the image area below the title bar
-            if let Some(bind_group) = &self.bind_group {
+            if let Some(image) = &self.image {
                 let offset_px = (content_offset_y.0 as f64 * self.scale_factor) as f32;
                 let sw = self.config.width as f32;
                 let sh = self.config.height as f32;
                 pass.set_viewport(0.0, offset_px, sw, (sh - offset_px).max(1.0), 0.0, 1.0);
                 pass.set_pipeline(&self.render_pipeline);
+                pass.set_bind_group(1, self.image_pipeline.frame_bind_group(), &[]);
                 // During a crossfade, draw the outgoing image first (opaque),
                 // then the incoming image over it at its current fade factor.
                 if let Some(cf) = &self.crossfade {
-                    pass.set_bind_group(0, &cf.prev_bind_group, &[]);
+                    pass.set_bind_group(0, &cf.prev.bind_group, &[]);
                     pass.draw(0..6, 0..1);
                 }
-                pass.set_bind_group(0, bind_group, &[]);
+                pass.set_bind_group(0, &image.bind_group, &[]);
                 pass.draw(0..6, 0..1);
                 // Reset viewport to full surface for pills and text
                 pass.set_viewport(0.0, 0.0, sw, sh, 0.0, 1.0);
@@ -1271,7 +1104,7 @@ impl Renderer {
 
     /// Capture the current scene as a PNG image. Returns empty Vec if no image is loaded.
     pub fn capture_screenshot(&self) -> Vec<u8> {
-        let Some(bind_group) = &self.bind_group else {
+        let Some(image) = &self.image else {
             return Vec::new();
         };
 
@@ -1316,12 +1149,7 @@ impl Renderer {
         {
             &self.render_pipeline
         } else {
-            screenshot_pipeline_owned = build_image_pipeline(
-                &self.device,
-                &self.image_shader,
-                &self.image_pipeline_layout,
-                screenshot_format,
-            );
+            screenshot_pipeline_owned = self.image_pipeline.build(&self.device, screenshot_format);
             &screenshot_pipeline_owned
         };
 
@@ -1344,7 +1172,10 @@ impl Renderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(screenshot_pipeline);
-            pass.set_bind_group(0, bind_group, &[]);
+            pass.set_bind_group(0, &image.bind_group, &[]);
+            // Headroom 1.0, so the headroom-dependent modes render their SDR rendition rather
+            // than HDR clipped at display white.
+            pass.set_bind_group(1, self.image_pipeline.sdr_frame_bind_group(), &[]);
             pass.draw(0..6, 0..1);
         }
 

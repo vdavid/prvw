@@ -3,16 +3,17 @@
 Not a feature. This is the GPU rendering scaffolding. Features like `zoom` (which owns `ViewState`) plug transforms into
 the renderer's uniform buffer via `crate::zoom::view::TransformUniform`.
 
-| File              | Purpose                                                                                       |
-| ----------------- | --------------------------------------------------------------------------------------------- |
-| `gpu.rs`          | Which backend and which adapter this platform asks wgpu for, as a pure policy                 |
-| `display_hdr.rs`  | `DisplayHdr { capable, headroom_now }` read out of wgpu's `DisplayHdrInfo`, pure and testable |
-| `renderer.rs`     | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback |
-| _(HDR)_           | `display_hdr` and `configure_surface` live in `renderer.rs`; see the sections below           |
-| `text.rs`         | `glyphon`-based text layout and rendering for the overlay pill                                |
-| `progress_bar.rs` | Pure layout for the read progress bar under the "Loading…" overlay: three overlay pills       |
-| `shader.wgsl`     | Image-quad vertex/fragment shader with a 2D affine transform                                  |
-| `overlay.wgsl`    | Rounded-rect pill shader for the title overlay                                                |
+| File                | Purpose                                                                                       |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| `gpu.rs`            | Which backend and which adapter this platform asks wgpu for, as a pure policy                 |
+| `display_hdr.rs`    | `DisplayHdr { capable, headroom_now }` read out of wgpu's `DisplayHdrInfo`, pure and testable |
+| `image_pipeline.rs` | The image quad's shader, bind group layouts, per-frame uniform, and upload; GPU parity tests  |
+| `renderer.rs`       | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback |
+| _(HDR)_             | `display_hdr` and `configure_surface` live in `renderer.rs`; see the sections below           |
+| `text.rs`           | `glyphon`-based text layout and rendering for the overlay pill                                |
+| `progress_bar.rs`   | Pure layout for the read progress bar under the "Loading…" overlay: three overlay pills       |
+| `shader.wgsl`       | Image-quad shader: 2D affine transform, one colour branch per `ShaderMode`                    |
+| `overlay.wgsl`      | Rounded-rect pill shader for the title overlay                                                |
 
 ## Decision: the backend is pinned per platform, with a wider fallback
 
@@ -86,12 +87,43 @@ _current_ value there.
 
 ## The image texture follows storage, the surface follows meaning
 
-`set_image` picks the texture format from `PixelBuffer` (`Rgba8` → `Rgba8UnormSrgb`, `Rgba16F` → `Rgba16Float`), while
-`App::want_edr_surface` reads `PixelEncoding::is_hdr()`. The two stopped meaning the same thing once 16-bit PNGs and
-TIFFs started arriving as `Rgba16F` tagged `DisplaySdr`: those draw on the ordinary `Bgra8UnormSrgb` surface, never the
-EDR one. Their half-floats are the display-encoded values passed through the sRGB EOTF (`color::display_sdr`), so the
-surface's sRGB encode lands on the same bytes an `Rgba8UnormSrgb` texture would give, rounded to 8 bits once. Nothing in
-the shader knows the difference. Branching on storage anywhere downstream is the mistake to avoid.
+`ImagePipeline::upload` picks the texture format from `PixelBuffer` (`Rgba8` → `Rgba8UnormSrgb`, `Rgba16F` →
+`Rgba16Float`) and the shader mode from `PixelEncoding::shader_mode()`, while `App::want_edr_surface` reads
+`PixelEncoding::is_hdr()`. The two stopped meaning the same thing once 16-bit PNGs and TIFFs started arriving as
+`Rgba16F` tagged `DisplaySdr`: those draw on the ordinary `Bgra8UnormSrgb` surface, never the EDR one. Their half-floats
+are the display-encoded values passed through the sRGB EOTF (`color::display_sdr`), so the surface's sRGB encode lands
+on the same bytes an `Rgba8UnormSrgb` texture would give, rounded to 8 bits once. Nothing in the shader knows the
+difference. Branching on storage anywhere downstream is the mistake to avoid.
+
+## One image shader, one mode per encoding, two uniform groups
+
+Every image draws through `ImagePipeline` (`image_pipeline.rs`), which owns the shader, both bind group layouts, the
+sampler, and the per-frame uniform, and needs only a device and a queue. `Renderer` holds one and adds the surface.
+
+- **Group 0 is per image**, owned by the image's own bind group: 0 transform, 1 image texture, 2 sampler, 3 gain-map
+  texture (a shared 1×1 `Rgba8Unorm` placeholder until M3 gives an encoding a map), 4 `ImageParams` (`mode`, and from M3
+  on that mode's parameters). The crossfade rebinds the outgoing `GpuImage` through `prev_uniform_buffer`, so it keeps
+  its own texture and mode while the incoming image fades in over it.
+- **Group 1 is per frame**: `FrameUniform { headroom_now }`, one buffer for the whole renderer. A headroom change is
+  `Renderer::set_headroom_now` plus a redraw; nothing per image is rewritten, which is the whole point of the design.
+  `capture_screenshot` binds a second group 1 pinned at 1.0, so the headroom-dependent modes screenshot as their SDR
+  rendition.
+- **Modes** (`color::hdr::fragment::ShaderMode`, mirrored as constants in `shader.wgsl`): 0 `DisplaySdr` and 1
+  `LinearHdrDisplay` are passthrough. M3 adds 2 (gain map) and M4 adds 3 (scene-linear tone map) as `case` arms in the
+  shader's `shade`, and the checkerboard composite and the crossfade `fade` stay after the mode's math for every mode.
+- **The Rust reference is the spec.** `color::hdr::fragment::shade` is what the WGSL ports, branch for branch.
+
+### Decision: a GPU parity test renders through the real pipeline
+
+**Why:** the WGSL and its Rust reference can drift without any compile error, and the drift (a clip at 1.0, a swapped
+matrix) is invisible on an SDR display. The `gpu_parity` tests in `image_pipeline.rs` render a one-row strip through
+`ImagePipeline` on a headless device into an `Rgba16Float` target at a forced headroom, read it back, and compare with
+`shade` (relative error under 1%, absolute under 1e-3 near black). One row at the target's width puts every fragment on
+a texel centre, so the comparison tests the colour math and not the filtering. The module doc says how to add a case.
+
+They run on macOS (Metal) and Windows (DX12, WARP on a GPU-less runner), where a missing adapter fails the test. Linux
+CI has no adapter, so they carry `#[cfg_attr(target_os = "linux", ignore = …)]`. ❌ Never turn that into an early return
+on a missing adapter: it would pass silently on every platform the day an adapter stops showing up.
 
 ## Key patterns
 
@@ -148,9 +180,10 @@ with the same faces, or a layout pass disagrees with what gets drawn.
   the size the overlay text is rasterised at. A window that moves to a display with a different factor - a Retina Mac to
   a 1x external monitor, a 150% Windows laptop panel to a 100% desktop screen - has to be told, which `app.rs` does from
   the `ScaleFactorChanged` arm via `set_scale_factor`. Anything else that caches the factor owes the same.
-- **Image texture must be explicitly destroyed on replace.** `set_image` holds the previous `wgpu::Texture` in
-  `Renderer.image_texture` and calls `texture.destroy()` before allocating the new one. Without this, Metal keeps the
-  old unified-memory backing resident. A long navigation session through 20 MP RAWs can grow RSS by gigabytes even
+- **Image texture must be explicitly destroyed on replace.** `set_image` holds the previous image in `Renderer.image`
+  and calls `GpuImage::destroy()` before allocating the new one (a crossfade's outgoing image is destroyed by
+  `end_crossfade`). M3's gain-map texture belongs in `GpuImage` so it's destroyed alongside. Without this, Metal keeps
+  the old unified-memory backing resident. A long navigation session through 20 MP RAWs can grow RSS by gigabytes even
   though `bind_group` was replaced.
 - **Screenshot path differs from main render.** `capture_screenshot` strips the viewport offset, pills, and text. Pixel
   tests of the live window's appearance need a different approach. For QA work that needs the full window (overlays,

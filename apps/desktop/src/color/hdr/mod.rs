@@ -4,6 +4,10 @@
 //! `ultrahdr-core` is pre-1.0 and renames things between minor versions, so the rest of the app
 //! reaches it only through this module, and a bump touches one place. It's added with
 //! `default-features = false` on purpose: see the comment on it in `apps/desktop/Cargo.toml`.
+//!
+//! - `fragment` — the Rust reference for the image shader's colour math, per `ShaderMode`.
+
+pub mod fragment;
 
 #[cfg(test)]
 mod tests {

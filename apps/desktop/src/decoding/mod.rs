@@ -47,6 +47,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
+use crate::color::hdr::fragment::ShaderMode;
 use crate::file_stamp::FileStamp;
 
 use dispatch::Backend;
@@ -115,6 +116,14 @@ impl PixelEncoding {
         match self {
             PixelEncoding::DisplaySdr => false,
             PixelEncoding::LinearHdrDisplay => true,
+        }
+    }
+
+    /// The fragment-shader branch that draws an image in this encoding.
+    pub fn shader_mode(self) -> ShaderMode {
+        match self {
+            PixelEncoding::DisplaySdr => ShaderMode::DisplaySdr,
+            PixelEncoding::LinearHdrDisplay => ShaderMode::LinearHdrDisplay,
         }
     }
 
