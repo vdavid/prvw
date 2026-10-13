@@ -1,5 +1,6 @@
-# Build stage
-FROM node:26-alpine AS builder
+# Build stage. Both base images are pinned by digest, so a re-pushed tag can't
+# change what we build on; Renovate bumps the digests.
+FROM node:26-alpine@sha256:143494b1da2945f061539253adc65e4f1569ddf07da2d384c022c791a9d90a4a AS builder
 
 WORKDIR /app
 
@@ -28,7 +29,7 @@ WORKDIR /app/apps/website
 RUN pnpm run build
 
 # Production stage
-FROM nginx:alpine AS production
+FROM nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2 AS production
 
 COPY --from=builder /app/apps/website/dist /usr/share/nginx/html
 COPY apps/website/nginx.conf /etc/nginx/conf.d/default.conf

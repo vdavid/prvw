@@ -1,13 +1,67 @@
 packages:
   - apps/*
 
-# Don't install versions published less than 3 days ago (value is minutes), a guard
-# against 0-day publish-time attacks. pnpm defaults to 1 day; this holds for anyone
-# cloning the repo, whatever their global config says.
+# ── Supply-chain defences (pnpm 11+) ────────────────────────────────────────
+# Project-side belt-and-suspenders so anyone cloning Prvw gets the same
+# install-side guarantees even without the matching keys in their global pnpm
+# config. Renovate enforces its own 3-day cooldown at PR-open time; this is the
+# install-side guardrail for anything that bypasses Renovate (manual `pnpm add`,
+# a fresh clone, a contributor without our Renovate config).
+
+# Block installs of versions published less than 3 days ago, a guard against
+# 0-day publish-time attacks. pnpm ships with a 1440 min (1 day) default; we
+# tighten it. Value is minutes (4320 = 3 days). Use `minimumReleaseAgeExclude`
+# to bypass per-package for hot-fix CVE patches.
 minimumReleaseAge: 4320
 
+# Refuse to install a package whose trust level has dropped since the last
+# successful resolve (publisher loses verified status, package transferred to
+# an unknown owner). Default is `off`. The win is mitigation against the
+# publisher-takeover class.
+#
+# pnpm re-verifies the WHOLE lockfile against this policy on every install (so
+# `check.sh` and CI hit it too, not just `pnpm add`). A `--trust-policy-exclude`
+# CLI flag is scoped to one command and never persists, so a vetted exclusion
+# has to live here, in `trustPolicyExclude`, pinned to the exact `name@version`
+# so a future republish of the same string re-trips. To approve one: vet it on
+# npmjs.com (same maintainer + repo, the flagged version merely lacks a
+# provenance attestation from npm's uneven rollout rather than showing a real
+# ownership transfer), then add it with a comment saying why.
+trustPolicy: no-downgrade
+
+# Vetted trust downgrades: old versions that predate npm's provenance rollout
+# (canonical maintainer + repo confirmed), not takeovers.
+#   chokidar@4.0.3 → paulmillr/chokidar, published 2024-12-18 by its sole
+#   maintainer, paulmillr (via `@astrojs/check`). Cmdr excludes it too.
+trustPolicyExclude:
+  - chokidar@4.0.3
+
+# Explicit even though pnpm 11+ defaults to true: only direct dependencies may
+# use exotic sources (git repos, tarball URLs). A compromised tree can't pull
+# anything unaudited through a nested repo URL.
+blockExoticSubdeps: true
+
+# Pin transitive deps to fix CVEs that `pnpm audit` reports in older indirect
+# ranges. All are dev/build-time only (lint, typecheck, Astro's static build);
+# none reach the shipped site, which is plain static files. Each key is scoped
+# to one major (`name@N`) so a parent that later moves to the next major isn't
+# dragged back. Drop an entry once `pnpm why <name>` shows every parent past the
+# fix.
+overrides:
+  # Under `eslint` (through `minimatch`).
+  brace-expansion@5: ^5.0.12
+  # Under `@astrojs/check` (through `yaml-language-server` and `ajv`).
+  fast-uri@3: ^3.1.8
+  # Under `eslint-plugin-astro`.
+  postcss-selector-parser@7: ^7.1.6
+  # The rest are under `astro` itself.
+  http-cache-semantics@4: ^4.3.0
+  smol-toml@1: ^1.9.0
+  source-map-js@1: ^1.2.2
+  undici@8: ^8.10.2
+
 # pnpm 11 makes every package with an install script an explicit decision, and errors
-# out until it gets one. `sharp` (Astro's image service) and `esbuild` both ship prebuilt
+# out until it gets one (the legacy `onlyBuiltDependencies` field is ignored). `sharp` (Astro's image service) and `esbuild` both ship prebuilt
 # binaries, so their build scripts aren't needed for the site build — the deploy image has
 # skipped them since the pnpm 11 move (see `--ignore-scripts` in apps/website/Dockerfile)
 # and the output is identical. Keeping them off here matches that, and keeps install-time
