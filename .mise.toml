@@ -1,5 +1,5 @@
 [tools]
-go = "1.26"
+go = "1.27"
 node = "26"
 # `npm:pnpm` backend, not the default `aqua:pnpm/pnpm`: pnpm switched their
 # GitHub release assets from `pnpm-linux-x64.tar.gz` archives to raw binaries
