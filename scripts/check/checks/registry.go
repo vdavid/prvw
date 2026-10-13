@@ -73,6 +73,17 @@ var AllChecks = []CheckDefinition{
 		Run:         RunCargoTest,
 	},
 	{
+		ID:          "desktop-rust-cargo-audit",
+		Nickname:    "cargo-audit",
+		DisplayName: "cargo-audit",
+		App:         AppDesktop,
+		Tech:        "🦀 Rust",
+		// Reads `Cargo.lock` and the RustSec database and compiles nothing, so it waits on no
+		// other check.
+		DependsOn: nil,
+		Run:       RunCargoAudit,
+	},
+	{
 		ID:          "conflict-markers",
 		Nickname:    "conflicts",
 		DisplayName: "conflict markers",
@@ -190,6 +201,15 @@ var AllChecks = []CheckDefinition{
 		Tech:        "🐹 Go",
 		DependsOn:   []string{"scripts-go-vet"},
 		Run:         RunGoTests,
+	},
+	{
+		ID:          "scripts-go-govulncheck",
+		Nickname:    "govulncheck",
+		DisplayName: "govulncheck",
+		App:         AppScripts,
+		Tech:        "🐹 Go",
+		DependsOn:   nil,
+		Run:         RunGovulncheck,
 	},
 
 	// Repo-wide checks

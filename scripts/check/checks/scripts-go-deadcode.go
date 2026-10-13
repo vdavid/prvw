@@ -9,7 +9,7 @@ import (
 
 // RunDeadcode runs Go's deadcode tool to find unreachable functions.
 func RunDeadcode(ctx *CheckContext) (CheckResult, error) {
-	deadcodePath, err := EnsureGoTool("deadcode", "golang.org/x/tools/cmd/deadcode@latest")
+	deadcodePath, err := EnsureGoTool(ctx.RootDir, "deadcode", "golang.org/x/tools/cmd/deadcode@v0.51.0")
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("failed to install deadcode: %w", err)
 	}

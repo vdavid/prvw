@@ -46,12 +46,13 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | `checks/walk.go`                       | `findFiles` / `countFiles`: the file counting every check does                      |
 | `console_{windows,other}.go`           | `prepareConsole()`: UTF-8 and ANSI on the Windows console                           |
 | `checks/registry.go`                   | `AllChecks`: canonical ordered list, lookup and validation functions                |
-| `checks/desktop-rust-*.go`             | Rust checks (rustfmt, clippy, cargo-test, parity, windows-cross, linux-cross)       |
+| `checks/go-tools.go`                   | `EnsureGoTool`: version-pinned Go analyzers, installed into `target/check-go-tools` |
+| `checks/desktop-rust-*.go`             | Rust checks (rustfmt, clippy, cargo-test, cargo-audit, parity, cross-checks)        |
 | `checks/desktop-macos-availability.go` | ObjC selector/class use vs. the `LSMinimumSystemVersion` floor                      |
 | `checks/windows-installer.go`          | The Windows installer's generated registry include, plus two facts about `prvw.nsi` |
 | `checks/oxfmt.go`                      | Monorepo-wide formatter (oxfmt, prettier-compatible)                                |
 | `checks/website-*.go`                  | Website checks (eslint, typecheck, build)                                           |
-| `checks/scripts-go-*.go`               | Go checks (gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests)          |
+| `checks/scripts-go-*.go`               | Go checks (gofmt, vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests) |
 | `checks/conflict-markers.go`           | Unresolved merge conflict markers in source and docs                                |
 | `stats.go`                             | CSV stats logging (`~/.local/share/check-runner/prvw/check-log.csv`)                |
 | `colors.go`                            | ANSI color constants                                                                |
@@ -79,9 +80,9 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | App     | Tech      | Checks                                                                                                              |
 | ------- | --------- | ------------------------------------------------------------------------------------------------------------------- |
 | Other   | 📐 Format | oxfmt (monorepo-wide; runs first, gates eslint)                                                                     |
-| Desktop | Rust      | rustfmt, clippy, cargo-test, parity, installer, macos-availability, windows-cross + linux-cross (both slow, opt-in) |
+| Desktop | Rust      | rustfmt, clippy, cargo-test, cargo-audit, parity, installer, macos-availability, windows-cross + linux-cross (both slow, opt-in) |
 | Website | Astro     | eslint, typecheck, build                                                                                            |
-| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, tests                                                      |
+| Scripts | Go        | gofmt, go-vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests                                         |
 | Other   | -         | changelog-commit-links, conflict-markers                                                                            |
 
 ## The conflict-marker check
@@ -117,6 +118,33 @@ The runner builds and runs on macOS, Linux, and Windows. Three things carry that
 
 **Gotcha**: `EnsureGoTool` returns a path with no `.exe`. That is fine, because `os/exec` appends Windows extensions
 when it starts a command given a full path.
+
+## Pinned tools and advisory checks
+
+Every tool the runner installs is pinned to an exact version, never `@latest`, for the same reason every dependency
+waits three days: an install runs code on every developer machine and CI runner. `docs/security.md` has the wider
+picture.
+
+- **Go analyzers** go through `EnsureGoTool(rootDir, name, "module/cmd/x@vX.Y.Z")`, which refuses an unpinned path,
+  installs into the repo's `target/check-go-tools`, and reinstalls when the binary's module version or the Go that built
+  it differs from what's wanted (read with `go version -m`). It ignores whatever `<name>` is on `PATH`: a staticcheck
+  built by an older Go can't read a newer stdlib's export data and fails with "export data version 5 is greater than
+  maximum supported version 4", which is what the Go 1.27.2 bump did to a `~/go/bin` copy. Renovate bumps the literals
+  through the custom manager in `renovate.json`.
+- **staticcheck and Go move together.** Go 1.27.2 changed the export data format, and only staticcheck 2026.2.2
+  (`v0.8.2`) reads it. So `.mise.toml` pins Go to an exact patch release and staticcheck to a build that reads it;
+  bumping one without the other fails the `staticcheck` check. Renovate groups the two for that reason. Today's pin is
+  a pseudo-version (a 2026-10-09 commit, the one Cmdr pins), because 2026.2.2 was inside the three-day window when Go
+  1.27.2 had to land, and staying on 1.27.1 would have failed `govulncheck` on eight stdlib advisories.
+- **`cargo-audit`** (nickname `cargo-audit`) checks `Cargo.lock` against the RustSec database: a vulnerability fails,
+  an unmaintained or unsound warning warns. `cargoAuditIgnoredAdvisories` holds the accepted ones, each with why it
+  doesn't reach the shipped app and when to drop it. `cargo-audit` itself installs at a pinned `--version`.
+- **`govulncheck`** (nickname `govulncheck`) is the Go twin, and only flags advisories our code actually calls into. An
+  advisory whose fix is under three days old can't be adopted yet, so it warns, and turns red three days after it
+  becomes adoptable.
+- Both run in every local `./scripts/check.sh` and daily in `.github/workflows/advisories.yml`, so a new advisory for a
+  dependency nobody touched still shows up within a day. They're deliberately not in `ci.yml`: a fresh advisory would
+  turn every unrelated push red.
 
 ## The parity check
 

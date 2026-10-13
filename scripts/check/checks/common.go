@@ -166,56 +166,6 @@ func CommandExists(name string) bool {
 	return err == nil
 }
 
-// EnsureGoTool ensures a Go tool is installed and returns the path to the binary.
-// If the tool is already in PATH, returns just the name. Otherwise installs it
-// and returns the full path to the installed binary.
-func EnsureGoTool(name, installPath string) (string, error) {
-	if CommandExists(name) {
-		return name, nil
-	}
-
-	// Get Go's bin directory
-	goBin := getGoBinDir()
-	if goBin == "" {
-		return "", fmt.Errorf("could not determine Go bin directory")
-	}
-
-	// Install the tool
-	installCmd := exec.Command("go", "install", installPath)
-	if _, err := RunCommand(installCmd, true); err != nil {
-		return "", fmt.Errorf("failed to install %s: %w", name, err)
-	}
-
-	// Return full path to the binary
-	return filepath.Join(goBin, name), nil
-}
-
-// getGoBinDir returns the directory where go install puts binaries.
-func getGoBinDir() string {
-	// First check GOBIN
-	cmd := exec.Command("go", "env", "GOBIN")
-	if output, err := RunCommand(cmd, true); err == nil {
-		if bin := strings.TrimSpace(output); bin != "" {
-			return bin
-		}
-	}
-
-	// Fall back to GOPATH/bin
-	cmd = exec.Command("go", "env", "GOPATH")
-	if output, err := RunCommand(cmd, true); err == nil {
-		if gopath := strings.TrimSpace(output); gopath != "" {
-			return filepath.Join(gopath, "bin")
-		}
-	}
-
-	// Last resort: ~/go/bin
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, "go", "bin")
-	}
-
-	return ""
-}
-
 // indentOutput indents each non-empty line of output.
 func indentOutput(output string) string {
 	lines := strings.Split(output, "\n")
