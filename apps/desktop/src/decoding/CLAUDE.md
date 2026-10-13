@@ -1,18 +1,18 @@
 # Decoding
 
-Decode image files to RGBA8, extract the embedded ICC profile, apply EXIF orientation, and hand a `DecodedImage` off to
-the renderer.
+Decode image files (to RGBA8, or half-float for 16-bit sources and HDR), extract the embedded ICC profile, apply EXIF
+orientation, and hand a `DecodedImage` off to the renderer.
 
 | File               | Purpose                                                                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `mod.rs`           | Public API: `DecodedImage`, `PixelBuffer` (Phase 5 RGBA8/RGBA16F), `load_image` (always-cancellable), `is_supported_extension`                                     |
+| `mod.rs`           | Public API: `DecodedImage`, `PixelBuffer` (storage), `PixelEncoding` (meaning), `OutputDepth`, `load_image` (always-cancellable), `is_supported_extension`         |
 | `read_progress.rs` | `ReadProgress`: the live byte counter of one file read, plus `READ_CHUNK_BYTES` and the `PRVW_READ_DELAY_MS` test hook                                             |
 | `dispatch.rs`      | `Backend` enum + extension-to-backend mapping                                                                                                                      |
 | `jpeg.rs`          | Fast JPEG path via `zune-jpeg` (SIMD)                                                                                                                              |
 | `raw.rs`           | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)                                                                                         |
 | `raw_preview.rs`   | Fast embedded-JPEG preview extraction (`decode_raw_preview`): no develop, downscaled + oriented soft placeholder shown on RAW cache-miss while the develop runs    |
 | `dng_opcodes.rs`   | DNG `OpcodeList1/2/3` parsing + application (Phase 3.0)                                                                                                            |
-| `generic.rs`       | Fallback path via the `image` crate (PNG, GIF, WebP, BMP, TIFF)                                                                                                    |
+| `generic.rs`       | Fallback path via the `image` crate (PNG, GIF, WebP, BMP, TIFF), including the 16-bit SDR path                                                                     |
 | `orientation.rs`   | EXIF orientation parsing and in-place pixel-buffer rotation                                                                                                        |
 | `exif_metadata.rs` | Curated EXIF subset for the EXIF info overlay (camera, lens, exposure, time, GPS). nom-exif on JPEG/Generic/RAW outer bytes; rawler `RawMetadata` fallback for RAW |
 
@@ -58,6 +58,30 @@ the renderer.
   that field may be `#[cfg]`-fenced to one platform, and `load_image_attaches_exif_to_the_decoded_jpeg` /
   `load_image_leaves_exif_none_for_a_png` in `mod.rs` are the anchors that say so from every host.
 - **ICC profile first, pixels second.** See the gotcha below.
+- **Storage and meaning are separate fields.** `PixelBuffer` says how the pixels are stored (`Rgba8` or `Rgba16F`),
+  `PixelEncoding` what they mean: `DisplaySdr` (display-ICC-encoded SDR, either storage) or `LinearHdrDisplay` (linear
+  light in `HdrDisplaySpace::for_host()`, `Rgba16F` only, RAW HDR). `PixelEncoding::is_hdr()` is the "needs the EDR
+  surface" question, so never infer HDR from `Rgba16F`. Each legal pair has its own constructor (`from_rgba8`,
+  `from_display_sdr_rgba16f`, `from_linear_hdr_rgba16f`), and `finalize` re-checks `PixelEncoding::accepts` in debug
+  builds. M2–M4 of `docs/specs/hdr-images.md` add `GainMapped` and `SceneLinear`.
+- **`OutputDepth::Rgba8` is for consumers that can only carry bytes.** The Windows clipboard and print
+  (`platform/windows/ui_common.rs`) and the preview generator pass it. It forces the headroom to 1.0 (so RAW develops
+  SDR) and keeps 16-bit sources on the 8-bit path, so those callers get exactly what they got before 16-bit decoding
+  existed. The viewer passes `OutputDepth::Native`. macOS copy and print re-read through ImageIO and never call
+  `load_image`.
+
+## 16-bit SDR PNGs and TIFFs
+
+`generic.rs` sends `Luma16` / `LumaA16` / `Rgb16` / `Rgba16` decodes (at `OutputDepth::Native`) through `into_rgba16()`
+→ `color::transform_icc_16bit` → `color::display_sdr::rgba16_to_display_sdr_f16_inplace`, stored as `Rgba16F` tagged
+`DisplaySdr`. The renderer draws it on the normal SDR surface, which rounds to 8 bits exactly once.
+
+**Why:** `to_rgba8()` before an 8-bit transform rounds twice, and on a smooth gradient through a real conversion (sRGB →
+Display P3) 48% of samples land a step off the single-rounding answer, up to 1.5 steps; those off-by-ones are the bands.
+The 16-bit path is under 0.1 steps everywhere. `a_16_bit_png_gradient_does_not_band_through_a_real_transform` is the
+anchor. Cost and numbers: `docs/specs/hdr-images.md` Findings, 2026-10-14. Float TIFFs stay on the 8-bit path until M4
+(they may be HDR). 8-bit sources are byte-identical to before (`an_8_bit_png_is_byte_identical_to_todays_path`).
+`RUST_LOG=prvw::decoding::generic=debug` logs the stage split (`to_rgba16`, `icc`, `to_f16`).
 
 ## Gotchas
 
@@ -73,7 +97,7 @@ the renderer.
 - **JPEG decodes straight to RGBA.** `jpeg.rs` sets `jpeg_set_out_colorspace(ColorSpace::RGBA)` so zune emits RGBA in
   one SIMD color-convert pass — no separate RGB→RGBA repack (which doubled peak memory with a second framebuffer) and no
   3-channel assumption (zune handles CMYK / grayscale → RGBA). The generic backend already delegates the same way via
-  `image`'s `to_rgba8()`.
+  `image`'s `to_rgba8()` (and `into_rgba16()` for 16-bit sources).
 - **Unknown EXIF orientation values get logged and ignored.** The spec defines 1–8; cameras occasionally write garbage.
   We pass the buffer through unchanged rather than guess.
 - **`nom-exif` decodes date/time tags into typed variants, never `Text`.** `DateTimeOriginal` / `CreateDate` /
@@ -183,8 +207,9 @@ hdr_active = flags.hdr_output && edr_headroom > 1.0
 
 `edr_headroom` is threaded in from `app.rs`, which gets it from `render::renderer::Renderer::display_hdr_headroom`:
 `NSScreen`'s EDR multiplier on macOS, DXGI's panel-peak-over-SDR-white ratio on Windows, `1.0` (no headroom) anywhere
-the display isn't in an HDR mode. `App` also tracks `current_image_is_hdr` so the window's `CAMetalLayer` can be flipped
-between SDR and EDR modes per-decode. `edr_should_be_active` fuses all three inputs (flag, headroom, image-is-HDR).
+the display isn't in an HDR mode. `App` also tracks `current_image_is_hdr` (from `PixelEncoding::is_hdr()`) so the
+window's `CAMetalLayer` can be flipped between SDR and EDR modes per-decode. `edr_should_be_active` fuses all three
+inputs (flag, headroom, image-is-HDR).
 
 Once inside `raw::decode`, `hdr_active` gates four different behaviors:
 

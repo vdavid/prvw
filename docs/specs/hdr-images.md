@@ -551,6 +551,38 @@ Filled in by the implementing agent during M0 and later. Date each entry.
   - **Changes M4:** the fixture generator writes `cICP` (and `cLLI`, if a fixture wants it) through `write_chunk`. `png`
     is only a transitive dependency today, so M4 adds it as a direct one at the same 0.18.1 (the decode path needs it
     anyway); the fixtures example then gets it for free.
+- **2026-10-14, M1 banding, measured.** A 4,096-wide 16-bit red ramp, sRGB → Display P3, compared with moxcms' f32
+  transform of the same samples: today's path (8 bits, then the transform) is up to 1.55 steps off and 48% of samples
+  end a step away from single rounding. The 16-bit path is under 0.1 steps and 1.7% (moxcms' 16-bit transform sits a few
+  hundredths of a step off its f32 one, which tips samples on a rounding boundary). Anchors in `decoding/generic.rs`.
+- **2026-10-14, M1 decode cost.** Release build, M3 Max, 12 MP (4000×3000) RGB16 with a smooth gradient plus noise,
+  median of seven; `OutputDepth::Rgba8` is exactly today's path, so one binary compares both (`sixteen_bit_decode_perf`,
+  `#[ignore]`). Quietest run:
+  - PNG, Display P3 target: today 81.1 ms, 16-bit 87.0 ms (+7%). sRGB target (transform skipped): 63.5 → 64.1 ms.
+  - TIFF (uncompressed), Display P3 target: today 24.2 ms, 16-bit 31.5 ms (+30%, +7 ms). sRGB target: 7.3 → 7.7 ms.
+  - Stage split of the 16-bit path: `into_rgba16` 2.2 ms, the 16-bit ICC transform 23 ms, the EOTF into f16 1.7 ms
+    (rayon). The added cost is almost all moxcms' 16-bit transform being slower than its 8-bit one.
+  - Two reruns ran at a load average of ~50 from other sessions and scattered from −9% to +85%, so take the quietest run
+    as the number and rerun on an idle machine before quoting it anywhere. Section 9's ±3% is for 8-bit sources, whose
+    code path is unchanged (one `matches!` added); `an_8_bit_png_is_byte_identical_to_todays_path` pins the bytes.
+  - Memory: a 16-bit image now costs 8 B/px in the cache and on the GPU, double today's. `image_memory_cost` already
+    counts real bytes, so the budget holds; fewer 16-bit images fit in it.
+- **2026-10-14, M1 deviations from the design.**
+  - No fallible `DecodedImage::new`. One constructor per legal pair (`from_rgba8`, `from_display_sdr_rgba16f`,
+    `from_linear_hdr_rgba16f`, the last renamed from `from_rgba16f`) makes illegal pairs unbuildable, and `finalize`
+    `debug_assert!`s `PixelEncoding::accepts`, since the fields stay public. A fallible constructor nothing called would
+    have been dead code. M3 and M4 can add one if `GainMapped` wants it.
+  - `load_image` gained an `OutputDepth` parameter (`Native` / `Rgba8`). `Rgba8` also pins the headroom to 1.0, so a
+    byte consumer can't get HDR whatever it passes. Besides Windows copy and print, `previews/generator.rs` needed it
+    too: it requires `Rgba8` and would have dropped every 16-bit preview.
+  - `histogram::compute::compute` takes the encoding next to the buffer.
+  - The gradient fixtures are generated in-test (`image`'s PNG and TIFF encoders), not by `make-hdr-fixtures`: unit
+    tests want a 4,096-wide ramp, which isn't worth committing. M3 starts the example.
+  - Float TIFFs stay on the 8-bit path; M4 owns them.
+- **For M2.** `PixelEncoding` has `is_hdr()` and `accepts()`, both exhaustive matches, so the new variants surface every
+  site. The renderer still picks the texture format from storage only; mode 0 covers `DisplaySdr` in both storages with
+  no shader change. A `DisplaySdr` f16 image on the EDR surface (only reachable mid-crossfade) shows linearized display
+  values as linear P3, like an 8-bit SDR one does today.
 - **2026-10-13, license guard (M0).** It reads `cargo tree`, not `cargo metadata`: metadata and `Cargo.lock` list
   `zentone`, because `ultrahdr-core`'s `std` feature names it weakly (`zentone?/std`), though cargo never builds it. The
   tree already held three non-permissive crates, now accepted exceptions bound to their license strings: `rawler`

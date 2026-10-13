@@ -5,7 +5,7 @@
 | File         | Purpose                                                                                                                         |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | `mod.rs`     | `histogram::State { visible, data, hover_bin }` + `HistogramRect` (cursor-to-bin mapping)                                       |
-| `compute.rs` | `compute(&PixelBuffer)` — 256-bin RGB scan; rayon-parallel above 4 MP; supports RGBA8 and RGBA16F (HDR clamps to 1)             |
+| `compute.rs` | `compute(&PixelBuffer, PixelEncoding)` — 256-bin RGB scan; rayon-parallel above 4 MP; RGBA8, and RGBA16F by encoding (below)    |
 | `overlay.rs` | Visual layout: backdrop pill, axis ticks, bar plot draw call, hover readout. `plot_rect_for(...)` is the layout source of truth |
 
 The GPU-side bar rendering lives in `crate::render::renderer` (search for `HistogramDrawCall`) and the WGSL is at
@@ -20,6 +20,16 @@ compute cost per nav. When the user toggles the panel on (`AppCommand::ToggleHis
 
 **Why:** The compute is a 256-bin scan over every pixel. A 24 MP RAW costs a few ms on the main thread, every
 navigation. Most users never enable the panel, so doing the work eagerly is pure waste.
+
+## Decision: half-floats bin by what they mean, not how they're stored
+
+**Decision:** `compute` takes the `PixelEncoding` alongside the buffer. `DisplaySdr` half-floats (16-bit PNGs and TIFFs)
+go back through the sRGB OETF (`color::display_sdr::display_sdr_f16_to_u8`, a 64K lookup) and land in exactly the bin
+their 8-bit equivalent would. `LinearHdrDisplay` (RAW HDR) clamps at 1.0 and quantizes linearly, so above-white
+highlights read as clipped.
+
+**Why:** a `DisplaySdr` half-float is the linearized display value. Binning it as-is skews the whole histogram dark
+(mid-grey lands near bin 55). `display_sdr_half_floats_bin_like_the_bytes_they_stand_for` is the anchor.
 
 ## Decision: `plot_rect_for` is the single layout source of truth
 

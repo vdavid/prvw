@@ -4,7 +4,9 @@ Scan the parent directory for images, preload adjacent files in the background, 
 budget for SDR, twice that for HDR (Phase 5). `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` in `preloader.rs` are the
 constants, and `ImageCache` resolves both once at construction. The cache switches between them when the RAW pipeline's
 `hdr_output` flag flips or the display's EDR headroom crosses the 1.0 boundary; doubling the budget alongside RAW
-RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in both modes.
+RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in both modes. `image_memory_cost` counts
+the storage's real bytes, so a 16-bit PNG or TIFF (half-float `DisplaySdr`, 8 B/px) costs twice an 8-bit image in either
+mode, and fewer of them fit in the SDR budget. Accepted: they're rare, and the budget isn't a count.
 
 ## Decision: the current image is found by name, not by canonicalizing every entry
 

@@ -72,6 +72,15 @@ platform, through `Surface::display_hdr_info`. macOS reports a live multiplier (
 panel peak over the OS's SDR white level, which is exactly `1.0` when the user hasn't switched that display into HDR
 mode. On macOS the headroom is ours to use; on Windows it is ours to respect.
 
+## The image texture follows storage, the surface follows meaning
+
+`set_image` picks the texture format from `PixelBuffer` (`Rgba8` → `Rgba8UnormSrgb`, `Rgba16F` → `Rgba16Float`), while
+`App::want_edr_surface` reads `PixelEncoding::is_hdr()`. The two stopped meaning the same thing once 16-bit PNGs and
+TIFFs started arriving as `Rgba16F` tagged `DisplaySdr`: those draw on the ordinary `Bgra8UnormSrgb` surface, never the
+EDR one. Their half-floats are the display-encoded values passed through the sRGB EOTF (`color::display_sdr`), so the
+surface's sRGB encode lands on the same bytes an `Rgba8UnormSrgb` texture would give, rounded to 8 bits once. Nothing in
+the shader knows the difference. Branching on storage anywhere downstream is the mistake to avoid.
+
 ## Key patterns
 
 - **Render-on-demand.** `App.needs_redraw` gates frames. Renderer is passive.
