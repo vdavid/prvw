@@ -15,6 +15,11 @@
 
 pub mod fragment;
 pub mod gain_map;
+// Nothing outside the tests calls these until the decoders and shader mode 3 land.
+#[allow(dead_code)]
+pub mod tone_map;
+#[allow(dead_code)]
+pub mod transfer;
 
 use gain_map::{ChannelParams, GainMapParams};
 
