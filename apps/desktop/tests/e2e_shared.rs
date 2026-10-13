@@ -190,6 +190,60 @@ fn a_raw_on_an_hdr_display_decodes_to_linear_hdr_and_the_surface_follows() {
     assert_eq!(hdr["edr_surface"].as_bool(), Some(supported));
 }
 
+/// A gain-map JPEG on a display that can show HDR keeps its map and asks for the EDR surface.
+/// Then the promise mode 2 exists for: the current headroom moving (a brightness change) only
+/// rewrites a shader uniform, so the image is never decoded again, while the display losing HDR
+/// altogether does re-decode it, to the plain SDR JPEG.
+#[test]
+fn a_gain_map_jpeg_follows_the_headroom_without_re_decoding() {
+    let jpeg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/hdr/ultra-hdr-xmp-64x48.jpg");
+    let Some(app) = SharedApp::start_with_image(&[], &jpeg) else {
+        return;
+    };
+    app.wait_for_state(Duration::from_secs(10), |s| {
+        s["pixel_encoding"].as_str().is_some()
+    });
+
+    let hdr = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": true, "headroom_now": 1.0 }),
+    );
+    assert_eq!(hdr["pixel_encoding"], "gain_mapped");
+    assert_eq!(hdr["want_edr_surface"], true);
+    let supported = hdr["hdr_surface_supported"]
+        .as_bool()
+        .expect("hdr_surface_supported");
+    assert_eq!(hdr["edr_surface"].as_bool(), Some(supported));
+    let decodes = full_decodes(&hdr);
+
+    for headroom in [2.0, 8.0, 1.5] {
+        let state = app.post_json(
+            "/display-hdr",
+            &serde_json::json!({ "capable": true, "headroom_now": headroom }),
+        );
+        assert_eq!(state["headroom_now"].as_f64(), Some(headroom));
+        assert_eq!(state["pixel_encoding"], "gain_mapped");
+        assert_eq!(
+            full_decodes(&state),
+            decodes,
+            "a headroom change at {headroom} must not decode the gain-map JPEG again"
+        );
+    }
+
+    let sdr = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": false, "headroom_now": 1.0 }),
+    );
+    assert!(
+        full_decodes(&sdr) > decodes,
+        "losing HDR changes what the decoder produces, so the image is decoded again"
+    );
+    assert_eq!(sdr["pixel_encoding"], "display_sdr");
+    assert_eq!(sdr["want_edr_surface"], false);
+    assert_eq!(sdr["edr_surface"], false);
+}
+
 #[test]
 fn window_geometry_changes_size() {
     let Some(app) = SharedApp::start(&[]) else {
