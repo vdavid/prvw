@@ -1,0 +1,50 @@
+name: Advisory scan
+
+# Daily check of `Cargo.lock` against the RustSec database and of the check runner against the Go
+# vuln DB, so a new advisory for a dependency nobody touched shows up within a day. Neither check
+# compiles the app, so this is cheap. They stay out of `ci.yml` on purpose: a fresh advisory would
+# turn every unrelated push red. GitHub emails repo admins when a scheduled run fails.
+on:
+  schedule:
+    - cron: '17 4 * * *' # daily, 4:17 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: Rust and Go advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install mise
+        uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca # v5.1.1
+
+      - name: Install tools with mise
+        run: mise install
+
+      # The check `cargo install`s its pinned cargo-audit when missing, which compiles for minutes.
+      # The version lives in the check file, so bumping it changes the key. A daily run keeps the
+      # cache inside GitHub's 7-day eviction window.
+      - name: Cache cargo-audit
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('scripts/check/checks/desktop-rust-cargo-audit.go') }}
+
+      - name: Build check tool
+        run: go build -o check .
+        working-directory: ./scripts/check
+
+      - name: Run cargo-audit
+        run: ./scripts/check/check --check cargo-audit --ci
+
+      - name: Run govulncheck
+        run: ./scripts/check/check --check govulncheck --ci

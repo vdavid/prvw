@@ -1,0 +1,59 @@
+name: CodeQL
+
+# Static analysis (SAST) over the GitHub Actions workflows and the Rust app. Results land in the
+# repo's code-scanning tab; a run doesn't fail on findings (Cmdr gates its releases on them, which
+# needs an accepted-findings filter Prvw doesn't carry yet). Free on a public repo; the cost is
+# runner time, mostly Rust's (several minutes per run), so it runs weekly and on pushes to main that
+# touch Rust or a workflow, never on every push.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '**/*.rs'
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/**'
+  schedule:
+    - cron: '41 4 * * 2' # weekly, Tuesday 4:41 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # A job-level block replaces the workflow-level one, so it restates the reads it needs.
+    permissions:
+      contents: read # check out the code
+      actions: read # the CodeQL action reads the run's own workflow details
+      security-events: write # upload the SARIF to code scanning
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, rust]
+    env:
+      # Rust only: analyze the shipped target (macOS) and leave inline `#[cfg(test)]` modules out.
+      # The Actions extractor ignores both.
+      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_TARGET: aarch64-apple-darwin
+      CODEQL_EXTRACTOR_RUST_OPTION_CARGO_CFG_OVERRIDES: -test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: /language:${{ matrix.language }}

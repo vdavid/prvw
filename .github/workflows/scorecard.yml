@@ -1,0 +1,56 @@
+name: Scorecard
+
+# OpenSSF Scorecard: grades the repo's supply-chain hygiene (pinned actions, token permissions,
+# branch protection, signed releases, and more) and publishes the result to the public Scorecard
+# API, which backs https://scorecard.dev/viewer/?uri=github.com/vdavid/prvw. The SARIF also lands
+# in the repo's code-scanning tab, one alert per failing check.
+#
+# ❗ `publish_results: true` makes the API verify this workflow before accepting a result: no
+# top-level `env` or `defaults`, no workflow-level write permission, `ubuntu-latest`, and only
+# allowlisted actions in the job (checkout, upload-artifact, codeql upload-sarif, the scorecard
+# action itself). Keep it minimal; anything else makes the publish step fail.
+on:
+  push:
+    branches:
+      - main
+  # Re-scores Branch-Protection as soon as a rule changes.
+  branch_protection_rule:
+  schedule:
+    - cron: '23 5 * * 1' # weekly, Monday 5:23 AM UTC
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write # upload the SARIF to code scanning
+      id-token: write # sign the published result, so the API can trust it came from this workflow
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload SARIF as an artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: results.sarif
