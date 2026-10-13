@@ -24,6 +24,12 @@ const CargoToolsRootPath = "target/check-cargo-tools"
 // left to cargo-audit (see the top of `deny.toml`), which is why they aren't named here.
 var cargoDenyChecks = []string{"bans", "licenses", "sources"}
 
+// cargoDenyLintLevels raises the two stale-skip lints, which cargo-deny only warns about and
+// `deny.toml` has no key for. With them, `[bans] skip` stays the exact set of known duplicates:
+// an entry whose duplicate upstream has since converged fails until it's deleted, the same way a
+// new duplicate fails until it's converged or listed (`deny.toml` § bans says why).
+var cargoDenyLintLevels = []string{"--deny", "unmatched-skip", "--deny", "unnecessary-skip"}
+
 // cargoDenyLine is one line of `cargo deny --format json` output, which writes a diagnostic per
 // finding and then a per-check summary.
 type cargoDenyLine struct {
@@ -35,12 +41,11 @@ type cargoDenyLine struct {
 	} `json:"fields"`
 }
 
-// cargoDenyFindings is what a passing run still has to say: crates resolved in more than one
-// version, and any other warning (an unused exception, a license that only parsed leniently).
+// cargoDenyFindings is what a run has to say. Warnings are what a passing run still reports (an
+// unused exception, a license that only parsed leniently).
 type cargoDenyFindings struct {
-	Duplicates []string
-	Warnings   []string
-	Errors     int
+	Warnings []string
+	Errors   int
 }
 
 // RunCargoDeny checks third-party crates' licenses, sources, and version requirements against
@@ -55,18 +60,19 @@ func RunCargoDeny(ctx *CheckContext) (CheckResult, error) {
 		return CheckResult{}, err
 	}
 
-	args := append([]string{"--format", "json", "--color", "never", "check", "--hide-inclusion-graph"}, cargoDenyChecks...)
-	cmd := exec.Command(bin, args...)
+	args := append([]string{"--format", "json", "--color", "never", "check", "--hide-inclusion-graph"}, cargoDenyLintLevels...)
+	cmd := exec.Command(bin, append(args, cargoDenyChecks...)...)
 	cmd.Dir = ctx.RootDir
 	stdout, stderr, runErr := RunCommandSplit(cmd)
 
 	findings, parseErr := parseCargoDenyOutput(stderr)
 	if runErr != nil || parseErr != nil || findings.Errors > 0 {
 		// The JSON is for counting; the human report is what says which crate, which rule, and what
-		// pulls it in, so a failure reruns in that form. Errors only: the 30-odd duplicate warnings
-		// would bury them. The other warnings follow, since an unmatched exception is often the
-		// reason a license failed.
-		human := exec.Command(bin, append([]string{"--log-level", "error", "--color", "never", "check"}, cargoDenyChecks...)...)
+		// pulls it in (for a new duplicate, the inclusion graph of each version), so a failure reruns
+		// in that form. Errors only, with the warnings appended after, since an unmatched exception
+		// is often the reason a license failed.
+		humanArgs := append([]string{"--log-level", "error", "--color", "never", "check"}, cargoDenyLintLevels...)
+		human := exec.Command(bin, append(humanArgs, cargoDenyChecks...)...)
 		human.Dir = ctx.RootDir
 		output, _ := RunCommand(human, true)
 		if strings.TrimSpace(output) == "" {
@@ -78,13 +84,12 @@ func RunCargoDeny(ctx *CheckContext) (CheckResult, error) {
 		return CheckResult{}, fmt.Errorf("cargo-deny found problems\n%s", indentOutput(output))
 	}
 
-	summary := formatCargoDenyFindings(findings)
-	if summary == "" {
+	if len(findings.Warnings) == 0 {
 		return Success(strings.Join(cargoDenyChecks, ", ") + " ok"), nil
 	}
 	return CheckResult{
 		Code:    ResultWarning,
-		Message: summary,
+		Message: strings.Join(findings.Warnings, "\n"),
 		Total:   -1, Issues: -1, Changes: -1,
 	}, nil
 }
@@ -130,39 +135,13 @@ func parseCargoDenyOutput(output string) (cargoDenyFindings, error) {
 			case "error":
 				findings.Errors++
 			case "warning":
-				if line.Fields.Code == "duplicate" {
-					findings.Duplicates = append(findings.Duplicates, duplicateCrateName(line.Fields.Message))
-				} else {
-					findings.Warnings = append(findings.Warnings, fmt.Sprintf("%s: %s", line.Fields.Code, line.Fields.Message))
-				}
+				findings.Warnings = append(findings.Warnings, fmt.Sprintf("%s: %s", line.Fields.Code, line.Fields.Message))
 			}
 		}
 	}
 	if !sawSummary {
 		return findings, fmt.Errorf("no summary in cargo-deny output")
 	}
-	sort.Strings(findings.Duplicates)
+	sort.Strings(findings.Warnings)
 	return findings, nil
-}
-
-// duplicateCrateName pulls `bitflags` out of "found 2 duplicate entries for crate 'bitflags'",
-// falling back to the whole message if the wording ever changes.
-func duplicateCrateName(message string) string {
-	start := strings.Index(message, "'")
-	end := strings.LastIndex(message, "'")
-	if start < 0 || end <= start {
-		return message
-	}
-	return message[start+1 : end]
-}
-
-// formatCargoDenyFindings builds the warning text, or "" when there's nothing to say.
-func formatCargoDenyFindings(findings cargoDenyFindings) string {
-	var lines []string
-	if n := len(findings.Duplicates); n > 0 {
-		lines = append(lines, fmt.Sprintf("%d %s in more than one version: %s",
-			n, Pluralize(n, "crate", "crates"), strings.Join(findings.Duplicates, ", ")))
-	}
-	lines = append(lines, findings.Warnings...)
-	return strings.Join(lines, "\n")
 }

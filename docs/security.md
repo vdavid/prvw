@@ -46,7 +46,11 @@ so nothing changes under an untouched commit.
 - **What it can't see:** data under another license compiled into a crate. `lensfun` embeds the LensFun lens database,
   which is CC-BY-SA-3.0 and needs attribution, and its manifest only names the code's license.
 - **Sources:** crates.io only. A git dependency or another registry fails until `deny.toml` allows it.
-- **Bans:** a `*` version requirement fails. Duplicate versions of one crate only warn, since they wait on upstream.
+- **Bans:** a `*` version requirement fails. So does a crate resolved in two versions, unless `[bans] skip` lists the
+  old one with what pulls it in. The list is the exact set of known duplicates, all waiting on upstream: a new one fails
+  until someone converges it (`cargo update -p <crate>@<old> --precise <ver>`) or lists it, and a listed one that
+  upstream has since converged fails until its entry goes. Either way it's a decision, and the check stays silent in
+  between. `deny.toml` § bans has the reasoning.
 - npm has no equivalent check yet, so a new npm package still needs its license read by hand.
 
 ## Advisory scanning

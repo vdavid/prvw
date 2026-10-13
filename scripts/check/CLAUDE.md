@@ -150,8 +150,10 @@ picture.
   `check bans licenses sources` and never `advisories`, which stay with cargo-audit (`deny.toml`'s header says why). It
   installs `cargoDenyVersion` into the repo's `target/check-cargo-tools` and reinstalls when `--version` disagrees,
   ignoring any `cargo-deny` on `PATH`, the way `EnsureGoTool` does. It parses the `--format json` stream to count, and
-  on failure reruns the human report at `--log-level error`, because the 30-odd duplicate-version warnings (warn-only in
-  `deny.toml`) would bury the one error that matters. A pass with duplicates is a warning listing their names.
+  on failure reruns the human report at `--log-level error`, which carries the inclusion graph that says what pulls a
+  crate in. It passes `--deny unmatched-skip --deny unnecessary-skip` (`cargoDenyLintLevels`) to both runs, because
+  `deny.toml` can't raise those lints itself: with them, a stale `[bans] skip` entry fails just like an unlisted
+  duplicate does, so the skip list can't drift from the graph. Run `cargo deny check` by hand and they're only warnings.
 - **`[[licenses.clarify]]` hashes are cargo-deny's own**: xxHash32 (seed 0) of the license file after every line ending
   is normalized to one `\n`, with a trailing `\n`. A raw-bytes hash of a CRLF file won't match, and a clarify that
   doesn't match is skipped silently, so the crate falls back to its manifest license with no hint why.
