@@ -41,10 +41,10 @@ rfd = { version = "0.17.2", default-features = false }
 # The native menu bar and the right-click context menu. macOS and Windows only: muda's Linux
 # backend is GTK (nine C dependencies, and an `apt-get` in CI), and its menu bar can't attach to
 # a winit window there anyway, since it only offers `init_for_gtk_window`. `src/menu/absent.rs` is the
-# Linux side of that. `default-features = false` drops `gtk` and `libxdo`, which muda pulls in
-# for Linux and BSD alone, so they leave `Cargo.lock` entirely.
+# Linux side of that. `default-features = false` drops `gtk3`, which muda pulls in for Linux
+# and BSD alone, so the GTK chain leaves `Cargo.lock` entirely.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-muda = { version = "0.19.3", default-features = false }
+muda = { version = "0.21.2", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # The updater's manifest fetch. `native-tls` is the TLS backend that costs nothing to build

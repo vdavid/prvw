@@ -73,7 +73,7 @@ impl Decoration {
         self
     }
 
-    fn accel(mut self, modifiers: Option<Modifiers>, code: Code) -> Self {
+    fn accel(mut self, modifiers: Modifiers, code: Code) -> Self {
         self.accelerator = Some(Accelerator::new(modifiers, code));
         self
     }
@@ -97,7 +97,7 @@ pub fn decoration(key: MenuItemKey) -> Option<Decoration> {
     let decoration = match key {
         // ── The three that move, because Windows has no app menu ──────────
         MenuItemKey::About => Decoration::new(Help, 'a'),
-        MenuItemKey::Settings => Decoration::new(Tools, 's').accel(Some(CTRL), Code::Comma),
+        MenuItemKey::Settings => Decoration::new(Tools, 's').accel(CTRL, Code::Comma),
         // "E&xit" is the classic Windows spelling; muda's own default is "&Exit". muda also
         // gives its predefined Quit a Ctrl+Q accelerator with no way to take it off, so the
         // item shows one where `docs/specs/windows-ui-design.md` asked for none. Ctrl+Q is a
@@ -106,27 +106,27 @@ pub fn decoration(key: MenuItemKey) -> Option<Decoration> {
         MenuItemKey::Quit => Decoration::new(File, 'x').named("Exit"),
 
         // ── File ──────────────────────────────────────────────────────────
-        MenuItemKey::Open => Decoration::new(File, 'o').accel(Some(CTRL), Code::KeyO),
-        MenuItemKey::Print => Decoration::new(File, 'p').accel(Some(CTRL), Code::KeyP),
+        MenuItemKey::Open => Decoration::new(File, 'o').accel(CTRL, Code::KeyO),
+        MenuItemKey::Print => Decoration::new(File, 'p').accel(CTRL, Code::KeyP),
 
         // ── Edit ──────────────────────────────────────────────────────────
-        MenuItemKey::Copy => Decoration::new(Edit, 'c').accel(Some(CTRL), Code::KeyC),
+        MenuItemKey::Copy => Decoration::new(Edit, 'c').accel(CTRL, Code::KeyC),
 
         // ── View ──────────────────────────────────────────────────────────
-        MenuItemKey::ZoomIn => Decoration::new(View, 'z').accel(Some(CTRL), Code::Equal),
-        MenuItemKey::ZoomOut => Decoration::new(View, 'o').accel(Some(CTRL), Code::Minus),
-        MenuItemKey::ActualSize => Decoration::new(View, 'a').accel(Some(CTRL), Code::Digit0),
+        MenuItemKey::ZoomIn => Decoration::new(View, 'z').accel(CTRL, Code::Equal),
+        MenuItemKey::ZoomOut => Decoration::new(View, 'o').accel(CTRL, Code::Minus),
+        MenuItemKey::ActualSize => Decoration::new(View, 'a').accel(CTRL, Code::Digit0),
         MenuItemKey::FitToWindow => Decoration::new(View, 't'),
         MenuItemKey::AutoFitWindow => Decoration::new(View, 'u'),
         MenuItemKey::EnlargeSmallImages => Decoration::new(View, 'e'),
         MenuItemKey::IccColorManagement => {
-            Decoration::new(View, 'i').accel(Some(CTRL | Modifiers::SHIFT), Code::KeyI)
+            Decoration::new(View, 'i').accel(CTRL | Modifiers::SHIFT, Code::KeyI)
         }
         MenuItemKey::ColorMatchDisplay => {
-            Decoration::new(View, 'c').accel(Some(CTRL | Modifiers::SHIFT), Code::KeyC)
+            Decoration::new(View, 'c').accel(CTRL | Modifiers::SHIFT, Code::KeyC)
         }
         MenuItemKey::RelativeColorimetric => {
-            Decoration::new(View, 'l').accel(Some(CTRL | Modifiers::SHIFT), Code::KeyR)
+            Decoration::new(View, 'l').accel(CTRL | Modifiers::SHIFT, Code::KeyR)
         }
         MenuItemKey::Histogram => Decoration::new(View, 'h').hint("H"),
         MenuItemKey::ExifInfo => Decoration::new(View, 'x').hint("E"),
@@ -135,8 +135,8 @@ pub fn decoration(key: MenuItemKey) -> Option<Decoration> {
         MenuItemKey::SortByFileType => Decoration::new(SortBy, 'f'),
         // F11 and F5 are real accelerators, unlike macOS: they aren't typing keys, so they
         // can't hijack a text field, and F5 means refresh in Explorer and every browser.
-        MenuItemKey::Fullscreen => Decoration::new(View, 'f').accel(None, Code::F11),
-        MenuItemKey::Refresh => Decoration::new(View, 'r').accel(None, Code::F5),
+        MenuItemKey::Fullscreen => Decoration::new(View, 'f').accel(Modifiers::empty(), Code::F11),
+        MenuItemKey::Refresh => Decoration::new(View, 'r').accel(Modifiers::empty(), Code::F5),
 
         // ── Navigate ──────────────────────────────────────────────────────
         // The mnemonic has to occur in both of a flipping item's labels: 'i' is in "Image

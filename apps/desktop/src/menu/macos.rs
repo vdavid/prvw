@@ -40,7 +40,7 @@ pub fn set_visible(_visible: bool) {}
 
 /// The key equivalent AppKit fires for the item, or `None` where the key belongs to `input`.
 ///
-/// `Modifiers::SUPER` is Command here. Bare-letter equivalents are deliberately absent: a menu
+/// `Modifiers::META` is Command here. Bare-letter equivalents are deliberately absent: a menu
 /// key equivalent is app-global, so `f`, `h`, or `e` would hijack those letters the moment a
 /// settings text field has focus. Those keys live in `input::key_to_command`, and the item's
 /// title advertises them instead.
@@ -49,20 +49,18 @@ pub fn set_visible(_visible: bool) {}
 /// can't be added without deciding whether it carries a shortcut here.
 pub fn accelerator(key: MenuItemKey) -> Option<Accelerator> {
     let (modifiers, code) = match key {
-        MenuItemKey::Settings => (Some(Modifiers::SUPER), Code::Comma),
-        MenuItemKey::Open => (Some(Modifiers::SUPER), Code::KeyO),
-        MenuItemKey::Print => (Some(Modifiers::SUPER), Code::KeyP),
-        MenuItemKey::Copy => (Some(Modifiers::SUPER), Code::KeyC),
-        MenuItemKey::ZoomIn => (Some(Modifiers::SUPER), Code::Equal),
-        MenuItemKey::ZoomOut => (Some(Modifiers::SUPER), Code::Minus),
-        MenuItemKey::ActualSize => (Some(Modifiers::SUPER), Code::Digit0),
-        MenuItemKey::IccColorManagement => (Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyI),
-        MenuItemKey::ColorMatchDisplay => (Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyC),
-        MenuItemKey::RelativeColorimetric => {
-            (Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyR)
-        }
-        MenuItemKey::GoToFirst => (None, Code::Home),
-        MenuItemKey::GoToLast => (None, Code::End),
+        MenuItemKey::Settings => (Modifiers::META, Code::Comma),
+        MenuItemKey::Open => (Modifiers::META, Code::KeyO),
+        MenuItemKey::Print => (Modifiers::META, Code::KeyP),
+        MenuItemKey::Copy => (Modifiers::META, Code::KeyC),
+        MenuItemKey::ZoomIn => (Modifiers::META, Code::Equal),
+        MenuItemKey::ZoomOut => (Modifiers::META, Code::Minus),
+        MenuItemKey::ActualSize => (Modifiers::META, Code::Digit0),
+        MenuItemKey::IccColorManagement => (Modifiers::META | Modifiers::SHIFT, Code::KeyI),
+        MenuItemKey::ColorMatchDisplay => (Modifiers::META | Modifiers::SHIFT, Code::KeyC),
+        MenuItemKey::RelativeColorimetric => (Modifiers::META | Modifiers::SHIFT, Code::KeyR),
+        MenuItemKey::GoToFirst => (Modifiers::empty(), Code::Home),
+        MenuItemKey::GoToLast => (Modifiers::empty(), Code::End),
 
         // No shortcut, or one `input` owns. The toolkit's own items (Hide, Quit, Close window)
         // come with AppKit's standard equivalents already.
