@@ -484,4 +484,75 @@ On the MacBook Pro's XDR display, with Preview open side by side:
 
 Filled in by the implementing agent during M0 and later. Date each entry.
 
-- _(empty)_
+- **2026-10-13, headroom on macOS: today's number is the _current_ headroom, and wgpu already has the potential one.**
+  wgpu 30's `DisplayHdrInfo::headroom` carries all three `NSScreen` values (`current` =
+  `maximumExtendedDynamicRangeColorComponentValue`, `potential` = `maximumPotential...`, `reference` =
+  `maximumReference...`, read in `wgpu-hal` `metal/surface.rs`), and `tone_map_headroom()` returns `current`. So
+  `Renderer::display_hdr_headroom` and `App::edr_headroom` are current headroom. A scratch Swift probe on the MBP read
+  current 1.0, potential 16.0, reference 0.0 (AppKit's "unknown"). With a window whose `CAMetalLayer` asked for EDR and
+  drew 4.0, current still read 1.0, but the run was unattended and the display may have been asleep. An E2E launch an
+  hour later logged `Display EDR headroom: 1.20` with no EDR content of ours, so an awake screen at high brightness
+  reports a small current headroom, not a flat 1.0.
+  - **Changes M2:** no `NSScreen` code of our own. `display_hdr_capable` reads `info.headroom.potential > 1.0` on macOS,
+    and `display_hdr_headroom_now` keeps `tone_map_headroom()`. Don't use wgpu's `coarse.high_dynamic_range` on macOS:
+    wgpu derives it from `current > 1.0`.
+  - **Possible existing bug, worth checking in QA:** today's `edr_headroom > 1.0` gate reads current. If current ever
+    reads exactly 1.0 at launch (full brightness, or Apple holding it at 1.0 until EDR content is on screen, which the
+    probe above couldn't confirm or rule out), RAW decodes SDR, the surface never asks for EDR, and nothing re-reads the
+    headroom until a display change. Gating on potential (M2) removes that loop either way.
+- **2026-10-13, headroom on Windows.** wgpu reads `IDXGIOutput6::GetDesc1` plus `DISPLAYCONFIG_SDR_WHITE_LEVEL` on every
+  call (`wgpu-hal` `auxil/dxgi/hdr.rs`; the factory is cached, the monitor lookup and adapter/output walk are not).
+  `coarse.high_dynamic_range` is "the output's colour space is G2084 or G10", which is HDR mode on: that's potential.
+  `tone_map_headroom()` is 1.0 in SDR mode, else `max_nits / sdr_white_nits`, which moves with the SDR brightness
+  slider: that's current.
+  - **Changes M2:** `display_hdr_capable` on Windows reads `coarse.high_dynamic_range == Some(true)`, not "headroom >
+    1.0". A panel whose EDID peak sits at or below its SDR white would otherwise read as not capable, because
+    `display_hdr_headroom` filters values under 1.0. Polling every 500 ms is fine; per frame it wouldn't be.
+- **2026-10-13, what the app polls today: nothing.** `query_edr_headroom` runs at init (`app.rs` `resumed`) and from
+  `refresh_edr_headroom`, which only `DisplayChanged` and a move onto another monitor reach. No brightness or SDR-white
+  notification turned up in wgpu or the platform code; M2's poll stands.
+- **2026-10-13, crossfade surface: the surface follows the _incoming_ image for the whole fade.**
+  `App::display_from_cache` calls `prepare_display`, which sets `current_image_is_hdr` and runs
+  `apply_edr_surface_state`, before `begin_crossfade`. Both bind groups share one layout, so the reconfigure doesn't
+  break the fade. What it shows:
+  - SDR → HDR: the outgoing SDR texture (display-ICC bytes, sRGB-decoded) lands on the linear extended Display P3
+    surface as if it were linear P3. Close only when the display profile is near P3 (the MacBook case).
+  - HDR → SDR: the outgoing f16 texture lands on `Bgra8UnormSrgb` with the display ICC as colourspace: highlights clip
+    at 1.0 and linear P3 is read as display-encoded, for the length of one fade.
+  - This differs from section 7's rule ("EDR while either image is HDR"). Per section 7, keep it and don't widen M2.
+- **2026-10-13, `ultrahdr-core` 0.6.0 and `zencodec` 0.1.26 parse neither `hdrgm` XMP nor MPF.** The crate docs say both
+  moved to `zenjpeg::container`, and `zenjpeg` (0.8.4) is `AGPL-3.0-only OR LicenseRef-Imazen-Commercial`.
+  `Error::XmpParse` and `Error::MpfParse` are leftovers. What's left and permissive: `parse_iso21496_fmt` (from
+  `zencodec`, re-exported), the Apple trio (`parse_exif_for_apple_hdr`, `parse_apple_makernote`, `from_apple_headroom`),
+  and `zencodec::Metadata::xmp` as raw bytes only.
+  - **Changes M3:** write our own `hdrgm` XMP parser and MPF parser, the spec's fallback. Both, not maybe.
+- **2026-10-13, the `ultrahdr-core` kernel, for the M3 port.** Three things the sketch in section 4 gets wrong or leaves
+  out:
+  - **The per-pixel math** lives in `GainMapLut::new` (gain =
+    `exp((log_min + pow(v, 1/gamma) × (log_max − log_min)) × weight)`, clamped to [2⁻³⁰, 2³⁰], non-finite → 1.0) and
+    `apply_simd::apply_gain_row_presampled` (`out = (sdr + base_offset) × gain − alternate_offset`). There's an
+    `apply_gain_row_scalar`, but it's a single-channel shortcut without offsets; port the two above.
+  - **The map isn't filtered bilinearly on its encoded values.** It's Shepard's inverse-distance weighting over the four
+    neighbouring texels, applied to the _linear gains_ (after the LUT), with top-left-aligned texels (`x / scale`, no
+    half-texel offset). Hardware bilinear on encoded values, centre-aligned, differs at every texel edge, so the "mean
+    relative error < 0.5% against `apply_gainmap`" test would fail on a busy map. Either fetch four texels with
+    `textureLoad` and weight the gains (exact, four loads), or keep the hardware sampler, make the Rust reference mirror
+    it, and compare against `apply_gainmap` only on smooth regions with a looser bound. The second is what GPU viewers
+    usually do; decide in M3.
+  - **`calculate_weight` returns 1.0 whenever the alternate headroom is at or below the base's**, so an HDR-base map
+    (allowed by ISO 21496-1) always gets the full gain and shows the SDR rendition, and `backward_direction` is never
+    read. Port it for the SDR-base direction only, and take libavif's `clamp((log2 H − base) / (alt − base), 0, 1)` for
+    the HDR base (1.0 at H = 1, 0.0 at H = 2^base). Test against `calculate_weight` only for an SDR base. Tests in
+    `color/hdr/mod.rs` pin the upstream behaviour, so an upgrade that changes it fails loudly.
+- **2026-10-13, `png` 0.18.1's encoder doesn't write `cICP`.** The decoder fills `Info::coding_independent_code_points`,
+  but `write_header` ignores that field (and the mastering/content-light ones). Writing it by hand works:
+  `writer.write_chunk(png::chunk::cICP, &[primaries, transfer, matrix, full_range])` right after `write_header()`
+  round-trips (verified with a scratch crate: decoded `Some(9, 16, 0, true)`).
+  - **Changes M4:** the fixture generator writes `cICP` (and `cLLI`, if a fixture wants it) through `write_chunk`. `png`
+    is only a transitive dependency today, so M4 adds it as a direct one at the same 0.18.1 (the decode path needs it
+    anyway); the fixtures example then gets it for free.
+- **2026-10-13, license guard (M0).** It reads `cargo tree`, not `cargo metadata`: metadata and `Cargo.lock` list
+  `zentone`, because `ultrahdr-core`'s `std` feature names it weakly (`zentone?/std`), though cargo never builds it. The
+  tree already held three non-permissive crates, now accepted exceptions bound to their license strings: `rawler`
+  (LGPL-2.1), `lensfun` (LGPL-3.0-or-later), and `nom-exif` (no expression; its license file is MIT). See
+  `scripts/check/CLAUDE.md`.
