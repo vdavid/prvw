@@ -126,7 +126,7 @@ pub struct SharedAppState {
     /// `None` off macOS, whose grids show no tags.
     pub browse_grid_selected_tags: Option<Vec<String>>,
     /// What the image on screen's pixels mean (`EncodingKind::name`: `"display_sdr"`,
-    /// `"linear_hdr_display"`), or `None` before the first image.
+    /// `"linear_hdr_display"`, `"gain_mapped"`), or `None` before the first image.
     pub pixel_encoding: Option<&'static str>,
     /// Whether the display can show HDR at all (potential headroom), QA override applied.
     pub hdr_capable: bool,

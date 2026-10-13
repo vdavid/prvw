@@ -107,25 +107,53 @@ Every image draws through `ImagePipeline` (`image_pipeline.rs`), which owns the 
 sampler, and the per-frame uniform, and needs only a device and a queue. `Renderer` holds one and adds the surface.
 
 - **Group 0 is per image**, owned by the image's own bind group: 0 transform, 1 image texture, 2 sampler, 3 gain-map
-  texture (a shared 1×1 `Rgba8Unorm` placeholder until M3 gives an encoding a map), 4 `ImageParams` (`mode`, and from M3
-  on that mode's parameters). The crossfade rebinds the outgoing `GpuImage` through `prev_uniform_buffer`, so it keeps
-  its own texture and mode while the incoming image fades in over it.
+  texture (the `GainMapped` image's own `Rgba8Unorm` map, `GpuImage::gain_map`, or a shared 1×1 placeholder), 4
+  `ImageParams` (`mode`, then mode 2's per-channel parameters, headrooms, and three matrices as `vec4` rows; 256 bytes,
+  pinned by a compile-time size assert). The crossfade rebinds the outgoing `GpuImage` through `prev_uniform_buffer`, so
+  it keeps its own texture, map, and mode while the incoming image fades in over it.
 - **Group 1 is per frame**: `FrameUniform { headroom_now }`, one buffer for the whole renderer. A headroom change is
   `Renderer::set_headroom_now` plus a redraw; nothing per image is rewritten, which is the whole point of the design.
   `capture_screenshot` binds a second group 1 pinned at 1.0, so the headroom-dependent modes screenshot as their SDR
   rendition.
 - **Modes** (`color::hdr::fragment::ShaderMode`, mirrored as constants in `shader.wgsl`): 0 `DisplaySdr` and 1
-  `LinearHdrDisplay` are passthrough. M3 adds 2 (gain map) and M4 adds 3 (scene-linear tone map) as `case` arms in the
-  shader's `shade`, and the checkerboard composite and the crossfade `fade` stay after the mode's math for every mode.
-- **The Rust reference is the spec.** `color::hdr::fragment::shade` is what the WGSL ports, branch for branch.
+  `LinearHdrDisplay` are passthrough, 2 `GainMap` applies a gain map, and M4 adds 3 (scene-linear tone map) as another
+  `case` arm in the shader's `shade`. The checkerboard composite and the crossfade `fade` stay after the mode's math for
+  every mode.
+- **Mode 2**, per fragment: the base sample (linear Display P3, thanks to the sRGB texture decode) into the gain's
+  application space, `(x + base_offset) × gain − alternate_offset`, then into the HDR display space; with the weight at
+  0 (headroom 1 on an SDR-base map) the base goes straight to the display space, which on macOS is the identity, so the
+  SDR rendition is the same bits mode 0 would draw.
+- **The Rust reference is the spec.** `color::hdr::fragment::shade` is what the WGSL ports, branch for branch, and mode
+  2's pieces are ported function by function from `color::hdr::gain_map`.
+
+### Decision: the gain map is sampled exactly like `ultrahdr-core`, with four `textureLoad`s
+
+**Why:** upstream weights the four neighbouring texels by Shepard's inverse distance, applied to the _linear gains_
+(after the per-texel `pow` and `exp2`), with the map's texels top-left aligned to the image's pixels. Hardware bilinear
+filtering of the encoded values is a different function: against `ultrahdr_core::gainmap::apply_gainmap` on a busy map
+it's 2.5% off on average and 82% at worst, where the spec's bound is 0.5%, and the parity test catches it at a texel
+edge. The exact port is four loads and a dozen `pow`/`exp2` per fragment on a viewer that renders on demand, so there
+was nothing to trade. The edge handling (a neighbour clamped onto the same texel moves its distance) follows upstream's
+integer-scale tables; at a non-integer map ratio (a Pixel's 6144 over 614) upstream's own float path differs from that
+at the last row and column, by a sliver nobody can see.
+
+**Gotcha: Shepard's weighting jumps at a cell edge**, because the far neighbours change, so a pixel that rounds a hair
+across one reads the wrong texels: up to 23% off on the iPhone fixture. Two roundings do it: the interpolated
+`(x + 0.5) / w` coordinate times `w` lands just under `x` at most widths that aren't powers of two, and a GPU's division
+isn't correctly rounded. So a fragment within 1/64 px of a pixel centre counts as that pixel, and its map cell comes
+from integer arithmetic (`x × map / image` and its remainder), exactly upstream's. Only fragments between pixels, when
+zoomed in, take the float path. `mode_2_lands_on_pixel_centres_at_any_width` (776 wide, the iPhone's) is the anchor;
+power-of-two test sizes hide this entirely.
 
 ### Decision: a GPU parity test renders through the real pipeline
 
 **Why:** the WGSL and its Rust reference can drift without any compile error, and the drift (a clip at 1.0, a swapped
 matrix) is invisible on an SDR display. The `gpu_parity` tests in `image_pipeline.rs` render a one-row strip through
 `ImagePipeline` on a headless device into an `Rgba16Float` target at a forced headroom, read it back, and compare with
-`shade` (relative error under 1%, absolute under 1e-3 near black). One row at the target's width puts every fragment on
-a texel centre, so the comparison tests the colour math and not the filtering. The module doc says how to add a case.
+`shade` (relative error under 1%, absolute under 1e-3 near black). A target exactly the image's size puts every fragment
+on a texel centre, so the comparison tests the colour math and not the filtering; the gain map is read at computed
+coordinates, which the reference mirrors, and a 2D image exercises its vertical weights too. The module doc says how to
+add a case.
 
 They run on macOS (Metal) and Windows (DX12, WARP on a GPU-less runner), where a missing adapter fails the test. Linux
 CI has no adapter, so they carry `#[cfg_attr(target_os = "linux", ignore = …)]`. ❌ Never turn that into an early return
@@ -188,8 +216,8 @@ with the same faces, or a layout pass disagrees with what gets drawn.
   the `ScaleFactorChanged` arm via `set_scale_factor`. Anything else that caches the factor owes the same.
 - **Image texture must be explicitly destroyed on replace.** `set_image` holds the previous image in `Renderer.image`
   and calls `GpuImage::destroy()` before allocating the new one (a crossfade's outgoing image is destroyed by
-  `end_crossfade`). M3's gain-map texture belongs in `GpuImage` so it's destroyed alongside. Without this, Metal keeps
-  the old unified-memory backing resident. A long navigation session through 20 MP RAWs can grow RSS by gigabytes even
+  `end_crossfade`). A gain map lives in `GpuImage` too, so `destroy` frees it alongside. Without this, Metal keeps the
+  old unified-memory backing resident. A long navigation session through 20 MP RAWs can grow RSS by gigabytes even
   though `bind_group` was replaced.
 - **Screenshot path differs from main render.** `capture_screenshot` strips the viewport offset, pills, and text. Pixel
   tests of the live window's appearance need a different approach. For QA work that needs the full window (overlays,

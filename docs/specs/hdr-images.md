@@ -627,3 +627,57 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     it the same way (the Shepard-vs-bilinear question from the M0 kernel finding). The tests are verified to catch a
     clip: a mode-1 shader clamped at 1.0 fails with `GPU 1 vs reference 2`.
   - Screenshots already bind a group 1 pinned at headroom 1.0, so mode 2 screenshots as its SDR rendition for free.
+- **2026-10-14, M3: Apple's "ISO 21496-1" gain map is XMP, not an APP2 segment.** The iPhone Air fixture has no ISO APP2
+  at all. Its one 388×388 single-channel map, appended through MPF and tagged `urn:com:apple:photo:2020:aux:hdrgainmap`,
+  carries ISO 21496-1's fields as XMP in Adobe's `hdrgm` namespace, bound to the prefix `HDRToneMap`, with ISO's names
+  (`BaseHeadroom`, `AlternateHeadroom`, not Ultra HDR's `HDRCapacityMin/Max`) and `0`/`1` booleans. That's what ImageIO
+  reports as the ISO gain map. Our XMP parser reads both dialects and labels this one `Iso21496`, so the precedence is:
+  an ISO APP2 on the map, then this XMP form, then full ISO parameters on the primary, then Ultra HDR XMP, then Apple's
+  maker note. On this file the ISO reading says 1.77 stops and the maker note's fitted formula 2.08; the test checks
+  they agree within half a stop.
+  - The Pixel photos (checked locally, not committed) are textbook Ultra HDR: MPF plus `GContainer`, primary XMP with
+    `hdrgm:Version` only, map XMP with the parameters as attributes, single-channel maps at 816×614 for an 8160×6144
+    base (a non-integer 10.006 ratio vertically) and 768×1020 for 3072×4080. Both found and decoded.
+- **2026-10-14, M3: map sampling, decided: exact Shepard with four `textureLoad`s.** Plain bilinear on linear gains (let
+  alone hardware bilinear on encoded values) misses `ultrahdr_core::gainmap::apply_gainmap` by 2.5% mean and 82% max on
+  a busy map, five times the spec's 0.5% bound, and the GPU parity test catches the hardware-sampler version at a texel
+  edge (4% off). The exact port costs four loads and a dozen `pow`/`exp2` per fragment, on a viewer that renders on
+  demand. Against upstream, the port is 3e-5 mean and 5e-4 max on a busy synthetic map, and 6e-4 mean on the real iPhone
+  file (its dark, noisy channels sit near the 1e-3 floor of the relative-error measure).
+  - **Shepard's weighting jumps at a cell edge**, so the coordinate has to land on the right side of it. At widths that
+    aren't powers of two, `(x + 0.5) / w × w − 0.5` rounds just under `x`, and a GPU's division isn't correctly rounded;
+    together they put 23% errors on the iPhone file. A fragment within 1/64 px of a pixel centre now counts as that
+    pixel, with its map cell from integer arithmetic, exactly upstream's `x × map / image`. Power-of-two test sizes hid
+    this; the busy-map and parity tests now include a 776-wide case.
+  - **A near-identity matrix isn't harmless.** Apple's Display P3 profile and `moxcms`' differ in their colorants' last
+    digits (even P3 to P3 through `moxcms` comes out 1e-5 off the identity), and the leak between channels showed as
+    error on dark channels, one going negative. `GainMapSpaces` snaps any conversion within 1e-3 of the identity to the
+    exact identity, so P3 bases (iPhone, Pixel) go through mode 2 with no matrix at all on macOS.
+- **2026-10-14, M3 cost, release, M3 Max** (`gain_map_decode_perf`, `#[ignore]`, median of seven, load average 5–8):
+  - 12.5 MP (Pixel, 3072×4080): SDR 33.8 ms, gain map 34.8 ms (1.03×) with a P3 display target; 50.5 against 34.0 ms
+    (0.67×) with an sRGB one, since the gain-map path's P3 transform is free for a P3 base and the display's isn't.
+    Memory 50.1 MB against 53.3 MB (+6.2%, the map's sixteenth).
+  - 50 MP (Pixel, 8160×6144): 88.6 against 89.2 ms (1.01×) with P3, 156.8 against 88.8 ms (0.57×) with sRGB; memory
+    +1.0% (that map is a hundredth).
+  - An SDR display, HDR off, and the byte consumers take the old path: the map is never looked for, and
+    `a_gain_map_jpeg_without_hdr_is_its_plain_primary` pins the bytes.
+- **2026-10-14, M3 deviations from the design.**
+  - **The ISO parser is upstream's, the rest is ours.** `ultrahdr-core` wraps only ISO 21496-1 APP2 and the Apple maker
+    note (`color::hdr`); MPF and `hdrgm` XMP are our own (`decoding::gain_map`), as the M0 finding said. Both of ours
+    are fuzzed with truncations and byte flips and never panic. With no MPF, the `GContainer` directory's lengths locate
+    the map from the end of the file.
+  - **An XMP gain map with an HDR base rendition is refused** (shown as SDR), as libultrahdr refuses it: Ultra HDR
+    doesn't pin down the gain's direction for it. ISO APP2 metadata with an HDR base is accepted, with libavif's weight.
+  - **At a weight of exactly 0 the base is shown untouched**, where upstream would still add and subtract the two
+    offsets (which needn't cancel, and on the iPhone don't matter). ISO 21496-1 says to show the base at or below its
+    headroom, and it's what makes headroom 1 the same bits as mode 0 on macOS.
+  - **A single-channel map applies channel 0's parameters to all three**, as upstream does; the replicated RGBA texels
+    would otherwise each read their own.
+  - **Apple's maker-note flavor keeps upstream's 1/64 default offsets** from `from_apple_headroom`. Apple's own formula
+    has none; it's the last-resort flavor (any iOS 18 file carries the ISO one), so it stays upstream's call.
+  - **The base's working space is Display P3, the gain's application space is the base ICC's primaries** (or the
+    alternate's, from the map's ICC, when ISO says so; P3 for a LUT profile), and three matrices go to the shader: P3 →
+    application space, application space → `HdrDisplaySpace::for_host()`, and P3 → display space for the w = 0 case.
+    `ImageParams` is 256 bytes, its size pinned at compile time.
+  - **The E2E test** drives the Ultra HDR fixture through `POST /display-hdr`: capable → `gain_mapped` and the EDR
+    surface wanted; three headroom changes → `full_decodes` unchanged; capability off → decoded again, as `display_sdr`.

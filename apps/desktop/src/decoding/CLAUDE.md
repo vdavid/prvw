@@ -8,7 +8,8 @@ orientation, and hand a `DecodedImage` off to the renderer.
 | `mod.rs`           | Public API: `DecodedImage`, `PixelBuffer` (storage), `PixelEncoding` (meaning), `OutputDepth`, `load_image` (always-cancellable), `is_supported_extension`         |
 | `read_progress.rs` | `ReadProgress`: the live byte counter of one file read, plus `READ_CHUNK_BYTES` and the `PRVW_READ_DELAY_MS` test hook                                             |
 | `dispatch.rs`      | `Backend` enum + extension-to-backend mapping                                                                                                                      |
-| `jpeg.rs`          | Fast JPEG path via `zune-jpeg` (SIMD)                                                                                                                              |
+| `jpeg.rs`          | Fast JPEG path via `zune-jpeg` (SIMD); keeps a gain-map JPEG's map when HDR is active                                                                              |
+| `gain_map/`        | Finding a JPEG's gain map: `mpf.rs` (MPF index), `xmp.rs` (`hdrgm`, `GContainer`, Apple's aux tag), `mod.rs` (`locate`, metadata precedence, `GainMapPayload`)     |
 | `raw.rs`           | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)                                                                                         |
 | `raw_preview.rs`   | Fast embedded-JPEG preview extraction (`decode_raw_preview`): no develop, downscaled + oriented soft placeholder shown on RAW cache-miss while the develop runs    |
 | `dng_opcodes.rs`   | DNG `OpcodeList1/2/3` parsing + application (Phase 3.0)                                                                                                            |
@@ -59,11 +60,13 @@ orientation, and hand a `DecodedImage` off to the renderer.
   `load_image_leaves_exif_none_for_a_png` in `mod.rs` are the anchors that say so from every host.
 - **ICC profile first, pixels second.** See the gotcha below.
 - **Storage and meaning are separate fields.** `PixelBuffer` says how the pixels are stored (`Rgba8` or `Rgba16F`),
-  `PixelEncoding` what they mean: `DisplaySdr` (display-ICC-encoded SDR, either storage) or `LinearHdrDisplay` (linear
-  light in `HdrDisplaySpace::for_host()`, `Rgba16F` only, RAW HDR). `EncodingKind::is_hdr()` is the "needs the EDR
-  surface" question, so never infer HDR from `Rgba16F`. Each legal pair has its own constructor (`from_rgba8`,
-  `from_display_sdr_rgba16f`, `from_linear_hdr_rgba16f`), and `finalize` re-checks `PixelEncoding::accepts` in debug
-  builds. M2–M4 of `docs/specs/hdr-images.md` add `GainMapped` and `SceneLinear`.
+  `PixelEncoding` what they mean: `DisplaySdr` (display-ICC-encoded SDR, either storage), `LinearHdrDisplay` (linear
+  light in `HdrDisplaySpace::for_host()`, `Rgba16F` only, RAW HDR), or `GainMapped` (a Display P3 SDR base plus its gain
+  map, `Rgba8` only; see below). `EncodingKind::is_hdr()` is the "needs the EDR surface" question, so never infer HDR
+  from storage. Each legal pair has its own constructor (`from_rgba8`, `from_display_sdr_rgba16f`,
+  `from_linear_hdr_rgba16f`, `from_gain_mapped`), and `finalize` re-checks `PixelEncoding::accepts` in debug builds.
+  `EncodingKind` is the payload-free tag the app keeps for the image on screen. M4 of `docs/specs/hdr-images.md` adds
+  `SceneLinear`.
 - **`OutputDepth::Rgba8` is for consumers that can only carry bytes.** The Windows clipboard and print
   (`platform/windows/ui_common.rs`) and the preview generator pass it. It forces `hdr_display` off (so RAW develops SDR)
   and keeps 16-bit sources on the 8-bit path, so those callers get exactly what they got before 16-bit decoding existed.
@@ -81,6 +84,55 @@ The 16-bit path is under 0.1 steps everywhere. `a_16_bit_png_gradient_does_not_b
 anchor. Cost and numbers: `docs/specs/hdr-images.md` Findings, 2026-10-14. Float TIFFs stay on the 8-bit path until M4
 (they may be HDR). 8-bit sources are byte-identical to before (`an_8_bit_png_is_byte_identical_to_todays_path`).
 `RUST_LOG=prvw::decoding::generic=debug` logs the stage split (`to_rgba16`, `icc`, `to_f16`).
+
+## Gain-map JPEGs
+
+A gain-map JPEG is a normal SDR JPEG with a second, smaller JPEG appended: the map, saying how much brighter each area
+gets on an HDR display. `jpeg::decode` keeps it only when `hdr_active` (`raw_flags.hdr_output && hdr_display`, RAW's
+gate); otherwise the map is never looked for, and the file decodes byte for byte like its primary alone
+(`a_gain_map_jpeg_without_hdr_is_its_plain_primary`). `OutputDepth::Rgba8` forces `hdr_display` off, so the clipboard,
+print, and previews get the SDR JPEG.
+
+With HDR active:
+
+1. `gain_map::locate` reads the headers zune already parsed: the primary's XMP, EXIF, MPF payload, and ISO APP2
+   segments. No signal (ISO segment, `hdrgm` namespace, Apple maker-note headroom) means a plain JPEG and today's path.
+2. The candidates are the MPF entries other than the primary (`mpf.rs`, every offset bounds-checked), or, with no MPF,
+   the `GContainer` directory's gain-map item, located from the end of the file by its listed length. Each candidate's
+   headers are read (no pixels) for its ISO APP2, its XMP, and its ICC profile.
+3. Metadata precedence: ISO 21496-1 (an APP2 on the map, then Apple's XMP form of the same fields, then full parameters
+   on the primary), Ultra HDR XMP, then Apple's maker note with a map tagged `urn:com:apple:photo:2020:aux:hdrgainmap`.
+   Every flavor lands in one `color::hdr::gain_map::GainMapParams`.
+4. The map decodes to RGBA8 (a grayscale map replicated into R, G, B), the base is color-managed into **Display P3**,
+   and `GainMapSpaces` works out the three matrices the shader's mode 2 needs. A map larger than its base on either side
+   is refused. Anything that fails falls back to the SDR path.
+
+The result is `PixelEncoding::GainMapped(Box<GainMapPayload>)`; the shader applies the map per frame at the display's
+current headroom (`render/CLAUDE.md`), so a brightness change never re-decodes.
+
+- **Decision: Display P3 is the base's working space.** It uses the sRGB transfer curve, so the `Rgba8UnormSrgb` texture
+  hands the shader linear P3 for free, it's a superset of sRGB and what iPhones shoot, and `transform_is_negligible`
+  makes a P3-tagged base (iPhone, Pixel) free. A base wider than P3 clips; `GainMapSpaces::new` logs it at `debug`.
+- **Decision: our own MPF and `hdrgm` parsers.** `ultrahdr-core` 0.6.0 dropped both, and the crate that has them
+  (`zenjpeg`) is AGPL. The XMP scanner resolves whatever prefix the packet binds the namespace to; the iPhone binds it
+  to `HDRToneMap`. Truncated and corrupted inputs are tested to never panic.
+- **Gotcha: Apple's "ISO 21496-1" metadata is XMP, not an APP2 segment.** iOS 18 writes ISO's fields (`BaseHeadroom`,
+  `AlternateHeadroom`) in Adobe's `hdrgm` namespace on the map image, with `0`/`1` booleans, and ImageIO reports that as
+  the ISO gain map. The iPhone fixture has no ISO APP2 at all. `xmp::parse_hdrgm` reads both dialects and says which.
+- **Gotcha: an XMP gain map with an HDR base is refused**, as libultrahdr refuses it: Ultra HDR doesn't pin down the
+  gain's direction for it. ISO 21496-1 APP2 metadata with an HDR base is accepted, and its weight runs backwards.
+- **Gotcha: the map is never color-managed.** It's data, not color; its ICC profile, if any, describes the alternate
+  rendition's color space (used only when ISO says to apply the gain there).
+- **Gotcha: the map follows the base's EXIF orientation.** `finalize` turns it with the same function, or the gain lands
+  on the wrong pixels (`the_gain_map_follows_every_orientation`).
+- **Gotcha: a single-channel map applies channel 0's parameters to all three**, as `ultrahdr-core` does. The RGBA
+  replicas would otherwise each read their own channel's, which differ for a single-channel map with per-channel XMP.
+- `RUST_LOG=prvw::decoding::jpeg=debug` logs the flavor, the map's size, and the stage split (`base`, `locate`, `map`,
+  `icc`).
+
+Cost (release, M3 Max, `gain_map_decode_perf`): a 12.5 MP Pixel Ultra HDR photo decodes in 1.03× its SDR time with a P3
+display target and 0.67× with an sRGB one (the base's P3 transform is free where the display's isn't); memory is +6.2%,
+the map's sixteenth. Numbers in `docs/specs/hdr-images.md` Findings, 2026-10-14.
 
 ## Gotchas
 
@@ -207,9 +259,9 @@ hdr_active = flags.hdr_output && hdr_display
 `hdr_display` is `App::display_hdr.capable`: whether the display can show HDR at all (potential headroom above 1.0 on
 macOS, HDR mode on in Windows; `render::display_hdr::DisplayHdr::from_info` reads it). **Decoders never see the current
 headroom.** It moves with screen brightness on macOS, and a decode that read it would have to re-run on every tweak; the
-shader takes it per frame instead (`render/CLAUDE.md`). `App` also tracks `current_image_is_hdr` (from
-`EncodingKind::is_hdr()`), and `App::want_edr_surface` fuses all three inputs (flag, capability, image-is-HDR) to flip
-the window's surface between SDR and EDR modes per decode.
+shader takes it per frame instead (`render/CLAUDE.md`). `App` also tracks `current_image_encoding` (an `EncodingKind`),
+and `App::want_edr_surface` fuses all three inputs (flag, capability, `EncodingKind::is_hdr()`) to flip the window's
+surface between SDR and EDR modes per decode. A gain-map JPEG goes through the same gate (see "Gain-map JPEGs" above).
 
 Once inside `raw::decode`, `hdr_active` gates four different behaviors:
 

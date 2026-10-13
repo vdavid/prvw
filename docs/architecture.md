@@ -38,8 +38,8 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `about/`             | About window: shared copy in `content.rs`, an AppKit window on macOS, a Win32 popup on Windows                                                                  |
 | `browser/`           | Browse mode: a native folder tree + thumbnail grid that swaps with the viewer + `browser::State`. AppKit on macOS, Win32 in `browser/windows/`, absent on Linux |
-| `color/`             | ICC transform + display-profile detection (macOS, Windows) + Color settings panel + `color::State`                                                              |
-| `decoding/`          | Image format decoders (JPEG via zune-jpeg; camera RAW via rawler; PNG/GIF/WebP/BMP/TIFF via `image`)                                                            |
+| `color/`             | ICC transform + display-profile detection (macOS, Windows) + Color settings panel + `color::State` + `hdr/` (gain-map math, the shader's Rust reference)        |
+| `decoding/`          | Image format decoders (JPEG via zune-jpeg, gain-map JPEGs included; camera RAW via rawler; PNG/GIF/WebP/BMP/TIFF via `image`)                                   |
 | `diagnostics.rs`     | Performance observability: `NavigationRecord` + `build_text`                                                                                                    |
 | `exif_overlay/`      | EXIF info overlay (`Settings::exif_visible` toggle, View → Exif info, bare `E` key)                                                                             |
 | `file_associations/` | LaunchServices FFI + File associations settings panel                                                                                                           |

@@ -7,7 +7,9 @@ constants, and `ImageCache` resolves both once at construction. The cache switch
 alone never touches the cache); doubling the budget alongside RAW RGBA16F's doubled per-pixel bytes is what keeps the
 preload count identical in both modes. `image_memory_cost` counts the storage's real bytes, so a 16-bit PNG or TIFF
 (half-float `DisplaySdr`, 8 B/px) costs twice an 8-bit image in either mode, and fewer of them fit in the SDR budget.
-Accepted: they're rare, and the budget isn't a count.
+Accepted: they're rare, and the budget isn't a count. A gain-map JPEG on an HDR display stays RGBA8 and adds its map's
+bytes (`PixelEncoding::extra_bytes`), usually a sixteenth of the base's, so it costs about what its SDR decode does and
+the doubled HDR budget simply holds more of them.
 
 ## Decision: the current image is found by name, not by canonicalizing every entry
 

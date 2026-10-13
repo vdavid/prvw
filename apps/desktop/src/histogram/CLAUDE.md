@@ -5,7 +5,7 @@
 | File         | Purpose                                                                                                                         |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | `mod.rs`     | `histogram::State { visible, data, hover_bin }` + `HistogramRect` (cursor-to-bin mapping)                                       |
-| `compute.rs` | `compute(&PixelBuffer, PixelEncoding)` — 256-bin RGB scan; rayon-parallel above 4 MP; RGBA8, and RGBA16F by encoding (below)    |
+| `compute.rs` | `compute(&PixelBuffer, &PixelEncoding)` — 256-bin RGB scan; rayon-parallel above 4 MP; RGBA8, and RGBA16F by encoding (below)   |
 | `overlay.rs` | Visual layout: backdrop pill, axis ticks, bar plot draw call, hover readout. `plot_rect_for(...)` is the layout source of truth |
 
 The GPU-side bar rendering lives in `crate::render::renderer` (search for `HistogramDrawCall`) and the WGSL is at
@@ -30,6 +30,10 @@ highlights read as clipped.
 
 **Why:** a `DisplaySdr` half-float is the linearized display value. Binning it as-is skews the whole histogram dark
 (mid-grey lands near bin 55). `display_sdr_half_floats_bin_like_the_bytes_they_stand_for` is the anchor.
+
+A `GainMapped` image (gain-map JPEG on an HDR display) bins its SDR base, the RGBA8 bytes, which are in Display P3
+rather than the display's profile. The highlights its gain map adds at the current headroom don't show: they exist only
+in the shader, and change with the brightness.
 
 ## Decision: `plot_rect_for` is the single layout source of truth
 
