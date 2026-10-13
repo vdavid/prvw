@@ -16,8 +16,8 @@ Test fixtures for the RAW decoding pipeline. Every fixture is small (tens of KB)
 converts the RGBA8 output to RGB8, and diffs it against the golden PNG via CIE76 Delta-E. Thresholds are mean < 0.5 and
 max < 3.0. Any real pipeline drift trips the assertion.
 
-The test runs unconditionally on macOS (no `#[ignore]`). Cross-platform CI skips it via the `target_os = "macos"` gate
-because the decode path depends on macOS's system sRGB profile.
+The test runs on every platform, with no `#[ignore]` and no `cfg` gate: its target profile is `color::srgb_icc_bytes()`,
+which `moxcms` generates rather than reading from the OS.
 
 ## Regenerating goldens after an intentional output change
 
