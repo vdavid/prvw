@@ -40,7 +40,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | -------------------------------------- | ------------------------------------------------------------------------------------ |
 | `main.go`                              | Entry point: flags, root dir, check selection, runner delegation                     |
 | `runner.go`                            | Parallel executor: goroutine pool, dependency graph, TTY status line                 |
-| `checks/common.go`                     | Core types, shared utils (`RunCommand`, `EnsureGoTool`, `runESLintCheck`)            |
+| `checks/common.go`                     | Core types, shared utils (`RunCommand`, `runESLintCheck`)                            |
 | `checks/common_unix.go`                | Process-group setup and tree kill on macOS and Linux                                 |
 | `checks/common_windows.go`             | The same, via job objects, on Windows                                                |
 | `checks/walk.go`                       | `findFiles` / `countFiles`: the file counting every check does                       |
