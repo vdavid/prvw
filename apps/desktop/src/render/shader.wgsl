@@ -106,14 +106,22 @@ fn texel_gain(v: vec3<f32>, w: f32) -> vec3<f32> {
 // map's texels top-left aligned to the image's pixels. Four `textureLoad`s, because hardware
 // bilinear filtering of the encoded values is a different function (spec Findings, M3).
 fn sample_gain(uv: vec2<f32>, w: f32) -> vec3<f32> {
-    let image_size = vec2<f32>(textureDimensions(t_diffuse));
+    let image_dims = textureDimensions(t_diffuse);
+    let image_size = vec2<f32>(image_dims);
     let map_dims = textureDimensions(t_gain_map);
-    let pixel = max(uv * image_size - 0.5, vec2<f32>(0.0));
-    let at = pixel * vec2<f32>(map_dims) / image_size;
-    let f = floor(at);
-    let i0 = min(vec2<u32>(f), map_dims - 1u);
+    // The weighting below jumps at a cell edge, so a pixel a hair on the wrong side of one takes
+    // the wrong texels. A fragment within 1/64 px of a pixel centre (`PIXEL_SNAP`) is that pixel,
+    // and its cell comes from integer arithmetic; the interpolated coordinate and this GPU's
+    // division would both round across the edge.
+    let raw = uv * image_size - 0.5;
+    let nearest = round(raw);
+    let on_pixel = abs(raw - nearest) < vec2<f32>(1.0 / 64.0);
+    let scaled = vec2<u32>(max(nearest, vec2<f32>(0.0))) * map_dims;
+    let at = max(raw, vec2<f32>(0.0)) * vec2<f32>(map_dims) / image_size;
+    let cell = select(vec2<u32>(floor(at)), scaled / image_dims, on_pixel);
+    let fr = select(at - floor(at), vec2<f32>(scaled % image_dims) / image_size, on_pixel);
+    let i0 = min(cell, map_dims - 1u);
     let i1 = min(i0 + 1u, map_dims - 1u);
-    let fr = at - f;
 
     var weights = vec4<f32>(1.0, 0.0, 0.0, 0.0);
     let d_tl = length(fr);

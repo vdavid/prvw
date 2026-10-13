@@ -684,10 +684,13 @@ mod gpu_parity {
         (i.wrapping_mul(2_654_435_761) >> 24) as u8
     }
 
-    /// A 16×8 base over a 4×2 map, both busy, with per-channel parameters and the real color
-    /// conversions for an sRGB base (so `p3_to_app` and `app_to_display` aren't the identity).
+    /// A busy base over a busy map, with per-channel parameters and the real color conversions
+    /// for an sRGB base (so `p3_to_app` and `app_to_display` aren't the identity).
     fn gain_mapped() -> DecodedImage {
-        let (width, height, map_w, map_h) = (16u32, 8u32, 4u32, 2u32);
+        gain_mapped_sized(16, 8, 4, 2)
+    }
+
+    fn gain_mapped_sized(width: u32, height: u32, map_w: u32, map_h: u32) -> DecodedImage {
         let base = (0..width * height * 4)
             .map(|i| if i % 4 == 3 { 255 } else { noise(i) })
             .collect();
@@ -782,6 +785,19 @@ mod gpu_parity {
             brightest > 1.5,
             "the gain must lift highlights: {brightest}"
         );
+    }
+
+    /// At a width that isn't a power of two the interpolated texture coordinate lands a hair off
+    /// each pixel centre, and Shepard's weighting jumps at a cell edge: the shader has to snap
+    /// onto the pixel, as the reference does, or it reads the wrong neighbour (the iPhone's 776
+    /// over 388).
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "Linux CI runners have no GPU adapter; macOS and Windows run this"
+    )]
+    fn mode_2_lands_on_pixel_centres_at_any_width() {
+        assert_matches_reference(&gain_mapped_sized(776, 4, 388, 2), &[8.0]);
     }
 
     /// At headroom 1 a gain-mapped image is its SDR base. On macOS, where the HDR display space

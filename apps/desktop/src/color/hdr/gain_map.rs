@@ -89,7 +89,22 @@ impl GainMapSpaces {
     }
 }
 
+/// A conversion within this of the identity, in every coefficient, is the identity: two
+/// profiles naming the same primaries (Apple's Display P3 and `moxcms`') differ in their
+/// colorants' last digits, and the almost-identity leaks each channel into the others. 1e-3 is
+/// at most a quarter of an 8-bit step; real conversions (sRGB to P3) are hundreds of times that.
+const IDENTITY_TOLERANCE: f64 = 1e-3;
+
 fn to_mat3(m: moxcms::Matrix3d) -> Mat3 {
+    let near_identity = m.v.iter().enumerate().all(|(r, row)| {
+        row.iter().enumerate().all(|(c, &v)| {
+            let identity = if r == c { 1.0 } else { 0.0 };
+            (v - identity).abs() < IDENTITY_TOLERANCE
+        })
+    });
+    if near_identity {
+        return IDENTITY;
+    }
     m.v.map(|row| row.map(|v| v as f32))
 }
 
@@ -128,6 +143,11 @@ pub fn gain(v: f32, channel: usize, p: &GainMapParams, weight: f32) -> f32 {
         .exp2()
 }
 
+/// How close, in image pixels, a texture coordinate has to land to a pixel centre to count as
+/// that pixel (`sample_gain`). Far above float rounding (about 1e-4 px at 10,000 px), far below
+/// anything a zoom puts between two pixels that matters.
+const PIXEL_SNAP: f32 = 1.0 / 64.0;
+
 /// A gain map's texels as the GPU holds them: RGBA8, a single-channel map replicated into R, G,
 /// and B.
 #[derive(Clone, Copy, Debug)]
@@ -154,12 +174,27 @@ pub fn sample_gain(
 ) -> [f32; 3] {
     let axis = |a: usize, map_len: u32| {
         // The image pixel this fragment is, then where that pixel sits on the map.
-        let pixel = (uv[a] * image_size[a] as f32 - 0.5).max(0.0);
-        let at = pixel * map_len as f32 / image_size[a] as f32;
-        let floor = at.floor();
-        let i0 = (floor as u32).min(map_len - 1);
+        //
+        // Shepard's weighting jumps at a cell edge (the far neighbours change), so a pixel that
+        // lands a hair on the wrong side of one takes the wrong texels. Two roundings do that:
+        // `(x + 0.5) / w × w − 0.5` comes out just under `x` at most widths that aren't powers
+        // of two, and a GPU's division isn't correctly rounded. So a fragment within
+        // `PIXEL_SNAP` of a pixel centre is that pixel, and its map cell comes from integer
+        // arithmetic, which is exactly upstream's `x × map / image`. `x × map` fits in a `u32`
+        // for any size a texture can have, as it must in the shader.
+        let size = image_size[a];
+        let raw = uv[a] * size as f32 - 0.5;
+        let nearest = raw.round();
+        let (cell, fraction) = if (raw - nearest).abs() < PIXEL_SNAP {
+            let scaled = nearest.max(0.0) as u32 * map_len;
+            (scaled / size, (scaled % size) as f32 / size as f32)
+        } else {
+            let at = raw.max(0.0) * map_len as f32 / size as f32;
+            (at.floor() as u32, at - at.floor())
+        };
+        let i0 = cell.min(map_len - 1);
         let i1 = (i0 + 1).min(map_len - 1);
-        (i0, i1, at - floor)
+        (i0, i1, fraction)
     };
     let (x0, x1, fx) = axis(0, map.width);
     let (y0, y1, fy) = axis(1, map.height);
@@ -365,88 +400,120 @@ mod tests {
     fn the_reference_matches_apply_gainmap_on_a_busy_map() {
         use ultrahdr_core::{ColorPrimaries, GainMap, PixelFormat, TransferFunction, Unstoppable};
 
-        let (width, height, map_w, map_h) = (32u32, 24u32, 8u32, 6u32);
-        let base: Vec<u8> = (0..width * height * 4)
-            .map(|i| if i % 4 == 3 { 255 } else { noise(i) })
-            .collect();
-        for channels in [1u8, 3] {
-            let data: Vec<u8> = (0..map_w * map_h * u32::from(channels))
-                .map(|i| noise(i + 7))
+        // A power-of-two size keeps every texture coordinate exact; the iPhone's 776 wide over a
+        // 388-wide map is a size where `(x + 0.5) / w × w − 0.5` rounds below `x`.
+        for (width, height, map_w, map_h) in [(32u32, 24u32, 8u32, 6u32), (776, 6, 388, 3)] {
+            let base: Vec<u8> = (0..width * height * 4)
+                .map(|i| if i % 4 == 3 { 255 } else { noise(i) })
                 .collect();
-            let rgba: Vec<u8> = data
-                .chunks(channels as usize)
-                .flat_map(|t| [t[0], t[t.len() / 2], t[t.len() - 1], 255])
-                .collect();
-            let mut p = params(0.0, 2.0);
-            if channels == 3 {
-                p.channels[1].gamma = 0.7;
-                p.channels[2].min = -0.5;
-                p.channels[2].max = 1.5;
-            }
-            for headroom in [1.5, 4.0, 16.0] {
-                let sdr = ultrahdr_core::pixel_buffer_from_vec(
-                    base.clone(),
-                    width,
-                    height,
-                    PixelFormat::Rgba8,
-                    ColorPrimaries::DisplayP3,
-                    TransferFunction::Srgb,
-                )
-                .expect("base buffer");
-                let map = GainMap {
-                    width: map_w,
-                    height: map_h,
-                    channels,
-                    data: data.clone(),
-                };
-                let out = ultrahdr_core::gainmap::apply_gainmap(
-                    &sdr,
-                    &map,
-                    &to_upstream(&p),
-                    headroom,
-                    ultrahdr_core::HdrOutputFormat::LinearFloat,
-                    Unstoppable,
-                )
-                .expect("upstream apply");
-                let slice = out.as_slice();
-                let stride = slice.stride();
-                let bytes = slice.as_strided_bytes();
+            for channels in [1u8, 3] {
+                let data: Vec<u8> = (0..map_w * map_h * u32::from(channels))
+                    .map(|i| noise(i + 7))
+                    .collect();
+                let rgba: Vec<u8> = data
+                    .chunks(channels as usize)
+                    .flat_map(|t| [t[0], t[t.len() / 2], t[t.len() - 1], 255])
+                    .collect();
+                let mut p = params(0.0, 2.0);
+                if channels == 3 {
+                    p.channels[1].gamma = 0.7;
+                    p.channels[2].min = -0.5;
+                    p.channels[2].max = 1.5;
+                }
+                for headroom in [1.5, 4.0, 16.0] {
+                    let sdr = ultrahdr_core::pixel_buffer_from_vec(
+                        base.clone(),
+                        width,
+                        height,
+                        PixelFormat::Rgba8,
+                        ColorPrimaries::DisplayP3,
+                        TransferFunction::Srgb,
+                    )
+                    .expect("base buffer");
+                    let map = GainMap {
+                        width: map_w,
+                        height: map_h,
+                        channels,
+                        data: data.clone(),
+                    };
+                    let out = ultrahdr_core::gainmap::apply_gainmap(
+                        &sdr,
+                        &map,
+                        &to_upstream(&p),
+                        headroom,
+                        ultrahdr_core::HdrOutputFormat::LinearFloat,
+                        Unstoppable,
+                    )
+                    .expect("upstream apply");
+                    let slice = out.as_slice();
+                    let stride = slice.stride();
+                    let bytes = slice.as_strided_bytes();
 
-                let view = MapView {
-                    width: map_w,
-                    height: map_h,
-                    rgba: &rgba,
-                };
-                let w = weight(headroom, &p);
-                let (mut sum, mut max, mut n) = (0.0f64, 0.0f32, 0u32);
-                for y in 0..height {
-                    for x in 0..width {
-                        let i = ((y * width + x) * 4) as usize;
-                        let linear = [0, 1, 2].map(|c| srgb_decode(base[i + c]));
-                        let uv = [
-                            (x as f32 + 0.5) / width as f32,
-                            (y as f32 + 0.5) / height as f32,
-                        ];
-                        let ours =
-                            apply(linear, sample_gain(&view, [width, height], uv, &p, w), &p);
-                        for (c, ours) in ours.into_iter().enumerate() {
-                            let at = y as usize * stride + x as usize * 16 + c * 4;
-                            let want =
-                                f32::from_le_bytes(bytes[at..at + 4].try_into().expect("f32"));
-                            let error = (ours - want).abs() / want.abs().max(1e-3);
-                            sum += f64::from(error);
-                            max = max.max(error);
-                            n += 1;
+                    let view = MapView {
+                        width: map_w,
+                        height: map_h,
+                        rgba: &rgba,
+                    };
+                    let w = weight(headroom, &p);
+                    let (mut sum, mut max, mut n) = (0.0f64, 0.0f32, 0u32);
+                    for y in 0..height {
+                        for x in 0..width {
+                            let i = ((y * width + x) * 4) as usize;
+                            let linear = [0, 1, 2].map(|c| srgb_decode(base[i + c]));
+                            let uv = [
+                                (x as f32 + 0.5) / width as f32,
+                                (y as f32 + 0.5) / height as f32,
+                            ];
+                            let ours =
+                                apply(linear, sample_gain(&view, [width, height], uv, &p, w), &p);
+                            for (c, ours) in ours.into_iter().enumerate() {
+                                let at = y as usize * stride + x as usize * 16 + c * 4;
+                                let want =
+                                    f32::from_le_bytes(bytes[at..at + 4].try_into().expect("f32"));
+                                let error = (ours - want).abs() / want.abs().max(1e-3);
+                                sum += f64::from(error);
+                                max = max.max(error);
+                                n += 1;
+                            }
                         }
                     }
+                    let mean = sum / f64::from(n);
+                    assert!(
+                        mean < 0.005 && max < 0.01,
+                        "{width}x{height}, {channels}-channel map at headroom {headroom}: mean \
+                     {mean:e}, max {max:e}"
+                    );
                 }
-                let mean = sum / f64::from(n);
-                assert!(
-                    mean < 0.005 && max < 0.01,
-                    "{channels}-channel map at headroom {headroom}: mean {mean:e}, max {max:e}"
-                );
             }
         }
+    }
+
+    /// A P3 base needs no conversion at all, whoever wrote its profile: the iPhone's Display P3
+    /// colorants differ from `moxcms`' in the last digits, and an almost-identity matrix leaks a
+    /// little of each channel into the others, which shows as error on dark channels.
+    #[test]
+    fn a_p3_base_converts_through_the_exact_identity() {
+        let iphone = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/hdr/iphone-air-gain-map-776.jpg"),
+        )
+        .expect("fixture");
+        let mut decoder = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(iphone.as_slice()));
+        decoder.decode_headers().expect("headers");
+        let apple_p3 = decoder
+            .icc_profile()
+            .expect("the iPhone base has a profile");
+        for icc in [crate::color::display_p3_icc_bytes(), apple_p3.as_slice()] {
+            let spaces = GainMapSpaces::new(icc, None, true);
+            assert_eq!(spaces.p3_to_app, IDENTITY);
+            if cfg!(target_os = "macos") {
+                assert_eq!(spaces.app_to_display, IDENTITY);
+                assert_eq!(spaces.p3_to_display, IDENTITY);
+            }
+        }
+        // An sRGB base is a real conversion, and stays one.
+        let srgb = GainMapSpaces::new(crate::color::srgb_icc_bytes(), None, true);
+        assert_ne!(srgb.p3_to_app, IDENTITY);
     }
 
     #[test]

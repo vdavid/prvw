@@ -1197,7 +1197,7 @@ mod tests {
 
         let inputs = payload.inputs([image.width, image.height]);
         let w = gain_map::weight(headroom, &payload.params);
-        let (mut sum, mut n) = (0.0f64, 0u32);
+        let (mut sum, mut max, mut n) = (0.0f64, 0.0f32, 0u32);
         for y in 0..image.height {
             for x in 0..image.width {
                 let i = ((y * image.width + x) * 4) as usize;
@@ -1223,13 +1223,18 @@ mod tests {
                 for (c, ours) in ours.into_iter().enumerate() {
                     let at = y as usize * stride + x as usize * 16 + c * 4;
                     let want = f32::from_le_bytes(bytes[at..at + 4].try_into().expect("f32"));
-                    sum += f64::from((ours - want).abs() / want.abs().max(1e-3));
+                    let error = (ours - want).abs() / want.abs().max(1e-3);
+                    sum += f64::from(error);
+                    max = max.max(error);
                     n += 1;
                 }
             }
         }
         let mean = sum / f64::from(n);
-        assert!(mean < 0.005, "mean relative error {mean:e}");
+        assert!(
+            mean < 0.005 && max < 0.01,
+            "mean relative error {mean:e}, max {max:e}"
+        );
     }
 
     /// Spec section 9's budget: a gain-map decode on an HDR display costs at most 1.3× the SDR
