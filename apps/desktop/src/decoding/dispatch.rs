@@ -27,6 +27,22 @@ pub(super) fn pick_backend(ext: &str) -> Backend {
     }
 }
 
+/// Pick the decoder for a file, by extension, except that a RAW extension on a file whose first
+/// bytes say JPEG or PNG goes to that format's decoder. Cameras and copy tools do produce those
+/// (a Sony JPEG saved as `.arw`), and rawler refuses them with "No decoder found".
+///
+/// Only JPEG and PNG: most RAW formats are TIFF containers, so a TIFF signature on a `.nef`
+/// says nothing about which decoder wants it.
+pub(super) fn pick_backend_for(ext: &str, bytes: &[u8]) -> Backend {
+    const JPEG_MAGIC: &[u8] = &[0xFF, 0xD8, 0xFF];
+    const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
+    match pick_backend(ext) {
+        Backend::Raw if bytes.starts_with(JPEG_MAGIC) => Backend::Jpeg,
+        Backend::Raw if bytes.starts_with(PNG_MAGIC) => Backend::Generic,
+        backend => backend,
+    }
+}
+
 /// JPEG extensions eligible for the fast zune-jpeg decode path.
 const JPEG_EXTENSIONS: &[&str] = &["jpg", "jpeg", "jpe", "jfif"];
 
@@ -110,6 +126,20 @@ mod tests {
         // Unknown extensions fall through to Generic; the supported-extension
         // gate is what filters them out upstream.
         assert_eq!(pick_backend("xyz"), Backend::Generic);
+    }
+
+    #[test]
+    fn a_raw_extension_goes_by_content_only_for_jpeg_and_png() {
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE1, 0x00];
+        let png = b"\x89PNG\r\n\x1a\n\x00\x00";
+        let tiff = b"II*\x00\x08\x00";
+        assert_eq!(pick_backend_for("arw", &jpeg), Backend::Jpeg);
+        assert_eq!(pick_backend_for("NEF", png), Backend::Generic);
+        // A TIFF signature is what most RAWs start with, so it stays RAW.
+        assert_eq!(pick_backend_for("arw", tiff), Backend::Raw);
+        // Only a RAW extension is second-guessed.
+        assert_eq!(pick_backend_for("png", &jpeg), Backend::Generic);
+        assert_eq!(pick_backend_for("jpg", png), Backend::Jpeg);
     }
 
     #[test]

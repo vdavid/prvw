@@ -175,6 +175,30 @@ priority-0 target gets the worker's full attention. `poll_preloader` runs the re
 neighbors (deferred until after the target arrives — see "Preloader prioritization" below). The main thread never
 decodes navigation targets directly. Only settings re-decode and `Refresh` still call the sync `display_image` path.
 
+## A file that fails to decode
+
+A failure is a stop like any image: one arrow lands on it, the next moves on.
+
+- **The cache remembers it.** `PreloadResponse::Failed` (neighbor or target) and the sync `display_image` path both call
+  `ImageCache::insert_failure`, keyed and windowed like the decoded images (`retain_only` drops it, `remove` and `clear`
+  forget it, a successful `insert` replaces it). `ImageCache::is_settled` is "no decode needed", and every place that
+  decides whether to decode (`after_position_change`, `submit_neighbor_preload`, `display_after_delete`,
+  `display_open_target`, the slideshow's "is the next one ready") asks it rather than `contains`. **Why:** without it
+  the preloader retried the same broken file as N+2, N+1, N, N-1, and N-2, five decodes in five seconds, and a slideshow
+  waiting on a cached next image would stall on a failure forever.
+- **Its error state replaces the picture.** `display_from_cache` routes a remembered failure to `display_failure`: the
+  texture is cleared (black canvas), the EDR surface and histogram drop, and `render_frame` draws "Can't open this
+  image" in the empty-state pill while `App::current_decode_error` holds. The title keeps the position and file name;
+  the decoder's reason goes to the log. **Why (regression):** the old failure path left the previous image on screen and
+  put `Prvw - <reason>` in the title, so the press onto the failure looked like a reload and the press off it like a
+  skip (David's QA, 2026-10-14).
+- **A failed target still queues its neighbors** (`App::on_pending_target_settled`, shared with `Ready`), since the user
+  steps off it next.
+- **Refresh retries.** `display_image` decodes regardless of the cache. Live sync's eviction does too, because a failure
+  has no file stamp, so any event on the file counts as a change.
+- `/state` reports `decode_error` (the reason, or null) and `failed_decodes` (live count of `load_image` failures);
+  `a_file_that_fails_to_decode_is_one_stop_with_its_own_error_state` is the anchor.
+
 ## Debounced navigation
 
 User input (arrow keys, mouse wheel, Next/Previous menu items) goes through `AppCommand::NavigateDebounced`, which

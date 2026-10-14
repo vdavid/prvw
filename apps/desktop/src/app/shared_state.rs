@@ -101,6 +101,9 @@ pub struct SharedAppState {
     /// one. `"no_images"` is the same state `no_images` reports; `"nothing_open"` is the launch
     /// that named nothing, which only the platforms without onboarding put up.
     pub empty_state: Option<&'static str>,
+    /// Why the file image mode is on failed to decode (`App::current_decode_error`), or `None`
+    /// while it shows a picture, waits on one, or is in browse mode.
+    pub decode_error: Option<String>,
     /// The folders whose live-sync watch is armed, meaning the FSEvents stream covering them has
     /// started and changes will be reported. Sorted. Tests poll for their folder to appear here before
     /// mutating it; a change made before the stream starts is never delivered, so this is the
@@ -236,6 +239,7 @@ impl Default for SharedAppState {
             browse_reveal_pending: false,
             no_images: false,
             empty_state: None,
+            decode_error: None,
             watched_folders: Vec::new(),
             scan_pending: false,
             queued_nav: None,
@@ -356,6 +360,7 @@ impl App {
             delta: q.delta,
         });
         state.read_progress = self.read_progress;
+        state.decode_error = self.current_decode_error().map(str::to_owned);
         state.pixel_encoding = self
             .current_image_encoding
             .map(crate::decoding::EncodingKind::name);

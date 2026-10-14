@@ -133,8 +133,13 @@ pub enum PreloadResponse {
 /// LRU cache for decoded images with a memory budget. Keyed by absolute
 /// file path so a future re-sort or directory rescan doesn't invalidate
 /// the cache.
+///
+/// It also remembers the files that failed to decode, with the reason, under the same
+/// keys and the same window: a file the preloader knows it can't open isn't tried again on
+/// every step around it, and landing on it shows its error state at once.
 pub struct ImageCache {
     entries: HashMap<PathBuf, CacheEntry>,
+    failures: HashMap<PathBuf, String>,
     /// Access order: most recently used at the end.
     access_order: Vec<PathBuf>,
     memory_used: usize,
@@ -185,6 +190,7 @@ impl ImageCache {
     fn with_budgets(sdr_budget: usize, hdr_budget: usize) -> Self {
         Self {
             entries: HashMap::new(),
+            failures: HashMap::new(),
             access_order: Vec::new(),
             memory_used: 0,
             memory_budget: sdr_budget,
@@ -259,6 +265,7 @@ impl ImageCache {
             return Vec::new();
         }
 
+        self.failures.remove(&path);
         // Remove existing entry if present
         if self.entries.contains_key(&path) {
             self.remove(&path);
@@ -315,6 +322,22 @@ impl ImageCache {
         self.entries.contains_key(path)
     }
 
+    /// Remember that `path` failed to decode, and why. A later successful `insert` replaces it.
+    pub fn insert_failure(&mut self, path: PathBuf, reason: String) {
+        self.remove(&path);
+        self.failures.insert(path, reason);
+    }
+
+    /// Why `path` failed to decode, when it's a remembered failure.
+    pub fn failure(&self, path: &Path) -> Option<&str> {
+        self.failures.get(path).map(String::as_str)
+    }
+
+    /// Whether `path` needs no decode: its image is cached, or it's known to fail.
+    pub fn is_settled(&self, path: &Path) -> bool {
+        self.contains(path) || self.failures.contains_key(path)
+    }
+
     /// The stamp of the bytes `path`'s cached decode was made from, when it's cached and the
     /// decode recorded one. Live sync compares it against the file's stamp now to tell a re-save
     /// from a metadata-only change (`crate::file_stamp`).
@@ -327,6 +350,7 @@ impl ImageCache {
     /// promptly instead of sitting until the LRU budget pushes them out.
     /// Returns the entries that were dropped so the caller can log them.
     pub fn retain_only(&mut self, keep: &[PathBuf]) -> Vec<EvictedEntry> {
+        self.failures.retain(|k, _| keep.iter().any(|p| p == k));
         let to_remove: Vec<PathBuf> = self
             .entries
             .keys()
@@ -357,6 +381,7 @@ impl ImageCache {
     pub fn clear(&mut self) {
         let count = self.entries.len();
         self.entries.clear();
+        self.failures.clear();
         self.access_order.clear();
         self.memory_used = 0;
         if count > 0 {
@@ -369,9 +394,11 @@ impl ImageCache {
         self.access_order.push(path.to_path_buf());
     }
 
-    /// Evict a single path from the cache. Used by live folder sync on a `Modify`/delete so a
-    /// re-decode reads fresh bytes and a deleted image stops squatting in RAM.
+    /// Evict a single path from the cache, and forget a failure recorded for it. Used by live
+    /// folder sync on a `Modify`/delete so a re-decode reads fresh bytes (a fixed file gets its
+    /// retry) and a deleted image stops squatting in RAM.
     pub fn remove(&mut self, path: &Path) {
+        self.failures.remove(path);
         if let Some(entry) = self.entries.remove(path) {
             self.memory_used = self.memory_used.saturating_sub(entry.memory_cost);
             self.access_order.retain(|p| p != path);
@@ -1062,6 +1089,36 @@ mod tests {
         assert_eq!(preload_count_for_budget(usize::MAX), MAX_PRELOAD_AHEAD);
         assert_eq!(preload_count_for_budget(3 * LARGE_DECODE_BYTES), 1);
         assert_eq!(preload_count_for_budget(0), 1);
+    }
+
+    #[test]
+    fn a_failure_is_remembered_until_the_file_could_have_changed() {
+        let mut cache = ImageCache::new();
+        let failed = test_path(1);
+        cache.insert_failure(failed.clone(), "No decoder found".into());
+        assert_eq!(cache.failure(&failed), Some("No decoder found"));
+        assert!(cache.is_settled(&failed));
+        assert!(!cache.contains(&failed), "a failure isn't an image");
+
+        // It lives in the same window as the images.
+        cache.retain_only(std::slice::from_ref(&failed));
+        assert!(cache.is_settled(&failed));
+        cache.retain_only(&[test_path(2)]);
+        assert!(!cache.is_settled(&failed), "out of the window, out of mind");
+
+        // Live sync's `remove` and a settings flush both give the file another try.
+        cache.insert_failure(failed.clone(), "bad".into());
+        cache.remove(&failed);
+        assert!(!cache.is_settled(&failed));
+        cache.insert_failure(failed.clone(), "bad".into());
+        cache.clear();
+        assert!(!cache.is_settled(&failed));
+
+        // A decode that works after all replaces the failure.
+        cache.insert_failure(failed.clone(), "bad".into());
+        insert_test_image(&mut cache, 1, 10, 10);
+        assert_eq!(cache.failure(&failed), None);
+        assert!(cache.contains(&failed));
     }
 
     #[test]

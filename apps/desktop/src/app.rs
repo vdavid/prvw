@@ -1715,7 +1715,7 @@ impl App {
             return;
         };
         self.request_times.insert(index, Instant::now());
-        if self.navigation.image_cache.contains(&path) {
+        if self.navigation.image_cache.is_settled(&path) {
             self.navigation.pending_current = None;
             if let Some(win) = &self.window {
                 window::set_title_keeping_buttons(
@@ -1819,7 +1819,13 @@ impl App {
             }
             Err(msg) => {
                 log::error!("{msg}");
-                if let Some(win) = &self.window {
+                self.navigation.pending_current = None;
+                if let Some(index) = self.navigation.dir_list.as_ref().map(|d| d.current_index()) {
+                    self.navigation
+                        .image_cache
+                        .insert_failure(path.to_path_buf(), msg);
+                    self.display_from_cache(index);
+                } else if let Some(win) = &self.window {
                     window::set_title_keeping_buttons(win, &format!("Prvw - {msg}"));
                 }
             }
@@ -1842,8 +1848,9 @@ impl App {
         }
     }
 
-    /// Render an image from the cache at `index`. Returns true when the image
-    /// was present and rendered; false on cache miss. Touches LRU order.
+    /// Render an image from the cache at `index`, or its error state when it's a remembered
+    /// failure. Returns true when either was present and shown; false on cache miss. Touches LRU
+    /// order.
     fn display_from_cache(&mut self, index: usize) -> bool {
         if self.renderer.is_none() {
             return false;
@@ -1857,6 +1864,10 @@ impl App {
         else {
             return false;
         };
+        if self.navigation.image_cache.failure(&path).is_some() {
+            self.display_failure();
+            return true;
+        }
         // Decide on a crossfade before `prepare_display` mutates the view: we
         // need the outgoing image's transform and the pre-resize surface size.
         let want_crossfade = self.pending_crossfade && self.slideshow.crossfade_enabled;
@@ -1940,6 +1951,29 @@ impl App {
             self.slideshow.next_advance = Some(Instant::now() + self.slideshow.interval());
         }
         true
+    }
+
+    /// Show the current file's error state: a black canvas with "Can't open this image" over it
+    /// (`render_frame`, keyed on `current_decode_error`). Never the previous picture: that
+    /// read as the arrow key having done nothing, so the next press looked like a skip.
+    fn display_failure(&mut self) {
+        self.navigation.current_image_size = None;
+        self.current_image_encoding = None;
+        self.apply_edr_surface_state();
+        self.pending_crossfade = false;
+        self.slideshow.crossfade = None;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.end_crossfade();
+            renderer.clear_image();
+        }
+        self.histogram.data = None;
+        self.histogram.hover_bin = None;
+        self.load_current_tags();
+        // A slideshow gives the error its interval like any slide, then moves on.
+        if self.slideshow.running {
+            self.slideshow.next_advance = Some(Instant::now() + self.slideshow.interval());
+        }
+        self.request_redraw();
     }
 
     /// Shared first half of the display pipeline: update dimensions, flip
@@ -2340,7 +2374,7 @@ impl App {
         self.navigation.last_direction = directory::Direction::Unknown;
         self.request_times.insert(index, Instant::now());
 
-        if self.navigation.image_cache.contains(&path) {
+        if self.navigation.image_cache.is_settled(&path) {
             // Warm hit — display instantly, no decode wait.
             self.navigation.pending_current = None;
             if let Some(win) = &self.window {
@@ -2553,7 +2587,7 @@ impl App {
                 .dir_list
                 .as_ref()
                 .and_then(|dir| dir.get(idx))
-                .is_none_or(|p| self.navigation.image_cache.contains(p)),
+                .is_none_or(|p| self.navigation.image_cache.is_settled(p)),
         }
     }
 
@@ -2738,7 +2772,7 @@ impl App {
             )
         };
 
-        let was_cached = self.navigation.image_cache.contains(&current_path);
+        let was_cached = self.navigation.image_cache.is_settled(&current_path);
         let cached_str = if was_cached { "yes" } else { "no" };
         log::debug!("Navigate {direction}: {from_index} -> {current_index} (cached: {cached_str})");
 
@@ -2982,7 +3016,7 @@ impl App {
                     continue;
                 }
                 let Some(p) = dir.get(i) else { continue };
-                if self.navigation.image_cache.contains(p) {
+                if self.navigation.image_cache.is_settled(p) {
                     continue;
                 }
                 tasks.push((i, p.to_path_buf()));
@@ -3030,7 +3064,13 @@ impl App {
         // the renderer, so it fills the image area with opaque black). Built here, not in
         // `build_text_overlay`, because that early-returns when there's no current image —
         // exactly the empty-state case. Same glyphon pill styling as the "Loading…" overlay.
-        if let Some(empty_state) = self.empty_state
+        // A file that failed to decode gets the same pill, in place of its picture. Draft copy,
+        // for David to review; the reason itself goes to the log, being decoder jargon.
+        let overlay = self.empty_state.map(EmptyState::overlay).or_else(|| {
+            self.current_decode_error()
+                .map(|_| "Can\u{2019}t open this image")
+        });
+        if let Some(overlay) = overlay
             && let Some(rend) = &self.renderer
         {
             let logical_width = rend.logical_width();
@@ -3038,7 +3078,7 @@ impl App {
             let line_height = 18.0_f32;
             let center_x = Logical(logical_width.0 / 2.0);
             let center_y = Logical((logical_height.0 - line_height) / 2.0);
-            let mut empty = text::TextBlock::new(empty_state.overlay(), center_x, center_y);
+            let mut empty = text::TextBlock::new(overlay, center_x, center_y);
             empty.font_size = 14.0;
             empty.line_height = line_height;
             empty = empty.bold().align_center().pill(
@@ -3069,7 +3109,7 @@ impl App {
                 Logical(5.0),
                 Logical(7.0),
             );
-            if self.empty_state.is_some() {
+            if self.empty_state.is_some() || self.current_decode_error().is_some() {
                 text_blocks.pop();
             }
             text_blocks.push(hint);
@@ -3568,61 +3608,9 @@ impl App {
                             .image_cache
                             .insert(path, image, decode_duration, file_name);
                     self.log_evictions(evicted, "LRU");
-                    if pending_slot.is_none() {
-                        neighbor_arrived = true;
-                    }
-                    if let Some(index) = pending_slot {
-                        self.navigation.pending_current = None;
-                        self.display_from_cache(index);
-                        // Title was "Loading…" — swap to the final title.
-                        if let Some(dir) = &self.navigation.dir_list
-                            && let Some(win) = &self.window
-                        {
-                            window::set_title_keeping_buttons(
-                                win,
-                                &window::window_title_with_position(
-                                    dir.current(),
-                                    dir.current_index(),
-                                    dir.len(),
-                                ),
-                            );
-                        }
-                        if let Some(requested_at) = self.request_times.remove(&index) {
-                            let elapsed = requested_at.elapsed().as_millis();
-                            log::info!("Image #{index} displayed after {elapsed}ms");
-                        } else {
-                            log::info!("Image #{index} displayed");
-                        }
-                        let had_placeholder = self.placeholder_active;
-                        self.placeholder_active = false;
-                        self.record_preview_event(
-                            "primary-arrived",
-                            format!("index={index} had_placeholder={had_placeholder}"),
-                        );
-                        self.on_primary_decode_settled();
-                        // Now that the user-visible target has arrived,
-                        // queue the neighbors for background pre-decode.
-                        // Deferring this until now keeps the FIFO channel
-                        // small during rapid navigation so the latest
-                        // priority-0 isn't piled behind stale neighbors.
-                        if self.navigation.preload_neighbors {
-                            let (total, neighbors) = if let Some(dir) = &self.navigation.dir_list {
-                                (
-                                    dir.len(),
-                                    dir.preload_range(
-                                        preloader::preload_count(),
-                                        self.navigation.last_direction,
-                                        self.navigation.loop_navigation,
-                                    ),
-                                )
-                            } else {
-                                (0, Vec::new())
-                            };
-                            if !neighbors.is_empty() {
-                                self.submit_neighbor_preload(index, total, &neighbors);
-                            }
-                        }
-                        self.update_shared_state();
+                    match pending_slot {
+                        Some(index) => self.on_pending_target_settled(index),
+                        None => neighbor_arrived = true,
                     }
                 }
                 preloader::PreloadResponse::Failed {
@@ -3637,16 +3625,19 @@ impl App {
                         "Preload response: failed [{index}] {}: {reason}",
                         path.display()
                     );
-                    if self.pending_slot_for(&path).is_some() {
-                        self.navigation.pending_current = None;
+                    let pending_slot = self.pending_slot_for(&path);
+                    if pending_slot.is_some() {
                         log::error!(
                             "Failed to decode current image {}: {reason}",
                             path.display()
                         );
-                        if let Some(win) = &self.window {
-                            window::set_title_keeping_buttons(win, &format!("Prvw - {reason}"));
-                        }
-                        self.on_primary_decode_settled();
+                    }
+                    // Remembered like a decoded image, so the preloader doesn't try it again on
+                    // every step around it, and landing on it shows its error state at once.
+                    self.navigation.image_cache.insert_failure(path, reason);
+                    match pending_slot {
+                        Some(index) => self.on_pending_target_settled(index),
+                        None => neighbor_arrived = true,
                     }
                 }
                 preloader::PreloadResponse::Cancelled { index: _, path } => {
@@ -3711,6 +3702,65 @@ impl App {
         if neighbor_arrived {
             self.update_shared_state();
         }
+    }
+
+    /// The image the user is waiting on has a result, a picture or a failure, now in the cache:
+    /// show it, put the position back in the title, and queue its neighbors. Deferring those
+    /// until now keeps the FIFO channel small during rapid navigation, so the latest priority-0
+    /// isn't piled behind stale neighbors. A failure queues them too: the user steps off it next.
+    fn on_pending_target_settled(&mut self, index: usize) {
+        self.navigation.pending_current = None;
+        self.display_from_cache(index);
+        // Title was "Loading…" — swap to the final title.
+        if let Some(dir) = &self.navigation.dir_list
+            && let Some(win) = &self.window
+        {
+            window::set_title_keeping_buttons(
+                win,
+                &window::window_title_with_position(dir.current(), dir.current_index(), dir.len()),
+            );
+        }
+        if let Some(requested_at) = self.request_times.remove(&index) {
+            let elapsed = requested_at.elapsed().as_millis();
+            log::info!("Image #{index} displayed after {elapsed}ms");
+        } else {
+            log::info!("Image #{index} displayed");
+        }
+        let had_placeholder = self.placeholder_active;
+        self.placeholder_active = false;
+        self.record_preview_event(
+            "primary-arrived",
+            format!("index={index} had_placeholder={had_placeholder}"),
+        );
+        self.on_primary_decode_settled();
+        if self.navigation.preload_neighbors {
+            let (total, neighbors) = if let Some(dir) = &self.navigation.dir_list {
+                (
+                    dir.len(),
+                    dir.preload_range(
+                        preloader::preload_count(),
+                        self.navigation.last_direction,
+                        self.navigation.loop_navigation,
+                    ),
+                )
+            } else {
+                (0, Vec::new())
+            };
+            if !neighbors.is_empty() {
+                self.submit_neighbor_preload(index, total, &neighbors);
+            }
+        }
+        self.update_shared_state();
+    }
+
+    /// Why the file image mode is on failed to decode, while that's what the window shows: not
+    /// in browse mode, and not while a decode of it is still pending.
+    pub(crate) fn current_decode_error(&self) -> Option<&str> {
+        if self.browser.is_browse() || self.navigation.pending_current.is_some() {
+            return None;
+        }
+        let dir = self.navigation.dir_list.as_ref()?;
+        self.navigation.image_cache.failure(dir.current())
     }
 
     /// Recompute the effective display ICC, update the layer colorspace, flush cache, and re-decode.

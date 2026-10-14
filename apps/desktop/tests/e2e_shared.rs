@@ -2764,3 +2764,89 @@ fn the_read_progress_bar_climbs_while_a_slow_file_reads() {
         "no pending read, no bar, got {displayed}"
     );
 }
+
+/// The middle pixel of what's on screen, for telling the five solid fixtures below apart, or
+/// `None` when no image is bound and the canvas is the plain black fill.
+fn center_pixel(app: &SharedApp) -> Option<[u8; 4]> {
+    let shot = app.try_screenshot()?;
+    Some(shot.get_pixel(shot.width() / 2, shot.height() / 2).0)
+}
+
+/// A file that won't decode is a stop of its own: the arrow lands on it, its error state shows
+/// in place of a picture, and the next arrow moves on. And it's decoded once: a known failure
+/// isn't retried on every step around it.
+///
+/// Regression: the picture before a failed file stayed on screen, under a title that lost its
+/// position, so the press onto the failure looked like a reload and the press off it like a
+/// skip. And with nothing remembering the failure, the preloader decoded it again as N+2, N+1,
+/// N, N-1, and N-2.
+#[test]
+fn a_file_that_fails_to_decode_is_one_stop_with_its_own_error_state() {
+    let dir = tempfile::tempdir().unwrap();
+    for (seed, name) in [(1, "a.png"), (2, "b.png"), (4, "d.png"), (5, "e.png")] {
+        write_png(&dir.path().join(name), seed);
+    }
+    // Not a RAW, not anything: no decoder takes it, whatever its content says.
+    std::fs::write(dir.path().join("c.arw"), b"not an image at all").unwrap();
+    let Some(app) = SharedApp::start_with_image(&["NextPreviousImage"], &dir.path().join("a.png"))
+    else {
+        return;
+    };
+    // From a.png, c.arw is N+2, so the neighbor preload tries it once.
+    app.wait_for_state(Duration::from_secs(10), |s| {
+        s["total_files"].as_u64() == Some(5) && s["failed_decodes"].as_u64() == Some(1)
+    });
+    let shade = |seed: u8| Some([seed * 31, seed * 31, seed * 31, 255]);
+
+    app.post("/navigate", "next");
+    app.wait_for_state(Duration::from_secs(5), |s| s["index"].as_u64() == Some(2));
+    assert_eq!(center_pixel(&app), shade(2));
+
+    app.post("/navigate", "next");
+    let failed = app.wait_for_state(Duration::from_secs(5), |s| {
+        s["index"].as_u64() == Some(3) && s["decode_error"].is_string()
+    });
+    assert!(
+        failed["decode_error"].is_string(),
+        "the failed file shows its error state, got {failed}"
+    );
+    assert_eq!(
+        failed["title"].as_str(),
+        Some("3 / 5 \u{2013} c.arw"),
+        "the title keeps the position, got {failed}"
+    );
+    assert_eq!(
+        center_pixel(&app),
+        None,
+        "the previous picture doesn't stay up over a file that failed"
+    );
+
+    app.post("/navigate", "next");
+    let moved_on = app.wait_for_state(Duration::from_secs(5), |s| {
+        s["index"].as_u64() == Some(4) && s["file"].as_str().is_some_and(|f| f.ends_with("d.png"))
+    });
+    assert!(
+        moved_on["decode_error"].is_null(),
+        "one press moves off the failure onto the next image, got {moved_on}"
+    );
+    assert_eq!(center_pixel(&app), shade(4));
+
+    app.post("/navigate", "prev");
+    let back = app.wait_for_state(Duration::from_secs(5), |s| s["decode_error"].is_string());
+    assert_eq!(
+        back["index"].as_u64(),
+        Some(3),
+        "one press back lands on the failure"
+    );
+
+    app.post("/navigate", "prev");
+    let before = app.wait_for_state(Duration::from_secs(5), |s| s["index"].as_u64() == Some(2));
+    assert!(before["decode_error"].is_null());
+    assert_eq!(center_pixel(&app), shade(2));
+
+    assert_eq!(
+        app.get_state()["failed_decodes"].as_u64(),
+        Some(1),
+        "a file known to fail isn't decoded again while it stays in the preload window"
+    );
+}

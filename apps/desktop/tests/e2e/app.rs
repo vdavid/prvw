@@ -315,14 +315,23 @@ impl TestApp {
     }
 
     pub fn get_screenshot(&self) -> image::DynamicImage {
-        let bytes = self
+        self.try_screenshot()
+            .expect("No screenshot: no image is bound to the renderer")
+    }
+
+    /// The screenshot, or `None` when no image is bound to the renderer (the canvas is the
+    /// black fill), which `/screenshot` answers with a 500 and no PNG.
+    pub fn try_screenshot(&self) -> Option<image::DynamicImage> {
+        let response = self
             .client
             .get(format!("{}/screenshot", self.base_url))
             .send()
-            .unwrap_or_else(|error| panic!("{}", self.diagnose("GET /screenshot", &error)))
-            .bytes()
-            .expect("Failed to read screenshot bytes");
-        image::load_from_memory(&bytes).expect("Failed to decode screenshot PNG")
+            .unwrap_or_else(|error| panic!("{}", self.diagnose("GET /screenshot", &error)));
+        if !response.status().is_success() {
+            return None;
+        }
+        let bytes = response.bytes().expect("Failed to read screenshot bytes");
+        Some(image::load_from_memory(&bytes).expect("Failed to decode screenshot PNG"))
     }
 
     pub fn get_state(&self) -> serde_json::Value {

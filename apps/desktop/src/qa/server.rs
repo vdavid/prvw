@@ -251,6 +251,9 @@ pub(super) fn format_state_json(state: &Arc<Mutex<SharedAppState>>) -> Value {
         "browse_reveal_pending": s.browse_reveal_pending,
         "no_images": s.no_images,
         "empty_state": s.empty_state,
+        "decode_error": s.decode_error,
+        // Live like `full_decodes`: a test asking "was that failure retried?" wants it as of now.
+        "failed_decodes": crate::decoding::failed_decodes(),
         "watched_folders": s.watched_folders,
         "scan_pending": s.scan_pending,
         "queued_nav": queued_nav,

@@ -23,6 +23,12 @@ orientation, and hand a `DecodedImage` off to the renderer.
 - **Backend dispatch is extension-based.** `dispatch::pick_backend(ext)` picks the decoder; `is_supported_extension` is
   the gate the directory scanner uses. Adding a format means: teach `dispatch` about its extensions, add a backend
   module, and match it in `mod::decode_with`.
+- **One exception: a RAW extension on a JPEG or PNG.** `load_image` calls `dispatch::pick_backend_for(ext, bytes)`,
+  which sends a RAW-extension file whose first bytes are a JPEG or PNG signature to that decoder. A Sony JPEG saved as
+  `.arw` made rawler fail with "No decoder found, model ''". TIFF signatures don't count, because most RAWs are TIFF
+  containers. The RAW quick preview and `previews::metadata` still go by extension and simply find nothing for such a
+  file. `a_jpeg_or_png_wearing_a_raw_extension_decodes_by_its_content` is the anchor.
+- `failed_decodes()` counts every `load_image` failure that isn't a cancel, for `/state`.
 - **Cancellation.** `load_image` takes an `AtomicBool`, checked between each RAW pipeline stage and at every 256 KB
   file-read chunk. Returns `Err("cancelled")` when the flag flips. Worst-case cancel latency inside RAW decode is one
   stage (≈ 80 ms on the `lens` stage; see the stage budget table). JPEG and generic decodes are a single opaque library

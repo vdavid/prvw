@@ -392,12 +392,13 @@ pub fn load_image(
     log::debug!("Loading {}", path.display());
     let start = Instant::now();
 
-    let (bytes, stamp) = read_file_cancellable(path, cancelled, read_progress)?;
+    let (bytes, stamp) = read_file_cancellable(path, cancelled, read_progress)
+        .inspect_err(|reason| count_failure(reason))?;
     if cancelled.load(Ordering::Relaxed) {
         return Err("cancelled".into());
     }
 
-    let backend = dispatch::pick_backend(ext);
+    let backend = dispatch::pick_backend_for(ext, &bytes);
     let result = decode_with(
         backend,
         path,
@@ -416,6 +417,7 @@ pub fn load_image(
         FULL_DECODES.fetch_add(1, Ordering::Relaxed);
         image
     });
+    let result = result.inspect_err(|reason| count_failure(reason));
 
     log_result(&result, ext, backend, path, start);
     result
@@ -428,6 +430,21 @@ static FULL_DECODES: AtomicU64 = AtomicU64::new(0);
 /// See [`FULL_DECODES`].
 pub fn full_decodes() -> u64 {
     FULL_DECODES.load(Ordering::Relaxed)
+}
+
+/// How many times [`load_image`] has given up on a file since launch (a cancel isn't a failure).
+/// `/state` reports it as `failed_decodes`, so a test can tell a remembered failure from a retry.
+static FAILED_DECODES: AtomicU64 = AtomicU64::new(0);
+
+fn count_failure(reason: &str) {
+    if reason != "cancelled" {
+        FAILED_DECODES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// See [`FAILED_DECODES`].
+pub fn failed_decodes() -> u64 {
+    FAILED_DECODES.load(Ordering::Relaxed)
 }
 
 /// Check if a file extension is a supported image format.
@@ -885,6 +902,37 @@ mod tests {
         .expect("decode should succeed");
 
         assert!(img.exif.is_none(), "a PNG has no EXIF to attach");
+    }
+
+    /// A camera JPEG saved with a RAW extension (David's Sony ILCE-5000 file was one) is
+    /// decoded as what it is. rawler finds no decoder for it ("No decoder found, model ''").
+    #[test]
+    fn a_jpeg_or_png_wearing_a_raw_extension_decodes_by_its_content() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jpeg = dir.path().join("really-a-jpeg.arw");
+        image::RgbImage::from_pixel(8, 8, image::Rgb([200, 20, 20]))
+            .save_with_format(&jpeg, image::ImageFormat::Jpeg)
+            .expect("write JPEG");
+        let png = dir.path().join("really-a-png.NEF");
+        image::RgbImage::from_pixel(6, 4, image::Rgb([20, 200, 20]))
+            .save_with_format(&png, image::ImageFormat::Png)
+            .expect("write PNG");
+
+        for (path, (width, height)) in [(jpeg, (8, 8)), (png, (6, 4))] {
+            let img = load_image(
+                &path,
+                &AtomicBool::new(false),
+                color::srgb_icc_bytes(),
+                false,
+                RawPipelineFlags::default(),
+                false,
+                OutputDepth::Native,
+                None,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("{} should decode by its content: {e}", path.display()));
+            assert_eq!((img.width, img.height), (width, height));
+        }
     }
 
     /// The storage-and-encoding pairs, and which of them asks for the EDR

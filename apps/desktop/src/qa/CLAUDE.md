@@ -101,6 +101,11 @@ macOS. `tests/e2e/mod.rs` carries the full caveat list.
 - **`full_decodes` in `/state`** counts every `decoding::load_image` success since launch, read live rather than from
   the snapshot. A test that wants "this change did NOT decode the image again" reads it before and after, in a one-image
   folder so no neighbor preload moves it (`a_tag_set_in_finder_shows_up_without_a_re_decode`).
+- **`decode_error` and `failed_decodes` in `/state`**: the reason the file image mode is on failed to decode (null while
+  it shows a picture, waits on one, or in browse mode), and a live count of `load_image` failures (a cancel isn't one).
+  The count is how a test tells a remembered failure from a retry
+  (`a_file_that_fails_to_decode_is_one_stop_with_its_own_error_state`). `TestApp::try_screenshot` returns `None` while
+  no image is bound, which is what a failure's black canvas looks like to `/screenshot`.
 - **HDR in `/state`**: `pixel_encoding` (the image on screen's `EncodingKind::name`: `"display_sdr"`,
   `"linear_hdr_display"`, `"gain_mapped"`, or `"scene_linear"`, `null` before the first image), `hdr_output` (Settings →
   Color → "HDR output"), `hdr_capable` and `headroom_now` (`App::display_hdr`, override applied), `want_edr_surface`,
