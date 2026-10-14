@@ -70,7 +70,7 @@ orientation, and hand a `DecodedImage` off to the renderer.
   `PixelEncoding::accepts` in debug builds. `EncodingKind` is the payload-free tag the app keeps for the image on
   screen.
 - **`OutputDepth::Rgba8` is for consumers that can only carry bytes.** The Windows clipboard and print
-  (`platform/windows/ui_common.rs`) and the preview generator pass it. It forces `hdr_display` off (so RAW develops SDR)
+  (`platform/windows/ui_common.rs`) and the preview generator pass it. It forces `hdr_active` off (so RAW develops SDR)
   and keeps 16-bit sources on the 8-bit path, so those callers get exactly what they got before 16-bit decoding existed.
   The viewer passes `OutputDepth::Native`. macOS copy and print re-read through ImageIO and never call `load_image`.
 
@@ -91,9 +91,9 @@ anchor. Cost and numbers: `docs/specs/hdr-images.md` Findings, 2026-10-14. Float
 ## Gain-map JPEGs
 
 A gain-map JPEG is a normal SDR JPEG with a second, smaller JPEG appended: the map, saying how much brighter each area
-gets on an HDR display. `jpeg::decode` keeps it only when `hdr_active` (`raw_flags.hdr_output && hdr_display`, RAW's
-gate); otherwise the map is never looked for, and the file decodes byte for byte like its primary alone
-(`a_gain_map_jpeg_without_hdr_is_its_plain_primary`). `OutputDepth::Rgba8` forces `hdr_display` off, so the clipboard,
+gets on an HDR display. `jpeg::decode` keeps it only when `hdr_active` (see "HDR / EDR flow" below); otherwise the map
+is never looked for, and the file decodes byte for byte like its primary alone
+(`a_gain_map_jpeg_without_hdr_is_its_plain_primary`). `OutputDepth::Rgba8` forces `hdr_active` off, so the clipboard,
 print, and previews get the SDR JPEG.
 
 With HDR active:
@@ -160,8 +160,8 @@ Their samples are light, not display values, so `scene_linear.rs` turns them int
 (1.0 = 203 nits, BT.2408's reference white) in their own primaries, measures the content peak (the 99.9th percentile of
 luminance), and then picks a shape:
 
-- **HDR active** (RAW's gate, `raw_flags.hdr_output && hdr_display`, at `OutputDepth::Native`): `SceneLinear`
-  half-floats, which shader mode 3 tone-maps per frame at the current headroom (`render/CLAUDE.md`).
+- **HDR active** (`hdr_active`, at `OutputDepth::Native`; see "HDR / EDR flow" below): `SceneLinear` half-floats, which
+  shader mode 3 tone-maps per frame at the current headroom (`render/CLAUDE.md`).
 - **Otherwise**: the same tone curve on the CPU with SDR white as the target (`color::hdr::tone_map::ToneCurve`), then
   the primaries changed in f32 and clipped in the display's own primaries, with `moxcms` applying only the display's
   curves (`color::transform_linear_f32_to_display`). The viewer gets M1's 16-bit `DisplaySdr` half-floats (a strong tone
@@ -300,11 +300,11 @@ for PQ and 8.1 ms for HLG, against a 25 ms budget; the CPU SDR fallback is 27 ms
    `color::profiles::HdrDisplaySpace` owns that decision and `color/CLAUDE.md` argues it. HDR brightness gain
    (`flags.hdr_gain`, default 2.0) multiplies the buffer before the matrix to push scene-white content into the EDR
    headroom. Without it, HDR output reads timidly SDR-bright rather than "HDR-bright" against Preview. 7b. **Phase 5:
-   HDR branch.** If the caller's `hdr_display` and `flags.hdr_output` are both true, skip the `[0, 1]` clamp and
-   quantise the f32 buffer into `PixelBuffer::Rgba16F` (half-floats via the `half` crate), preserving values above 1.0
-   for the EDR-capable compositor. Sharpening still fires on this branch via `color::sharpen::sharpen_rgba16f_inplace`
-   (same luminance-only unsharp mask as the 8-bit path, computed in f32 with no `[0, 1]` clamp so above-white highlights
-   survive). Otherwise the SDR path below fires. 7c. **Phase 6.2: clarity (local contrast).**
+   HDR branch.** If the caller's `hdr_active` is true, skip the `[0, 1]` clamp and quantise the f32 buffer into
+   `PixelBuffer::Rgba16F` (half-floats via the `half` crate), preserving values above 1.0 for the EDR-capable
+   compositor. Sharpening still fires on this branch via `color::sharpen::sharpen_rgba16f_inplace` (same luminance-only
+   unsharp mask as the 8-bit path, computed in f32 with no `[0, 1]` clamp so above-white highlights survive). Otherwise
+   the SDR path below fires. 7c. **Phase 6.2: clarity (local contrast).**
    `color::clarity::apply_clarity_rgba8_inplace_with` runs a larger- radius (`σ ≈ 10 px`) separable-Gaussian unsharp
    mask on **luminance only**, lifting midtone features (shape silhouettes, textures) that survive display downscaling
    so the image reads crisper at every zoom level. Same math as capture sharpening, different defaults. Runs before step
@@ -319,21 +319,26 @@ for PQ and 8.1 ms for HLG, against a 25 ms budget; the CPU SDR fallback is 27 ms
 The linear Rec.2020 `ColorProfile` is built programmatically in `color::profiles::linear_rec2020_profile`. No bundled
 ICC file.
 
-## HDR / EDR flow (Phase 5 + 5.2)
+## HDR / EDR flow
 
-Whether a given decode lands in HDR or SDR is decided once, up front, in `raw::decode`:
+Whether a decode lands in HDR or SDR is decided once, up front, by the caller, and every format reads the same answer:
 
 ```
-hdr_active = flags.hdr_output && hdr_display
+hdr_active = color.hdr_output && display_hdr.capable     // App::hdr_active
 ```
 
-`hdr_display` is `App::display_hdr.capable`: whether the display can show HDR at all (potential headroom above 1.0 on
-macOS, HDR mode on in Windows; `render::display_hdr::DisplayHdr::from_info` reads it). **Decoders never see the current
-headroom.** It moves with screen brightness on macOS, and a decode that read it would have to re-run on every tweak; the
-shader takes it per frame instead (`render/CLAUDE.md`). `App` also tracks `current_image_encoding` (an `EncodingKind`),
-and `App::want_edr_surface` fuses all three inputs (flag, capability, `EncodingKind::is_hdr()`) to flip the window's
-surface between SDR and EDR modes per decode. Gain-map JPEGs, PQ and HLG PNGs, and float TIFFs go through the same gate
-(see their sections above).
+`color.hdr_output` is Settings → Color → "HDR output" (default on). `display_hdr.capable` is whether the display can
+show HDR at all (potential headroom above 1.0 on macOS, HDR mode on in Windows;
+`render::display_hdr::DisplayHdr::from_info` reads it). `load_image` takes the result as `hdr_active` and hands it to
+the backend; `OutputDepth::Rgba8` forces it off. Off, RAW develops SDR, a gain-map JPEG is its plain primary, and PQ,
+HLG, and float HDR take the CPU's tone-mapped SDR rendition: every image renders as it did before HDR support.
+`App::sync_hdr_active` is the one place that reacts to a flip (preloader, cache budget, cache flush), so toggling the
+setting on an SDR display decodes nothing.
+
+**Decoders never see the current headroom.** It moves with screen brightness on macOS, and a decode that read it would
+have to re-run on every tweak; the shader takes it per frame instead (`render/CLAUDE.md`). `App` also tracks
+`current_image_encoding` (an `EncodingKind`), and `App::want_edr_surface` fuses `hdr_active`, image mode, and
+`EncodingKind::is_hdr()` to flip the window's surface between SDR and EDR modes per decode.
 
 Once inside `raw::decode`, `hdr_active` gates four different behaviors:
 

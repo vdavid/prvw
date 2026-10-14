@@ -2,16 +2,16 @@
 
 Scan the parent directory for images, preload adjacent files in the background, and keep an LRU cache with a flat 512 MB
 budget for SDR, twice that for HDR (Phase 5). `SDR_MEMORY_BUDGET` / `HDR_MEMORY_BUDGET` in `preloader.rs` are the
-constants, and `ImageCache` resolves both once at construction. The cache switches between them when the RAW pipeline's
-`hdr_output` flag flips or the display's HDR capability does (`App::adopt_display_hdr`; a change in the current headroom
-alone never touches the cache); doubling the budget alongside RAW RGBA16F's doubled per-pixel bytes is what keeps the
-preload count identical in both modes. `image_memory_cost` counts the storage's real bytes, so a 16-bit PNG or TIFF
-(half-float `DisplaySdr`, 8 B/px) costs twice an 8-bit image in either mode, and fewer of them fit in the SDR budget.
-Accepted: they're rare, and the budget isn't a count. A gain-map JPEG on an HDR display stays RGBA8 and adds its map's
-bytes (`PixelEncoding::extra_bytes`), usually a sixteenth of the base's, so it costs about what its SDR decode does and
-the doubled HDR budget simply holds more of them. A PQ or HLG PNG or an HDR float TIFF on an HDR display is
-`SceneLinear` half-floats, 8 B/px like a RAW develop, which is exactly what the doubled budget is sized for; its SDR
-rendition elsewhere is RGBA8.
+constants, and `ImageCache` resolves both once at construction. The cache switches between them when `App::hdr_active`
+flips, which is the "HDR output" setting or the display's HDR capability (`App::sync_hdr_active`; a change in the
+current headroom alone never touches the cache, and neither does the setting on a display that can't show HDR); doubling
+the budget alongside RAW RGBA16F's doubled per-pixel bytes is what keeps the preload count identical in both modes.
+`image_memory_cost` counts the storage's real bytes, so a 16-bit PNG or TIFF (half-float `DisplaySdr`, 8 B/px) costs
+twice an 8-bit image in either mode, and fewer of them fit in the SDR budget. Accepted: they're rare, and the budget
+isn't a count. A gain-map JPEG on an HDR display stays RGBA8 and adds its map's bytes (`PixelEncoding::extra_bytes`),
+usually a sixteenth of the base's, so it costs about what its SDR decode does and the doubled HDR budget simply holds
+more of them. A PQ or HLG PNG or an HDR float TIFF on an HDR display is `SceneLinear` half-floats, 8 B/px like a RAW
+develop, which is exactly what the doubled budget is sized for; its SDR rendition elsewhere is RGBA8.
 
 ## Decision: the current image is found by name, not by canonicalizing every entry
 

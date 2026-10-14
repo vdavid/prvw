@@ -378,13 +378,14 @@ title bar overlapping the image and nothing to reserve space for.
 **Zoom tab, two keys.** `AutoFitWindow` and `EnlargeSmallImages`, both checkboxes. As on macOS, "Enlarge small images"
 is deliberately _not_ disabled by "Auto-fit window": auto-fit is inert in fullscreen, where enlarge still governs.
 
-**Color tab, three keys.** `IccColorManagement`, `ColorMatchDisplay`, and `RelativeColorimetric`, all checkboxes. The
-cross-dependency carries over: unchecking ICC color management calls `EnableWindow(hwnd, FALSE)` on the other two. The
-description copy needs rewriting for Windows display hardware, and it should mention Windows 11 Auto Color Management,
-which is on by default on supported displays and can double-transform what a color-aware app does. That is listed as a
-risk in the cross-platform plan and it is the kind of thing a user will read the settings copy to understand.
+**Color tab, four keys.** `IccColorManagement`, `ColorMatchDisplay`, `RelativeColorimetric`, and `HdrOutput`, all
+checkboxes. The cross-dependency carries over: unchecking ICC color management calls `EnableWindow(hwnd, FALSE)` on
+`ColorMatchDisplay` and `RelativeColorimetric`. `HdrOutput` stays independent of it, as on macOS. The description copy
+needs rewriting for Windows display hardware, and it should mention Windows 11 Auto Color Management, which is on by
+default on supported displays and can double-transform what a color-aware app does. That is listed as a risk in the
+cross-platform plan and it is the kind of thing a user will read the settings copy to understand.
 
-**RAW tab, 23 keys**, in eight group boxes matching the macOS panel's section headers exactly:
+**RAW tab, 22 keys**, in eight group boxes matching the macOS panel's section headers exactly:
 
 - Sensor corrections (DNG only): `RawDngOpcodeList1`, `RawDngOpcodeList2`, `RawDngOpcodeList3`.
 - Color: `RawBaselineExposure`, then `RawBaselineExposureOffset` as a trackbar indented under it, `RawDcpHueSatMap`,
@@ -395,7 +396,7 @@ risk in the cross-platform plan and it is the kind of thing a user will read the
   then `RawSharpenAmount` as a trackbar under it.
 - Denoise: `RawChromaDenoise`.
 - Geometry: `RawLensCorrection`.
-- Output: `RawHdrOutput`, then `RawHdrGain` as a trackbar under it.
+- Output: `RawHdrGain` as a trackbar, not indented, since its switch (`HdrOutput`) is on the Color tab.
 - DCP profile: `CustomDcpDir`, as the read-only edit plus Browse and Clear.
 
 Plus the Reset button at the bottom, matching macOS.

@@ -467,17 +467,73 @@ the M3 Max with `rav1d`'s assembly off (its aarch64 assembly fails to build: `me
 - `apps/desktop/src/histogram/CLAUDE.md`, `apps/desktop/src/navigation/CLAUDE.md` (cache), `docs/architecture.md`.
 - Settings and parity docs in M5.
 
-## Manual QA for David (at the end of M5)
+## Manual QA for David
 
-On the MacBook Pro's XDR display, with Preview open side by side:
+On the MacBook Pro's XDR display, brightness well below full (the headroom is what's left above the current brightness),
+Preview open side by side. Run a release build from the worktree: `cd apps/desktop` then
+`cargo run --release -- <file or folder>`. Settings → Color → "HDR output" should be on (it is by default, and your
+existing RAW setting carries over).
 
-1. Open the two Pixel photos. Highlights (sky, lamps) should glow like in Preview, and the rest should match.
-2. Drag the brightness slider down and up with a gain-map photo open. The highlights adapt within about half a second,
-   with no flash and no "Loading…".
-3. Move the window to an external SDR monitor. The photo shows its normal SDR version, identical to today.
-4. Turn the HDR setting off. Everything renders SDR, identical to today.
-5. Open the PQ and HLG PNG fixtures (or any real ones you have). They look like photos, not grey.
-6. Step through a folder mixing SDR JPEGs, gain-map JPEGs, and RAWs, and confirm navigation feels as instant as today.
+**Files.**
+
+- Pixel (Ultra HDR): `~/Downloads/takeout-unique-samples/photo-27 [Photos from 2025] PXL_20250219_153250675.jpg` and
+  `photo-28 [Photos from 2025] PXL_20251008_104424078.jpg` in the same folder.
+- iPhone, both flavors in one file: `apps/desktop/tests/fixtures/hdr/iphone-air-gain-map-776.jpg` (in the repo).
+- iPhone, Apple's older flavor only: download the two iPhone 14 Plus files listed in section 8 ("About iPhone 15 Pro
+  Max…" and "Back view of iPhone 14 Pro Max…", Wikimedia Commons). Don't commit them.
+- PQ, HLG, and float: `apps/desktop/tests/fixtures/hdr/pq-bt2020-32x16.png`, `hlg-bt2020-32x16.png`,
+  `float-linear-peak-4-32x16.tif`, and `float-linear-sdr-32x16.tif` (all in the repo, 32×16, so zoom in). They come from
+  `cd apps/desktop && cargo run --example make-hdr-fixtures`, which rewrites every fixture in that folder; only run it
+  if you want fresh ones (it also rewrites `iso-21496-64x48.jpg`'s timestamp, so discard that change). We have no real
+  PQ or HLG file, so any you find is worth a look too.
+- Any RAW of yours.
+
+**Steps.**
+
+1. **Gain maps against Preview.** Open the two Pixel photos, then the iPhone files. Highlights (sky, lamps, reflections)
+   should glow like in Preview, and everything else should match it. The Apple-only iPhone 14 Plus files are the ones
+   measured against ImageIO (0.5% off), so they should be the closest match.
+2. **Brightness.** With a gain-map photo open, drag the brightness slider down and up. The highlights adapt within about
+   half a second, with no flash, no "Loading…", and no re-decode (`RUST_LOG=prvw::app=debug,prvw::decoding=info` shows
+   `Display headroom now: …` lines and no new `Decoded …` line).
+3. **An SDR monitor.** Move the window to an external monitor with HDR off. The photo shows its normal SDR version,
+   identical to the release build. Back on the MacBook, it glows again.
+4. **The switch.** Turn Settings → Color → "HDR output" off. Every image renders SDR, identical to the release build
+   (gain-map JPEGs as their plain JPEG, RAW as its SDR develop). On again, the glow comes back. On the external SDR
+   monitor, toggling it changes nothing and decodes nothing.
+5. **PQ and HLG.** Open the PQ and HLG PNGs. They look like a grey ramp and four colored patches, not a flat grey wash,
+   and the bright end of the ramp glows. Preview may not read `cICP` on your macOS; if it shows these grey and flat,
+   that's the bug Prvw used to have. Then the float TIFFs: the peak-4 one glows, the SDR one doesn't.
+6. **The SDR renditions.** Repeat step 5 with HDR output off: diffuse white should sit close to full white (about 243 of
+   255), not dim, and the highlights packed into the top. HLG here is the one to judge (open item 5 below).
+7. **Navigation.** Step through a folder mixing SDR JPEGs, gain-map JPEGs, and RAWs: it should feel as instant as the
+   release build.
+8. **RAW at launch.** At full brightness, launch Prvw on a RAW (from the command line, so it's the first image). It
+   should open with its highlights glowing straight away, not after a display change (`RUST_LOG=info` logs
+   `Display HDR capable: false -> true` before the first `Decoded …` line). Open item 2.
+
+**Open items to decide or check on real hardware.**
+
+1. **RAW's SDR conversion clips in BT.2020, before the matrix.** Scene-linear HDR got fixed (review fix M1 in Findings);
+   RAW keeps today's clip so its look doesn't change without you. Switching is one call in `raw.rs` plus a regenerated
+   golden: saturated highlights past white get more saturated (`[2.0, 0.6, 0.1]` lands on `[255, 175, 33]` in sRGB,
+   today `[255, 196, 51]`), everything in gamut stays put. The same switch would also fix RAW on a LUT-only calibrated
+   display profile, which shows a RAW linear (dark) in SDR today (review L3). Decide whether to take it.
+2. **The launch-time RAW gating bug from M0 should be gone.** Gating moved from the current headroom (which can read 1.0
+   at launch) to the potential one, which an MBP reports as 16 whatever the brightness. Step 8 confirms it on hardware.
+3. **Windows HDR has never run on a real HDR display.** The scRGB surface, the SDR-white scale (`sdr_white_nits / 80`),
+   and the headroom poll are unit- and GPU-tested only. Known gap: the overlay pills and text draw through their own
+   pipeline and stay unscaled on a Windows HDR surface, so they look dim next to the image there.
+4. **16-bit TIFFs decode about 30% slower** (24 → 31.5 ms for 12 MP, measured under load; PNG is +7%). Almost all of it
+   is `moxcms`' 16-bit transform. Worth an idle-machine rerun (`sixteen_bit_decode_perf`, `#[ignore]`) before deciding
+   whether it matters.
+5. **HLG's SDR rendition** uses the fixed 1,000-nit OOTF plus the tone map, so it matches the HDR one at headroom 1. If
+   it looks off in step 6, the alternative is in Findings (review L2).
+6. **Crossfades between an HDR and an SDR image** show the outgoing image on the wrong surface for one fade (Findings,
+   M2 and M4). Watch a slideshow mixing the two and say whether it's noticeable.
+7. **The settings copy** for "HDR output" is a draft: `apps/desktop/src/color/settings_panel.rs` (macOS),
+   `apps/desktop/src/settings/windows/model.rs` (Windows, Color tab and the RAW tab's HDR gain line), and the RAW
+   panel's HDR gain line in `apps/desktop/src/settings/panels/raw.rs`.
 
 ## Findings
 
@@ -893,3 +949,19 @@ Filled in by the implementing agent during M0 and later. Date each entry.
   - **The alternative, if QA says HLG looks off on SDR:** on the CPU fallback only, render with the display-adaptive
     gamma at `Lw` = 203 nits (BT.2100's extended formula gives about 0.95) and skip the tone map. It would match a
     native HLG SDR display more closely, at the cost of the SDR rendition no longer matching headroom 1 on an HDR one.
+- **2026-10-14, M5: the setting, as built.**
+  - **Key and shape.** `Settings::color.hdr_output` (a `ColorSettings` group under `color` in the JSON, default on),
+    `SettingKey::HdrOutput` on the Color panel, `CommandKey::HdrOutput`, `AppCommand::SetHdrOutput`, and
+    `color::State::hdr_output`. `RawPipelineFlags::hdr_output` is gone; the RAW panel keeps only "HDR brightness gain"
+    under "Output", and on Windows that trackbar is no longer indented, since nothing sits above it.
+  - **Migration.** `Settings::parse` copies a persisted `raw.hdr_output` into `color.hdr_output` unless the new key is
+    already there, and the next save drops the old one (serde ignores unknown fields, so without the copy an old `false`
+    would silently turn back on). Pinned by `the_old_raw_hdr_output_key_carries_over`.
+  - **One gate.** Decoders take `hdr_active` (the setting AND the display's capability, `App::hdr_active`) in place of
+    M2's `hdr_display` plus the RAW flag; `App::sync_hdr_active` is the only place that reacts to it flipping
+    (preloader, cache budget, cache flush), shared by display changes and the setting. Toggling the setting on an SDR
+    display decodes nothing.
+  - **QA.** `/state` reports `hdr_output`, `POST /hdr-output` and the `hdr_output` MCP tool set it, and
+    `hdr_output_re_decodes_only_when_it_changes_what_shows` checks both directions on an HDR display and no re-decode on
+    an SDR one (verified to fail when the setting always re-decodes).
+  - **Not added:** a menu item. The other color settings have one, but HDR output is a set-and-forget preference.

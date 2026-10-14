@@ -12,48 +12,48 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 
 **Infrastructure:**
 
-| Path                        | Role                                                                                                  |
-| --------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `main.rs`                   | Thin entry: CLI, logger, event-loop setup                                                             |
-| `app.rs` + `app/`           | `App`, `ApplicationHandler`, command dispatcher, `SharedAppState`                                     |
-| `chrome.rs`                 | What colour every Win32 window of ours paints: theme, surface, ink, and the high-contrast rule        |
-| `clipboard.rs`              | The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`)                   |
-| `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                                                           |
-| `file_stamp.rs`             | A file's size + mtime, recorded at read time: tells a re-save from a metadata-only change (a tag)     |
-| `folder_scan.rs`            | The one off-thread directory reader: images + subdirs per pass, per-folder dedupe, live progress      |
-| `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce, stamps what changed in place    |
-| `input.rs`                  | Maps keys and QA keys to `AppCommand`                                                                 |
-| `launch.rs`                 | What Prvw is asked to open, by argument or by drop: wait for a file, a folder's images, nothing       |
-| `logging.rs`                | `env_logger` setup, and where a console-less Windows launch writes instead                            |
-| `menu/`                     | Menu bar and context menu via `muda` (macOS, Windows), and the seam for platforms with neither        |
-| `paths.rs`                  | What "the same path" means per platform: verbatim `\\?\` prefixes, case folding, the display boundary |
-| `pixels.rs`                 | `Logical` / `Physical` newtypes for coordinate types                                                  |
-| `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers, both clipboards, the Windows console)      |
-| `render.rs` + `render/`     | wgpu infrastructure: renderer, text overlay, shaders                                                  |
-| `scroll.rs`                 | What a wheel notch or a trackpad swipe means, per platform: zoom modifier, zoom steps, images         |
+| Path                        | Role                                                                                                                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `main.rs`                   | Thin entry: CLI, logger, event-loop setup                                                                                                                                      |
+| `app.rs` + `app/`           | `App`, `ApplicationHandler`, command dispatcher, `SharedAppState`                                                                                                              |
+| `chrome.rs`                 | What colour every Win32 window of ours paints: theme, surface, ink, and the high-contrast rule                                                                                 |
+| `clipboard.rs`              | The byte layouts Windows' clipboard formats want (`CF_DIB`, `CF_DIBV5`, `CF_HDROP`)                                                                                            |
+| `commands.rs`               | `AppCommand` enum + global `EventLoopProxy`                                                                                                                                    |
+| `file_stamp.rs`             | A file's size + mtime, recorded at read time: tells a re-save from a metadata-only change (a tag)                                                                              |
+| `folder_scan.rs`            | The one off-thread directory reader: images + subdirs per pass, per-folder dedupe, live progress                                                                               |
+| `folder_watch.rs`           | Live folder sync: `notify` FSEvents watcher + pure debounce/coalesce, stamps what changed in place                                                                             |
+| `input.rs`                  | Maps keys and QA keys to `AppCommand`                                                                                                                                          |
+| `launch.rs`                 | What Prvw is asked to open, by argument or by drop: wait for a file, a folder's images, nothing                                                                                |
+| `logging.rs`                | `env_logger` setup, and where a console-less Windows launch writes instead                                                                                                     |
+| `menu/`                     | Menu bar and context menu via `muda` (macOS, Windows), and the seam for platforms with neither                                                                                 |
+| `paths.rs`                  | What "the same path" means per platform: verbatim `\\?\` prefixes, case folding, the display boundary                                                                          |
+| `pixels.rs`                 | `Logical` / `Physical` newtypes for coordinate types                                                                                                                           |
+| `platform.rs` + `platform/` | Cross-cutting platform glue (Apple Events, AppKit helpers, both clipboards, the Windows console)                                                                               |
+| `render.rs` + `render/`     | wgpu infrastructure: renderer, text overlay, the image shader's four modes (SDR, RAW HDR, gain map, scene-linear tone map), and the display's HDR capability and live headroom |
+| `scroll.rs`                 | What a wheel notch or a trackpad swipe means, per platform: zoom modifier, zoom steps, images                                                                                  |
 
 **Features:**
 
-| Path                 | Owns                                                                                                                                                                             |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `about/`             | About window: shared copy in `content.rs`, an AppKit window on macOS, a Win32 popup on Windows                                                                                   |
-| `browser/`           | Browse mode: a native folder tree + thumbnail grid that swaps with the viewer + `browser::State`. AppKit on macOS, Win32 in `browser/windows/`, absent on Linux                  |
-| `color/`             | ICC transform + display-profile detection (macOS, Windows) + Color settings panel + `color::State` + `hdr/` (gain maps, PQ/HLG, the tone map, the shader's Rust reference)       |
-| `decoding/`          | Image format decoders (JPEG via zune-jpeg, gain-map JPEGs included; camera RAW via rawler; PNG/GIF/WebP/BMP/TIFF via `image`, PQ/HLG PNGs and float TIFFs as scene-linear light) |
-| `diagnostics.rs`     | Performance observability: `NavigationRecord` + `build_text`                                                                                                                     |
-| `exif_overlay/`      | EXIF info overlay (`Settings::exif_visible` toggle, View → Exif info, bare `E` key)                                                                                              |
-| `file_associations/` | LaunchServices FFI + File associations settings panel                                                                                                                            |
-| `histogram/`         | 256-bin RGB histogram overlay (toggle via View → Histogram or `H` key) + `histogram::State`                                                                                      |
-| `navigation/`        | Directory scan + background preloader + LRU cache + `navigation::State`                                                                                                          |
-| `onboarding/`        | Onboarding window (macOS launch without a file) + defaults-sentence generator + checkmark renderer                                                                               |
-| `open_dialog.rs`     | The native "Open an image" picker behind File → Open, run off the event-loop thread through `rfd`                                                                                |
-| `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                                                                                              |
-| `settings/`          | JSON persistence + the AppKit settings window (shell + General panel) + the Win32 one (`settings/windows/`)                                                                      |
-| `slideshow/`         | Timer-driven auto-advance (`S`) + crossfade + Slideshow settings panel + `slideshow::State`                                                                                      |
-| `tags/`              | Finder color tags (macOS): bare `1`–`7` and the Tags menu toggle them, dots in the bottom-left corner show them, `tags::State` caches them per path                              |
-| `updater.rs`         | Update check: macOS installs the DMG, Windows opens the download                                                                                                                 |
-| `window.rs`          | Main viewer window: create, fullscreen, auto-fit, title-bar vibrancy                                                                                                             |
-| `zoom/`              | `ViewState` + zoom/pan math + Zoom settings panel + `zoom::State`                                                                                                                |
+| Path                 | Owns                                                                                                                                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `about/`             | About window: shared copy in `content.rs`, an AppKit window on macOS, a Win32 popup on Windows                                                                                                                                       |
+| `browser/`           | Browse mode: a native folder tree + thumbnail grid that swaps with the viewer + `browser::State`. AppKit on macOS, Win32 in `browser/windows/`, absent on Linux                                                                      |
+| `color/`             | ICC transform + display-profile detection (macOS, Windows) + Color settings panel (including "HDR output", the switch for every HDR format) + `color::State` + `hdr/` (gain maps, PQ/HLG, the tone map, the shader's Rust reference) |
+| `decoding/`          | Image format decoders (JPEG via zune-jpeg, gain-map JPEGs included; camera RAW via rawler; PNG/GIF/WebP/BMP/TIFF via `image`, PQ/HLG PNGs and float TIFFs as scene-linear light)                                                     |
+| `diagnostics.rs`     | Performance observability: `NavigationRecord` + `build_text`                                                                                                                                                                         |
+| `exif_overlay/`      | EXIF info overlay (`Settings::exif_visible` toggle, View → Exif info, bare `E` key)                                                                                                                                                  |
+| `file_associations/` | LaunchServices FFI + File associations settings panel                                                                                                                                                                                |
+| `histogram/`         | 256-bin RGB histogram overlay (toggle via View → Histogram or `H` key) + `histogram::State`                                                                                                                                          |
+| `navigation/`        | Directory scan + background preloader + LRU cache + `navigation::State`                                                                                                                                                              |
+| `onboarding/`        | Onboarding window (macOS launch without a file) + defaults-sentence generator + checkmark renderer                                                                                                                                   |
+| `open_dialog.rs`     | The native "Open an image" picker behind File → Open, run off the event-loop thread through `rfd`                                                                                                                                    |
+| `qa/`                | Embedded HTTP + MCP JSON-RPC server                                                                                                                                                                                                  |
+| `settings/`          | JSON persistence + the AppKit settings window (shell + General panel) + the Win32 one (`settings/windows/`)                                                                                                                          |
+| `slideshow/`         | Timer-driven auto-advance (`S`) + crossfade + Slideshow settings panel + `slideshow::State`                                                                                                                                          |
+| `tags/`              | Finder color tags (macOS): bare `1`–`7` and the Tags menu toggle them, dots in the bottom-left corner show them, `tags::State` caches them per path                                                                                  |
+| `updater.rs`         | Update check: macOS installs the DMG, Windows opens the download                                                                                                                                                                     |
+| `window.rs`          | Main viewer window: create, fullscreen, auto-fit, title-bar vibrancy                                                                                                                                                                 |
+| `zoom/`              | `ViewState` + zoom/pan math + Zoom settings panel + `zoom::State`                                                                                                                                                                    |
 
 ### Top-level principles
 
@@ -69,6 +69,11 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 - **Per-feature state.** `zoom::State`, `color::State`, `navigation::State` own feature-specific fields. `App` keeps
   only cross-cutting handles and runtime input.
 - **Shared-state boundary.** `SharedAppState` (in `app/shared_state.rs`) is the snapshot the QA thread reads.
+- **HDR is decided once per display, rendered per frame.** `App::hdr_active` ("HDR output" on and a display that can
+  show HDR) is the one bool every decoder gets; flipping it re-decodes. The display's current headroom moves with
+  brightness and only feeds a shader uniform, so a brightness change never re-decodes. Spec and measurements:
+  [`specs/hdr-images.md`](specs/hdr-images.md); the flow: `apps/desktop/src/decoding/CLAUDE.md` ("HDR / EDR flow") and
+  `apps/desktop/src/render/CLAUDE.md`.
 
 ## Website (`apps/website/`)
 

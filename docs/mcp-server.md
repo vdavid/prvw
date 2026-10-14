@@ -43,6 +43,9 @@ both a text confirmation and a `state` field with the current app state as JSON.
 
 - **auto_fit_window**: Enable/disable auto-fit. Params: `enabled` (bool).
 - **enlarge_small_images**: Enable/disable small image enlargement. Params: `enabled` (bool).
+- **hdr_output**: Enable/disable Settings → Color → "HDR output". On, HDR images render brighter than SDR white on a
+  display that can show HDR; off, everything renders SDR. Re-decodes only when that changes what the image decodes to.
+  Params: `enabled` (bool).
 
 ### Utility
 
@@ -82,6 +85,10 @@ both a text confirmation and a `state` field with the current app state as JSON.
   `full_decodes` counts every full decode since launch, neighbors and browse-mode warming included. Tests read it before
   and after a change to tell whether an image was decoded again.
 
+  The HDR fields: `pixel_encoding` (what the image on screen's pixels mean: `"display_sdr"`, `"linear_hdr_display"`,
+  `"gain_mapped"`, or `"scene_linear"`), `hdr_output` (the setting), `hdr_capable` and `headroom_now` (the display, QA
+  override applied), `want_edr_surface`, `edr_surface`, and `hdr_surface_supported`.
+
 - **prvw://settings**: Current settings from disk as JSON (auto_update, auto_fit_window, enlarge_small_images,
   loop_navigation).
 - **prvw://menu**: Menu bar structure.
@@ -92,32 +99,34 @@ both a text confirmation and a `state` field with the current app state as JSON.
 All endpoints also available as simple HTTP for cURL debugging. POST endpoints return the updated app state as JSON
 (`application/json`) after the command completes. GET `/state` also returns JSON.
 
-| Method | Path                  | Body                                                      | Response         |
-| ------ | --------------------- | --------------------------------------------------------- | ---------------- |
-| GET    | /state                | -                                                         | State JSON       |
-| GET    | /settings             | -                                                         | Settings JSON    |
-| GET    | /menu                 | -                                                         | Menu text        |
-| GET    | /parity               | -                                                         | Parity JSON      |
-| GET    | /screenshot           | -                                                         | PNG bytes        |
-| GET    | /diagnostics          | -                                                         | Diagnostics text |
-| POST   | /key                  | key name                                                  | State JSON       |
-| POST   | /navigate             | "next", "prev", "forward", or "backward"                  | State JSON       |
-| POST   | /zoom                 | "fit", "actual", or float                                 | State JSON       |
-| POST   | /zoom-in              | -                                                         | State JSON       |
-| POST   | /zoom-out             | -                                                         | State JSON       |
-| POST   | /scroll-zoom          | JSON: `{"delta": 1.0, "cursor_x": 400, "cursor_y": 300}`  | State JSON       |
-| POST   | /fullscreen           | "on", "off", "toggle"                                     | State JSON       |
-| POST   | /open                 | file path                                                 | State JSON       |
-| POST   | /auto-fit             | "on" or "off"                                             | State JSON       |
-| POST   | /enlarge-small        | "on" or "off"                                             | State JSON       |
-| POST   | /window-geometry      | JSON: `{"x": 100, "y": 100, "width": 800, "height": 600}` | State JSON       |
-| GET    | /window-diagnostics   | -                                                         | Text (debug)     |
-| POST   | /zoom-window          | -                                                         | State JSON       |
-| POST   | /click-zoom-button    | -                                                         | State JSON       |
-| POST   | /refresh              | -                                                         | State JSON       |
-| POST   | /browse/select-folder | absolute folder path (test-only, macOS)                   | State JSON       |
-| POST   | /browse/select-grid   | grid index (test-only, macOS)                             | State JSON       |
-| POST   | /browse/open          | - (open the selected grid image; test-only, macOS)        | State JSON       |
+| Method | Path                  | Body                                                                                                              | Response         |
+| ------ | --------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------- |
+| GET    | /state                | -                                                                                                                 | State JSON       |
+| GET    | /settings             | -                                                                                                                 | Settings JSON    |
+| GET    | /menu                 | -                                                                                                                 | Menu text        |
+| GET    | /parity               | -                                                                                                                 | Parity JSON      |
+| GET    | /screenshot           | -                                                                                                                 | PNG bytes        |
+| GET    | /diagnostics          | -                                                                                                                 | Diagnostics text |
+| POST   | /key                  | key name                                                                                                          | State JSON       |
+| POST   | /navigate             | "next", "prev", "forward", or "backward"                                                                          | State JSON       |
+| POST   | /zoom                 | "fit", "actual", or float                                                                                         | State JSON       |
+| POST   | /zoom-in              | -                                                                                                                 | State JSON       |
+| POST   | /zoom-out             | -                                                                                                                 | State JSON       |
+| POST   | /scroll-zoom          | JSON: `{"delta": 1.0, "cursor_x": 400, "cursor_y": 300}`                                                          | State JSON       |
+| POST   | /fullscreen           | "on", "off", "toggle"                                                                                             | State JSON       |
+| POST   | /open                 | file path                                                                                                         | State JSON       |
+| POST   | /auto-fit             | "on" or "off"                                                                                                     | State JSON       |
+| POST   | /enlarge-small        | "on" or "off"                                                                                                     | State JSON       |
+| POST   | /hdr-output           | "on" or "off"                                                                                                     | State JSON       |
+| POST   | /display-hdr          | JSON: `{"capable": true, "headroom_now": 4.0}` (QA stand-in for the display; see `apps/desktop/src/qa/CLAUDE.md`) | State JSON       |
+| POST   | /window-geometry      | JSON: `{"x": 100, "y": 100, "width": 800, "height": 600}`                                                         | State JSON       |
+| GET    | /window-diagnostics   | -                                                                                                                 | Text (debug)     |
+| POST   | /zoom-window          | -                                                                                                                 | State JSON       |
+| POST   | /click-zoom-button    | -                                                                                                                 | State JSON       |
+| POST   | /refresh              | -                                                                                                                 | State JSON       |
+| POST   | /browse/select-folder | absolute folder path (test-only, macOS)                                                                           | State JSON       |
+| POST   | /browse/select-grid   | grid index (test-only, macOS)                                                                                     | State JSON       |
+| POST   | /browse/open          | - (open the selected grid image; test-only, macOS)                                                                | State JSON       |
 
 The last three endpoints above are debug-build, macOS-only window-chrome hooks (they don't exist in release):
 

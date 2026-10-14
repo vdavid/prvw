@@ -990,10 +990,10 @@ guards.
    - **HDR is a user toggle on Windows, and that's a genuine behavioral difference from macOS, not a bug.** macOS EDR
      gives headroom whenever the display has it. On Windows, values above 1.0 only reach the display when the user has
      turned HDR on in Settings, and the app is expected to query `DXGI_OUTPUT_DESC1` and fall back to
-     `DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709` when it's off. So the "HDR / EDR output" setting means something
-     different per platform: on macOS it's ours to decide, on Windows it's ours to _respect_. Decide what the settings
-     UI says when the display isn't in HDR mode, and check whether wgpu 30's `Surface::display_hdr_info` gives us the
-     query or whether we need `IDXGIOutput6` through `as_hal`.
+     `DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709` when it's off. So the "HDR output" setting means something different per
+     platform: on macOS it's ours to decide, on Windows it's ours to _respect_. Decide what the settings UI says when
+     the display isn't in HDR mode, and check whether wgpu 30's `Surface::display_hdr_info` gives us the query or
+     whether we need `IDXGIOutput6` through `as_hal`.
    - **Bonus to check:** the macOS code pokes `CAMetalLayer.colorspace` by hand. Once wgpu owns surface color space,
      some of `display_profile.rs`'s CG plumbing may become redundant. Deleting it would be a real simplification, so
      look before assuming both are needed.
