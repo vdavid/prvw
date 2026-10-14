@@ -183,8 +183,10 @@ How each source gets to light:
   nits (system gamma 1.2), over 203; HLG's 75% signal is reference white. Both run through a 64K lookup table per
   transfer (built once), and HLG adds a `powf` per pixel for the OOTF.
 - **Float TIFF** (`Rgb32F` / `Rgba32F` from `image`): already linear, 1.0 = SDR white. The ICC profile's colorants name
-  the primaries when it's a matrix-shaper profile, BT.709 otherwise; its curves are ignored. NaN becomes 0 and anything
-  past the half-float range clamps, since a renderer's stray value would otherwise reach the texture.
+  the primaries when it's a matrix-shaper profile, BT.709 otherwise (logged at `debug`); its curves are ignored. A NaN
+  color becomes 0, a NaN alpha 1 (the pixel stays rather than vanishing), alpha clamps to [0, 1], and color past the
+  half-float range clamps, since a renderer's stray value would otherwise reach the texture
+  (`float_tiff_alpha_is_sanitized`).
 
 `cLLI` and `mDCV` are logged at `debug`, never trusted: the measured peak decides.
 `RUST_LOG=prvw::decoding::scene_linear=debug` logs the stage split for both shapes.

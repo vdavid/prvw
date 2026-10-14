@@ -303,14 +303,19 @@ pub(super) fn decode_float(
         .map(|chunk| {
             let mut histogram = PeakHistogram::default();
             for px in chunk.as_chunks_mut::<4>().0 {
-                // A renderer's NaN or infinity would reach the texture as garbage.
-                *px = px.map(|v| {
+                // A renderer's NaN or infinity would reach the texture as garbage. A NaN color is
+                // black; a NaN alpha says nothing, so the pixel stays opaque rather than vanishing,
+                // and alpha is a blend weight, so it clamps to [0, 1].
+                let [r, g, b, a] = *px;
+                let color = |v: f32| {
                     if v.is_nan() {
                         0.0
                     } else {
                         v.clamp(-F16_MAX, F16_MAX)
                     }
-                });
+                };
+                let alpha = if a.is_nan() { 1.0 } else { a.clamp(0.0, 1.0) };
+                *px = [color(r), color(g), color(b), alpha];
                 histogram.add(luminance([px[0], px[1], px[2]], weights));
             }
             histogram
@@ -501,9 +506,14 @@ impl SourceSpace {
     fn from_icc(icc: Option<&[u8]>) -> Self {
         let profile = icc
             .and_then(|bytes| ColorProfile::new_from_slice(bytes).ok())
-            .filter(ColorProfile::is_matrix_shaper)
-            .unwrap_or_else(ColorProfile::new_srgb);
-        Self::linear_in(profile)
+            .filter(ColorProfile::is_matrix_shaper);
+        if icc.is_some() && profile.is_none() {
+            log::debug!(
+                "Float TIFF's ICC profile isn't a readable matrix-shaper RGB profile (LUT, grey, \
+                 CMYK, or broken); taking its samples as linear BT.709"
+            );
+        }
+        Self::linear_in(profile.unwrap_or_else(ColorProfile::new_srgb))
     }
 
     fn linear_in(mut profile: ColorProfile) -> Self {
@@ -886,6 +896,31 @@ mod tests {
             hdr_active,
         )
         .expect("decodes")
+    }
+
+    /// A renderer's stray alpha: NaN means nothing, so the pixel stays (opaque), never vanishes;
+    /// out-of-range alpha clamps, so the texture never holds a blend weight above 1 or below 0.
+    #[test]
+    fn float_tiff_alpha_is_sanitized() {
+        let alphas = [f32::NAN, 2.0, -1.0, 0.25];
+        let rgba: Vec<f32> = alphas.iter().flat_map(|&a| [4.0, 2.0, 1.0, a]).collect();
+        let buffer =
+            image::ImageBuffer::<image::Rgba<f32>, _>::from_raw(4, 1, rgba).expect("dimensions");
+        let mut out = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba32F(buffer)
+            .write_to(&mut out, image::ImageFormat::Tiff)
+            .expect("encode TIFF");
+        let image = decode_tiff(out.into_inner(), true, OutputDepth::Native);
+        let PixelBuffer::Rgba16F(halves) = &image.pixels else {
+            panic!("expected half-floats");
+        };
+        let got: Vec<f32> = halves
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| half(px[3]))
+            .collect();
+        assert_eq!(got, [1.0, 1.0, 0.0, 0.25]);
     }
 
     /// A render's lamps or a star field: highlights on far fewer than 0.1% of the pixels, which
