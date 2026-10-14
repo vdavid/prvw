@@ -11,15 +11,13 @@
 //! `NSOutlineView` (see `outline::BrowseTree`) sits inside it, inset `TITLE_BAR_HEIGHT` from the
 //! top so its rows clear the traffic lights.
 //!
-//! ## Right pane: the thumbnail grid on a rounded gallery surface
+//! ## Right pane: the thumbnail grid
 //!
-//! The `NSCollectionView` gallery (see `grid::BrowseGrid`) sits inside a layer-backed,
-//! rounded-corner **gallery surface** — a `controlBackgroundColor`-filled view inset from the pane
-//! edges (`GALLERY_INSET_PT`, with a larger `GALLERY_TOP_INSET_PT` to clear the title-bar strip),
-//! so the grid reads as an intentional gallery rather than a flush void (the "rounded corners like
-//! Finder's content area" cue). The grid scroll view fills the surface; `masksToBounds` clips its
-//! content to the rounded corners. The grid's "(No images)" overlay is centered on the surface
-//! (shown only for an empty folder). Tune the inset/radius via the `GALLERY_*` constants.
+//! The `NSCollectionView` gallery (see `grid::BrowseGrid`) sits in a plain container inset
+//! `GALLERY_INSET_PT` from every edge of the pane, top included, with no fill of its own: the
+//! window background shows through. The grid needs no title-bar clearance, since the traffic lights
+//! sit over the sidebar. The grid scroll view fills the container, and the grid's "(No images)"
+//! overlay is centered on it (shown only for an empty folder).
 //!
 //! ## The two spike fixes baked in here
 //!
@@ -80,19 +78,11 @@ const INITIAL_DIVIDER_X: f64 = 240.0;
 /// clear of the traffic lights. Mirrors `crate::TITLE_BAR_HEIGHT`.
 const SIDEBAR_TOP_INSET: f64 = crate::TITLE_BAR_HEIGHT as f64;
 
-// ─── Gallery surface (the grid pane's rounded background) ───────────────────
-// The thumbnail grid sits on an intentional, slightly-inset rounded-corner surface — the
-// user's "rounded corners like the left side of Finder windows" cue. Tune these to taste.
+// ─── Gallery container (the grid pane's inset) ──────────────────────────────
 
-/// Inset of the gallery surface from the grid pane's leading/trailing/bottom edges, in logical px.
-/// The small gap lets the window background frame the gallery so it reads as a deliberate surface.
+/// Inset of the gallery container from every edge of the grid pane, in logical px. The same on
+/// all four sides, so the gaps to the window edge match.
 const GALLERY_INSET_PT: f64 = 10.0;
-/// Top inset of the gallery surface, in logical px. Larger than the side inset so the surface
-/// clears the traffic-light / title-bar strip (mirrors the sidebar's `SIDEBAR_TOP_INSET`) plus a
-/// little air below it.
-const GALLERY_TOP_INSET_PT: f64 = crate::TITLE_BAR_HEIGHT as f64 + GALLERY_INSET_PT;
-/// Corner radius of the gallery surface, in logical px. Echoes a Finder content area.
-const GALLERY_CORNER_RADIUS: f64 = 10.0;
 
 // ─── BrowseSplitViewInner: sets the divider on first layout ────────────────
 
@@ -388,24 +378,15 @@ unsafe fn build(
         tree_pane.addSubview(&loading_overlay);
         pin_edges(&loading_overlay, &tree_pane, 0.0);
 
-        // ── Right pane: a rounded gallery surface hosting the NSCollectionView grid ─
+        // ── Right pane: an inset container hosting the NSCollectionView grid ─
         let grid_pane = FlippedView::new_as_nsview(mtm);
         let _: () = msg_send![&*grid_pane, setWantsLayer: true];
 
-        // The gallery surface: a layer-backed, rounded-corner container inset from the pane edges,
-        // filled with a semantic surface color so the grid reads as an intentional gallery (not a
-        // flush void). The grid scroll view fills it; rounded corners clip its content.
+        // The gallery container: inset from the pane edges, no fill, so the window background
+        // shows through. The grid scroll view fills it.
         let gallery = FlippedView::new_as_nsview(mtm);
         let _: () = msg_send![&*gallery, setWantsLayer: true];
         let _: () = msg_send![&*gallery, setTranslatesAutoresizingMaskIntoConstraints: false];
-        if let Some(layer) = gallery.layer() {
-            let layer_ptr = &*layer as *const _ as *const AnyObject;
-            let _: () = msg_send![layer_ptr, setCornerRadius: GALLERY_CORNER_RADIUS];
-            let _: () = msg_send![layer_ptr, setMasksToBounds: true];
-            // `controlBackgroundColor` is the semantic content-area surface — light gray in light
-            // mode, near-black in dark mode — so it adapts automatically.
-            set_layer_background(layer_ptr, &NSColor::controlBackgroundColor());
-        }
         grid_pane.addSubview(&gallery);
         pin_gallery(&gallery, &grid_pane);
 
@@ -512,9 +493,8 @@ unsafe fn pin_edges(item: &AnyObject, container: &AnyObject, inset: f64) {
     }
 }
 
-/// Pin the gallery surface inside the grid pane: a uniform `GALLERY_INSET_PT` on the leading,
-/// trailing, and bottom edges, but a larger `GALLERY_TOP_INSET_PT` on top so it clears the
-/// traffic-light / title-bar strip. SAFETY: both views are live on the main thread.
+/// Pin the gallery container inside the grid pane, `GALLERY_INSET_PT` from every edge.
+/// SAFETY: both views are live on the main thread.
 unsafe fn pin_gallery(gallery: &AnyObject, pane: &AnyObject) {
     unsafe {
         pin(
@@ -522,7 +502,7 @@ unsafe fn pin_gallery(gallery: &AnyObject, pane: &AnyObject) {
             NSLayoutAttribute::Top,
             pane,
             NSLayoutAttribute::Top,
-            GALLERY_TOP_INSET_PT,
+            GALLERY_INSET_PT,
         );
         pin(
             gallery,

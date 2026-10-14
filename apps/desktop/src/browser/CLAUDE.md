@@ -354,8 +354,8 @@ the way the native `didSelectItemsAtIndexPaths:` delegate does (so the open path
 `grid.rs` builds the right pane: an `NSCollectionView` (`NSCollectionViewFlowLayout`, vertical scroll) of fixed-size
 cells (`CELL_PT` × `CELL_HEIGHT_PT`, see "Styling constants"), each a `GridItem` (an `NSCollectionViewItem` subclass
 with a proportionally-scaling `NSImageView` + a filename label). The grid uses a fixed cell size; a bottom slider to
-live-resize cells is deferred (see "Deferred work + known limitations"). The grid sits on a rounded gallery surface (see
-`split_view.rs`).
+live-resize cells is deferred (see "Deferred work + known limitations"). The grid sits in an unfilled, evenly inset
+container (see `split_view.rs`).
 
 - **Where the mutable state lives.** `NSCollectionView` holds its data source/delegate weakly, so `BrowseGrid` keeps the
   `Retained<GridDataSource>` alive for the window's life. All the grid's mutable state — the `grid_model::GridModel`,
@@ -544,20 +544,21 @@ by the `live_sync_browse_grid_*` integration tests and the pure `select_after_re
 The look is tuned via named constants so it's easy to refine; values are logical points unless noted. All colors are
 semantic `NSColor`s (light/dark adapt automatically). Tweak these, not magic numbers buried in calls.
 
-- **Grid cells** (`grid.rs`): `CELL_PT` 168 wide × `CELL_HEIGHT_PT` 176 tall, top to bottom: `CELL_IMAGE_PT` 140
+- **Grid cells** (`grid.rs`): `CELL_PT` 168 wide × `CELL_HEIGHT_PT` 190 tall, top to bottom: `CELL_TOP_PAD_PT` 14 (the
+  same as the side padding, so a tall or square thumbnail doesn't touch the selection fill's top), `CELL_IMAGE_PT` 140
   (centered square thumbnail), `CELL_IMAGE_TAGS_GAP_PT` 2, `CELL_TAGS_ROW_PT` 12 (the tag dot row: one 10pt dot plus its
   ring), `CELL_TAGS_LABEL_GAP_PT` 1, `CELL_LABEL_PT` 18 (filename label), `CELL_BOTTOM_PAD_PT` 4. `CELL_LABEL_FONT_PT`
   11 (small system font, `secondaryLabelColor`, centered, single-line middle-truncation), `CELL_SPACING` 16 (inter-cell,
-  both axes), `SECTION_INSET_PT` 14 (inset inside the gallery surface). The cell container is a `FlippedView` so the
+  both axes), `SECTION_INSET_PT` 14 (inset inside the gallery container). The cell container is a `FlippedView` so the
   stack reads top-down.
 - **Selection ring** (`grid.rs`): `SELECTION_CORNER_RADIUS` 8, `SELECTION_FOCUSED_ALPHA` 0.85 (softens the focused
   accent fill). Focus model is unchanged: focused pane → `selectedContentBackgroundColor` (accent), unfocused →
   `unemphasizedSelectedContentBackgroundColor` (gray), driven by `gridPaneIsFocused` (see "Selection emphasis follows
   focus"). `SELECTION_INSET_PT` 2 is reserved for a future inset ring.
-- **Empty state** (`grid.rs`): `EMPTY_LABEL_FONT_PT` 15, `secondaryLabelColor`, centered on the gallery surface.
-- **Gallery surface** (`split_view.rs`): the grid sits on a rounded-corner `controlBackgroundColor` container inset from
-  the grid pane — `GALLERY_INSET_PT` 10 (leading/trailing/bottom), `GALLERY_TOP_INSET_PT` (= `TITLE_BAR_HEIGHT` + inset,
-  clears the traffic-light strip), `GALLERY_CORNER_RADIUS` 10 (`masksToBounds` clips the grid to the rounded corners).
+- **Empty state** (`grid.rs`): `EMPTY_LABEL_FONT_PT` 15, `secondaryLabelColor`, centered on the gallery container.
+- **Gallery container** (`split_view.rs`): the grid sits in an unfilled container inset `GALLERY_INSET_PT` 10 from every
+  edge of the grid pane, top included, so the window background shows through and the gaps to the window edge match. The
+  grid needs no title-bar clearance: the traffic lights sit over the sidebar.
 - **Sidebar rows** (`outline.rs`): `ROW_HEIGHT_PT` 24, `ICON_SIZE_PT` 16, `INDENT_PER_LEVEL_PT` 14, `ICON_LABEL_GAP_PT`
   6, `CELL_LEADING_INSET_PT` 2, `CELL_TRAILING_INSET_PT` 4, `LABEL_FONT_PT` 13 (system font, middle-truncating). Keeps
   the `.sidebar` vibrancy + source-list rounded-pill selection.

@@ -104,14 +104,17 @@ const CELL_TAGS_ROW_PT: f64 = crate::tags::overlay::DOT_SIZE as f64 + 2.0 * TAG_
 const CELL_TAGS_LABEL_GAP_PT: f64 = 1.0;
 /// Room under the label, inside the selection fill.
 const CELL_BOTTOM_PAD_PT: f64 = 4.0;
+/// Room above the thumbnail, inside the selection fill: the same as beside it, so a tall or square
+/// thumbnail doesn't touch the fill's top edge.
+const CELL_TOP_PAD_PT: f64 = (CELL_PT - CELL_IMAGE_PT) / 2.0;
 /// Top of the tag dot row, from the cell's top.
-const CELL_TAGS_Y: f64 = CELL_IMAGE_PT + CELL_IMAGE_TAGS_GAP_PT;
+const CELL_TAGS_Y: f64 = CELL_TOP_PAD_PT + CELL_IMAGE_PT + CELL_IMAGE_TAGS_GAP_PT;
 /// Top of the filename label, from the cell's top.
 const CELL_LABEL_Y: f64 = CELL_TAGS_Y + CELL_TAGS_ROW_PT + CELL_TAGS_LABEL_GAP_PT;
 /// Cell height in points: thumbnail, tag dot row, label, and a little padding.
 const CELL_HEIGHT_PT: f64 = CELL_LABEL_Y + CELL_LABEL_PT + CELL_BOTTOM_PAD_PT;
 // Thumbnail, dot row, and label stack without touching, and all seven dots fit the row.
-const _: () = assert!(CELL_TAGS_Y > CELL_IMAGE_PT);
+const _: () = assert!(CELL_TAGS_Y > CELL_TOP_PAD_PT + CELL_IMAGE_PT);
 const _: () = assert!(CELL_LABEL_Y > CELL_TAGS_Y + CELL_TAGS_ROW_PT);
 const _: () = assert!(
     crate::tags::overlay::DOT_SIZE as f64 + 6.0 * crate::tags::overlay::DOT_STEP as f64
@@ -318,7 +321,7 @@ define_class!(
             let image_view = NSImageView::new(mtm);
             image_view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
             let image_frame = NSRect::new(
-                NSPoint::new((CELL_PT - CELL_IMAGE_PT) / 2.0, 0.0),
+                NSPoint::new((CELL_PT - CELL_IMAGE_PT) / 2.0, CELL_TOP_PAD_PT),
                 NSSize::new(CELL_IMAGE_PT, CELL_IMAGE_PT),
             );
             unsafe {
