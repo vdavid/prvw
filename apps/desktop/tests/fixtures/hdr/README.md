@@ -31,8 +31,10 @@ along the bottom (red, green, and blue at about reference white, then a warm hig
 transfer, wrong primaries, or a clip all show.
 
 - `pq-bt2020-32x16.png`: 16-bit PQ, BT.2020, `cICP` 9/16/0/1, light up to 1,000 nits, and a `cLLI` of 1,000 nits.
-- `hlg-bt2020-32x16.png`: 16-bit HLG, BT.2020, `cICP` 9/18/0/1, reference white at the 75% signal, the top clipping at
-  full signal (1,000 nits through the OOTF).
+- `hlg-bt2020-32x16.png`: 16-bit HLG, BT.2020, `cICP` 9/18/0/1: the PQ file's display light, taken back through
+  BT.2100's OOTF at its nominal 1,000 nits, so the two decode to the same light (reference white on the 75% signal, the
+  1,000-nit grey on full signal). Only the warm highlight's red differs, by about 6%: it needs a little more than full
+  signal, so it clips. `the_pq_and_hlg_fixtures_decode_to_the_same_light` holds them together.
 - `sdr-cicp-display-p3-32x16.png`: 8-bit SDR, `cICP` 12/13/0/1 (Display P3, sRGB curve) and no ICC profile, so a reader
   that ignores the chunk reads the saturated patches as sRGB.
 - `float-linear-peak-4-32x16.tif`: `Rgb32F`, linear BT.709, no ICC profile, peaking at 4.0 (four times SDR white).

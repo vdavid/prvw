@@ -985,3 +985,19 @@ Filled in by the implementing agent during M0 and later. Date each entry.
   - **Cost: about 2 ms on 24 MP.** Release, M3 Max under load (`raw_sdr_decode_perf`, `#[ignore]`): the conversion alone
     went from 7.2–8.6 ms to 9.4–10.7 ms (the extra matrix pass), and a whole SDR decode of a 24 MP Sony A7 III ARW
     measured 475–586 ms both before and after, so the difference is under the noise.
+- **2026-10-14, David's QA: the HLG fixture was a different scene from the PQ one.** Its writer scaled the PQ file's
+  light linearly into HLG scene light (× 0.265, clipped at 1.0), skipping the OOTF, so the reader (correctly) decoded a
+  1.2 power of the PQ scene. Decoded linear BT.2020, HLG against PQ: mid ramp 3.07 against 2.54, the top quarter clipped
+  flat at 4.93, the patches darker the more saturated (blue at 63%), and the warm highlight `[5.09, 4.41, 2.49]` in the
+  display space against `[5.52, 3.37, 1.95]`, its red clipped per channel. The writer now takes the PQ file's display
+  light back through the OOTF (1,000 nits, gamma 1.2, BT.2020 luminance), and the two decode the same to 1%; only the
+  highlight's red differs (5.21 against 5.52), since it needs more than HLG's full signal at 1,000 nits.
+  `the_pq_and_hlg_fixtures_decode_to_the_same_light` holds the pair together. No decoder change: the reader's HLG path
+  matched BT.2100 all along.
+- **2026-10-14, David's QA: the peak-4 float TIFF "doesn't glow".** Not reproduced as a bug. Debug and release builds on
+  the MacBook Pro: `Float TIFF: content peak 4.000× SDR white, brightest 4.000×, HDR`, `pixel_encoding` `scene_linear`,
+  the EDR surface on, headroom 5.07. Through the real GPU pipeline at headroom 5 the ramp reaches `[4.00, 4.00, 4.00]`
+  and the highlight `[3.79, 2.84, 1.73]` (linear Display P3). The difference from the PQ and HLG files is content: they
+  peak at 4.93 and their BT.2020 highlight's red reaches 5.5, past most headrooms, where the TIFF's BT.709 highlight
+  stays inside. At a low current headroom (bright ambient, or the first frames before macOS grants EDR) everything
+  compresses toward 1.0 and the neutral ramp reads as plain white.

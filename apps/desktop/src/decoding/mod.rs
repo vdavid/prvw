@@ -1076,6 +1076,45 @@ mod tests {
         }
     }
 
+    /// The PQ and HLG fixtures encode one scene, so they decode to the same light: HLG's OOTF is
+    /// the writer's to invert, not the reader's to skip. The warm highlight is the one exception,
+    /// and only by a little: its red needs more than HLG's full signal at 1,000 nits, so it clips.
+    ///
+    /// Regression: the writer scaled scene light linearly into HLG, so the decoded ramp ran a
+    /// 1.2 power above PQ's (3.07 against 2.54 at mid ramp), its top quarter clipped flat, the
+    /// blue patch landed at 63% of PQ's, and the highlight lost most of its warmth.
+    #[test]
+    fn the_pq_and_hlg_fixtures_decode_to_the_same_light() {
+        let light = |name: &str| -> Vec<[f32; 3]> {
+            let image = load_at(&hdr_fixture(name), true, OutputDepth::Native);
+            assert!(
+                matches!(image.encoding, PixelEncoding::SceneLinear(_)),
+                "{name}"
+            );
+            let PixelBuffer::Rgba16F(halves) = &image.pixels else {
+                panic!("{name}: expected half-floats");
+            };
+            halves
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|px| [0, 1, 2].map(|c| half::f16::from_bits(px[c]).to_f32()))
+                .collect()
+        };
+        let (pq, hlg) = (light("pq-bt2020-32x16.png"), light("hlg-bt2020-32x16.png"));
+        for (i, (p, h)) in pq.iter().zip(&hlg).enumerate() {
+            let (x, y) = (i % 32, i / 32);
+            let highlight = y >= 8 && x >= 24;
+            for c in 0..3 {
+                let tolerance = if highlight { 0.06 } else { 0.01 } * p[c] + 2e-3;
+                assert!(
+                    (p[c] - h[c]).abs() <= tolerance,
+                    "({x}, {y}) channel {c}: PQ {p:?}, HLG {h:?}"
+                );
+            }
+        }
+    }
+
     /// A float TIFF within SDR white is SDR, on any display; an SDR `cICP` PNG is plain SDR.
     #[test]
     fn sdr_fixtures_in_hdr_containers_stay_sdr() {

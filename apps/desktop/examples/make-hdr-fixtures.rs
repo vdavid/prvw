@@ -69,6 +69,9 @@ fn main() {
 const SCENE_WIDTH: u32 = 32;
 const SCENE_HEIGHT: u32 = 16;
 
+/// BT.2408's reference white: what 1.0 in `scene_light` is, in nits.
+const REFERENCE_WHITE_NITS: f32 = 203.0;
+
 /// Light at `(x, y)`, linear RGB relative to SDR white: the ramp runs from black to `top`, the
 /// patches sit at reference white except the highlight, which is `top`.
 fn scene_light(x: u32, y: u32, top: f32) -> [f32; 3] {
@@ -144,21 +147,43 @@ fn cicp_png(
 
 /// The scene's light at `(x, y)` with a 1,000-nit top (4.93× SDR white).
 fn light_at(x: u32, y: u32) -> [f32; 3] {
-    scene_light(x, y, 1000.0 / 203.0)
+    scene_light(x, y, 1000.0 / REFERENCE_WHITE_NITS)
 }
 
 /// PQ, BT.2020: up to 1,000 nits, with a `cLLI` that says so.
 fn pq_png() -> Vec<u8> {
-    cicp_png(16, |light| light.map(|v| pq_signal(v * 203.0)), Some(1000))
+    cicp_png(
+        16,
+        |light| light.map(|v| pq_signal(v * REFERENCE_WHITE_NITS)),
+        Some(1000),
+    )
 }
 
-/// HLG, BT.2020. The light is scene light, normalized so that reference white (1.0) sits at
-/// HLG's 75% signal (scene light 0.2650); the 1,000-nit top clips at full signal.
+/// HLG, BT.2020, at BT.2100's nominal 1,000-nit peak. `light_at` is display light, as for PQ, so
+/// it goes back through the OOTF (system gamma 1.2, on BT.2020 luminance) to scene light before
+/// the OETF: reference white lands on the 75% signal and the 1,000-nit grey on full signal. The
+/// warm highlight's red needs a little more than full signal, so it clips there.
+///
+/// The OOTF is the whole difference between the two files: scaling the light into HLG linearly
+/// decodes to a 1.2 power of the PQ scene, with saturated colors darker and the top clipped flat.
 fn hlg_png() -> Vec<u8> {
-    const REFERENCE_SCENE: f32 = 0.265;
+    const PEAK_NITS: f32 = 1000.0;
+    const SYSTEM_GAMMA: f32 = 1.2;
+    const BT2020_WEIGHTS: [f32; 3] = [0.2627, 0.6780, 0.0593];
     cicp_png(
         18,
-        |light| light.map(|v| hlg_signal((v * REFERENCE_SCENE).min(1.0))),
+        |light| {
+            // Display light relative to the peak, its luminance, and the scene luminance the OOTF
+            // raised to it: Fd = Ys^(γ-1) · Es, so Es = Fd / Ys^(γ-1).
+            let display = light.map(|v| v * REFERENCE_WHITE_NITS / PEAK_NITS);
+            let luminance: f32 = display.iter().zip(BT2020_WEIGHTS).map(|(v, w)| v * w).sum();
+            if luminance <= 0.0 {
+                return [0.0; 3];
+            }
+            let scene_luminance = luminance.powf(1.0 / SYSTEM_GAMMA);
+            let scale = scene_luminance.powf(1.0 - SYSTEM_GAMMA);
+            display.map(|v| hlg_signal((v * scale).min(1.0)))
+        },
         None,
     )
 }
