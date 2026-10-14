@@ -127,8 +127,13 @@ current headroom (`render/CLAUDE.md`), so a brightness change never re-decodes.
   gain's direction for it. ISO 21496-1 APP2 metadata with an HDR base is accepted, and its weight runs backwards.
 - **Gotcha: the map is never color-managed.** It's data, not color; its ICC profile, if any, describes the alternate
   rendition's color space (used only when ISO says to apply the gain there).
-- **Gotcha: the map follows the base's EXIF orientation.** `finalize` turns it with the same function, or the gain lands
-  on the wrong pixels (`the_gain_map_follows_every_orientation`).
+- **Decision: the map stays in the file's frame; the sampler follows the turn.** `finalize` turns the base by its EXIF
+  orientation and records the turn on the map (`GainMapPayload::turn`, `color::hdr::gain_map::MapTurn`); mode 2 maps
+  each shown pixel back to the stored pixel it came from before sampling. **Why:** upstream aligns map texel 0 with
+  stored pixel 0, so a map turned with the base sits `1 − map / image` texels off along every axis the turn reverses (1
+  image pixel for half-res maps, 3 for Apple's quarter-res), and the edge clamp lands on the wrong side. Portrait iPhone
+  shots are orientation 6, the common case. `a_turned_gain_map_matches_apply_gainmap_on_the_unturned_file` checks every
+  orientation against upstream on the unturned buffer; a real orientation-6 Apple file matches ImageIO to 0.5%.
 - **Gotcha: a single-channel map applies channel 0's parameters to all three**, as `ultrahdr-core` does. The RGBA
   replicas would otherwise each read their own channel's, which differ for a single-channel map with per-channel XMP.
 - `RUST_LOG=prvw::decoding::jpeg=debug` logs the flavor, the map's size, and the stage split (`base`, `locate`, `map`,

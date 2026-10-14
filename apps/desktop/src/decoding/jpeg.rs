@@ -114,6 +114,8 @@ pub(super) fn decode(
                         params,
                         source: found.source,
                         spaces,
+                        // As stored; `finalize` records the EXIF turn.
+                        turn: Default::default(),
                     };
                     return Ok(DecodedImage::from_gain_mapped(width, height, rgba, payload));
                 }

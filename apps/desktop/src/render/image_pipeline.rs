@@ -26,7 +26,9 @@ pub struct ImageParams {
     pub mode: u32,
     /// Mode 2: 0 for ISO 21496-1's log2 curve, 1 for Apple's (`GainCurve`).
     pub gain_curve: u32,
-    pub _pad: [u32; 2],
+    /// Mode 2: how the base was turned away from the map's frame (`MapTurn::bits`).
+    pub map_turn: u32,
+    pub _pad: u32,
     /// Mode 2, per channel in `xyz`: log2 gain at map value 0 and 1, the map gamma, and the
     /// two offsets (`color::hdr::gain_map::ChannelParams`).
     pub gain_min: [f32; 4],
@@ -63,6 +65,7 @@ impl ImageParams {
                     crate::color::hdr::gain_map::GainCurve::Log2 => 0,
                     crate::color::hdr::gain_map::GainCurve::Apple => 1,
                 };
+                params.map_turn = map.turn.bits();
                 let per_channel = |f: fn(&crate::color::hdr::gain_map::ChannelParams) -> f32| {
                     [f(&p.channels[0]), f(&p.channels[1]), f(&p.channels[2]), 0.0]
                 };
@@ -761,6 +764,7 @@ mod gpu_parity {
                 params,
                 source: GainMapSource::Iso21496,
                 spaces: GainMapSpaces::new(crate::color::srgb_icc_bytes(), None, true),
+                turn: Default::default(),
             },
         )
     }
@@ -840,6 +844,26 @@ mod gpu_parity {
     /// each pixel centre, and Shepard's weighting jumps at a cell edge: the shader has to snap
     /// onto the pixel, as the reference does, or it reads the wrong neighbour (the iPhone's 776
     /// over 388).
+    /// A map the base was turned away from, under every EXIF orientation: the shader goes back
+    /// into the file's frame exactly as the reference does. Shown 8 × 16 is a stored 16 × 8 for
+    /// the turns that swap axes, over a stored 4 × 2 map.
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "Linux CI runners have no GPU adapter; macOS and Windows run this"
+    )]
+    fn mode_2_follows_a_turned_map() {
+        for orientation in 1..=8u16 {
+            let turn = crate::color::hdr::gain_map::MapTurn::from_exif(orientation);
+            let (w, h) = if turn.swap_axes { (8, 16) } else { (16, 8) };
+            let mut image = gain_mapped_sized(w, h, 4, 2);
+            if let PixelEncoding::GainMapped(map) = &mut image.encoding {
+                map.turn = turn;
+            }
+            assert_matches_reference(&image, &[1.5, 8.0]);
+        }
+    }
+
     /// Apple's curve on the GPU, at partial and full weight.
     #[test]
     #[cfg_attr(

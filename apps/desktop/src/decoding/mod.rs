@@ -569,10 +569,10 @@ fn finalize(mut img: DecodedImage, orientation: u16) -> DecodedImage {
             orientation::apply_orientation_u16(old_w, old_h, halfs, orientation, 4)
         }
     };
-    // The gain map turns with its base, or the gain lands on the wrong pixels.
+    // The gain map stays in the file's frame, and the sampler finds each shown pixel's stored one
+    // through the turn: turning the map too would misalign every reversed axis (`MapTurn`).
     if let PixelEncoding::GainMapped(map) = &mut img.encoding {
-        (map.width, map.height) =
-            apply_orientation_bytes(map.width, map.height, &mut map.rgba, orientation, 4);
+        map.turn = crate::color::hdr::gain_map::MapTurn::from_exif(orientation);
     }
     if (new_w, new_h) != (old_w, old_h) {
         log::debug!(
@@ -1146,11 +1146,12 @@ mod tests {
         }
     }
 
-    /// Orientation 6 turns the base 90° clockwise, and the map with it: the fixture's map is
-    /// brightest top-left, which lands top-right. And it's the same map as the upright fixture's,
-    /// turned.
+    /// Orientation 6 turns the base 90° clockwise, and the map stays as the file stores it, with
+    /// the turn recorded: the same bytes as the upright fixture's map. The fixture's map is
+    /// brightest top-left, so the brightest gain lands top-right of the shown image.
     #[test]
-    fn the_gain_map_turns_with_its_base() {
+    fn the_gain_map_keeps_its_frame_and_follows_the_turn() {
+        use crate::color::hdr::gain_map::{self, MapTurn};
         let upright = load_at(
             &hdr_fixture("ultra-hdr-xmp-64x48.jpg"),
             true,
@@ -1163,76 +1164,173 @@ mod tests {
         );
         assert_eq!((turned.width, turned.height), (48, 64));
         let map = gain_map_of(&turned);
-        assert_eq!((map.width, map.height), (12, 16));
-        let at = |x: u32, y: u32| map.rgba[((y * map.width + x) * 4) as usize];
-        let brightest = (0..map.height)
-            .flat_map(|y| (0..map.width).map(move |x| (x, y)))
-            .max_by_key(|&(x, y)| at(x, y))
-            .expect("texels");
-        assert_eq!(brightest, (11, 0));
+        assert_eq!((map.width, map.height), (16, 12));
+        assert_eq!(map.turn, MapTurn::from_exif(6));
+        assert!(map.rgba == gain_map_of(&upright).rgba);
 
-        let mut expected = gain_map_of(&upright).rgba.clone();
-        orientation::apply_orientation_bytes(16, 12, &mut expected, 6, 4);
-        assert!(expected == map.rgba);
+        let inputs = map.inputs([turned.width, turned.height]);
+        let gain_at = |x: u32, y: u32| {
+            let uv = [
+                (x as f32 + 0.5) / turned.width as f32,
+                (y as f32 + 0.5) / turned.height as f32,
+            ];
+            gain_map::sample_gain(&inputs.map, inputs.image_size, uv, &inputs.params, 1.0)[0]
+        };
+        let brightest = (0..turned.height)
+            .flat_map(|y| (0..turned.width).map(move |x| (x, y)))
+            .max_by(|&(ax, ay), &(bx, by)| gain_at(ax, ay).total_cmp(&gain_at(bx, by)))
+            .expect("pixels");
+        assert!(
+            brightest.0 >= 44 && brightest.1 < 4,
+            "the brightest gain sits at {brightest:?}"
+        );
     }
 
-    /// For every EXIF orientation, each map texel still sits over the 2×2 block of base pixels
-    /// it described before the turn. Base pixels and map texels both carry their block's id.
+    /// A busy map under every EXIF orientation against `ultrahdr_core::gainmap::apply_gainmap`
+    /// on the file's unturned pixels: each pixel the viewer shows must get the gain upstream gives
+    /// the stored pixel it came from. Upstream aligns map texel 0 with stored pixel 0, so an axis
+    /// the turn reverses would be off by `1 − map / image` texels if the map were simply turned
+    /// with the base. 30 × 18 over a 15 × 9 map is a half-res map; 28 × 20 over 7 × 5 is
+    /// Apple's quarter-res.
     #[test]
-    fn the_gain_map_follows_every_orientation() {
-        use crate::color::hdr::gain_map::{GainMapSpaces, IDENTITY};
-        let (w, h) = (8u32, 4u32);
-        let id = |bx: u32, by: u32| (by * (w / 2) + bx) as u8 * 10;
-        let base: Vec<u8> = (0..h)
-            .flat_map(|y| (0..w).flat_map(move |x| [id(x / 2, y / 2), 0, 0, 255]))
-            .collect();
-        let map: Vec<u8> = (0..h / 2)
-            .flat_map(|y| (0..w / 2).flat_map(move |x| [id(x, y), 0, 0, 255]))
-            .collect();
+    fn a_turned_gain_map_matches_apply_gainmap_on_the_unturned_file() {
+        use crate::color::hdr::gain_map::{self, ChannelParams, GainMapSpaces, IDENTITY};
+        use ultrahdr_core::{ColorPrimaries, GainMap, PixelFormat, TransferFunction, Unstoppable};
+
+        let noise = |i: u32| (i.wrapping_mul(2_654_435_761) >> 24) as u8;
+        let srgb_decode = |byte: u8| {
+            let v = f32::from(byte) / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
         let params = crate::color::hdr::gain_map::GainMapParams {
-            channels: [Default::default(); 3],
+            channels: [ChannelParams {
+                max: 2.0,
+                ..ChannelParams::default()
+            }; 3],
             base_headroom: 0.0,
-            alternate_headroom: 1.0,
+            alternate_headroom: 2.0,
             use_base_color_space: true,
             curve: crate::color::hdr::gain_map::GainCurve::Log2,
         };
-        for orientation in 1..=8u16 {
-            let image = finalize(
-                DecodedImage::from_gain_mapped(
-                    w,
-                    h,
-                    base.clone(),
-                    GainMapPayload {
-                        width: w / 2,
-                        height: h / 2,
-                        rgba: map.clone(),
-                        params,
-                        source: crate::color::hdr::gain_map::GainMapSource::Iso21496,
-                        spaces: GainMapSpaces {
-                            p3_to_app: IDENTITY,
-                            app_to_display: IDENTITY,
-                            p3_to_display: IDENTITY,
-                        },
-                    },
-                ),
-                orientation,
-            );
-            let payload = gain_map_of(&image);
-            assert_eq!(
-                (payload.width * 2, payload.height * 2),
-                (image.width, image.height),
-                "orientation {orientation}"
-            );
-            let PixelBuffer::Rgba8(base) = &image.pixels else {
-                unreachable!()
+        let headroom = 4.0;
+        for (w, h, map_w, map_h) in [(30u32, 18u32, 15u32, 9u32), (28, 20, 7, 5)] {
+            let base: Vec<u8> = (0..w * h * 4)
+                .map(|i| if i % 4 == 3 { 255 } else { noise(i) })
+                .collect();
+            let single: Vec<u8> = (0..map_w * map_h).map(|i| noise(i + 7)).collect();
+            let rgba: Vec<u8> = single.iter().flat_map(|&v| [v, v, v, 255]).collect();
+            let sdr = ultrahdr_core::pixel_buffer_from_vec(
+                base.clone(),
+                w,
+                h,
+                PixelFormat::Rgba8,
+                ColorPrimaries::DisplayP3,
+                TransferFunction::Srgb,
+            )
+            .expect("base buffer");
+            let map = GainMap {
+                width: map_w,
+                height: map_h,
+                channels: 1,
+                data: single.clone(),
             };
-            for y in 0..image.height {
-                for x in 0..image.width {
-                    let pixel = base[((y * image.width + x) * 4) as usize];
-                    let texel = payload.rgba[(((y / 2) * payload.width + x / 2) * 4) as usize];
-                    assert_eq!(pixel, texel, "orientation {orientation} at ({x}, {y})");
+            let out = ultrahdr_core::gainmap::apply_gainmap(
+                &sdr,
+                &map,
+                &crate::color::hdr::to_upstream(&params),
+                headroom,
+                ultrahdr_core::HdrOutputFormat::LinearFloat,
+                Unstoppable,
+            )
+            .expect("upstream apply");
+            let slice = out.as_slice();
+            let (stride, bytes) = (slice.stride(), slice.as_strided_bytes());
+            let upstream = |x: u32, y: u32, c: usize| {
+                let at = y as usize * stride + x as usize * 16 + c * 4;
+                f32::from_le_bytes(bytes[at..at + 4].try_into().expect("f32"))
+            };
+
+            for orientation in 1..=8u16 {
+                let image = finalize(
+                    DecodedImage::from_gain_mapped(
+                        w,
+                        h,
+                        base.clone(),
+                        GainMapPayload {
+                            width: map_w,
+                            height: map_h,
+                            rgba: rgba.clone(),
+                            params,
+                            source: crate::color::hdr::gain_map::GainMapSource::Iso21496,
+                            spaces: GainMapSpaces {
+                                p3_to_app: IDENTITY,
+                                app_to_display: IDENTITY,
+                                p3_to_display: IDENTITY,
+                            },
+                            turn: Default::default(),
+                        },
+                    ),
+                    orientation,
+                );
+                let PixelBuffer::Rgba8(shown) = &image.pixels else {
+                    unreachable!()
+                };
+                let inputs = gain_map_of(&image).inputs([image.width, image.height]);
+                let weight = gain_map::weight(headroom, &params);
+                let (mut worst, mut sum, mut n) = (0.0f32, 0.0f64, 0u32);
+                for y in 0..image.height {
+                    for x in 0..image.width {
+                        // The stored pixel this shown one is: find it by its bytes' position.
+                        let (sx, sy) = stored_pixel(orientation, x, y, w, h);
+                        let i = ((y * image.width + x) * 4) as usize;
+                        let linear = [0, 1, 2].map(|c| srgb_decode(shown[i + c]));
+                        let uv = [
+                            (x as f32 + 0.5) / image.width as f32,
+                            (y as f32 + 0.5) / image.height as f32,
+                        ];
+                        let gain = gain_map::sample_gain(
+                            &inputs.map,
+                            inputs.image_size,
+                            uv,
+                            &params,
+                            weight,
+                        );
+                        let ours = gain_map::apply(linear, gain, &params);
+                        for (c, ours) in ours.into_iter().enumerate() {
+                            let want = upstream(sx, sy, c);
+                            let error = (ours - want).abs() / want.abs().max(1e-3);
+                            worst = worst.max(error);
+                            sum += f64::from(error);
+                            n += 1;
+                        }
+                    }
                 }
+                let mean = sum / f64::from(n);
+                assert!(
+                    mean < 5e-3 && worst < 1e-2,
+                    "{w}x{h} over {map_w}x{map_h}, orientation {orientation}: mean {mean:e}, \
+                     worst {worst:e}"
+                );
             }
+        }
+    }
+
+    /// The stored pixel that EXIF `orientation` shows at `(x, y)`, for a stored `w` × `h` image
+    /// (`orientation::apply_orientation_generic`'s mapping, inverted).
+    fn stored_pixel(orientation: u16, x: u32, y: u32, w: u32, h: u32) -> (u32, u32) {
+        match orientation {
+            2 => (w - 1 - x, y),
+            3 => (w - 1 - x, h - 1 - y),
+            4 => (x, h - 1 - y),
+            5 => (y, x),
+            6 => (y, h - 1 - x),
+            7 => (w - 1 - y, h - 1 - x),
+            8 => (w - 1 - y, x),
+            _ => (x, y),
         }
     }
 

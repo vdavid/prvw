@@ -758,6 +758,36 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     Windows HDR too, and outside this fix.
   - Verified by unit tests on `from_info` and a GPU test (each HDR mode at 3.125 is its unscaled render times 3.125);
     nobody has looked at a real Windows HDR display with it yet.
+- **2026-10-14, review fix: Apple's maker-note flavor had upstream's headroom and curve, both wrong.**
+  - **Headroom.** `ultrahdr-core`'s last branch is `-0.44 × maker48 + 2.86`; Apple's published one ("Applying Apple HDR
+    effect to your photos", developer.apple.com, fetched 2026-10-14) is `-0.303 × maker48 + 2.303`. On the iPhone Air
+    fixture (maker33 1.01, maker48 1.766) Apple's gives 1.7678 stops, exactly the file's ISO `AlternateHeadroom`
+    (1.767799); upstream's gave 2.08, about 24% too bright at the peak. Confirmed with ImageIO: an Apple-only copy of
+    the fixture (its ISO XMP namespace and `HDRGainMapHeadroom` renamed in a scratch copy, so ImageIO reports no ISO
+    gain map) fits best at 1.77 stops in a sweep from 1.4 to 1.95. `color::hdr::apple_headroom_stops` is Apple's
+    formula; only the tag reader is upstream's.
+  - **Curve.** Apple reconstructs `hdr = sdr × (1 + (headroom − 1) × g)`, linear, no offsets; upstream mapped it onto
+    ISO's log2 curve with 1/64 offsets. `GainCurve::Apple` (a flag in `ImageParams`, Rust reference and WGSL both, a GPU
+    parity case) is Apple's formula.
+  - **The map's transfer is gamma 2.2, not Rec.709.** Apple's article says to linearize the map with the Rec.709
+    transfer. A Swift probe applied candidate curves to ImageIO's own SDR decode and aux map of an Apple-only iPhone 14
+    Plus photo (the Wikimedia "About iPhone 15 Pro Max" file, kept outside the repo) and compared with ImageIO's HDR
+    decode (`kCGImageSourceDecodeToHDR`): mean relative error 0.5% for gamma 2.2, 2.4% for the sRGB curve, 3.2% for
+    gamma 2.4, 5.5% for Skia's `pow(v, 1.961)`, 13% for Rec.709's inverse OETF, 22% for upstream's log2 curve. Gamma 2.2
+    is macOS' default for an untagged grey image; we match ImageIO, since Preview is the QA reference.
+  - **Weight at a partial headroom: log2, like every other flavor**, which is Skia's choice
+    (`exp(log(1 + (H − 1)·g) × W)` in `SkGainmapShader`): the full gain `(1 + (H − 1)·g)` raised to the weight. The
+    brightest texel then lands on the display's headroom, and the shape matches ISO's interpolation between renditions.
+    Weighting the headroom alone (`1 + (H^w − 1)·g`) was the alternative; it keeps midtones brighter at low headroom,
+    and nothing we have says Apple does it.
+  - Both of these files have maker48 0 (3.0 stops on either formula), so they check the curve, not the constants; the
+    fixture's two flavors check the constants. Two consequences for the tests:
+    `the_apple_fixture_reads_the_maker_note_headroom` now pins 2.1515 (was 2.64), and the iPhone fixture's two readings
+    agree to 2e-3 stops (was half a stop).
+- **2026-10-14, review finding L1, not taken: the identity snap stays at 1e-3.** The review assumed two Display P3
+  profiles differ by about 1e-5; that's `moxcms` against itself. The iPhone's Apple-written P3 profile is 3.5e-4 off
+  `moxcms`', so 1e-4 brought the leak back (two iPhone tests failed). The comment on `IDENTITY_TOLERANCE` now states the
+  real numbers and the worst case 1e-3 lets through (about three sRGB codes near black).
 - **2026-10-14, M4 review fix M1: the SDR fallback clipped in BT.2020, before the matrix.** `moxcms`' in-place f32
   transform runs each input channel through its linearization table, which clamps to [0, 1] first, so a saturated
   BT.2020 orange the tone map left at R ≈ 2.6 came out salmon (`[255, 164, 102]` against the true `[255, 114, 91]` in
@@ -777,3 +807,14 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     identical. So the change only touches highlights past white, which RAW's highlight recovery already desaturates;
     clip-after keeps them more saturated (closer to the RAW HDR path), today's look is paler. Switching is one call in
     `raw.rs` plus a regenerated golden.
+- **2026-10-14, review fix M2: a turned gain map sat off by up to 3 pixels on every reversed axis.** `finalize` turned
+  the map with the base, but upstream aligns map texel 0 with the _stored_ pixel 0, so after a flip or a rotation an
+  axis that runs backwards needs `X × m / W − (1 − m / W)`, and the shader used `X × m / W`: half a texel (1 image
+  pixel) for a half-res map, three quarters (3 pixels) for Apple's quarter-res. Of the two fixes the review offered, the
+  map now stays in the file's frame and the sampler goes back through the turn (`MapTurn`: swap the axes, reverse x, y,
+  or both, in `ImageParams::map_turn`), not a per-axis offset: upstream clamps the far neighbour at the stored frame's
+  last texel, and only sampling in that frame reproduces it at the edge. It also skips turning the map on the CPU. A
+  busy-map test compares all eight orientations with `apply_gainmap` on the unturned buffer (orientation 2 was 27% off
+  on it before), and a GPU parity case runs the eight turns. The real Apple-only iPhone 14 Plus photo, orientation 6
+  with a half-res map, matches ImageIO's HDR decode through our whole decode to 0.54% mean relative error at full
+  headroom (a second file from the same phone, 0.67%), which is also review finding L9's real-file check.

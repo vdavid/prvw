@@ -163,13 +163,58 @@ pub fn gain(v: f32, channel: usize, p: &GainMapParams, weight: f32) -> f32 {
 /// anything a zoom puts between two pixels that matters.
 const PIXEL_SNAP: f32 = 1.0 / 64.0;
 
+/// How an EXIF orientation turned the base the map belongs to, as a way back from a pixel as
+/// shown to the pixel the file stored: swap the axes, then reverse x, y, or both, in the stored
+/// frame.
+///
+/// The map stays in the file's frame, unturned. Upstream aligns map texel 0 with stored pixel 0,
+/// so turning the map with the base would misplace every axis the turn reverses by
+/// `1 − map / image` texels (3 image pixels for Apple's quarter-res maps), and at the far edge
+/// the clamped neighbour would land on the wrong side. Sampling in the stored frame is
+/// upstream's own arithmetic, edges included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MapTurn {
+    pub swap_axes: bool,
+    pub flip_x: bool,
+    pub flip_y: bool,
+}
+
+impl MapTurn {
+    /// The turn for EXIF `orientation` (`decoding::orientation`'s mapping, inverted). Values
+    /// outside 1–8 are ignored there, so they're no turn here.
+    pub fn from_exif(orientation: u16) -> Self {
+        let turn = |swap_axes, flip_x, flip_y| Self {
+            swap_axes,
+            flip_x,
+            flip_y,
+        };
+        match orientation {
+            2 => turn(false, true, false),
+            3 => turn(false, true, true),
+            4 => turn(false, false, true),
+            5 => turn(true, false, false),
+            6 => turn(true, false, true),
+            7 => turn(true, true, true),
+            8 => turn(true, true, false),
+            _ => Self::default(),
+        }
+    }
+
+    /// The shader's encoding (`ImageParams::map_turn`): bit 0 swap, bit 1 flip x, bit 2 flip y.
+    pub fn bits(self) -> u32 {
+        u32::from(self.swap_axes) | u32::from(self.flip_x) << 1 | u32::from(self.flip_y) << 2
+    }
+}
+
 /// A gain map's texels as the GPU holds them: RGBA8, a single-channel map replicated into R, G,
-/// and B.
+/// and B, in the file's own (unturned) frame.
 #[derive(Clone, Copy, Debug)]
 pub struct MapView<'a> {
     pub width: u32,
     pub height: u32,
     pub rgba: &'a [u8],
+    /// How the base was turned for display.
+    pub turn: MapTurn,
 }
 
 impl MapView<'_> {
@@ -178,7 +223,7 @@ impl MapView<'_> {
     }
 }
 
-/// The per-channel gain at texture coordinate `uv` (0 to 1 across the base image of
+/// The per-channel gain at texture coordinate `uv` (0 to 1 across the base image as shown, of
 /// `image_size`), with the base's texels centred at `(x + 0.5) / width` as the GPU puts them.
 pub fn sample_gain(
     map: &MapView,
@@ -187,6 +232,19 @@ pub fn sample_gain(
     p: &GainMapParams,
     weight: f32,
 ) -> [f32; 3] {
+    // Back into the file's frame, where the map's texels line up with upstream's.
+    let mut raw = [0, 1].map(|a| uv[a] * image_size[a] as f32 - 0.5);
+    let mut image_size = image_size;
+    if map.turn.swap_axes {
+        raw.swap(0, 1);
+        image_size.swap(0, 1);
+    }
+    if map.turn.flip_x {
+        raw[0] = (image_size[0] - 1) as f32 - raw[0];
+    }
+    if map.turn.flip_y {
+        raw[1] = (image_size[1] - 1) as f32 - raw[1];
+    }
     let axis = |a: usize, map_len: u32| {
         // The image pixel this fragment is, then where that pixel sits on the map.
         //
@@ -198,7 +256,7 @@ pub fn sample_gain(
         // arithmetic, which is exactly upstream's `x × map / image`. `x × map` fits in a `u32`
         // for any size a texture can have, as it must in the shader.
         let size = image_size[a];
-        let raw = uv[a] * size as f32 - 0.5;
+        let raw = raw[a];
         let nearest = raw.round();
         let (cell, fraction) = if (raw - nearest).abs() < PIXEL_SNAP {
             let scaled = nearest.max(0.0) as u32 * map_len;
@@ -505,6 +563,7 @@ mod tests {
                         width: map_w,
                         height: map_h,
                         rgba: &rgba,
+                        turn: MapTurn::default(),
                     };
                     let w = weight(headroom, &p);
                     let (mut sum, mut max, mut n) = (0.0f64, 0.0f32, 0u32);
@@ -575,6 +634,7 @@ mod tests {
             width: 2,
             height: 1,
             rgba: &rgba,
+            turn: MapTurn::default(),
         };
         let p = params(0.0, 2.0);
         // Image pixel 0 sits exactly on map texel 0.

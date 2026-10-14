@@ -27,7 +27,9 @@ struct ImageParams {
     mode: u32,
     // Mode 2: 0 ISO 21496-1's log2 curve, 1 Apple's (`color::hdr::gain_map::GainCurve`).
     gain_curve: u32,
-    _pad1: u32,
+    // Mode 2: how the base was turned away from the map's frame (`MapTurn::bits`): bit 0 swap
+    // the axes, bit 1 reverse x, bit 2 reverse y, in the file's frame.
+    map_turn: u32,
     _pad2: u32,
     // Mode 2, per channel in xyz (`color::hdr::gain_map::ChannelParams`).
     gain_min: vec4<f32>,
@@ -126,14 +128,26 @@ fn texel_gain(v: vec3<f32>, w: f32) -> vec3<f32> {
 // map's texels top-left aligned to the image's pixels. Four `textureLoad`s, because hardware
 // bilinear filtering of the encoded values is a different function (spec Findings, M3).
 fn sample_gain(uv: vec2<f32>, w: f32) -> vec3<f32> {
-    let image_dims = textureDimensions(t_diffuse);
+    // Back from the pixel as shown to the pixel as the file stores it, which is the frame the
+    // map stays in (`MapTurn`).
+    var image_dims = textureDimensions(t_diffuse);
+    var raw = uv * vec2<f32>(image_dims) - 0.5;
+    if (image.map_turn & 1u) != 0u {
+        raw = raw.yx;
+        image_dims = image_dims.yx;
+    }
     let image_size = vec2<f32>(image_dims);
+    if (image.map_turn & 2u) != 0u {
+        raw.x = image_size.x - 1.0 - raw.x;
+    }
+    if (image.map_turn & 4u) != 0u {
+        raw.y = image_size.y - 1.0 - raw.y;
+    }
     let map_dims = textureDimensions(t_gain_map);
     // The weighting below jumps at a cell edge, so a pixel a hair on the wrong side of one takes
     // the wrong texels. A fragment within 1/64 px of a pixel centre (`PIXEL_SNAP`) is that pixel,
     // and its cell comes from integer arithmetic; the interpolated coordinate and this GPU's
     // division would both round across the edge.
-    let raw = uv * image_size - 0.5;
     let nearest = round(raw);
     let on_pixel = abs(raw - nearest) < vec2<f32>(1.0 / 64.0);
     let scaled = vec2<u32>(max(nearest, vec2<f32>(0.0))) * map_dims;

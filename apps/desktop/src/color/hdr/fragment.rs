@@ -166,6 +166,7 @@ mod tests {
                 width: 1,
                 height: 1,
                 rgba,
+                turn: Default::default(),
             },
             image_size: [4, 4],
             p3_to_app: IDENTITY,
