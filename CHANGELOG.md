@@ -5,6 +5,89 @@ All notable changes to Prvw are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versioning:
 [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] - 2026-10-14
+
+HDR photos in HDR: iPhone and Pixel highlights glow like they do in Preview, PQ and HLG images look like photos instead
+of grey, and 16-bit images stop banding.
+
+### Added
+
+- **Gain-map HDR photos show in HDR.** On an HDR display, iPhone, Pixel (Ultra HDR), and ISO 21496-1 JPEGs now show
+  their bright highlights the way Preview does, including iPhone photos from before iOS 18 and portrait shots. Moving
+  the brightness slider adapts the highlights live, without decoding the photo again
+  ([abdf4b22](https://github.com/vdavid/prvw/commit/abdf4b22),
+  [ad246c40](https://github.com/vdavid/prvw/commit/ad246c40),
+  [2991d15b](https://github.com/vdavid/prvw/commit/2991d15b),
+  [f57d2f6a](https://github.com/vdavid/prvw/commit/f57d2f6a),
+  [53117d14](https://github.com/vdavid/prvw/commit/53117d14),
+  [c06f8f6c](https://github.com/vdavid/prvw/commit/c06f8f6c),
+  [8b72bb11](https://github.com/vdavid/prvw/commit/8b72bb11))
+- **PQ and HLG PNGs and floating-point TIFFs show as light, not grey.** On an HDR display they're tone-mapped to the
+  brightness your screen has right now; on an SDR display they get a proper SDR version that keeps diffuse white bright
+  and saturated highlights in hue ([de1e1c61](https://github.com/vdavid/prvw/commit/de1e1c61),
+  [e221248f](https://github.com/vdavid/prvw/commit/e221248f),
+  [68ba2bd3](https://github.com/vdavid/prvw/commit/68ba2bd3),
+  [cee8d7db](https://github.com/vdavid/prvw/commit/cee8d7db),
+  [c808cb5e](https://github.com/vdavid/prvw/commit/c808cb5e),
+  [a685d342](https://github.com/vdavid/prvw/commit/a685d342))
+- Files with the wrong extension open anyway: Prvw reads a file's first bytes to pick its decoder, so a JPEG named
+  `.png` opens with its HDR intact and a JPEG saved as `.arw` opens as a JPEG. Their browse thumbnails show up too
+  ([db4d3360](https://github.com/vdavid/prvw/commit/db4d3360),
+  [eb944c35](https://github.com/vdavid/prvw/commit/eb944c35))
+
+### Changed
+
+- **One "HDR output" switch in Settings → Color now covers every format**, RAW included. It moved from the RAW panel,
+  and if you had turned it off there, it stays off ([398f760d](https://github.com/vdavid/prvw/commit/398f760d))
+- 16-bit PNGs and TIFFs no longer band: smooth gradients stay smooth instead of showing steps
+  ([11e7b91a](https://github.com/vdavid/prvw/commit/11e7b91a))
+- RAW photos keep the hue of saturated highlights. Bright colored lights used to wash out toward pastel (a blue light
+  came out pale sky blue), and RAWs rendered too dark on a calibrated display profile built only from lookup tables
+  ([5b4ee592](https://github.com/vdavid/prvw/commit/5b4ee592))
+- Browse mode's thumbnail grid sits straight on the window with even margins, and tall thumbnails get room above them
+  inside the selection ([fa3b7360](https://github.com/vdavid/prvw/commit/fa3b7360))
+- A file that can't be decoded is one stop in the folder with its own "Can't open this image" screen, instead of leaving
+  the previous photo up. Prvw also stops retrying it on every arrow press, and a slideshow no longer stalls on it
+  ([361ce46c](https://github.com/vdavid/prvw/commit/361ce46c))
+- With "Enlarge small images" on, resizing the window refits a small image to the new size
+  ([4ee58aad](https://github.com/vdavid/prvw/commit/4ee58aad))
+- Prvw now ships the license texts and attributions of the open-source code it's built on, linked from the About box
+  ([adbef59d](https://github.com/vdavid/prvw/commit/adbef59d))
+
+### Fixed
+
+- The traffic lights no longer flicker to the corner and back while you resize the window
+  ([d153289e](https://github.com/vdavid/prvw/commit/d153289e))
+- An HDR image on a display or connection where macOS refuses HDR output shows its SDR version instead of clipped
+  highlights ([ac6af7eb](https://github.com/vdavid/prvw/commit/ac6af7eb))
+- HDR images on Windows match the desktop's SDR brightness instead of showing about three times too dark
+  ([77871666](https://github.com/vdavid/prvw/commit/77871666))
+
+### Non-app
+
+- Move to Rust 1.99, pnpm 12, Node 26, and Go 1.27, refresh every crate within its major, and take the new `muda` 0.21,
+  `rawler` 0.8, `zstd`, `multiversion`, and `pollster` majors
+  ([faaa7f8d](https://github.com/vdavid/prvw/commit/faaa7f8d),
+  [5ada3971](https://github.com/vdavid/prvw/commit/5ada3971),
+  [bc83f8b9](https://github.com/vdavid/prvw/commit/bc83f8b9),
+  [a013dd47](https://github.com/vdavid/prvw/commit/a013dd47),
+  [de58109b](https://github.com/vdavid/prvw/commit/de58109b),
+  [973aa2ac](https://github.com/vdavid/prvw/commit/973aa2ac),
+  [d7a25707](https://github.com/vdavid/prvw/commit/d7a25707))
+- Harden the supply chain: `cargo-audit`, `govulncheck`, and `cargo-deny` checks (licenses, sources, duplicate crates),
+  pinned check tools, least-privilege CI workflows, and daily advisory, CodeQL, and Scorecard runs
+  ([5670f41d](https://github.com/vdavid/prvw/commit/5670f41d),
+  [7f5fd9f2](https://github.com/vdavid/prvw/commit/7f5fd9f2),
+  [c18c5889](https://github.com/vdavid/prvw/commit/c18c5889),
+  [ffc2a545](https://github.com/vdavid/prvw/commit/ffc2a545),
+  [fa7a363f](https://github.com/vdavid/prvw/commit/fa7a363f),
+  [1392753f](https://github.com/vdavid/prvw/commit/1392753f),
+  [9905a7fa](https://github.com/vdavid/prvw/commit/9905a7fa))
+- A headless GPU parity harness checks the HDR shader against a Rust reference, and E2E tests prove a brightness change
+  never re-decodes ([cd9b5b74](https://github.com/vdavid/prvw/commit/cd9b5b74),
+  [3285de20](https://github.com/vdavid/prvw/commit/3285de20),
+  [8e70abca](https://github.com/vdavid/prvw/commit/8e70abca))
+
 ## [0.17.0] - 2026-09-24
 
 Finder color tags: tag photos with a single key while you flip through them.
