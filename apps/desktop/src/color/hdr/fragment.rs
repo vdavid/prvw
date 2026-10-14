@@ -160,6 +160,7 @@ mod tests {
                 base_headroom: 0.0,
                 alternate_headroom: 2.0,
                 use_base_color_space: true,
+                curve: crate::color::hdr::gain_map::GainCurve::Log2,
             },
             map: MapView {
                 width: 1,

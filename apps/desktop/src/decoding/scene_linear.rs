@@ -396,7 +396,7 @@ fn sdr_fallback(
         }
     });
     let toned = start.elapsed();
-    color::transform_f32_with_profile(
+    color::transform_linear_f32_to_display(
         &mut rgb,
         &space.linear,
         target_icc,
@@ -446,7 +446,7 @@ fn display_sdr_16(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
 ) -> DecodedImage {
-    color::transform_f32_with_profile(
+    color::transform_linear_f32_to_display(
         &mut rgb,
         &space.linear,
         target_icc,
@@ -776,6 +776,58 @@ mod tests {
         }
         // And that's not what the same samples read as sRGB give: P3 red is out of sRGB.
         assert_ne!(halves(&by_cicp), halves(&untagged));
+    }
+
+    /// A saturated highlight keeps its hue on the SDR fallback: the primaries change first and
+    /// the clip happens in the display's primaries, as the GPU path plus the compositor does. A
+    /// clamp in BT.2020 before the matrix (moxcms' in-place f32 transform does that to its input)
+    /// turns a PQ sunset's orange into salmon.
+    #[test]
+    fn the_sdr_fallback_clips_in_the_displays_primaries() {
+        // A bright BT.2020 orange (luminance 1.14, so the tone map acts) and a saturated green
+        // that lands outside sRGB, negative in red.
+        let light = [[3.0f32, 0.5, 0.2], [0.05, 0.8, 0.05]];
+        let samples: Vec<u16> = light
+            .iter()
+            .flatten()
+            .map(|&v| (transfer::pq_inverse_eotf(v * 203.0) * 65_535.0).round() as u16)
+            .collect();
+        let bytes = png_bytes(2, 1, &samples, Some([9, 16, 0, 1]), None);
+        let image = decode(bytes, color::srgb_icc_bytes(), false);
+        let PixelBuffer::Rgba8(rgba) = &image.pixels else {
+            panic!("the SDR fallback is RGBA8");
+        };
+
+        // The reference: what decode measured as the peak (the brighter pixel), the tone map in
+        // BT.2020, BT.2020 → sRGB unclipped, then the clip and the sRGB curve.
+        let weights = SourceSpace::from_cicp(9).weights;
+        let peak = light
+            .iter()
+            .map(|&px| luminance(px, weights))
+            .fold(0.0f32, f32::max);
+        let curve = tone_map::ToneCurve::new(peak, 1.0);
+        let m = crate::color::profiles::linear_rec2020_profile()
+            .transform_matrix(&ColorProfile::new_srgb())
+            .v;
+        let encode = |v: f32| {
+            let v = v.clamp(0.0, 1.0);
+            let e = if v <= 0.003_130_8 {
+                12.92 * v
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            };
+            (e * 255.0).round() as u8
+        };
+        for (i, px) in light.iter().enumerate() {
+            let toned = curve.rgb(*px, weights);
+            let want: Vec<u8> = (0..3)
+                .map(|r| encode((0..3).map(|c| m[r][c] as f32 * toned[c]).sum()))
+                .collect();
+            let got = &rgba[i * 4..i * 4 + 3];
+            for (g, w) in got.iter().zip(&want) {
+                assert!(g.abs_diff(*w) <= 1, "pixel {i}: {got:?} vs {want:?}");
+            }
+        }
     }
 
     /// The SDR fallback: a photo, not grey. Shadows keep their PQ value, reference white stays

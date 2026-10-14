@@ -34,11 +34,55 @@ pub fn parse_iso21496(payload: &[u8]) -> Option<GainMapParams> {
 }
 
 /// Read Apple's gain-map parameters from a primary image's EXIF (the APP1 payload after
-/// `Exif\0\0`): the maker note's headroom tags, converted the way `ultrahdr-core` documents.
+/// `Exif\0\0`): the maker note's headroom tags (33 and 48), through Apple's own formula.
 /// `None` when there's no Apple maker note or no headroom tag in it.
+///
+/// `ultrahdr-core` reads the tags, but its `from_apple_headroom` is off on both counts: a
+/// fitted constant in its last branch (2.08 stops where Apple's formula and the file's own ISO
+/// metadata say 1.77, on the iPhone fixture), and ISO's log2 curve with 1/64 offsets where
+/// Apple's reconstruction is linear with none. So only the tag reader is upstream's.
 pub fn parse_apple(exif: &[u8]) -> Option<GainMapParams> {
     let info = ultrahdr_core::parse_exif_for_apple_hdr(exif)?;
-    from_upstream(&ultrahdr_core::from_apple_headroom(&info)?)
+    apple_params(apple_headroom_stops(
+        info.hdr_headroom? as f32,
+        info.hdr_gain as f32,
+    ))
+}
+
+/// Apple's headroom, in stops, from maker-note tags 33 and 48, as "Applying Apple HDR effect to
+/// your photos" (developer.apple.com) gives it.
+pub fn apple_headroom_stops(maker33: f32, maker48: f32) -> f32 {
+    let stops = if maker33 < 1.0 {
+        if maker48 <= 0.01 {
+            -20.0 * maker48 + 1.8
+        } else {
+            -0.101 * maker48 + 1.601
+        }
+    } else if maker48 <= 0.01 {
+        -70.0 * maker48 + 3.0
+    } else {
+        -0.303 * maker48 + 2.303
+    };
+    stops.max(0.0)
+}
+
+/// The parameters of an Apple-flavor map with `stops` of headroom: an SDR base, a map that
+/// spans 1× to `2^stops` along [`gain_map::GainCurve::Apple`], and no offsets.
+pub fn apple_params(stops: f32) -> Option<GainMapParams> {
+    let params = GainMapParams {
+        channels: [ChannelParams {
+            min: 0.0,
+            max: stops,
+            gamma: 1.0,
+            base_offset: 0.0,
+            alternate_offset: 0.0,
+        }; 3],
+        curve: gain_map::GainCurve::Apple,
+        base_headroom: 0.0,
+        alternate_headroom: stops,
+        use_base_color_space: true,
+    };
+    params.is_usable().then_some(params)
 }
 
 fn from_upstream(m: &ultrahdr_core::GainMapMetadata) -> Option<GainMapParams> {
@@ -53,6 +97,7 @@ fn from_upstream(m: &ultrahdr_core::GainMapMetadata) -> Option<GainMapParams> {
         base_headroom: m.base_hdr_headroom as f32,
         alternate_headroom: m.alternate_hdr_headroom as f32,
         use_base_color_space: m.use_base_color_space,
+        curve: gain_map::GainCurve::Log2,
     };
     params.is_usable().then_some(params)
 }
@@ -121,6 +166,41 @@ mod tests {
         );
         for len in 0..payload.len() {
             let _ = parse_iso21496(&payload[..len]);
+        }
+    }
+
+    /// Apple's published formula ("Applying Apple HDR effect to your photos"), one case per
+    /// branch. The first is the iPhone Air fixture's maker note, and 1.7678 stops is the ISO
+    /// `AlternateHeadroom` the same file carries; `ultrahdr-core`'s last branch
+    /// (`-0.44 × maker48 + 2.86`) gives 2.08 there.
+    #[test]
+    fn apple_headroom_uses_apples_published_constants() {
+        for (maker33, maker48, stops) in [
+            (1.01, 1.766_262, 1.767_799),
+            (1.01, 0.5, 2.1515),
+            (1.28, 0.0, 3.0),
+            (0.5, 0.005, 1.7),
+            (0.5, 0.5, 1.5505),
+            (1.01, 9.0, 0.0),
+        ] {
+            let got = apple_headroom_stops(maker33, maker48);
+            assert!(
+                (got - stops).abs() < 1e-3,
+                "maker33 {maker33}, maker48 {maker48}: {got} vs {stops}"
+            );
+        }
+    }
+
+    /// Apple's flavor carries no offsets and its own curve: `hdr = sdr × (1 + (headroom − 1) ×
+    /// g)`, nothing added or subtracted.
+    #[test]
+    fn apple_params_have_no_offsets_and_apples_curve() {
+        let p = apple_params(2.0).expect("usable");
+        assert_eq!(p.curve, gain_map::GainCurve::Apple);
+        assert_eq!((p.base_headroom, p.alternate_headroom), (0.0, 2.0));
+        for c in p.channels {
+            assert_eq!((c.base_offset, c.alternate_offset), (0.0, 0.0));
+            assert_eq!(c.max, 2.0);
         }
     }
 

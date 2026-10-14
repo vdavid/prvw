@@ -758,3 +758,22 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     Windows HDR too, and outside this fix.
   - Verified by unit tests on `from_info` and a GPU test (each HDR mode at 3.125 is its unscaled render times 3.125);
     nobody has looked at a real Windows HDR display with it yet.
+- **2026-10-14, M4 review fix M1: the SDR fallback clipped in BT.2020, before the matrix.** `moxcms`' in-place f32
+  transform runs each input channel through its linearization table, which clamps to [0, 1] first, so a saturated
+  BT.2020 orange the tone map left at R ≈ 2.6 came out salmon (`[255, 164, 102]` against the true `[255, 114, 91]` in
+  sRGB), and wide-gamut negatives were cut before conversion too. `color::transform_linear_f32_to_display` now does the
+  primaries in Rust (`source.transform_matrix(&target)`, unclipped), clips each channel in the target's primaries, and
+  leaves `moxcms` only the target's curves (a linear copy of the target, CICP tag dropped). Non-matrix-shaper targets
+  keep the old call. The scene-linear fallback and the SDR float TIFF path use it;
+  `the_sdr_fallback_clips_in_the_displays_primaries` checks a saturated orange and an out-of-sRGB green against an
+  independent reference. The comment on `transform_f32_with_profile` no longer claims the f32 path avoids that clip.
+  - **RAW has the same clip and keeps it, for David to decide.** Its SDR conversion (`raw.rs`, linear Rec.2020 →
+    display) still calls `transform_f32_with_profile`. Measured by switching it to the new function (temporarily, not
+    committed): the golden `synthetic-bayer-128.dng` changes in 481 of 16,384 pixels into sRGB (mean ΔE 0.060, p95 0,
+    max 3.96, which would fail the golden test's max-3.0 bound) and 409 into Display P3 (mean 0.021, max 1.86).
+    Saturated Rec.2020 highlights into sRGB, today vs clip-after: `[1.2, 0.5, 0.2]` → `[255, 177, 110]` vs
+    `[255, 173, 109]`; `[2.0, 0.6, 0.1]` → `[255, 196, 51]` vs `[255, 175, 33]`; `[1.5, 1.4, 0.2]` → `[255, 255, 91]` vs
+    `[255, 255, 67]`; `[0.9, 0.9, 1.3]` → `[243, 243, 255]` vs `[240, 243, 255]`; in-gamut and negative-only cases
+    identical. So the change only touches highlights past white, which RAW's highlight recovery already desaturates;
+    clip-after keeps them more saturated (closer to the RAW HDR path), today's look is paler. Switching is one call in
+    `raw.rs` plus a regenerated golden.

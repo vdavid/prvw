@@ -109,6 +109,15 @@ Two events re-run it, and they are not the same event:
   SDR base. Its tests compare against upstream for all 256 codes, six headrooms, and whole images through
   `apply_gainmap`. Two deliberate departures: an HDR base takes libavif's weight (upstream always answers 1.0 there),
   and a weight of exactly 0 shows the base untouched, where upstream would still add and subtract the two offsets.
+- **Apple's maker-note flavor has its own curve and headroom, not upstream's.** `hdr::apple_headroom_stops` is Apple's
+  published formula ("Applying Apple HDR effect to your photos"); `ultrahdr-core`'s last branch is a fit that says 2.08
+  stops where the iPhone fixture's own ISO metadata says 1.77, and Apple's constants give 1.7678. The gain is
+  `GainCurve::Apple`, `1 + (headroom − 1) × v^2.2` with no offsets, weighted in log2 at a partial headroom like every
+  flavor (Skia's `exp(log(1 + (H − 1)·g) × W)`), so the peak lands on the display's headroom.
+  - **Gotcha: Apple's article says the map is Rec.709-encoded, but ImageIO decodes it as gamma 2.2.** On an Apple-only
+    iPhone 14 Plus photo, ImageIO's HDR decode matches gamma 2.2 to 0.5% mean error, the sRGB curve to 2.4%, Skia's
+    `pow(v, 1.961)` to 5.5%, and Rec.709's inverse OETF to 13%. Gamma 2.2 is macOS' default for an untagged grey image,
+    and Preview is what David compares against. Method in the spec's Findings, 2026-10-14.
 - **Scene-linear HDR is tone-mapped with BT.2390's EETF, on luminance, in the PQ domain** (`hdr::tone_map`). It's the
   curve BT.2408 Annex 5 gives for exactly this: identity below a knee, a Hermite spline above it that puts the content
   peak on the target, and the identity outright when the content fits. Luminance with one ratio for R, G, and B keeps

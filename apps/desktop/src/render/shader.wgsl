@@ -25,7 +25,8 @@ var s_diffuse: sampler;
 // `render::image_pipeline::ImageParams`; append fields there and here together.
 struct ImageParams {
     mode: u32,
-    _pad0: u32,
+    // Mode 2: 0 ISO 21496-1's log2 curve, 1 Apple's (`color::hdr::gain_map::GainCurve`).
+    gain_curve: u32,
     _pad1: u32,
     _pad2: u32,
     // Mode 2, per channel in xyz (`color::hdr::gain_map::ChannelParams`).
@@ -99,14 +100,25 @@ fn gain_weight() -> f32 {
     return clamp((h - lo) / (hi - lo), 0.0, 1.0);
 }
 
-// The linear gain one map texel stands for, per channel (`GainMapLut::new`'s formula).
+const GAIN_CURVE_APPLE: u32 = 1u;
+const APPLE_MAP_GAMMA: f32 = 2.2;
+
+// The linear gain one map texel stands for, per channel (`gain`: `GainMapLut::new`'s formula,
+// or Apple's linear reconstruction).
 fn texel_gain(v: vec3<f32>, w: f32) -> vec3<f32> {
-    let gamma = image.gamma.xyz;
-    // pow(0, y) is undefined in WGSL even for y > 0, so a zero code stays zero explicitly.
-    let powed = select(pow(v, 1.0 / gamma), vec3<f32>(0.0), v <= vec3<f32>(0.0));
-    let use_gamma = (gamma != vec3<f32>(1.0)) & (gamma > vec3<f32>(0.0));
-    let recovery = select(v, powed, use_gamma);
-    let log2_gain = image.gain_min.xyz + recovery * (image.gain_max.xyz - image.gain_min.xyz);
+    let zero = v <= vec3<f32>(0.0);
+    var log2_gain: vec3<f32>;
+    if image.gain_curve == GAIN_CURVE_APPLE {
+        // pow(0, y) is undefined in WGSL even for y > 0, so a zero code stays zero explicitly.
+        let linear = select(pow(v, vec3<f32>(APPLE_MAP_GAMMA)), vec3<f32>(0.0), zero);
+        log2_gain = log2(1.0 + (exp2(image.gain_max.xyz) - 1.0) * linear);
+    } else {
+        let gamma = image.gamma.xyz;
+        let powed = select(pow(v, 1.0 / gamma), vec3<f32>(0.0), zero);
+        let use_gamma = (gamma != vec3<f32>(1.0)) & (gamma > vec3<f32>(0.0));
+        let recovery = select(v, powed, use_gamma);
+        log2_gain = image.gain_min.xyz + recovery * (image.gain_max.xyz - image.gain_min.xyz);
+    }
     return exp2(clamp(log2_gain * w, vec3<f32>(-30.0), vec3<f32>(30.0)));
 }
 

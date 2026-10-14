@@ -24,7 +24,9 @@ use wgpu::util::DeviceExt;
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ImageParams {
     pub mode: u32,
-    pub _pad: [u32; 3],
+    /// Mode 2: 0 for ISO 21496-1's log2 curve, 1 for Apple's (`GainCurve`).
+    pub gain_curve: u32,
+    pub _pad: [u32; 2],
     /// Mode 2, per channel in `xyz`: log2 gain at map value 0 and 1, the map gamma, and the
     /// two offsets (`color::hdr::gain_map::ChannelParams`).
     pub gain_min: [f32; 4],
@@ -57,6 +59,10 @@ impl ImageParams {
             }
             PixelEncoding::GainMapped(map) => {
                 let p = &map.params;
+                params.gain_curve = match p.curve {
+                    crate::color::hdr::gain_map::GainCurve::Log2 => 0,
+                    crate::color::hdr::gain_map::GainCurve::Apple => 1,
+                };
                 let per_channel = |f: fn(&crate::color::hdr::gain_map::ChannelParams) -> f32| {
                     [f(&p.channels[0]), f(&p.channels[1]), f(&p.channels[2]), 0.0]
                 };
@@ -742,6 +748,7 @@ mod gpu_parity {
             base_headroom: 0.0,
             alternate_headroom: 2.0,
             use_base_color_space: true,
+            curve: crate::color::hdr::gain_map::GainCurve::Log2,
         };
         DecodedImage::from_gain_mapped(
             width,
@@ -756,6 +763,16 @@ mod gpu_parity {
                 spaces: GainMapSpaces::new(crate::color::srgb_icc_bytes(), None, true),
             },
         )
+    }
+
+    /// The same busy base and map, read as Apple's maker-note flavor: its own curve, no offsets.
+    fn apple_gain_mapped() -> DecodedImage {
+        let mut image = gain_mapped();
+        if let PixelEncoding::GainMapped(map) = &mut image.encoding {
+            map.params = crate::color::hdr::apple_params(1.7678).expect("usable");
+            map.source = GainMapSource::Apple;
+        }
+        image
     }
 
     const HEADROOMS: [f32; 3] = [1.0, 2.0, 8.0];
@@ -823,6 +840,16 @@ mod gpu_parity {
     /// each pixel centre, and Shepard's weighting jumps at a cell edge: the shader has to snap
     /// onto the pixel, as the reference does, or it reads the wrong neighbour (the iPhone's 776
     /// over 388).
+    /// Apple's curve on the GPU, at partial and full weight.
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "Linux CI runners have no GPU adapter; macOS and Windows run this"
+    )]
+    fn mode_2_with_apples_curve_matches_the_reference() {
+        assert_matches_reference(&apple_gain_mapped(), &[1.0, 1.5, 2.5, 8.0]);
+    }
+
     #[test]
     #[cfg_attr(
         target_os = "linux",

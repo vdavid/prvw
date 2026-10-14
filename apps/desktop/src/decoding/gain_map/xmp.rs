@@ -96,6 +96,7 @@ pub fn parse_hdrgm(xmp: &str) -> Option<(GainMapParams, GainMapSource)> {
         base_headroom: capacity_min,
         alternate_headroom: capacity_max,
         use_base_color_space: true,
+        curve: crate::color::hdr::gain_map::GainCurve::Log2,
     };
     params.is_usable().then_some((params, source))
 }

@@ -1194,6 +1194,7 @@ mod tests {
             base_headroom: 0.0,
             alternate_headroom: 1.0,
             use_base_color_space: true,
+            curve: crate::color::hdr::gain_map::GainCurve::Log2,
         };
         for orientation in 1..=8u16 {
             let image = finalize(

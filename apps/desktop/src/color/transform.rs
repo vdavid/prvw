@@ -190,10 +190,16 @@ impl<T: Copy + Default + Into<u32>> BuiltTransform<'_, T> {
 
 /// Transform f32 RGB pixels from a source `ColorProfile` into a target ICC
 /// profile, in place. Input and output layouts are both `Rgb` (three
-/// components, no alpha). Used by the RAW decode path to convert a linear
-/// wide-gamut intermediate buffer into the display's color space without
-/// going through an 8-bit round trip first — that would clip anything
-/// outside [0, 1] before the transform ever sees it.
+/// components, no alpha). Used by the RAW decode path to convert its linear
+/// Rec.2020 buffer into the display's color space in f32, skipping an 8-bit
+/// round trip's rounding.
+///
+/// **It still clips in the source's primaries.** `moxcms`' in-place f32
+/// transform runs every input channel through its linearization table, which
+/// clamps to [0, 1] before the matrix, so a saturated channel above 1 (or a
+/// wide-gamut negative) is cut before the conversion sees it, and the hue
+/// shifts toward white. [`transform_linear_f32_to_display`] converts first and
+/// clips after; RAW stays here until David decides (spec Findings, 2026-10-14).
 ///
 /// Silently skips the transform on parse/setup errors and leaves the buffer
 /// untouched. The caller decides what to render in that case.
@@ -259,6 +265,45 @@ pub fn transform_f32_with_profile(
         "ICC f32 transform: {source_desc} -> {target_desc}, {intent_name} ({pixel_count_fmt} pixels) in {}ms",
         start.elapsed().as_millis()
     );
+}
+
+/// Linear f32 RGB in `source`'s primaries (its curves are ignored) into the target profile,
+/// in place: the primaries change in f32 with nothing clipped, then each channel clips to the
+/// target's [0, 1], and `moxcms` applies only the target's curves. So a saturated highlight
+/// clips in the display's primaries, the way the GPU path and the compositor clip it, and keeps
+/// its hue. A target that isn't a matrix-shaper profile takes [`transform_f32_with_profile`].
+///
+/// For the scene-linear SDR renditions (`decoding::scene_linear`).
+pub fn transform_linear_f32_to_display(
+    rgb: &mut [f32],
+    source: &ColorProfile,
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
+) {
+    let target = match ColorProfile::new_from_slice(target_icc) {
+        Ok(target) if target.is_matrix_shaper() => target,
+        _ => {
+            transform_f32_with_profile(rgb, source, target_icc, use_relative_colorimetric);
+            return;
+        }
+    };
+    use rayon::prelude::*;
+    const CHUNK_PIXELS: usize = 16_384;
+    let m = crate::color::hdr::gain_map::to_mat3(source.transform_matrix(&target));
+    rgb.par_chunks_mut(CHUNK_PIXELS * 3).for_each(|chunk| {
+        for px in chunk.as_chunks_mut::<3>().0 {
+            *px = crate::color::hdr::gain_map::mul(&m, *px).map(|v| v.clamp(0.0, 1.0));
+        }
+    });
+    // The target's own primaries with linear curves (and no CICP tag, which `moxcms` would
+    // believe over them): what's left of the transform is the target's encoding.
+    let mut linear_target = target.clone();
+    let linear = moxcms::ToneReprCurve::Lut(Vec::new());
+    linear_target.red_trc = Some(linear.clone());
+    linear_target.green_trc = Some(linear.clone());
+    linear_target.blue_trc = Some(linear);
+    linear_target.cicp = None;
+    transform_f32_with_profile(rgb, &linear_target, target_icc, use_relative_colorimetric);
 }
 
 /// Format a number with thousands separators (e.g., 24000000 -> "24,000,000").

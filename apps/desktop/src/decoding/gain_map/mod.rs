@@ -221,6 +221,7 @@ fn inspect(file: &[u8], range: Range<usize>) -> Option<Candidate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::hdr::gain_map::GainCurve;
 
     fn fixture(name: &str) -> Vec<u8> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -265,11 +266,10 @@ mod tests {
         decoder.decode_headers().expect("headers");
         let apple = crate::color::hdr::parse_apple(decoder.exif().expect("EXIF"))
             .expect("the maker note carries Apple's headroom");
-        // The two readings come from different formulas (ISO's stored headroom against Apple's
-        // maker-note fit), so they agree on the order of magnitude, not to the digit: 1.77 and
-        // 2.08 stops on this file.
+        // Apple's maker-note formula lands on the headroom the same file states in ISO terms
+        // (1.767799 stops), which is what anchors its constants.
         assert!(
-            (apple.alternate_headroom - found.params.alternate_headroom).abs() < 0.5,
+            (apple.alternate_headroom - found.params.alternate_headroom).abs() < 2e-3,
             "Apple {} vs ISO {} stops",
             apple.alternate_headroom,
             found.params.alternate_headroom
@@ -299,8 +299,9 @@ mod tests {
     fn the_apple_fixture_reads_the_maker_note_headroom() {
         let found = locate_in(&fixture("apple-64x48.jpg")).expect("gain map");
         assert_eq!(found.source, GainMapSource::Apple);
-        // maker33 = 1.01, maker48 = 0.5: -0.44 × 0.5 + 2.86 stops.
-        assert!((found.params.alternate_headroom - 2.64).abs() < 1e-5);
+        // maker33 = 1.01, maker48 = 0.5: -0.303 × 0.5 + 2.303 stops.
+        assert!((found.params.alternate_headroom - 2.1515).abs() < 1e-5);
+        assert_eq!(found.params.curve, GainCurve::Apple);
     }
 
     /// No MPF index: the `GContainer` directory's lengths still find the map.

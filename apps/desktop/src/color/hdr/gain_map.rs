@@ -13,6 +13,9 @@
 //! - [`weight`] ports `calculate_weight` for an SDR base and takes libavif's formula for an HDR
 //!   base, where upstream always answers 1.0 (pinned by a test in `color::hdr`).
 //!
+//! Apple's maker-note flavor is the one exception: [`GainCurve::Apple`] is Apple's own linear
+//! reconstruction with no offsets, which no `ultrahdr-core` setting reproduces.
+//!
 //! `render/shader.wgsl` ports the same functions; `color::hdr::fragment::shade` strings them
 //! together the way the shader does, and the GPU parity tests compare the two.
 
@@ -137,12 +140,19 @@ pub fn weight(headroom_now: f32, p: &GainMapParams) -> f32 {
 /// `channel`, at `weight`.
 pub fn gain(v: f32, channel: usize, p: &GainMapParams, weight: f32) -> f32 {
     let c = &p.channels[channel];
-    let recovery = if c.gamma != 1.0 && c.gamma > 0.0 {
-        v.powf(1.0 / c.gamma)
-    } else {
-        v
+    let log2_gain = match p.curve {
+        GainCurve::Log2 => {
+            let recovery = if c.gamma != 1.0 && c.gamma > 0.0 {
+                v.powf(1.0 / c.gamma)
+            } else {
+                v
+            };
+            c.min + recovery * (c.max - c.min)
+        }
+        // Apple's full gain, weighted in log2 like the others, as Skia does: at a partial
+        // headroom the peak still lands on the display's.
+        GainCurve::Apple => (1.0 + (c.max.exp2() - 1.0) * v.powf(APPLE_MAP_GAMMA)).log2(),
     };
-    let log2_gain = c.min + recovery * (c.max - c.min);
     (log2_gain * weight)
         .clamp(-MAX_LOG2_GAIN, MAX_LOG2_GAIN)
         .exp2()
@@ -278,11 +288,29 @@ pub enum GainMapSource {
     Apple,
 }
 
+/// How a map value becomes a gain at full weight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GainCurve {
+    /// ISO 21496-1 and Ultra HDR: the value, through `gamma`, is how far from `min` to `max` the
+    /// gain's log2 goes.
+    Log2,
+    /// Apple's maker-note flavor: the value, linearized with gamma 2.2, is how far from 1× to
+    /// the headroom (`2^max`) the gain goes, linearly: `1 + (headroom − 1) × v^2.2`. Apple's
+    /// article says the map uses the Rec.709 transfer, but ImageIO decodes an Apple-only iPhone
+    /// photo as gamma 2.2 (0.5% mean error, against 13% for Rec.709's inverse OETF; spec
+    /// Findings, 2026-10-14), which is macOS' default for an untagged grey image.
+    Apple,
+}
+
+/// The gamma ImageIO linearizes an Apple gain map with ([`GainCurve::Apple`]).
+const APPLE_MAP_GAMMA: f32 = 2.2;
+
 /// A gain map's parameters, whatever metadata they were read from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GainMapParams {
     /// R, G, B. A single-channel map repeats the same parameters three times.
     pub channels: [ChannelParams; 3],
+    pub curve: GainCurve,
     /// log2 of the base rendition's headroom: 0 for an SDR base.
     pub base_headroom: f32,
     /// log2 of the alternate rendition's headroom.
@@ -321,6 +349,7 @@ mod tests {
             base_headroom,
             alternate_headroom,
             use_base_color_space: true,
+            curve: crate::color::hdr::gain_map::GainCurve::Log2,
         }
     }
 
@@ -381,6 +410,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Apple's reconstruction at full weight, `1 + (headroom − 1) × v^2.2`, weighted in log2 at
+    /// a partial headroom like every flavor (Skia's `exp(log(1 + (H − 1)·g) × W)`), so the peak
+    /// lands on the display's headroom.
+    #[test]
+    fn apples_curve_is_linear_in_the_linearized_map_value() {
+        let p = crate::color::hdr::apple_params(2.0).expect("usable");
+        for v in [0.0f32, 0.1, 0.5, 0.73, 1.0] {
+            let full = 1.0 + 3.0 * v.powf(2.2);
+            let got = gain(v, 0, &p, 1.0);
+            assert!((got - full).abs() < 1e-5 * full, "v {v}: {got} vs {full}");
+            let half = gain(v, 0, &p, 0.5);
+            assert!((half - full.sqrt()).abs() < 1e-5, "v {v}: {half}");
+            assert_eq!(gain(v, 0, &p, 0.0), 1.0);
+        }
+        // At w = 1 there's nothing added or subtracted: white at full gain is the headroom.
+        assert_eq!(apply([1.0; 3], [gain(1.0, 0, &p, 1.0); 3], &p), [4.0; 3]);
     }
 
     /// A deterministic, busy pattern: neighbouring texels differ a lot, which is where a sampler

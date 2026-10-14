@@ -133,7 +133,8 @@ sampler, and the per-frame uniform, and needs only a device and a queue. `Render
 - **Mode 2**, per fragment: the base sample (linear Display P3, thanks to the sRGB texture decode) into the gain's
   application space, `(x + base_offset) × gain − alternate_offset`, then into the HDR display space; with the weight at
   0 (headroom 1 on an SDR-base map) the base goes straight to the display space, which on macOS is the identity, so the
-  SDR rendition is the same bits mode 0 would draw.
+  SDR rendition is the same bits mode 0 would draw. `ImageParams::gain_curve` picks how a map texel becomes a gain: ISO
+  21496-1's log2 curve, or Apple's linear one (`color::hdr::gain_map::GainCurve`).
 - **Mode 3**, per fragment: the sample's luminance (the source primaries' weights) through BT.2390's EETF from the
   image's content peak down to `headroom_now` (never below 1.0), R, G, and B scaled by the same ratio, then the source
   primaries into the HDR display space. The EETF's setup (two PQ encodes) runs per fragment, since its target is the
