@@ -33,37 +33,46 @@ pub struct Dimensions {
 /// Read the display-space pixel dimensions of `path`, or `None` if nothing here
 /// can answer for it.
 ///
-/// Dispatches on the extension, because each family has a cheaper header route
-/// than the one before it. On a slow network share each file open costs ~150 ms,
-/// so the goal is **one** open per file whichever tier handles it.
+/// Two tiers, picked the way the decode picks its decoder: by the file's first
+/// bytes, with the extension as the tiebreaker (`decoding::decodes_as_raw`). On a
+/// slow network share each file open costs ~150 ms, so the goal is **one** open
+/// per correctly named file whichever tier handles it.
 ///
 /// | Tier | Formats | Reader | Why |
 /// |------|---------|--------|-----|
 /// | 1 | Camera RAW | `rawler` header-only parse | Same crate that develops the file, so the crop rect matches |
-/// | 2 | PNG, GIF, BMP | `image::image_dimensions` | Tiny header, no EXIF to honour |
-/// | 3 | JPEG | one 64 KB read, `image` for dims + `nom-exif` for orientation | Two parsers, one read, one round trip |
-/// | 4 | WebP, TIFF, anything else | same 64 KB reader, format guessed from the magic bytes | Whatever the `image` crate opens, this sizes |
+/// | 2 | Everything else | one 64 KB read, `image` for dims (format guessed from the bytes) + `nom-exif` for orientation | Two parsers, one read, one round trip |
+///
+/// A RAW extension goes to rawler straight away, since rawler reads the file's
+/// signature itself. Any other extension reads the 64 KB prefix first and asks it
+/// which tier applies. Only a mislabeled file (a JPEG saved as `.arw`, a DNG saved
+/// as `.tif`) pays a second open, for the tier its content needs.
 ///
 /// Used by both the dim prefetcher pool (in parallel) and as the lazy fallback
 /// on the main thread when the prefetcher hasn't reached the requested index.
 pub fn read_dimensions_fast(path: &Path) -> Option<Dimensions> {
-    super::without_panicking("Header parse", path, || read_dimensions_by_extension(path))
+    super::without_panicking("Header parse", path, || read_dimensions_by_content(path))
 }
 
-fn read_dimensions_by_extension(path: &Path) -> Option<Dimensions> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|s| s.to_ascii_lowercase());
-    match ext.as_deref() {
-        Some(e) if crate::decoding::is_raw_extension(e) => read_raw_dimensions(path),
-        Some("png" | "gif" | "bmp") => read_via_image_crate(path),
-        Some(e) if crate::decoding::is_jpeg_extension(e) => read_buffered_with_orientation(path),
-        // WebP, TIFF, and any extension no backend claims. The buffered reader
-        // guesses the format from the magic bytes, so it answers for whatever
-        // the `image` crate can open and `None` for the rest.
-        _ => read_buffered_with_orientation(path),
+fn read_dimensions_by_content(path: &Path) -> Option<Dimensions> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if crate::decoding::is_raw_extension(ext) {
+        if let Some(dimensions) = read_raw_dimensions(path) {
+            return Some(dimensions);
+        }
+        // Not a RAW rawler can read. If the bytes say it's something else, size it as that;
+        // if they say RAW, the decode fails too, and `None` is the honest answer.
+        let prefix = read_prefix(path, HEADER_PREFIX_BYTES)?;
+        if crate::decoding::decodes_as_raw(ext, &prefix) {
+            return None;
+        }
+        return read_buffered_with_orientation(path, Some(prefix));
     }
+    let prefix = read_prefix(path, HEADER_PREFIX_BYTES)?;
+    if crate::decoding::decodes_as_raw(ext, &prefix) {
+        return read_raw_dimensions(path);
+    }
+    read_buffered_with_orientation(path, Some(prefix))
 }
 
 /// Tier 1: camera RAW, via `rawler`'s header-only parse.
@@ -116,29 +125,18 @@ fn developed_raw_dimensions(
     crop_area.or(active_area).unwrap_or((sensor_w, sensor_h))
 }
 
-/// Tier 2: PNG/GIF/BMP. `image::image_dimensions` reads only the header (IHDR
-/// for PNG, Logical Screen Descriptor for GIF, BMP file header). None of the
-/// three carries orientation in a header the decode honours either, so there's
-/// nothing to swap.
-fn read_via_image_crate(path: &Path) -> Option<Dimensions> {
-    let (w, h) = image::image_dimensions(path).ok()?;
-    Some(Dimensions {
-        width: w,
-        height: h,
-    })
-}
-
-/// Tiers 3 and 4: one open, one read of up to 64 KB, both answers parsed out of
-/// that buffer — dimensions through the `image` crate, EXIF orientation through
+/// Tier 2: one open, one read of up to 64 KB, both answers parsed out of that
+/// buffer — dimensions through the `image` crate, EXIF orientation through
 /// `nom-exif`. Neither parser does further I/O, so it's a single round trip.
+/// `prefix` is that read when the caller already made it.
 ///
 /// Orientation deliberately comes from `nom-exif` rather than `image`'s own
 /// `ImageDecoder::orientation`, because `nom-exif` is what
 /// `decoding::orientation` uses on the real decode. Where the two disagree
 /// (WebP, whose EXIF chunk `image` reads and `nom-exif` doesn't), matching the
 /// decode is what keeps the window from resizing twice.
-fn read_buffered_with_orientation(path: &Path) -> Option<Dimensions> {
-    if let Some(bytes) = read_prefix(path, HEADER_PREFIX_BYTES)
+fn read_buffered_with_orientation(path: &Path, prefix: Option<Vec<u8>>) -> Option<Dimensions> {
+    if let Some(bytes) = prefix.or_else(|| read_prefix(path, HEADER_PREFIX_BYTES))
         && let Some((w, h)) = dimensions_from(Cursor::new(bytes.as_slice()))
     {
         let orientation = exif_orientation(Cursor::new(bytes.as_slice())).unwrap_or(1);
@@ -322,7 +320,7 @@ mod tests {
             .save(&path)
             .expect("encode tiff");
         assert_eq!(
-            read_buffered_with_orientation(&path),
+            read_buffered_with_orientation(&path, None),
             Some(Dimensions {
                 width: 40,
                 height: 20
@@ -339,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn every_jpeg_extension_reaches_the_jpeg_tier() {
+    fn every_jpeg_extension_is_sized() {
         let bytes = std::fs::read(fixture("p3_red_64x64.jpg")).expect("fixture");
         for ext in ["jpg", "jpeg", "jpe", "jfif", "JPG"] {
             let path = scratch(&format!("photo.{ext}"));
@@ -351,6 +349,35 @@ mod tests {
                     height: 64
                 }),
                 "{ext}"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// The header read follows the decode's content decision, so a mislabeled file sizes the
+    /// window for what will actually paint rather than answering `None` (or the wrong IFD).
+    #[test]
+    fn a_mislabeled_file_is_sized_by_its_content() {
+        let jpeg = std::fs::read(fixture("p3_red_64x64.jpg")).expect("fixture");
+        let dng = std::fs::read(fixture("raw/synthetic-bayer-128.dng")).expect("fixture");
+        let mut png = Vec::new();
+        image::RgbImage::new(40, 20)
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encode PNG");
+        for (name, bytes, (width, height)) in [
+            ("jpeg-as.png", &jpeg, (64, 64)),
+            ("jpeg-as.arw", &jpeg, (64, 64)),
+            ("png-as.jpg", &png, (40, 20)),
+            ("png-as.gif", &png, (40, 20)),
+            ("dng-as.tif", &dng, (128, 128)),
+            ("dng-as.jpg", &dng, (128, 128)),
+        ] {
+            let path = scratch(name);
+            std::fs::write(&path, bytes).expect("write");
+            assert_eq!(
+                read_dimensions_fast(&path),
+                Some(Dimensions { width, height }),
+                "{name}"
             );
             let _ = std::fs::remove_file(&path);
         }

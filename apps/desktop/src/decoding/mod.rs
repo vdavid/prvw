@@ -399,6 +399,14 @@ pub fn load_image(
     }
 
     let backend = dispatch::pick_backend_for(ext, &bytes);
+    let format_name = match backend {
+        Backend::Jpeg => "JPEG via zune-jpeg".to_string(),
+        Backend::Raw => format!("{} via rawler", ext.to_uppercase()),
+        // Named from the bytes, since that's what picked the decoder.
+        Backend::Generic => image::guess_format(&bytes)
+            .map(|format| format!("{format:?}").to_uppercase())
+            .unwrap_or_else(|_| ext.to_uppercase()),
+    };
     let result = decode_with(
         backend,
         path,
@@ -419,7 +427,7 @@ pub fn load_image(
     });
     let result = result.inspect_err(|reason| count_failure(reason));
 
-    log_result(&result, ext, backend, path, start);
+    log_result(&result, &format_name, path, start);
     result
 }
 
@@ -463,22 +471,33 @@ pub fn is_raw_extension(ext: &str) -> bool {
     dispatch::is_raw_extension(ext)
 }
 
-/// Whether a file extension takes the fast JPEG decode path. The metadata tier
-/// reads it so its per-format routing can't drift from the decoder's.
-pub fn is_jpeg_extension(ext: &str) -> bool {
-    dispatch::is_jpeg_extension(ext)
+/// Whether [`load_image`] will develop this file as a camera RAW, judged from its extension
+/// and the first bytes of the file (`head` only needs to reach a TIFF's IFD0). The header-only
+/// dimension read asks this so it reads the file with the decoder that will paint it.
+pub fn decodes_as_raw(ext: &str, head: &[u8]) -> bool {
+    dispatch::pick_backend_for(ext, head) == Backend::Raw
+}
+
+/// What [`decode_raw_preview`] found in a file.
+pub enum RawPreview {
+    /// The camera's embedded preview, ready to show.
+    Image(DecodedImage),
+    /// A RAW without an embedded preview rawler can read (or a file that can't be opened).
+    Missing,
+    /// Not a RAW by its content, whatever the extension says (a JPEG saved as `.arw`). It
+    /// decodes the normal way, through [`load_image`].
+    NotRaw,
 }
 
 /// Extract the camera's embedded JPEG preview from a RAW file as a soft,
-/// downscaled, orientation-corrected placeholder — see [`raw_preview`]. Returns
-/// `None` for non-RAW files or RAWs without an embedded preview. Fast (no RAW
-/// develop); the preloader shows this instantly on a cache-miss while the full
-/// develop runs.
+/// downscaled, orientation-corrected placeholder — see [`raw_preview`]. Fast (no
+/// RAW develop); the preloader shows this instantly on a cache-miss while the
+/// full develop runs.
 pub fn decode_raw_preview(
     path: &Path,
     target_icc: &[u8],
     use_relative_colorimetric: bool,
-) -> Option<DecodedImage> {
+) -> RawPreview {
     raw_preview::decode_raw_preview(path, target_icc, use_relative_colorimetric)
 }
 
@@ -780,8 +799,7 @@ where
 /// Shared success/failure logging for both entry points.
 fn log_result(
     result: &Result<DecodedImage, String>,
-    ext: &str,
-    backend: Backend,
+    format_name: &str,
     path: &Path,
     start: Instant,
 ) {
@@ -789,11 +807,6 @@ fn log_result(
         Ok(image) => {
             let duration = start.elapsed();
             let decoded_size = format_decoded_size(image.pixels.byte_len());
-            let format_name = match backend {
-                Backend::Jpeg => "JPEG via zune-jpeg".to_string(),
-                Backend::Raw => format!("{} via rawler", ext.to_uppercase()),
-                Backend::Generic => ext.to_uppercase(),
-            };
             let hdr_label = match (&image.pixels, &image.encoding) {
                 (_, PixelEncoding::LinearHdrDisplay) => " [HDR]",
                 (_, PixelEncoding::GainMapped(_)) => " [gain map]",
@@ -933,6 +946,107 @@ mod tests {
             .unwrap_or_else(|e| panic!("{} should decode by its content: {e}", path.display()));
             assert_eq!((img.width, img.height), (width, height));
         }
+    }
+
+    /// The RAW quick preview asks the file's bytes too: a JPEG named `.arw` says it's not a RAW
+    /// (so a caller can decode it the normal way), and a real RAW is one whatever its name.
+    #[test]
+    fn the_raw_preview_goes_by_content() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let jpeg = dir.path().join("really-a-jpeg.arw");
+        image::RgbImage::from_pixel(8, 8, image::Rgb([200, 20, 20]))
+            .save_with_format(&jpeg, image::ImageFormat::Jpeg)
+            .expect("write JPEG");
+        let target = color::srgb_icc_bytes();
+        assert!(matches!(
+            decode_raw_preview(&jpeg, target, false),
+            RawPreview::NotRaw
+        ));
+
+        // The synthetic DNG carries no embedded preview, renamed or not.
+        let dng = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/raw/synthetic-bayer-128.dng");
+        let renamed = dir.path().join("synthetic.tif");
+        std::fs::copy(&dng, &renamed).expect("copy fixture");
+        for path in [dng, renamed] {
+            assert!(
+                matches!(
+                    decode_raw_preview(&path, target, false),
+                    RawPreview::Missing
+                ),
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    /// Every format under another format's extension decodes as what it is: the bytes pick the
+    /// decoder, so a `.jpg` that's really a PNG doesn't hit zune-jpeg and fail.
+    #[test]
+    fn an_image_wearing_another_formats_extension_decodes_by_its_content() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let source = image::RgbaImage::from_pixel(6, 4, image::Rgba([20, 200, 20, 255]));
+        for (format, wrong_ext) in [
+            (image::ImageFormat::Png, "jpg"),
+            (image::ImageFormat::Jpeg, "png"),
+            (image::ImageFormat::Gif, "webp"),
+            (image::ImageFormat::WebP, "gif"),
+            (image::ImageFormat::Bmp, "png"),
+            (image::ImageFormat::Png, "tif"),
+        ] {
+            let path = dir.path().join(format!("{format:?}.{wrong_ext}"));
+            let image = image::DynamicImage::ImageRgba8(source.clone());
+            let image = if format == image::ImageFormat::Jpeg {
+                image::DynamicImage::ImageRgb8(image.to_rgb8())
+            } else {
+                image
+            };
+            image
+                .save_with_format(&path, format)
+                .expect("write fixture");
+            let img = load_at(&path, false, OutputDepth::Native);
+            assert_eq!(
+                (img.width, img.height),
+                (6, 4),
+                "{format:?} as .{wrong_ext}"
+            );
+        }
+    }
+
+    /// A gain-map JPEG renamed `.png` still takes the JPEG path, which is the only one that
+    /// finds the map.
+    #[test]
+    fn a_gain_map_jpeg_named_png_keeps_its_gain_map() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let renamed = dir.path().join("ultra-hdr.png");
+        std::fs::copy(hdr_fixture("ultra-hdr-xmp-64x48.jpg"), &renamed).expect("copy fixture");
+        let hdr = load_at(&renamed, true, OutputDepth::Native);
+        assert_eq!(hdr.encoding.kind(), EncodingKind::GainMapped);
+    }
+
+    /// A DNG renamed `.tif` is still developed as a RAW. The `image` crate would otherwise read
+    /// it as a TIFF and show whatever IFD0 holds (a DNG's is often a small preview).
+    #[test]
+    fn a_dng_named_tif_is_developed_as_a_raw() {
+        let dng = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/raw/synthetic-bayer-128.dng");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let renamed = dir.path().join("synthetic.tif");
+        std::fs::copy(&dng, &renamed).expect("copy fixture");
+
+        let expected = load_at(&dng, false, OutputDepth::Native);
+        let actual = load_at(&renamed, false, OutputDepth::Native);
+        assert_eq!(
+            (actual.width, actual.height),
+            (expected.width, expected.height)
+        );
+        assert!(
+            matches!(
+                (&actual.pixels, &expected.pixels),
+                (PixelBuffer::Rgba8(a), PixelBuffer::Rgba8(b)) if a == b
+            ),
+            "the .tif develop should match the .dng one pixel for pixel"
+        );
     }
 
     /// The storage-and-encoding pairs, and which of them asks for the EDR

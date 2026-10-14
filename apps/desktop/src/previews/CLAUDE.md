@@ -13,7 +13,7 @@ Two halves that share a folder list, with different reach:
 | File              | Purpose                                                                                                          | Platforms      |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------- | -------------- |
 | `mod.rs`          | `State { scheduler, cache, dim_prefetcher, paths, current, requests }` + API + RAM-scaled byte budget + eviction | all            |
-| `metadata.rs`     | Four-tier dim+orientation reader (rawler / image / image+nom-exif)                                               | all            |
+| `metadata.rs`     | Two-tier dim+orientation reader (rawler / image+nom-exif), tier picked from the file's first bytes               | all            |
 | `dim_prefetch.rs` | 16-thread parallel pool that pre-warms `(width, height)` for window indices                                      | all            |
 | `scheduler.rs`    | Pure state machine: priority-ordered queue, windowing, parallelism cap, pause/resume                             | macOS, Windows |
 | `request.rs`      | What a request carries and what comes back: `SubmitRequest`, `Delivery`, the pending queue and its wake rule     | all            |
@@ -141,7 +141,7 @@ portable Rust.
 
 | Route         | Files                                                         | How                                                                     |
 | ------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `EmbeddedRaw` | every camera RAW                                              | `decoding::decode_raw_preview` — the camera's embedded JPEG, no develop |
+| `EmbeddedRaw` | every RAW extension                                           | `decoding::decode_raw_preview` — the camera's embedded JPEG, no develop |
 | `System`      | everything else with a legal shell path (`paths::shell_path`) | `IShellItemImageFactory::GetImage`, the cache Explorer fills            |
 | `Decode`      | everything else                                               | `decoding::load_image` + a box-filter downscale                         |
 
@@ -150,6 +150,11 @@ installed, so without it every RAW in the folder is a blank screen; and with it,
 the placeholder would visibly shift colour when the real develop landed. `decode_raw_preview` is the same call
 `navigation::preloader` already makes on a RAW cache-miss, so the preview and the quick preview that follows it are the
 same pixels rather than two guesses. Cheap, too: an embedded-JPEG decode, no develop.
+
+**A RAW extension on a file that isn't one takes the `Decode` route after all.** `route_for` only has the name, so a
+JPEG saved as `.arw` starts on `EmbeddedRaw`; `decode_raw_preview` reads its bytes, answers `RawPreview::NotRaw`, and
+`produce` decodes it like any other image (`a_jpeg_named_as_a_raw_still_gets_a_preview`). The reverse, a RAW under a
+non-RAW name, goes to the shell or to `Decode`, which develops it by its content.
 
 **Decision: a path the shell can't take falls back to decoding, not to nothing.** **Why:** `shell_path` answers `None`
 for a path that would be mangled once de-verbatimed (over `MAX_PATH`, a volume-GUID path, a reserved DOS device name),
@@ -211,26 +216,32 @@ finish on a stale generation drop their result. Keeps the cache truthful across 
 cancellation.
 
 **Lazy fallback:** if the user navigates faster than the prefetcher, `State::source_dimensions` falls through to a
-synchronous `metadata::read_dimensions_fast` call on the main thread — same three-tier dispatcher the workers use, just
-blocking. Result is cached back into the prefetcher's map for next time.
+synchronous `metadata::read_dimensions_fast` call on the main thread — same dispatcher the workers use, just blocking.
+Result is cached back into the prefetcher's map for next time.
 
-## Four-tier dim+orientation reader
+## Two-tier dim+orientation reader
 
-`metadata::read_dimensions_fast(path)` dispatches by extension. Goal: _one_ file open per file regardless of which tier
-handles it, because on a slow network share each open costs ~150 ms and that dominates everything else.
+`metadata::read_dimensions_fast(path)` picks its tier the way the decode picks its decoder: by the file's first bytes,
+with the extension as the tiebreaker (`decoding::decodes_as_raw`, which is `dispatch::pick_backend_for`). Goal: _one_
+file open per correctly named file regardless of which tier handles it, because on a slow network share each open costs
+~150 ms and that dominates everything else.
 
-| Tier | Formats                    | Reader                                                                   | Why                                                                     |
-| ---- | -------------------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| 1    | Camera RAW                 | `rawler`, `raw_image(.., dummy = true)` + `raw_metadata`                 | Same crate that develops the file, so the crop rect matches             |
-| 2    | PNG, GIF, BMP              | `image::image_dimensions`                                                | Tiny header, and no orientation the decode honours                      |
-| 3    | JPEG (`jpg jpeg jpe jfif`) | open once → 64 KB buffer → `image` for dims + `nom-exif` for orientation | Both parsers run in-memory on the same buffer; single round trip        |
-| 4    | WebP, TIFF, anything else  | the same buffered reader, format guessed from the magic bytes            | Sizes whatever the `image` crate opens, and answers `None` for the rest |
+| Tier | Formats         | Reader                                                                                                   | Why                                                              |
+| ---- | --------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| 1    | Camera RAW      | `rawler`, `raw_image(.., dummy = true)` + `raw_metadata`                                                 | Same crate that develops the file, so the crop rect matches      |
+| 2    | Everything else | open once → 64 KB buffer → `image` for dims (format guessed from the bytes) + `nom-exif` for orientation | Both parsers run in-memory on the same buffer; single round trip |
 
-Tiers 3 and 4 are one function; only the routing differs, and tier 3 exists because the extension list is worth reading
-off `decoding::dispatch` rather than matching by hand (`.jpe` and `.jfif` used to fall through to tier 4). 64 KB is well
-above any JPEG's SOF + APP1/EXIF segments, typically both within the first 4 KB. When the prefix isn't enough — a TIFF
-whose IFD sits at the end of the file, which plenty of writers produce — the reader pays a second open and lets both
-parsers seek instead.
+A RAW extension goes straight to tier 1, since rawler checks the file's signature itself. Any other extension reads the
+64 KB prefix first and asks it which tier applies. Only a mislabeled file pays a second open: a JPEG saved as `.arw`
+(rawler refuses it, the prefix says JPEG, tier 2 sizes it) or a DNG saved as `.tif` (the prefix says RAW, tier 1 sizes
+it). A RAW extension on bytes that still say RAW but that rawler can't parse answers `None`, as the decode would fail.
+`a_mislabeled_file_is_sized_by_its_content` is the anchor.
+
+64 KB is well above any JPEG's SOF + APP1/EXIF segments, typically both within the first 4 KB. When the prefix isn't
+enough — a TIFF whose IFD sits at the end of the file, which plenty of writers produce — the reader pays a second open
+and lets both parsers seek instead. Such a TIFF also can't show its RAW structure in the prefix, so a RAW laid out that
+way under a non-RAW extension is sized by tier 2 (or not at all) while the decode, which has the whole file, develops
+it; the window then resizes once when the develop lands.
 
 **Decision: every tier reads with the crate that decodes the format.**
 
@@ -305,14 +316,13 @@ cached indices, failed indices, paused flag, and parallelism cap.
   nothing ever frees. `previews::without_panicking` turns it into a `None` plus a debug log, and both
   `read_dimensions_fast` and `generator`'s worker go through it. Don't move the guard down into one tier or one route:
   the contract is on the dispatcher.
-- **A PNG `eXIf` chunk is the one orientation this tier can miss.** Tier 2 reads dimensions only, while
-  `decoding::generic` runs `parse_exif_orientation` over the **whole** file, and `nom-exif` does parse a PNG `eXIf`
-  chunk. So a PNG carrying a quarter turn auto-fits to the unrotated size and resizes once when the decode lands.
-  Routing PNG through the buffered reader wouldn't fix it: `eXIf` is legal after `IDAT`, which puts it past the 64 KB
-  prefix on any real photo, so a correct fix costs a second seeking pass over every PNG on the launch path. Not worth it
-  for how rare the tag is on PNG. No other tier has the gap: a JPEG's APP1 sits right behind SOI, a TIFF keeps
-  dimensions and orientation in the same IFD (so they succeed or fall back together), and neither this tier nor the
-  decode reads WebP EXIF at all.
+- **A PNG `eXIf` chunk past the prefix is the one orientation this reader can miss.** Tier 2 reads orientation from the
+  64 KB prefix, while `decoding::generic` runs `parse_exif_orientation` over the **whole** file, and `nom-exif` does
+  parse a PNG `eXIf` chunk. `eXIf` is legal after `IDAT`, which puts it past the prefix on any real photo, so such a PNG
+  carrying a quarter turn auto-fits to the unrotated size and resizes once when the decode lands. A correct fix costs a
+  second seeking pass over every PNG on the launch path. Not worth it for how rare the tag is on PNG. No other tier has
+  the gap: a JPEG's APP1 sits right behind SOI, a TIFF keeps dimensions and orientation in the same IFD (so they succeed
+  or fall back together), and neither this tier nor the decode reads WebP EXIF at all.
 - **`little_exif` can't build a fixture for that.** `Metadata::write_to_file` picks the container from the extension and
   writes PNG EXIF as a **`zTXt`** chunk, which `nom-exif` doesn't read (it takes `eXIf` and an uncompressed `tEXt` "Raw
   profile type exif"). A round-trip through it looks like the gap is absent. Proving the case needs a hand-built `eXIf`

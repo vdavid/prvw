@@ -268,9 +268,12 @@ fn worker_loop(
 fn produce(route: &Route, path: &Path, pixels: u32) -> Option<PreviewPixels> {
     match route {
         Route::EmbeddedRaw => {
-            let decoded =
-                decoding::decode_raw_preview(path, crate::color::srgb_icc_bytes(), false)?;
-            downscale(decoded, pixels)
+            match decoding::decode_raw_preview(path, crate::color::srgb_icc_bytes(), false) {
+                decoding::RawPreview::Image(decoded) => downscale(decoded, pixels),
+                decoding::RawPreview::Missing => None,
+                // A JPEG or PNG saved under a RAW extension: decode it like any other image.
+                decoding::RawPreview::NotRaw => produce(&Route::Decode, path, pixels),
+            }
         }
         Route::System(shell_path) => system_thumbnail(shell_path, pixels),
         Route::Decode => {
@@ -437,6 +440,20 @@ mod tests {
             route_for(&path(r"C:\pics\scan"), true),
             Route::System(r"C:\pics\scan".to_string())
         );
+    }
+
+    /// A JPEG saved under a RAW extension takes the RAW route by its name, finds no RAW inside,
+    /// and still gets a preview: the decode a JPEG would have had.
+    #[test]
+    fn a_jpeg_named_as_a_raw_still_gets_a_preview() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("really-a-jpeg.arw");
+        image::RgbImage::from_pixel(8, 6, image::Rgb([200, 20, 20]))
+            .save_with_format(&file, image::ImageFormat::Jpeg)
+            .expect("write JPEG");
+        assert_eq!(route_for(&file, false), Route::EmbeddedRaw);
+        let preview = produce(&Route::EmbeddedRaw, &file, 64).expect("a preview");
+        assert_eq!((preview.width, preview.height), (8, 6));
     }
 
     /// The two sizes the app asks for, on the scales it meets.

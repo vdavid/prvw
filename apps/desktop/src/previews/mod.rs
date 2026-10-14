@@ -312,7 +312,7 @@ impl State {
         if let Some(dims) = self.dim_prefetcher.get(index) {
             return Some(dims);
         }
-        // Lazy synchronous fallback. Uses the same three-tier dispatcher
+        // Lazy synchronous fallback. Uses the same dispatcher
         // the prefetcher pool uses, so per-format optimisations apply
         // here too. Insert into the prefetcher cache so subsequent
         // lookups for this index are instant.

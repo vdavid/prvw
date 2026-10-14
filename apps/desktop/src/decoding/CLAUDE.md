@@ -7,11 +7,11 @@ orientation, and hand a `DecodedImage` off to the renderer.
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `mod.rs`           | Public API: `DecodedImage`, `PixelBuffer` (storage), `PixelEncoding` (meaning), `OutputDepth`, `load_image` (always-cancellable), `is_supported_extension`         |
 | `read_progress.rs` | `ReadProgress`: the live byte counter of one file read, plus `READ_CHUNK_BYTES` and the `PRVW_READ_DELAY_MS` test hook                                             |
-| `dispatch.rs`      | `Backend` enum + extension-to-backend mapping                                                                                                                      |
+| `dispatch.rs`      | `Backend` enum, the supported-extension tables, and `pick_backend_for`: the decoder from the file's first bytes, the extension as tiebreaker                       |
 | `jpeg.rs`          | Fast JPEG path via `zune-jpeg` (SIMD); keeps a gain-map JPEG's map when HDR is active                                                                              |
 | `gain_map/`        | Finding a JPEG's gain map: `mpf.rs` (MPF index), `xmp.rs` (`hdrgm`, `GContainer`, Apple's aux tag), `mod.rs` (`locate`, metadata precedence, `GainMapPayload`)     |
 | `raw.rs`           | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)                                                                                         |
-| `raw_preview.rs`   | Fast embedded-JPEG preview extraction (`decode_raw_preview`): no develop, downscaled + oriented soft placeholder shown on RAW cache-miss while the develop runs    |
+| `raw_preview.rs`   | Fast embedded-JPEG preview extraction (`decode_raw_preview` → `RawPreview`): no develop, downscaled + oriented soft placeholder shown on RAW cache-miss            |
 | `dng_opcodes.rs`   | DNG `OpcodeList1/2/3` parsing + application (Phase 3.0)                                                                                                            |
 | `generic.rs`       | Fallback path via the `image` crate (PNG, GIF, WebP, BMP, TIFF), including the 16-bit SDR path and the `cICP` probe                                                |
 | `scene_linear.rs`  | PQ and HLG PNGs and float TIFFs: linear light, its content peak, then `SceneLinear` or the CPU's tone-mapped SDR rendition                                         |
@@ -20,14 +20,39 @@ orientation, and hand a `DecodedImage` off to the renderer.
 
 ## Key patterns
 
-- **Backend dispatch is extension-based.** `dispatch::pick_backend(ext)` picks the decoder; `is_supported_extension` is
-  the gate the directory scanner uses. Adding a format means: teach `dispatch` about its extensions, add a backend
-  module, and match it in `mod::decode_with`.
-- **One exception: a RAW extension on a JPEG or PNG.** `load_image` calls `dispatch::pick_backend_for(ext, bytes)`,
-  which sends a RAW-extension file whose first bytes are a JPEG or PNG signature to that decoder. A Sony JPEG saved as
-  `.arw` made rawler fail with "No decoder found, model ''". TIFF signatures don't count, because most RAWs are TIFF
-  containers. The RAW quick preview and `previews::metadata` still go by extension and simply find nothing for such a
-  file. `a_jpeg_or_png_wearing_a_raw_extension_decodes_by_its_content` is the anchor.
+- **The extension says whether it's an image; the bytes say which decoder reads it.** `is_supported_extension` is the
+  gate the directory scanner, the file picker, and drops use, so unknown extensions stay out of folder listings. For a
+  file that passes it, `load_image` calls `dispatch::pick_backend_for(ext, bytes)` on the bytes it already read (no
+  extra I/O; a few byte compares, plus a walk of a TIFF's IFD0 entries):
+  - JPEG signature (`FF D8 FF`): `Jpeg` (zune-jpeg, and the gain-map path), whatever the extension.
+  - PNG, GIF, WebP, or BMP signature: `Generic`, whatever the extension (`image` guesses the exact format from the bytes
+    too).
+  - A RAW signature of its own: `Raw`, whatever the extension. RAF (`FUJIFILMCCD-RAW`), CR3 (`ftypcrx` at 4), ORF
+    (`IIRO`, `IIRS`, `MMOR`), RW2 (`IIU\0`), and CR2 (a TIFF header with `CR\x02` at 8).
+  - A TIFF signature whose IFD0 is built like a camera RAW (`DNGVersion`, a CFA or LinearRaw photometric interpretation,
+    or `Make` next to `SubIFDs`): `Raw`, whatever the extension. That's how a DNG, NEF, ARW, or PEF saved as `.tif`
+    still develops (all 12 files in `_ignored/test-raw-pics` sniff as RAW under `.tif` and `.jpg`, from the 64 KB the
+    header reader has).
+  - Any other TIFF: the extension breaks the tie. A RAW extension stays `Raw` (most RAW formats are TIFF containers, and
+    one we can't recognise is still more likely a RAW than not); anything else is `Generic`.
+  - Bytes that match nothing: the extension decides (`pick_backend`).
+- **Decision: no second try with the other decoder.** A TIFF the rules above send to the wrong decoder fails rather than
+  falling back. **Why:** a fallback needs the bytes twice (a copy of a 100 MB TIFF, or a second read), and its failure
+  mode is worse than an error: the `image` crate happily decodes a NEF's or DNG's IFD0, which is a small preview, so a
+  RAW would silently show as a thumbnail. Reading IFD0 for RAW structure gets the realistic cases right without either.
+  **Known gap:** a plain TIFF saved under a RAW extension goes to rawler and fails.
+- **Everything downstream of the backend already reads bytes, not names.** EXIF, orientation, and the gain-map lookup
+  parse the file's bytes, so a JPEG named `.png` gets its orientation and its gain map
+  (`a_gain_map_jpeg_named_png_keeps_its_gain_map`). The other places that pick a reader for a file follow the same
+  `pick_backend_for`: `decode_raw_preview` reports `RawPreview::NotRaw` for a non-RAW wearing a RAW extension (the
+  Windows preview generator then decodes it like any other image), and `previews::metadata` asks `decodes_as_raw` on its
+  64 KB prefix. **Exception:** the preloader still starts the RAW quick preview from the extension alone, because it
+  runs before the file is read; a RAW under a non-RAW extension gets no soft placeholder, only the full develop.
+  Anchors: `dispatch`'s tests, `an_image_wearing_another_formats_extension_decodes_by_its_content`,
+  `a_dng_named_tif_is_developed_as_a_raw`, and `a_jpeg_or_png_wearing_a_raw_extension_decodes_by_its_content` (a Sony
+  JPEG saved as `.arw` made rawler fail with "No decoder found, model ''").
+- **Adding a format** means: teach `dispatch` its extensions (and its signature, in `sniff`), add a backend module, and
+  match it in `mod::decode_with`.
 - `failed_decodes()` counts every `load_image` failure that isn't a cancel, for `/state`.
 - **Cancellation.** `load_image` takes an `AtomicBool`, checked between each RAW pipeline stage and at every 256 KB
   file-read chunk. Returns `Err("cancelled")` when the flag flips. Worst-case cancel latency inside RAW decode is one

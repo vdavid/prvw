@@ -21,40 +21,62 @@ use rawler::rawsource::RawSource;
 
 use crate::color;
 
-use super::DecodedImage;
+use super::dispatch::{Backend, pick_backend_for};
 use super::orientation::apply_orientation_bytes;
+use super::{DecodedImage, RawPreview};
 
 /// Long-edge size the embedded preview is downscaled to. Small on purpose so
 /// the placeholder looks soft. **Tunable**: raise for a sharper preview, lower
 /// for blurrier. 1024 matches the QuickLook-preview bucket the app already uses.
 const PREVIEW_LONG_EDGE_PX: u32 = 1024;
 
-/// Extract and prepare the embedded preview for `path`, or `None` if the file
-/// has no embedded preview / rawler can't read it. Never runs the RAW develop.
+/// Extract and prepare the embedded preview for `path`. Never runs the RAW develop.
+///
+/// The file's own bytes decide whether it's a RAW, the same way `load_image` decides
+/// (`dispatch::pick_backend_for`), so a JPEG saved as `.arw` comes back as
+/// [`RawPreview::NotRaw`] rather than as a missing preview.
 pub(super) fn decode_raw_preview(
     path: &Path,
     target_icc: &[u8],
     use_relative_colorimetric: bool,
+) -> RawPreview {
+    let Ok(src) = RawSource::new(path) else {
+        return RawPreview::Missing;
+    };
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if pick_backend_for(ext, src.buf()) != Backend::Raw {
+        return RawPreview::NotRaw;
+    }
+    embedded_preview(path, &src, target_icc, use_relative_colorimetric)
+        .map_or(RawPreview::Missing, RawPreview::Image)
+}
+
+/// The embedded preview of a file already known to be a RAW, or `None` if it has none
+/// rawler can read.
+fn embedded_preview(
+    path: &Path,
+    src: &RawSource,
+    target_icc: &[u8],
+    use_relative_colorimetric: bool,
 ) -> Option<DecodedImage> {
     let start = std::time::Instant::now();
-    let src = RawSource::new(path).ok()?;
-    let decoder = rawler::get_decoder(&src).ok()?;
+    let decoder = rawler::get_decoder(src).ok()?;
     let params = RawDecodeParams::default();
 
     // Embedded preview if present, else the embedded full-size image. Both are
     // stored JPEGs in the RAW container — cheap. Explicitly NOT the develop.
     let dynimg = decoder
-        .preview_image(&src, &params)
+        .preview_image(src, &params)
         .ok()
         .flatten()
-        .or_else(|| decoder.full_image(&src, &params).ok().flatten())?;
+        .or_else(|| decoder.full_image(src, &params).ok().flatten())?;
 
     // rawler hard-codes `RawImage.orientation` to Normal; the real EXIF value
     // is on the decoder metadata (same source the full develop uses). The
     // embedded preview is stored un-oriented, so apply it or portrait shots
     // would flash sideways before snapping upright.
     let orientation = decoder
-        .raw_metadata(&src, &params)
+        .raw_metadata(src, &params)
         .ok()
         .and_then(|m| m.exif.orientation)
         .unwrap_or(1);

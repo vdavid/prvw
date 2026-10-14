@@ -710,7 +710,7 @@ impl Preloader {
                     .and_then(|e| e.to_str())
                     .unwrap_or_default();
                 if decoding::is_raw_extension(ext)
-                    && let Some(preview) =
+                    && let decoding::RawPreview::Image(preview) =
                         decoding::decode_raw_preview(&path, &display_icc, use_relative_colorimetric)
                     && !cancelled.load(Ordering::Relaxed)
                 {
