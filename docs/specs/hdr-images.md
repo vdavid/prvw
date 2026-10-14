@@ -818,3 +818,22 @@ Filled in by the implementing agent during M0 and later. Date each entry.
   on it before), and a GPU parity case runs the eight turns. The real Apple-only iPhone 14 Plus photo, orientation 6
   with a half-res map, matches ImageIO's HDR decode through our whole decode to 0.54% mean relative error at full
   headroom (a second file from the same phone, 0.67%), which is also review finding L9's real-file check.
+- **2026-10-14, review lows, decided.**
+  - **L2, fixed:** `want_edr_surface` needs image mode, and every mode switch re-applies the surface state, so browse
+    drops the EDR surface and the headroom poll; `WindowEvent::Occluded` stops the poll for a covered window. The review
+    suggested also clearing the image's encoding on entering browse; the gate does the same job and keeps what image
+    mode returns to.
+  - **L3, kept and documented:** a gain-map base is color-managed into Display P3 even with ICC off. The HDR surface's
+    color space defines its values, so "unmanaged" has no meaning there, and RAW and scene-linear HDR convert regardless
+    too. ICC off governs the SDR path (`decoding/CLAUDE.md`).
+  - **L4, kept and documented:** the histogram of a `GainMapped` image bins P3 bytes, and an HDR screenshot is encoded
+    in the HDR display space. Both match the display on a P3 panel, where gain maps show at all (`histogram/CLAUDE.md`,
+    `render/CLAUDE.md`).
+  - **L5, fixed:** an MPF index listing an image past the primary counts as a gain-map signal, so an iPhone file whose
+    maker note was stripped still finds its ISO map. Costs a header read per appended image on HDR decodes.
+  - **L6, fixed:** full ISO parameters on the primary go to an appended image with its own ISO segment, else the first
+    one not tagged (`apdi:AuxiliaryImageType`) as a depth map or matte, else no map at all.
+  - **L7, documented:** an HDR base in an 8-bit JPEG is taken as SDR-white-relative; no writer we know does it.
+  - **L8, fixed:** the `GContainer` scan reads at most 16 items and looks at most 64 names.
+  - **L9:** covered by the real Apple-only files in the H1 and M2 entries. A real Pixel file stays local (David's
+    photos, never committed), so CI's only real-world gain-map input is still the iPhone Air fixture.

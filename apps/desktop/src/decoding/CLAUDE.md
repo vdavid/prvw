@@ -129,6 +129,13 @@ current headroom (`render/CLAUDE.md`), so a brightness change never re-decodes.
   the ISO gain map. The iPhone fixture has no ISO APP2 at all. `xmp::parse_hdrgm` reads both dialects and says which.
 - **Gotcha: an XMP gain map with an HDR base is refused**, as libultrahdr refuses it: Ultra HDR doesn't pin down the
   gain's direction for it. ISO 21496-1 APP2 metadata with an HDR base is accepted, and its weight runs backwards.
+  **Assumption:** an 8-bit sRGB base is SDR-white-relative (1.0 is SDR white), so at a weight of 0 an HDR base shows at
+  SDR brightness. A writer that means "base white sits at `2^base_headroom`" would show that much dimmer. No writer we
+  know puts an HDR base in an 8-bit JPEG; revisit with a real file.
+- **Decision: a gain-map base is color-managed even with ICC off.** Settings' ICC switch empties the SDR path's target
+  (`App::effective_display_icc`), so SDR bytes go to the screen as the file has them. An HDR surface has no such option:
+  its layer's color space (linear Display P3 or scRGB) says what every value means, so an unconverted sRGB base would
+  show oversaturated. RAW HDR and scene-linear HDR convert regardless too; ICC off governs the SDR path.
 - **Gotcha: the map is never color-managed.** It's data, not color; its ICC profile, if any, describes the alternate
   rendition's color space (used only when ISO says to apply the gain there).
 - **Decision: the map stays in the file's frame; the sampler follows the turn.** `finalize` turns the base by its EXIF

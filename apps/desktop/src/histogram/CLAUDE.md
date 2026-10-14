@@ -33,7 +33,10 @@ above-white highlights read as clipped.
 
 A `GainMapped` image (gain-map JPEG on an HDR display) bins its SDR base, the RGBA8 bytes, which are in Display P3
 rather than the display's profile. The highlights its gain map adds at the current headroom don't show: they exist only
-in the shader, and change with the brightness.
+in the shader, and change with the brightness. **Decision: kept in P3.** On a Display P3 panel (every Mac with an HDR
+display) P3 bytes are the display's bytes, so nothing differs where gain maps show at all; elsewhere the bins shift by
+the P3-to-display hue difference, and converting a copy of the base only for the histogram would cost a full transform
+per image.
 
 A `SceneLinear` image (a PQ or HLG PNG or an HDR float TIFF on an HDR display) bins its stored values, linear light in
 the source's primaries before the tone map, clamped at SDR white like RAW HDR. **Known simplification:** that skews dark

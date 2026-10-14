@@ -249,6 +249,11 @@ with the same faces, or a layout pass disagrees with what gets drawn.
   encoding. Phase 5.1: when the current image is an HDR RAW and the display reports EDR headroom, the surface flips to
   `Rgba16Float` and the CAMetalLayer EDR properties go on. Screenshots still render through an SDR offscreen target
   (clamped to display-white) so PNG readback stays format-agnostic.
+- **An HDR image screenshots in its working space, not the display profile.** Modes 1–3 write linear light in
+  `HdrDisplaySpace::for_host()` (linear Display P3 on macOS), and the sRGB-format target encodes that with the sRGB
+  curve, so a `GainMapped` image's readback is P3-encoded bytes at headroom 1 where its SDR decode would be
+  display-encoded. Kept on purpose: screenshots serve QA, which compares a render with itself, and on a P3 panel the two
+  agree. Don't compare a screenshot of an HDR decode with one of the same file's SDR decode.
 - **HDR surface transitions rebuild three pipelines.** `reconfigure_surface_format` rebuilds the image-quad pipeline,
   the overlay pipeline, and the glyphon text renderer against the new format. Shader modules and pipeline layouts are
   cached, so only the `RenderPipeline` objects get recreated. The glyphon renderer is rebuilt wholesale because
