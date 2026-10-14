@@ -114,10 +114,9 @@ orientation, and hand a `DecodedImage` off to the renderer.
 **Why:** `to_rgba8()` before an 8-bit transform rounds twice, and on a smooth gradient through a real conversion (sRGB →
 Display P3) 48% of samples land a step off the single-rounding answer, up to 1.5 steps; those off-by-ones are the bands.
 The 16-bit path is under 0.1 steps everywhere. `a_16_bit_png_gradient_does_not_band_through_a_real_transform` is the
-anchor. Cost and numbers: `docs/specs/hdr-images.md` Findings, 2026-10-14. Float TIFFs take the scene-linear path
-(below), since they may be HDR. 8-bit sources are byte-identical to before
-(`an_8_bit_png_is_byte_identical_to_todays_path`). `RUST_LOG=prvw::decoding::generic=debug` logs the stage split
-(`to_rgba16`, `icc`, `to_f16`).
+anchor. Cost and numbers: `docs/notes/hdr-images.md`. Float TIFFs take the scene-linear path (below), since they may be
+HDR. 8-bit sources are byte-identical to before (`an_8_bit_png_is_byte_identical_to_todays_path`).
+`RUST_LOG=prvw::decoding::generic=debug` logs the stage split (`to_rgba16`, `icc`, `to_f16`).
 
 ## Gain-map JPEGs
 
@@ -183,7 +182,7 @@ current headroom (`render/CLAUDE.md`), so a brightness change never re-decodes.
 
 Cost (release, M3 Max, `gain_map_decode_perf`): a 12.5 MP Pixel Ultra HDR photo decodes in 1.03× its SDR time with a P3
 display target and 0.67× with an sRGB one (the base's P3 transform is free where the display's isn't); memory is +6.2%,
-the map's sixteenth. Numbers in `docs/specs/hdr-images.md` Findings, 2026-10-14.
+the map's sixteenth. Numbers in `docs/notes/hdr-images.md`.
 
 ## PQ and HLG PNGs, and float TIFFs
 
@@ -212,8 +211,9 @@ How each source gets to light:
   the pixels. Narrow-range files are scaled to full range first, in the source's own bit depth.
 - **PQ:** SMPTE ST 2084's EOTF to nits, over 203. **HLG:** BT.2100's inverse OETF, then its OOTF at the nominal 1,000
   nits (system gamma 1.2), over 203; HLG's 75% signal is reference white. Fixed at 1,000 nits rather than adapted to the
-  display, so the SDR rendition and the GPU at headroom 1 stay one image (decided in the spec's Findings, review L2).
-  Both run through a 64K lookup table per transfer (built once), and HLG adds a `powf` per pixel for the OOTF.
+  display, so the SDR rendition and the GPU at headroom 1 stay one image (`docs/notes/hdr-images.md` weighs the
+  alternative). Both run through a 64K lookup table per transfer (built once), and HLG adds a `powf` per pixel for the
+  OOTF.
 - **Float TIFF** (`Rgb32F` / `Rgba32F` from `image`): already linear, 1.0 = SDR white. The ICC profile's colorants name
   the primaries when it's a matrix-shaper profile, BT.709 otherwise (logged at `debug`); its curves are ignored. A NaN
   color becomes 0, a NaN alpha 1 (the pixel stays rather than vanishing), alpha clamps to [0, 1], and color past the
@@ -234,7 +234,7 @@ How each source gets to light:
 
 Cost (release, M3 Max, `pq_decode_perf`, 12 MP): the added work on the HDR path (light, peak, half-float pack) is 2.9 ms
 for PQ and 8.1 ms for HLG, against a 25 ms budget; the CPU SDR fallback is 27 ms on top of that. Numbers in
-`docs/specs/hdr-images.md` Findings, 2026-10-14.
+`docs/notes/hdr-images.md`.
 
 ## Gotchas
 

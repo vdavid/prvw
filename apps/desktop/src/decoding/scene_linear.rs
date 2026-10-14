@@ -1,5 +1,5 @@
 //! PQ and HLG PNGs and float TIFFs: HDR stills whose samples are light rather than display values
-//! (`docs/specs/hdr-images.md`, section 5).
+//! (`decoding/CLAUDE.md`, "PQ and HLG PNGs, and float TIFFs").
 //!
 //! Each decodes to linear light relative to SDR white (1.0 = 203 nits) in its own primaries, then
 //! takes one of three shapes:
@@ -1083,7 +1083,7 @@ mod tests {
         }
     }
 
-    /// The decode cost the spec budgets (section 9): our added work on a 12 MP PQ PNG (to light,
+    /// The decode budget in `docs/notes/hdr-images.md`: our added work on a 12 MP PQ PNG (to light,
     /// peak histogram, half-float pack) under 25 ms. Release only:
     /// `RUST_LOG=prvw::decoding::scene_linear=debug cargo test --release pq_decode_perf -- --ignored --nocapture`.
     #[test]

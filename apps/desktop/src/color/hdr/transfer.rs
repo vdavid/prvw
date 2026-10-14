@@ -68,7 +68,7 @@ mod tests {
         (got - want).abs() <= tolerance * want.abs().max(1e-6)
     }
 
-    /// The spec's reference values (section 5), which are BT.2408's.
+    /// Reference values from BT.2408.
     #[test]
     fn pq_eotf_hits_the_reference_values() {
         assert!(close(pq_eotf(0.5806), 203.0, 0.005), "{}", pq_eotf(0.5806));

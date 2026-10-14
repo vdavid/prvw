@@ -1517,7 +1517,7 @@ mod tests {
 
     /// The real iPhone file through the whole decode, then the Rust reference of mode 2 against
     /// `ultrahdr_core::gainmap::apply_gainmap` on the original bytes: mean relative error under
-    /// 0.5% (spec section 8). The base is Display P3 already, so the P3 working space leaves its
+    /// 0.5%. The base is Display P3 already, so the P3 working space leaves its
     /// bytes alone and the two see the same input.
     #[test]
     fn the_iphone_gain_map_matches_upstream_apply_gainmap() {
@@ -1611,9 +1611,9 @@ mod tests {
         );
     }
 
-    /// Spec section 9's budget: a gain-map decode on an HDR display costs at most 1.3× the SDR
-    /// decode of the same file. Takes the file from `PRVW_GAIN_MAP_SAMPLE` (a real 12 MP camera
-    /// JPEG lives outside the repo). Run in release:
+    /// The budget in `docs/notes/hdr-images.md`: a gain-map decode on an HDR display costs at most
+    /// 1.3× the SDR decode of the same file. Takes the file from `PRVW_GAIN_MAP_SAMPLE` (a real
+    /// 12 MP camera JPEG lives outside the repo). Run in release:
     /// `PRVW_GAIN_MAP_SAMPLE=/path/to.jpg cargo test --release --bin prvw gain_map_decode_perf -- --ignored --nocapture`
     #[test]
     #[ignore]

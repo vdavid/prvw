@@ -335,7 +335,7 @@ impl Default for ChannelParams {
 }
 
 /// Where a file's gain-map parameters came from. The first one a file carries wins, in this
-/// order (`docs/specs/hdr-images.md`, section 4).
+/// order (`decoding/CLAUDE.md`, "Gain-map JPEGs").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GainMapSource {
     /// An ISO 21496-1 APP2 segment on the gain-map image.
@@ -504,7 +504,7 @@ mod tests {
     }
 
     /// The reference against `ultrahdr_core::gainmap::apply_gainmap` over a whole image, at
-    /// texel centres, for a single- and a three-channel map: the spec's bound is a mean relative
+    /// texel centres, for a single- and a three-channel map: the bound is a mean relative
     /// error under 0.5%.
     #[test]
     fn the_reference_matches_apply_gainmap_on_a_busy_map() {

@@ -474,7 +474,7 @@ impl ImagePipeline {
     }
 }
 
-/// The GPU parity harness (`docs/specs/hdr-images.md`, section 8): render a small image of known
+/// The GPU parity harness (`render/CLAUDE.md` says why): render a small image of known
 /// texels through the real image pipeline into an `Rgba16Float` target at a forced headroom, read
 /// it back, and compare with `color::hdr::fragment::shade`.
 ///
@@ -679,7 +679,7 @@ mod gpu_parity {
         }
     }
 
-    /// Relative error under 1%, or absolute under 1e-3 near black (section 8's bounds).
+    /// Relative error under 1%, or absolute under 1e-3 near black.
     fn assert_matches_reference(image: &DecodedImage, headrooms: &[f32]) {
         let mode = image.encoding.shader_mode();
         let inputs = image.encoding.shader_inputs(image.width, image.height);

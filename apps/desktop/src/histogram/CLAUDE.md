@@ -41,8 +41,8 @@ per image.
 A `SceneLinear` image (a PQ or HLG PNG or an HDR float TIFF on an HDR display) bins its stored values, linear light in
 the source's primaries before the tone map, clamped at SDR white like RAW HDR. **Known simplification:** that skews dark
 (no transfer curve) and piles every highlight into bin 255, and it's not what's on screen, which the shader tone-maps at
-the live headroom. The spec allows it for now; the SDR rendition the same file gets on an SDR display bins correctly,
-because it's RGBA8.
+the live headroom. Accepted for now; the SDR rendition the same file gets on an SDR display bins correctly, because it's
+RGBA8.
 
 ## Decision: `plot_rect_for` is the single layout source of truth
 

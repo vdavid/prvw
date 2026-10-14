@@ -34,7 +34,7 @@ half = "2.7.1"
 # Read directly only for a PNG's `cICP` chunk (PQ, HLG, and SDR code points), which `image` doesn't
 # pass on. MIT/Apache-2.0. Same version `image` already pulls in, so nothing new gets built.
 png = "0.18.1"
-# Gain-map math and metadata for HDR JPEGs (`color::hdr`, `docs/specs/hdr-images.md`). Apache-2.0.
+# Gain-map math and metadata for HDR JPEGs (`color::hdr`, `docs/notes/hdr-images.md`). Apache-2.0.
 # Pinned exactly and wrapped behind `color::hdr`, because it's pre-1.0 and renames between minors.
 # `default-features = false` is load-bearing: the default `tonemap` feature (and `resize`) pull in
 # `zentone` and `zenresize`, which are AGPL. The `cargo-deny` check fails if one slips in.

@@ -1,8 +1,8 @@
 # HDR fixtures
 
-Test fixtures for HDR decoding: gain-map JPEGs, PQ/HLG PNGs, float TIFFs, and 16-bit SDR files. The plan that uses them
-is `docs/specs/hdr-images.md`. Every file is listed in `licenses.md` with its source and license; don't check in one
-that isn't.
+Test fixtures for HDR decoding: gain-map JPEGs, PQ/HLG PNGs, float TIFFs, and 16-bit SDR files. How the decoders use
+them: `apps/desktop/src/decoding/CLAUDE.md`. Every file is listed in `licenses.md` with its source and license; don't
+check in one that isn't.
 
 ## Files
 
@@ -42,5 +42,6 @@ transfer, wrong primaries, or a clip all show.
 
 ## Not checked in
 
-Larger real-world samples live outside the repo; the spec lists them under "Fixtures": two Pixel Ultra HDR photos on
-David's machine (personal, never commit them) and three more iPhone JPEGs on Wikimedia Commons (3–4 MB each).
+Larger real-world samples live outside the repo; `docs/notes/hdr-images.md` lists them under "Real files for checking by
+hand": two Pixel Ultra HDR photos on David's machine (personal, never commit them) and three more iPhone JPEGs on
+Wikimedia Commons (3–4 MB each).

@@ -71,8 +71,8 @@ per-feature state via `zoom::State`, `color::State`, `navigation::State`.
 - **Shared-state boundary.** `SharedAppState` (in `app/shared_state.rs`) is the snapshot the QA thread reads.
 - **HDR is decided once per display, rendered per frame.** `App::hdr_active` ("HDR output" on and a display that can
   show HDR) is the one bool every decoder gets; flipping it re-decodes. The display's current headroom moves with
-  brightness and only feeds a shader uniform, so a brightness change never re-decodes. Spec and measurements:
-  [`specs/hdr-images.md`](specs/hdr-images.md); the flow: `apps/desktop/src/decoding/CLAUDE.md` ("HDR / EDR flow") and
+  brightness and only feeds a shader uniform, so a brightness change never re-decodes. Decisions and measurements:
+  [`notes/hdr-images.md`](notes/hdr-images.md); the flow: `apps/desktop/src/decoding/CLAUDE.md` ("HDR / EDR flow") and
   `apps/desktop/src/render/CLAUDE.md`.
 
 ## Website (`apps/website/`)

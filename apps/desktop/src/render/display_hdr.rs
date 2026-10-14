@@ -1,7 +1,7 @@
 //! What the display behind the window can do with HDR, read out of wgpu's `DisplayHdrInfo`.
 //!
 //! Two numbers that mean different things, and conflating them re-decodes on every brightness
-//! tweak (`docs/specs/hdr-images.md`, section 3):
+//! tweak (`render/CLAUDE.md`):
 //!
 //! - **`capable`** (potential headroom): can this display show HDR at all? Static per display and
 //!   display mode. It decides whether decoders produce HDR and whether the surface may go EDR, so
@@ -177,7 +177,7 @@ mod tests {
     }
 
     /// The probe on David's MBP read current 1.0 and potential 16.0. Gating on current would have
-    /// called the XDR panel SDR, which is the launch loop the spec's findings warn about.
+    /// called the XDR panel SDR, the launch loop `docs/notes/hdr-images.md` describes.
     #[test]
     fn an_xdr_panel_at_full_brightness_is_capable_with_no_headroom_right_now() {
         let hdr = DisplayHdr::from_info(&apple(1.0, Some(16.0)), MAC);

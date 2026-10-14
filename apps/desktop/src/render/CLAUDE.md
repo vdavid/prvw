@@ -155,7 +155,7 @@ sampler, and the per-frame uniform, and needs only a device and a queue. `Render
 **Why:** upstream weights the four neighbouring texels by Shepard's inverse distance, applied to the _linear gains_
 (after the per-texel `pow` and `exp2`), with the map's texels top-left aligned to the image's pixels. Hardware bilinear
 filtering of the encoded values is a different function: against `ultrahdr_core::gainmap::apply_gainmap` on a busy map
-it's 2.5% off on average and 82% at worst, where the spec's bound is 0.5%, and the parity test catches it at a texel
+it's 2.5% off on average and 82% at worst, where the port's bound is 0.5%, and the parity test catches it at a texel
 edge. The exact port is four loads and a dozen `pow`/`exp2` per fragment on a viewer that renders on demand, so there
 was nothing to trade. The edge handling (a neighbour clamped onto the same texel moves its distance) follows upstream's
 integer-scale tables; at a non-integer map ratio (a Pixel's 6144 over 614) upstream's own float path differs from that
@@ -257,6 +257,10 @@ with the same faces, or a layout pass disagrees with what gets drawn.
   curve, so a `GainMapped` image's readback is P3-encoded bytes at headroom 1 where its SDR decode would be
   display-encoded. Kept on purpose: screenshots serve QA, which compares a render with itself, and on a P3 panel the two
   agree. Don't compare a screenshot of an HDR decode with one of the same file's SDR decode.
+- **A crossfade between an HDR and an SDR image runs on the incoming image's surface.** `display_from_cache` applies the
+  surface state before `begin_crossfade`, so for one fade the outgoing image draws on a surface that reads its values
+  differently (an SDR image as linear P3, an HDR one as display-encoded and clipped). Known and kept;
+  `docs/notes/hdr-images.md` ("Known gaps and quirks") has the detail.
 - **HDR surface transitions rebuild three pipelines.** `reconfigure_surface_format` rebuilds the image-quad pipeline,
   the overlay pipeline, and the glyphon text renderer against the new format. Shader modules and pipeline layouts are
   cached, so only the `RenderPipeline` objects get recreated. The glyphon renderer is rebuilt wholesale because

@@ -115,7 +115,7 @@ pub(super) fn decode(
 }
 
 /// 16 bits per channel, integer. Float TIFFs aren't here: they may be HDR, which
-/// is a different path (`docs/specs/hdr-images.md` section 5).
+/// is a different path (`scene_linear.rs`).
 fn is_16_bit(img: &image::DynamicImage) -> bool {
     use image::DynamicImage as D;
     matches!(
@@ -402,8 +402,8 @@ mod tests {
     }
 
     /// Decode time of a 12 MP 16-bit file, today's path (`OutputDepth::Rgba8`
-    /// is exactly it) against the 16-bit one. Numbers live in the spec's
-    /// Findings. Run in release:
+    /// is exactly it) against the 16-bit one. Numbers live in
+    /// `docs/notes/hdr-images.md`. Run in release:
     /// `cargo test --release sixteen_bit_decode_perf -- --ignored --nocapture`, plus
     /// `RUST_LOG=prvw::decoding::generic=debug` for the per-stage split.
     #[test]

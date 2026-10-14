@@ -1,5 +1,5 @@
 //! Finding the gain map in a JPEG: which metadata flavor the file carries, and which of its
-//! appended images is the map (`docs/specs/hdr-images.md`, section 4).
+//! appended images is the map (`decoding/CLAUDE.md`, "Gain-map JPEGs").
 //!
 //! Only ever called with HDR active. On an SDR display, with HDR off, or for a byte consumer
 //! (`OutputDepth::Rgba8`), `jpeg::decode` never gets here, so a gain-map JPEG costs exactly what

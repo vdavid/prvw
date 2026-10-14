@@ -20,7 +20,7 @@ pub fn srgb_icc_bytes() -> &'static [u8] {
 }
 
 /// Display P3 ICC profile bytes, generated once by `moxcms` like [`srgb_icc_bytes`]. The working
-/// space of a gain-mapped JPEG's base (`docs/specs/hdr-images.md`, section 4): it uses the sRGB
+/// space of a gain-mapped JPEG's base (`color/CLAUDE.md` says why): it uses the sRGB
 /// transfer curve, so an `Rgba8UnormSrgb` texture hands the shader linear Display P3.
 pub fn display_p3_icc_bytes() -> &'static [u8] {
     static P3: OnceLock<Vec<u8>> = OnceLock::new();
