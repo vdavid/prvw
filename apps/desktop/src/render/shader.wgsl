@@ -189,6 +189,8 @@ fn shade_gain_map(sdr: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
 // and `color::hdr::tone_map`. ──
 
 const REFERENCE_WHITE_NITS: f32 = 203.0;
+// `color::hdr::tone_map::WHITE_ANCHOR`; the parity test keeps the two in step.
+const WHITE_ANCHOR: f32 = 0.8;
 const PQ_M1: f32 = 2610.0 / 16384.0;
 const PQ_M2: f32 = 2523.0 / 4096.0 * 128.0;
 const PQ_C1: f32 = 3424.0 / 4096.0;
@@ -215,6 +217,19 @@ fn eetf(y: f32, content_peak: f32, target_peak: f32) -> f32 {
     let source_pq = pq_inverse_eotf(content_peak * REFERENCE_WHITE_NITS);
     let max_lum = pq_inverse_eotf(target_peak * REFERENCE_WHITE_NITS) / source_pq;
     let start = max(1.5 * max_lum - 0.5, 0.0);
+    // BT.2390's knee far under the target (a headroom near SDR white) would dim diffuse white,
+    // so the white-anchored shoulder takes over: identity to `WHITE_ANCHOR × target`, then a
+    // Reinhard shoulder that puts the content peak on the target (`ToneCurve::new`).
+    let anchor = WHITE_ANCHOR * target_peak;
+    if pq_eotf(start * source_pq) / REFERENCE_WHITE_NITS < anchor {
+        if y < anchor {
+            return y;
+        }
+        let range = content_peak - anchor;
+        let a = 1.0 / (target_peak - anchor) - 1.0 / range;
+        let x = min(y - anchor, range);
+        return anchor + x / (1.0 + a * x);
+    }
     let e1 = min(pq_inverse_eotf(y * REFERENCE_WHITE_NITS) / source_pq, 1.0);
     var e2 = e1;
     if e1 >= start {

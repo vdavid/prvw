@@ -138,11 +138,14 @@ sampler, and the per-frame uniform, and needs only a device and a queue. `Render
   21496-1's log2 curve, or Apple's linear one (`color::hdr::gain_map::GainCurve`). The map texture is in the file's
   frame, unturned, and `ImageParams::map_turn` takes each fragment back from the shown pixel to the stored one before
   the map is read (`decoding/CLAUDE.md` says why).
-- **Mode 3**, per fragment: the sample's luminance (the source primaries' weights) through BT.2390's EETF from the
+- **Mode 3**, per fragment: the sample's luminance (the source primaries' weights) through the tone curve from the
   image's content peak down to `headroom_now` (never below 1.0), R, G, and B scaled by the same ratio, then the source
-  primaries into the HDR display space. The EETF's setup (two PQ encodes) runs per fragment, since its target is the
-  per-frame headroom; content that fits only changes primaries. The curve bounds luminance, not channels, so a saturated
-  highlight can keep one channel above the headroom, which the display clips, as with RAW's tone curve.
+  primaries into the HDR display space. The curve is BT.2390's EETF where its knee sits at or above `WHITE_ANCHOR` (0.8)
+  × the headroom, and otherwise (a headroom near SDR white) the white-anchored Reinhard shoulder
+  (`color::hdr::tone_map::ToneCurve`, `color/CLAUDE.md` says why); both constants live in the WGSL and the Rust. The
+  EETF's setup (two PQ encodes) runs per fragment, since its target is the per-frame headroom; content that fits only
+  changes primaries. The curve bounds luminance, not channels, so a saturated highlight can keep one channel above the
+  headroom, which the display clips, as with RAW's tone curve.
 - **The Rust reference is the spec.** `color::hdr::fragment::shade` is what the WGSL ports, branch for branch; mode 2's
   pieces are ported function by function from `color::hdr::gain_map`, and mode 3's from `color::hdr::tone_map` and
   `transfer`.

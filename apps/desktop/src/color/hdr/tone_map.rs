@@ -42,17 +42,64 @@ pub fn tone_map(rgb: [f32; 3], weights: [f32; 3], content_peak: f32, target_peak
 /// [`eetf`] and [`tone_map`] for one source and target, set up once: what the CPU runs per
 /// pixel. The shader recomputes the setup per fragment, since its target moves every frame.
 #[derive(Clone, Copy, Debug)]
-pub struct ToneCurve(Option<Knee>);
+pub struct ToneCurve(Curve);
+
+#[derive(Clone, Copy, Debug)]
+enum Curve {
+    /// The content fits the target.
+    Identity,
+    /// BT.2390's EETF, where its knee sits high enough to leave diffuse white alone.
+    Bt2390(Knee),
+    /// A target close to SDR white, where BT.2390's knee would drop far below it.
+    Anchored(Shoulder),
+}
+
+/// Where the curve may start bending at the latest, as a share of the target: BT.2390 is used
+/// when its own knee is at or above this, and the white-anchored shoulder takes over below it.
+///
+/// **Why:** BT.2390's spline runs in the PQ domain from a knee at `1.5 × maxLum − 0.5`, and that
+/// is the highest knee its slope-1 Hermite allows: any higher, and its slope goes negative near
+/// the peak (the curve turns back down). With the target at SDR white, the knee lands at 88 nits
+/// for a 1,000-nit master and 24 nits for a 10,000-nit one, and 203-nit diffuse white comes out
+/// 0.35 to 0.87 stop dim. Below this share the shoulder keeps everything under 0.8 × target
+/// untouched, which puts diffuse white at about 0.9 of SDR white whatever the master's peak.
+pub(crate) const WHITE_ANCHOR: f32 = 0.8;
 
 impl ToneCurve {
     pub fn new(content_peak: f32, target_peak: f32) -> Self {
-        Self(Knee::new(content_peak, target_peak))
+        let Some(knee) = Knee::new(content_peak, target_peak) else {
+            return Self(Curve::Identity);
+        };
+        let anchor = WHITE_ANCHOR * target_peak;
+        if knee.start_luminance >= anchor {
+            Self(Curve::Bt2390(knee))
+        } else {
+            Self(Curve::Anchored(Shoulder::new(
+                anchor,
+                content_peak,
+                target_peak,
+            )))
+        }
     }
 
     pub fn luminance(&self, y: f32) -> f32 {
+        if y <= 0.0 || y.is_nan() {
+            return y;
+        }
         match self.0 {
-            Some(knee) if y > 0.0 => knee.apply(y),
-            _ => y,
+            Curve::Identity => y,
+            Curve::Bt2390(knee) => knee.apply(y),
+            Curve::Anchored(shoulder) => shoulder.apply(y),
+        }
+    }
+
+    /// Where the curve leaves the identity, as a luminance; `None` when the content fits.
+    #[cfg(test)]
+    fn knee_luminance(&self) -> Option<f32> {
+        match self.0 {
+            Curve::Identity => None,
+            Curve::Bt2390(knee) => Some(knee.start_luminance),
+            Curve::Anchored(shoulder) => Some(shoulder.knee),
         }
     }
 
@@ -120,6 +167,37 @@ impl Knee {
                 .min(self.max_lum)
         };
         pq_eotf(e2 * self.source_pq) / REFERENCE_WHITE_NITS
+    }
+}
+
+/// The white-anchored shoulder: the identity up to `knee`, then Reinhard's `x / (1 + a·x)` on the
+/// luminance above it, which starts at slope 1 (so the curve is smooth at the knee), rises
+/// monotonically, and is tuned (`a = 1/H − 1/R`) to put the content peak exactly on the target.
+#[derive(Clone, Copy, Debug)]
+struct Shoulder {
+    knee: f32,
+    /// The content peak above the knee (`R`).
+    range: f32,
+    a: f32,
+}
+
+impl Shoulder {
+    fn new(knee: f32, content_peak: f32, target_peak: f32) -> Self {
+        let (range, headroom) = (content_peak - knee, target_peak - knee);
+        Self {
+            knee,
+            range,
+            a: 1.0 / headroom - 1.0 / range,
+        }
+    }
+
+    fn apply(self, y: f32) -> f32 {
+        if y < self.knee {
+            return y;
+        }
+        // The 0.1% of pixels above the content peak land on the target with it.
+        let x = (y - self.knee).min(self.range);
+        self.knee + x / (1.0 + self.a * x)
     }
 }
 
@@ -217,6 +295,8 @@ mod tests {
     /// 1,000-nit content, the common PQ master, against a few display headrooms.
     const CONTENT: f32 = 1000.0 / 203.0;
     const TARGETS: [f32; 3] = [1.0, 2.0, 4.0];
+    /// Masters from a common 1,000 nits up to PQ's 10,000.
+    const PEAKS_NITS: [f32; 4] = [1000.0, 2000.0, 4000.0, 10_000.0];
 
     fn close(got: f32, want: f32, tolerance: f32) -> bool {
         (got - want).abs() <= tolerance * want.abs().max(1e-6)
@@ -224,8 +304,9 @@ mod tests {
 
     /// Where the curve starts bending, as a luminance.
     fn knee_luminance(content_peak: f32, target: f32) -> f32 {
-        let k = Knee::new(content_peak, target).expect("the content doesn't fit");
-        pq_eotf(k.start * k.source_pq) / REFERENCE_WHITE_NITS
+        ToneCurve::new(content_peak, target)
+            .knee_luminance()
+            .expect("the content doesn't fit")
     }
 
     #[test]
@@ -287,10 +368,70 @@ mod tests {
     /// The SDR fallback's case: 1,000-nit content onto SDR white. Reference white comes down a
     /// little to make room, shadows don't move: a photo, not grey.
     #[test]
-    fn reference_white_stays_bright_on_an_sdr_target() {
-        let white = eetf(1.0, CONTENT, 1.0);
-        assert!(white > 0.7 && white < 1.0, "{white}");
-        assert!(close(eetf(0.1, CONTENT, 1.0), 0.1, 1e-4));
+    fn diffuse_white_stays_near_sdr_white_on_an_sdr_target_at_any_peak() {
+        for nits in PEAKS_NITS {
+            let peak = nits / 203.0;
+            let white = eetf(1.0, peak, 1.0);
+            // About 0.15 stop under SDR white (0.9 is 243 of 255 in sRGB), for every master.
+            assert!(
+                (0.88..=0.93).contains(&white),
+                "{nits}-nit master: white {white}"
+            );
+            for y in [0.01, 0.18, 0.5, 0.79] {
+                assert_eq!(eetf(y, peak, 1.0), y, "{nits}-nit master at {y}");
+            }
+            assert!(close(eetf(peak, peak, 1.0), 1.0, 1e-5), "{nits}");
+        }
+    }
+
+    /// Both shoulders, everywhere they run: monotonic, never above the target, the content peak
+    /// on the target, and smooth at the knee (slope 1 on both sides).
+    #[test]
+    fn the_curve_is_monotonic_and_smooth_across_peaks_and_headrooms() {
+        for nits in PEAKS_NITS {
+            let peak = nits / 203.0;
+            for target in [1.0, 1.2, 1.5, 2.0, 4.0, 8.0] {
+                if peak <= target {
+                    continue;
+                }
+                let curve = ToneCurve::new(peak, target);
+                let mut last = 0.0;
+                for i in 0..=2000 {
+                    let y = peak * 1.2 * i as f32 / 2000.0;
+                    let got = curve.luminance(y);
+                    assert!(got >= last, "{nits} at {target}: falls at {y}");
+                    assert!(
+                        got <= target * (1.0 + 1e-4),
+                        "{nits} at {target}: {got} at {y}"
+                    );
+                    last = got;
+                }
+                assert!(
+                    close(curve.luminance(peak), target, 1e-4),
+                    "{nits} at {target}"
+                );
+                let knee = curve.knee_luminance().expect("the content doesn't fit");
+                // A 1% step: smaller ones drown in the PQ round trip's f32 noise (2e-5).
+                let h = knee * 1e-2;
+                // Second-order one-sided difference, so the shoulder's curvature doesn't read as a kink.
+                let f = |d: f32| curve.luminance(knee + d);
+                let slope = (4.0 * f(h) - f(2.0 * h) - 3.0 * f(0.0)) / (2.0 * h);
+                assert!(
+                    (slope - 1.0).abs() < 0.03,
+                    "{nits} at {target}: slope {slope}"
+                );
+            }
+        }
+    }
+
+    /// Where its knee already sits near the target, BT.2390 itself still runs: a 1,000-nit
+    /// master on a display with 4× headroom bends at BT.2390's own knee, above the anchor.
+    #[test]
+    fn bt2390_runs_where_its_knee_leaves_white_alone() {
+        let curve = ToneCurve::new(CONTENT, 4.0);
+        assert!(matches!(curve.0, Curve::Bt2390(_)), "{curve:?}");
+        assert!(curve.knee_luminance().unwrap() >= WHITE_ANCHOR * 4.0);
+        assert!(matches!(ToneCurve::new(CONTENT, 1.0).0, Curve::Anchored(_)));
     }
 
     #[test]

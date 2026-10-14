@@ -126,6 +126,15 @@ Two events re-run it, and they are not the same event:
   The GPU runs it at the live headroom (mode 3); the CPU runs it with SDR white as the target for every SDR rendition,
   then `moxcms` into the display profile. `gainforge` (BSD-3/Apache, the `moxcms` author's) has a BT.2408 mapper, but
   the WGSL needed our own port anyway, and one curve on both sides keeps the SDR rendition and the HDR one in step.
+  - **Near SDR white, a white-anchored shoulder replaces BT.2390** (`tone_map::ToneCurve`). BT.2390's knee sits at
+    `1.5 × maxLum − 0.5` in the PQ domain, the highest its slope-1 spline allows before it turns back down, and with the
+    target at SDR white that's 88 nits for a 1,000-nit master and 24 for a 10,000-nit one: diffuse white came out 0.35
+    to 0.87 stop dim, the "grey wash" in a milder form. Wherever BT.2390's knee would land under `WHITE_ANCHOR` (0.8) ×
+    target, the curve is the identity up to 0.8 × target and then Reinhard's `x / (1 + a·x)` on the luminance above it
+    (slope 1 at the knee, `a` set so the content peak lands exactly on the target). Diffuse white then sits at about
+    0.90 of SDR white for any master from 1,000 to 10,000 nits, at the cost of highlights packed into the last tenth.
+    Everywhere else (a real headroom) BT.2390 runs as specified. The GPU makes the same choice per fragment, so the SDR
+    rendition and headroom 1 still agree.
   - **Luminance weights are D65, not the ICC connection space's D50.** ICC colorants are Bradford-adapted to D50, and
     their Y row puts BT.2020 red at 0.279 where BT.2100 (and HLG's OOTF) says 0.2627. `decoding::scene_linear` undoes
     the adaptation with `moxcms::adaption_matrix_d` (`bt2020_luminance_weights_are_bt2100s`).

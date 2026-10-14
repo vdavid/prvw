@@ -845,3 +845,23 @@ Filled in by the implementing agent during M0 and later. Date each entry.
   - **L8, fixed:** the `GContainer` scan reads at most 16 items and looks at most 64 names.
   - **L9:** covered by the real Apple-only files in the H1 and M2 entries. A real Pixel file stays local (David's
     photos, never committed), so CI's only real-world gain-map input is still the iPhone Air fixture.
+- **2026-10-14, M4 review fix M3: diffuse white on an SDR target, decided.** BT.2390 with the target at SDR white put
+  203-nit white at 0.90 (400-nit master), 0.78 (1,000), 0.63 (4,000), and 0.55 (10,000) of SDR white: 0.15 to 0.87 stop
+  dim, with midtones compressed from 24 nits up for the brightest masters. That's structural, not a tuning slip:
+  BT.2390's knee `KS = 1.5 × maxLum − 0.5` is exactly the highest its slope-1 PQ-domain Hermite allows without its slope
+  going negative near the peak, so no other knee fixes it inside BT.2390.
+  - **Chosen:** keep BT.2390 wherever its knee sits at or above `WHITE_ANCHOR` (0.8) × the target, and below that use a
+    white-anchored shoulder: the identity up to 0.8 × target, then Reinhard's `x / (1 + a·x)` on luminance above it,
+    with `a = 1/(target − knee) − 1/(peak − knee)`, so its slope is 1 at the knee and the content peak lands exactly on
+    the target. Diffuse white now sits at 0.900–0.903 of SDR white for 1,000- to 10,000-nit masters (about −0.15 stop,
+    243 of 255 in sRGB), and nothing under 0.8 × SDR white moves. The cost is highlights packed into the top tenth on an
+    SDR target, which is what SDR has room for.
+  - **Why this over the alternatives:** BT.2446 Method C is an HDR-to-SDR conversion for broadcast, with its own
+    crosstalk and a different look from what the GPU shows; a target-only switch would make the SDR fallback disagree
+    with the same file at headroom 1 on an HDR display. The shader makes the same choice per fragment (one extra PQ
+    decode), so the CPU fallback and the GPU at a low headroom (an MBP at full brightness reads about 1.2) still agree,
+    and the parity test covers headrooms 1 and 1.5, where the shoulder runs.
+  - **Tests:** `diffuse_white_stays_near_sdr_white_on_an_sdr_target_at_any_peak` (1,000 to 10,000 nits),
+    `the_curve_is_monotonic_and_smooth_across_peaks_and_headrooms` (four masters by six headrooms, slope 1 at the knee),
+    `bt2390_runs_where_its_knee_leaves_white_alone`. All three failed first with the anchor set to 0, which is pure
+    BT.2390.
