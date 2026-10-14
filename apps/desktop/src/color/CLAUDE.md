@@ -135,9 +135,13 @@ Two events re-run it, and they are not the same event:
     0.90 of SDR white for any master from 1,000 to 10,000 nits, at the cost of highlights packed into the last tenth.
     Everywhere else (a real headroom) BT.2390 runs as specified. The GPU makes the same choice per fragment, so the SDR
     rendition and headroom 1 still agree.
-  - **Luminance weights are D65, not the ICC connection space's D50.** ICC colorants are Bradford-adapted to D50, and
-    their Y row puts BT.2020 red at 0.279 where BT.2100 (and HLG's OOTF) says 0.2627. `decoding::scene_linear` undoes
-    the adaptation with `moxcms::adaption_matrix_d` (`bt2020_luminance_weights_are_bt2100s`).
+  - **Luminance weights are in the source's own white, not the ICC connection space's D50.** ICC colorants are
+    Bradford-adapted to D50, and their Y row puts BT.2020 red at 0.279 where BT.2100 (and HLG's OOTF) says 0.2627.
+    `decoding::scene_linear` undoes the adaptation with `moxcms::adaption_matrix_d`: back to D65 for PQ and HLG, and for
+    a float TIFF back to its profile's white (`icc_white`: `chad⁻¹ · D50` for ICC v4, else the white-point tag; a
+    ProPhoto file stays D50). **Gotcha:** `moxcms` writes Bradford's cone matrix as every profile's `chad`, which isn't
+    an adaptation; `icc_white` spots it because it doesn't map any white to Y = 1
+    (`float_tiff_luminance_weights_use_the_profiles_own_white`).
 - **Perceptual intent by default.** "Relative colorimetric" toggle is opt-in for photographers comparing specific color
   values.
 - **Parametric + default wrapper pattern (Phase 2.5b).** `tone_curve.rs` and `sharpen.rs` both expose a parametric entry

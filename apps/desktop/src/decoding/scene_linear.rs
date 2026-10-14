@@ -494,12 +494,16 @@ impl SourceSpace {
             log::debug!("PNG cICP primaries {primaries} are unusable; assuming BT.2020");
             CicpColorPrimaries::Bt2020
         });
-        Self::linear_in(ColorProfile::new_from_cicp(CicpProfile {
-            color_primaries: primaries,
-            transfer_characteristics: TransferCharacteristics::Linear,
-            matrix_coefficients: MatrixCoefficients::Identity,
-            full_range: true,
-        }))
+        // Every BT.2100 signal is D65; so are BT.709 and Display P3.
+        Self::linear_in(
+            ColorProfile::new_from_cicp(CicpProfile {
+                color_primaries: primaries,
+                transfer_characteristics: TransferCharacteristics::Linear,
+                matrix_coefficients: MatrixCoefficients::Identity,
+                full_range: true,
+            }),
+            moxcms::Chromaticity::D65.to_xyz(),
+        )
     }
 
     /// A float TIFF's: the ICC's colorants when it's a matrix-shaper profile, BT.709 otherwise.
@@ -513,10 +517,18 @@ impl SourceSpace {
                  CMYK, or broken); taking its samples as linear BT.709"
             );
         }
-        Self::linear_in(profile.unwrap_or_else(ColorProfile::new_srgb))
+        match profile {
+            Some(profile) => {
+                let white = icc_white(&profile);
+                Self::linear_in(profile, white)
+            }
+            None => Self::linear_in(ColorProfile::new_srgb(), moxcms::Chromaticity::D65.to_xyz()),
+        }
     }
 
-    fn linear_in(mut profile: ColorProfile) -> Self {
+    /// `profile`'s primaries with linear curves, and its luminance weights in `white`, the white
+    /// its source was in before the ICC connection space adapted it to D50.
+    fn linear_in(mut profile: ColorProfile, white: moxcms::Xyz) -> Self {
         // An empty table is the identity curve (`color::profiles::linear_rec2020_profile`).
         let linear = ToneReprCurve::Lut(Vec::new());
         profile.red_trc = Some(linear.clone());
@@ -531,15 +543,12 @@ impl SourceSpace {
         };
         // Luminance is the Y row of RGB to XYZ in the source's own white. ICC colorants are
         // Bradford-adapted to D50, which moves BT.2020's red weight from 0.2627 to 0.279, so the
-        // adaptation is undone back to D65, every HDR source's white.
-        let to_d65 = moxcms::adaption_matrix_d(
-            moxcms::Chromaticity::D50.to_xyz(),
-            moxcms::Chromaticity::D65.to_xyz(),
-        );
-        let rgb_to_xyz_d65 = to_d65.mat_mul(profile.colorant_matrix());
+        // adaptation is undone back to that white (the identity for a D50 source like ProPhoto).
+        let undo = moxcms::adaption_matrix_d(moxcms::Chromaticity::D50.to_xyz(), white);
+        let rgb_to_xyz = undo.mat_mul(profile.colorant_matrix());
         Self {
             to_display: gain_map::to_mat3(profile.transform_matrix(&display)),
-            weights: rgb_to_xyz_d65.v[1].map(|v| v as f32),
+            weights: rgb_to_xyz.v[1].map(|v| v as f32),
             linear: profile,
         }
     }
@@ -550,6 +559,38 @@ impl SourceSpace {
             content_peak,
             luminance_weights: self.weights,
         }
+    }
+}
+
+/// The white a parsed ICC profile's source was in, before its colorants were adapted to D50.
+///
+/// - **ICC v4** keeps the white-point tag at D50 and records the adaptation in `chad`, so the
+///   white is `chad⁻¹ · D50` (Apple's Display P3 and ITU-2020 profiles: D65).
+/// - **A `chad` that isn't an adaptation**: `moxcms` writes Bradford's cone matrix there, which
+///   doesn't map any white to D50 (its inverse gives D50 a Y of 0.976). A real adaptation's
+///   white has Y = 1, so anything else is ignored.
+/// - **Otherwise** the white-point tag is the white (ICC v2, like Apple's sRGB: D65; and
+///   `moxcms`' own profiles), or D50 when there's none.
+fn icc_white(profile: &ColorProfile) -> moxcms::Xyz {
+    let d50 = moxcms::Chromaticity::D50.to_xyz();
+    let from_chad = profile.chromatic_adaptation.map(|chad| {
+        let inverse = chad.inverse();
+        let d = [f64::from(d50.x), f64::from(d50.y), f64::from(d50.z)];
+        let row =
+            |r: usize| inverse.v[r][0] * d[0] + inverse.v[r][1] * d[1] + inverse.v[r][2] * d[2];
+        [row(0), row(1), row(2)]
+    });
+    let white = match from_chad {
+        Some(w) if (w[1] - 1.0).abs() < 1e-3 => w,
+        _ => match profile.media_white_point {
+            Some(w) if w.y > 0.0 => [w.x / w.y, 1.0, w.z / w.y],
+            _ => return d50,
+        },
+    };
+    moxcms::Xyz {
+        x: white[0] as f32,
+        y: white[1] as f32,
+        z: white[2] as f32,
     }
 }
 
@@ -617,6 +658,40 @@ mod tests {
         let mut eight = vec![16 * 257, 235 * 257, 0, 255 * 257];
         expand_narrow_range(&mut eight, 8);
         assert_eq!(eight, [0, 65535, 0, 255 * 257]);
+    }
+
+    /// A float TIFF's luminance weights come from its profile's own white, whichever way the
+    /// profile records it: an ICC v4 `chad` (Apple's Display P3 shape: white point tag at D50),
+    /// a D50 working space (ProPhoto, identity `chad`), and a `moxcms`-written profile, whose
+    /// `chad` is Bradford's cone matrix rather than an adaptation and whose `wtpt` is the white.
+    #[test]
+    fn float_tiff_luminance_weights_use_the_profiles_own_white() {
+        use moxcms::{Chromaticity, Matrix3d, adaption_matrix_d};
+        let d50 = Chromaticity::D50.to_xyz();
+        let d65 = Chromaticity::D65.to_xyz();
+        let mut v4_p3 = ColorProfile::new_display_p3();
+        v4_p3.chromatic_adaptation = Some(adaption_matrix_d(d65, d50));
+        v4_p3.media_white_point = Some(Chromaticity::D50.to_xyzd());
+        let mut prophoto = ColorProfile::new_pro_photo_rgb();
+        prophoto.chromatic_adaptation = Some(Matrix3d {
+            v: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        });
+        prophoto.media_white_point = Some(Chromaticity::D50.to_xyzd());
+        for (name, profile, want) in [
+            ("v4 Display P3", v4_p3, [0.2290, 0.6917, 0.0793]),
+            ("ProPhoto (D50)", prophoto, [0.2880, 0.7119, 0.0001]),
+            (
+                "moxcms sRGB",
+                ColorProfile::new_srgb(),
+                [0.2126, 0.7152, 0.0722],
+            ),
+        ] {
+            let icc = profile.encode().expect("encodes");
+            let got = SourceSpace::from_icc(Some(&icc)).weights;
+            for (g, w) in got.iter().zip(want) {
+                assert!((g - w).abs() < 2e-3, "{name}: {got:?} vs {want:?}");
+            }
+        }
     }
 
     /// BT.2020's luminance weights, which the HLG OOTF names, from the colorants' D50 Y row.
