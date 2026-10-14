@@ -198,9 +198,13 @@ pub(crate) struct App {
     /// whose displays have none. Empty unless a test set it.
     pub(crate) display_hdr_override: DisplayHdrOverride,
     /// When the headroom poll next reads the display. `Some` only while
-    /// `want_edr_surface()` holds and the window is visible, so an SDR image
-    /// never wakes the loop for it.
+    /// `want_edr_surface()` holds and the window is visible and not occluded,
+    /// so an SDR image, the browser, or a covered window never wakes the loop
+    /// for it.
     pub(crate) headroom_poll_due: Option<Instant>,
+    /// The window is entirely covered (winit's `Occluded`): visible as far as
+    /// the window manager is concerned, but nothing on screen to keep current.
+    pub(crate) occluded: bool,
 
     // ── Runtime input / rendering ───────────────────────────────────
     pub(crate) modifiers: ModifiersState,
@@ -348,6 +352,7 @@ impl App {
             current_image_encoding: None,
             display_hdr_override: DisplayHdrOverride::default(),
             headroom_poll_due: None,
+            occluded: false,
             modifiers: ModifiersState::empty(),
             drag_start: None,
             pending_drops: Vec::new(),
@@ -2461,6 +2466,9 @@ impl App {
         self.browser.toggle_mode();
 
         self.set_browse_menu_label();
+        // `want_edr_surface` reads the mode: browse drops the EDR surface (and with it the
+        // headroom poll), and coming back puts it back for the image still on screen.
+        self.apply_edr_surface_state();
 
         // Image mode needs a frame; browse mode goes idle (render-on-demand).
         if matches!(target, crate::browser::ViewMode::Image) {
@@ -3817,7 +3825,7 @@ impl App {
             .as_ref()
             .and_then(|window| window.is_visible())
             .unwrap_or(true);
-        let should_poll = visible && self.want_edr_surface();
+        let should_poll = visible && !self.occluded && self.want_edr_surface();
         let now = Instant::now();
         if should_poll && self.headroom_poll_due.is_some_and(|due| now >= due) {
             let before = self.display_hdr;
@@ -3926,13 +3934,15 @@ impl App {
     }
 
     /// Single source of truth for "should the wgpu surface run in EDR mode
-    /// right now?" All three inputs must hold: the user hasn't opted out,
+    /// right now?" All four inputs must hold: the user hasn't opted out,
     /// the display can show HDR (potential headroom, not the current one, so
-    /// a brightness change never flips the surface), and the
-    /// currently-displayed image is actually an HDR decode. When any flips,
-    /// call `apply_edr_surface_state`.
+    /// a brightness change never flips the surface), the viewer is in image
+    /// mode (browse shows no image of ours), and the currently-displayed image
+    /// is actually an HDR decode. When any flips, call `apply_edr_surface_state`.
+    /// The headroom poll runs on this too, so browsing never wakes for it.
     pub(crate) fn want_edr_surface(&self) -> bool {
         self.hdr_active()
+            && !self.browser.is_browse()
             && self
                 .current_image_encoding
                 .is_some_and(decoding::EncodingKind::is_hdr)
@@ -4404,6 +4414,9 @@ impl ApplicationHandler<AppCommand> for App {
             // and the expensive one (read and parse its ICC profile) off it. macOS is told
             // instead, through `AppCommand::DisplayChanged`, so this costs it nothing.
             WindowEvent::Moved(_) => self.refresh_display_profile_after_move(),
+
+            // Gates the headroom poll; `about_to_wait` restarts it once the window shows again.
+            WindowEvent::Occluded(occluded) => self.occluded = occluded,
 
             WindowEvent::Resized(size) => {
                 log::debug!("Window resized to {}x{}", size.width, size.height);

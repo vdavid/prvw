@@ -244,6 +244,39 @@ fn a_gain_map_jpeg_follows_the_headroom_without_re_decoding() {
     assert_eq!(sdr["edr_surface"], false);
 }
 
+/// Browse mode shows no HDR image, so the EDR surface and the headroom poll go off while it's up,
+/// and come back with the image: an idle browser never wakes for the display.
+#[test]
+fn browse_mode_drops_the_edr_surface_and_image_mode_restores_it() {
+    let jpeg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/hdr/ultra-hdr-xmp-64x48.jpg");
+    let Some(app) = SharedApp::start_with_image(&["BrowseMode", "BrowseOpenSelected"], &jpeg)
+    else {
+        return;
+    };
+    app.wait_for_state(Duration::from_secs(10), |s| {
+        s["pixel_encoding"].as_str().is_some()
+    });
+    let hdr = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": true, "headroom_now": 2.0 }),
+    );
+    assert_eq!(hdr["want_edr_surface"], true);
+
+    app.post("/key", "Enter");
+    let browsing = app.wait_for_state(Duration::from_secs(10), |s| {
+        s["view_mode"].as_str() == Some("browse")
+    });
+    assert_eq!(browsing["want_edr_surface"], false);
+    assert_eq!(browsing["edr_surface"], false);
+
+    app.post("/key", "Escape");
+    let back = app.wait_for_state(Duration::from_secs(10), |s| {
+        s["view_mode"].as_str() == Some("image")
+    });
+    assert_eq!(back["want_edr_surface"], true);
+}
+
 /// A PQ PNG on a display that can show HDR is scene-linear light, tone-mapped by the shader at the
 /// current headroom: a brightness change rewrites a uniform and never decodes the file again. The
 /// display losing HDR does re-decode it, to the CPU's SDR rendition.

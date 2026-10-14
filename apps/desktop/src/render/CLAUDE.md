@@ -96,8 +96,9 @@ _current_ value there.
 **The headroom is polled, not announced.** Neither macOS nor Windows sends a notification for a brightness or
 SDR-white-level change, so `App::poll_display_headroom` re-reads the display every `display_hdr::HEADROOM_POLL` (500 ms)
 from `about_to_wait`, on the main thread (which `display_hdr_info` needs on Metal), and `schedule_wakeup` holds a
-`WaitUntil` for it. It runs only while `want_edr_surface()` holds and the window is visible, so an SDR image never wakes
-the loop, and a reading within 1% of the last (`display_hdr::headroom_moved`) draws nothing.
+`WaitUntil` for it. It runs only while `want_edr_surface()` holds (which is false in browse mode, so the browser drops
+the EDR surface too) and the window is visible and not occluded, so an SDR image, the browser, or a covered window never
+wakes the loop, and a reading within 1% of the last (`display_hdr::headroom_moved`) draws nothing.
 
 ## The image texture follows storage, the surface follows meaning
 
