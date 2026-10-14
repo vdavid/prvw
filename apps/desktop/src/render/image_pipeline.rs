@@ -313,14 +313,22 @@ impl ImagePipeline {
         );
     }
 
-    /// Group 1 for the live display.
-    pub fn frame_bind_group(&self) -> &wgpu::BindGroup {
-        &self.frame_bind_group
-    }
-
     /// Group 1 at headroom 1.0, so a render shows the SDR rendition.
     pub fn sdr_frame_bind_group(&self) -> &wgpu::BindGroup {
         &self.sdr_frame_bind_group
+    }
+
+    /// Group 1 for a render into a surface that is (or isn't) in EDR mode. Only an EDR surface can
+    /// show anything above SDR white, so every other one gets the headroom-1 group: decoding gates
+    /// on the display being capable, but the surface can still stay SDR (macOS refusing EDR, a
+    /// Windows adapter that fell back from DX12 to Vulkan), and a gain map applied at the live
+    /// headroom would then clip at 1.0.
+    pub fn frame_bind_group_for(&self, edr_surface: bool) -> &wgpu::BindGroup {
+        if edr_surface {
+            &self.frame_bind_group
+        } else {
+            &self.sdr_frame_bind_group
+        }
     }
 
     /// Upload `image`. The texture format follows storage (`Rgba8` → `Rgba8UnormSrgb`, `Rgba16F`
@@ -512,8 +520,14 @@ mod gpu_parity {
         );
     }
 
-    /// Render `image` at `headroom_now` and read back linear RGB per pixel, row by row.
+    /// Render `image` at `headroom_now` into an EDR target and read back linear RGB per pixel, row
+    /// by row.
     fn render(image: &DecodedImage, headroom_now: f32) -> Vec<[f32; 3]> {
+        render_onto(image, headroom_now, true)
+    }
+
+    /// [`render`], choosing group 1 the way the renderer does for a surface that is or isn't EDR.
+    fn render_onto(image: &DecodedImage, headroom_now: f32, edr_surface: bool) -> Vec<[f32; 3]> {
         let (device, queue) = headless_gpu();
         let pipeline = ImagePipeline::new(&device, &queue);
         let format = wgpu::TextureFormat::Rgba16Float;
@@ -577,7 +591,7 @@ mod gpu_parity {
             });
             pass.set_pipeline(&render_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.set_bind_group(1, pipeline.frame_bind_group(), &[]);
+            pass.set_bind_group(1, pipeline.frame_bind_group_for(edr_surface), &[]);
             pass.draw(0..6, 0..1);
         }
         encoder.copy_texture_to_buffer(
@@ -862,6 +876,23 @@ mod gpu_parity {
             squeezed < fits / 2.0,
             "the tone map brings them down toward the headroom: {squeezed} vs {fits}"
         );
+    }
+
+    /// An HDR image on a surface that stayed SDR (macOS refusing EDR, Windows' DX12 to Vulkan
+    /// fallback) draws its headroom-1 rendition, whatever the display's headroom says: the gain
+    /// map's SDR base and the scene-linear tone map onto SDR white, where the live headroom would
+    /// clip at the surface's 1.0.
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "Linux CI runners have no GPU adapter; macOS and Windows run this"
+    )]
+    fn an_sdr_surface_shows_the_sdr_rendition_at_any_headroom() {
+        for image in [gain_mapped(), scene_linear()] {
+            let want = render(&image, 1.0);
+            let got = render_onto(&image, 8.0, false);
+            assert_eq!(got, want, "{:?}", image.encoding.shader_mode());
+        }
     }
 
     /// At headroom 1 a gain-mapped image is its SDR base. On macOS, where the HDR display space

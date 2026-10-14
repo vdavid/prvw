@@ -1057,7 +1057,12 @@ impl Renderer {
                 let sh = self.config.height as f32;
                 pass.set_viewport(0.0, offset_px, sw, (sh - offset_px).max(1.0), 0.0, 1.0);
                 pass.set_pipeline(&self.render_pipeline);
-                pass.set_bind_group(1, self.image_pipeline.frame_bind_group(), &[]);
+                pass.set_bind_group(
+                    1,
+                    self.image_pipeline
+                        .frame_bind_group_for(self.is_edr_surface()),
+                    &[],
+                );
                 // During a crossfade, draw the outgoing image first (opaque),
                 // then the incoming image over it at its current fade factor.
                 if let Some(cf) = &self.crossfade {

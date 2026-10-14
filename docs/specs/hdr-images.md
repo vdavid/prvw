@@ -736,3 +736,10 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     surfaced.
   - **Not checked against a real PQ or HLG file**: none was at hand, so the fixtures are ours and the curves are pinned
     against BT.2100's and BT.2408's published reference values instead. Spec QA step 5 is the first real check.
+- **2026-10-14, review fix: an HDR image on a surface that stayed SDR drew at the live headroom.** Decoding gates on
+  `capable`, but the surface also needs `hdr_surface_supported`; where that's false (macOS refusing EDR, the Windows
+  DX12 to Vulkan fallback), a `GainMapped` image drew on `Bgra8UnormSrgb` with `headroom_now > 1`, and its gain clipped
+  at 1.0 (a `SceneLinear` one would have tone-mapped to the headroom and clipped too). The render pass now binds group 1
+  through `ImagePipeline::frame_bind_group_for(edr_surface)`, which hands any non-EDR surface the headroom-1 group the
+  screenshot already used: the gain map's SDR base, and mode 3's tone map onto SDR white. The GPU test renders both at
+  headroom 8 onto a non-EDR target and gets the headroom-1 bits exactly.

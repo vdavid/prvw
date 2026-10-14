@@ -115,7 +115,10 @@ sampler, and the per-frame uniform, and needs only a device and a queue. `Render
 - **Group 1 is per frame**: `FrameUniform { headroom_now }`, one buffer for the whole renderer. A headroom change is
   `Renderer::set_headroom_now` plus a redraw; nothing per image is rewritten, which is the whole point of the design.
   `capture_screenshot` binds a second group 1 pinned at 1.0, so the headroom-dependent modes screenshot as their SDR
-  rendition.
+  rendition, and the live render binds that one too whenever the surface isn't EDR (`frame_bind_group_for`): decoding
+  gates on the display being capable, but the surface can still stay SDR (macOS refusing EDR, Windows falling back from
+  DX12 to Vulkan), and the live headroom would then lift a gain map or a tone map past the surface's 1.0, where it
+  clips. `an_sdr_surface_shows_the_sdr_rendition_at_any_headroom` is the anchor.
 - **Modes** (`color::hdr::fragment::ShaderMode`, mirrored as constants in `shader.wgsl`): 0 `DisplaySdr` and 1
   `LinearHdrDisplay` are passthrough, 2 `GainMap` applies a gain map, and 3 `SceneLinear` tone-maps linear light down to
   the headroom. The checkerboard composite and the crossfade `fade` stay after the mode's math for every mode.
