@@ -244,6 +244,59 @@ fn a_gain_map_jpeg_follows_the_headroom_without_re_decoding() {
     assert_eq!(sdr["edr_surface"], false);
 }
 
+/// A PQ PNG on a display that can show HDR is scene-linear light, tone-mapped by the shader at the
+/// current headroom: a brightness change rewrites a uniform and never decodes the file again. The
+/// display losing HDR does re-decode it, to the CPU's SDR rendition.
+#[test]
+fn a_pq_png_follows_the_headroom_without_re_decoding() {
+    let png = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/hdr/pq-bt2020-32x16.png");
+    let Some(app) = SharedApp::start_with_image(&[], &png) else {
+        return;
+    };
+    app.wait_for_state(Duration::from_secs(10), |s| {
+        s["pixel_encoding"].as_str().is_some()
+    });
+
+    let hdr = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": true, "headroom_now": 1.0 }),
+    );
+    assert_eq!(hdr["pixel_encoding"], "scene_linear");
+    assert_eq!(hdr["want_edr_surface"], true);
+    let supported = hdr["hdr_surface_supported"]
+        .as_bool()
+        .expect("hdr_surface_supported");
+    assert_eq!(hdr["edr_surface"].as_bool(), Some(supported));
+    let decodes = full_decodes(&hdr);
+
+    for headroom in [2.0, 8.0, 1.5] {
+        let state = app.post_json(
+            "/display-hdr",
+            &serde_json::json!({ "capable": true, "headroom_now": headroom }),
+        );
+        assert_eq!(state["headroom_now"].as_f64(), Some(headroom));
+        assert_eq!(state["pixel_encoding"], "scene_linear");
+        assert_eq!(
+            full_decodes(&state),
+            decodes,
+            "a headroom change at {headroom} must not decode the PQ PNG again"
+        );
+    }
+
+    let sdr = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": false, "headroom_now": 1.0 }),
+    );
+    assert!(
+        full_decodes(&sdr) > decodes,
+        "losing HDR changes what the decoder produces, so the image is decoded again"
+    );
+    assert_eq!(sdr["pixel_encoding"], "display_sdr");
+    assert_eq!(sdr["want_edr_surface"], false);
+    assert_eq!(sdr["edr_surface"], false);
+}
+
 #[test]
 fn window_geometry_changes_size() {
     let Some(app) = SharedApp::start(&[]) else {
