@@ -130,8 +130,13 @@ macOS. `tests/e2e/mod.rs` carries the full caveat list.
 `GET /window-diagnostics` returns a text dump of the main window's AppKit view and layer tree: each titlebar view's
 frame in window coordinates, the three standard window buttons, `styleMask`, `collectionBehavior`, and the layer corner
 radii/masks. `POST /zoom-window` (native `zoom:`) and `POST /click-zoom-button` (`performClick:` on the green traffic
-light) drive the two window-zoom paths without synthesizing OS mouse input. All three are gated by
-`#[cfg(all(debug_assertions, target_os = "macos"))]`, like `screenshot_window`.
+light) drive the two window-zoom paths without synthesizing OS mouse input. `POST /traffic-light-trace`
+(`{"steps": 30, "live": true}`) resizes the window one step per event-loop turn, inside AppKit's private live-resize
+mode when `live`, flushes Core Animation after each step, and reports where the three traffic lights were in every
+flushed frame, ending with a hit-test of each button's visible centre and a `summary:` line counting frames with a
+button off its nudged spot. It's what `e2e_macos.rs` uses to keep the resize flicker fixed; a real mouse drag is the one
+thing it can't reproduce. All four are gated by `#[cfg(all(debug_assertions, target_os = "macos"))]`, like
+`screenshot_window`.
 
 They exist because window-chrome bugs are invisible to `/state`: the traffic lights' clickable rect drifting away from
 their drawing, or a window keeping its fullscreen appearance after a restore, only show up in the AppKit geometry. No

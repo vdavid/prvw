@@ -160,6 +160,7 @@ impl AppCommand {
             AppCommand::GetNativeWindowId(_) => Internal,
             #[cfg(all(debug_assertions, target_os = "macos"))]
             AppCommand::WindowDiagnostics(_)
+            | AppCommand::TrafficLightTrace(..)
             | AppCommand::ZoomWindow
             | AppCommand::ClickZoomButton => Internal,
         }
@@ -489,6 +490,13 @@ pub enum AppCommand {
     /// Runs on the event loop because it talks to AppKit.
     #[cfg(all(debug_assertions, target_os = "macos"))]
     WindowDiagnostics(mpsc::Sender<String>),
+    /// One step of the debug-only `POST /traffic-light-trace`, which resizes the window and
+    /// reports where the traffic lights sat when each frame went to the window server.
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    TrafficLightTrace(
+        crate::platform::macos::window_diagnostics::TrafficLightTraceStep,
+        mpsc::Sender<String>,
+    ),
     /// Perform the native window `zoom:` — what the green traffic light does. Debug-only
     /// driving hook: the QA path can't synthesize a real click on the button.
     #[cfg(all(debug_assertions, target_os = "macos"))]

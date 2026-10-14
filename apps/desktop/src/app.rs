@@ -3781,8 +3781,8 @@ impl App {
             window::set_fullscreen_appearance(win, window::is_fullscreen(win));
             // The glass frame mask doesn't autoresize; rebuild it for the new size.
             window::apply_glass_frame_mask(win);
-            // The traffic lights stay nudged across the relayout via the swizzled
-            // frame setters (see `window::register_traffic_light_keeper`).
+            // The traffic lights stay nudged across the relayout via the titlebar layout
+            // hook (see `window::register_traffic_light_keeper`).
         }
         // Asked before the new size lands: a fitted image follows the window, a zoomed one
         // keeps its zoom.

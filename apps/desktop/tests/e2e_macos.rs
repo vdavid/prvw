@@ -98,6 +98,30 @@ fn fullscreen_state_survives_a_round_trip_appkit_drove() {
     });
 }
 
+// ── Traffic lights through a resize ──────────────────────────────────────────────────────────
+
+#[test]
+fn traffic_lights_never_reach_the_screen_at_their_default_spot_during_a_resize() {
+    // AppKit puts the traffic lights back at its default spot in every resize step, and a live
+    // resize draws and flushes inside that step. A nudge that runs any later than the layout
+    // call itself (it used to be queued for the end of the run-loop turn) loses that race, and
+    // every step showed the buttons 6 pt left and 2 pt up of where they belong: a flicker.
+    // `/traffic-light-trace` resizes the window in live-resize mode and reports where the
+    // buttons were in each frame it flushed.
+    let app = TestApp::start();
+    let trace = app.post_text("/traffic-light-trace", r#"{"steps": 30, "live": true}"#);
+    assert!(
+        trace.contains("summary: 0 of 30 flushed frames"),
+        "a resize frame showed a traffic light off its nudged spot:\n{trace}"
+    );
+    // The nudge moves the buttons themselves, so each one's visible spot is also where a click
+    // lands.
+    assert!(
+        trace.contains("centerHitsButton=[true, true, true]"),
+        "a traffic light's visible spot doesn't hit-test to it:\n{trace}"
+    );
+}
+
 // ── The native window capture ────────────────────────────────────────────────────────────────
 
 /// `screenshot_window` MCP tool runs end-to-end. Marked `#[ignore]` because the tool

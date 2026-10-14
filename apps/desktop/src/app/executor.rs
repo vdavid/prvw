@@ -720,6 +720,19 @@ impl App {
                 let _ = sender.send(text);
             }
             #[cfg(all(debug_assertions, target_os = "macos"))]
+            AppCommand::TrafficLightTrace(step, sender) => {
+                let text = self
+                    .window
+                    .as_ref()
+                    .map(|win| {
+                        crate::platform::macos::window_diagnostics::traffic_light_trace_step(
+                            win, step,
+                        )
+                    })
+                    .unwrap_or_else(|| "(no window)".to_string());
+                let _ = sender.send(text);
+            }
+            #[cfg(all(debug_assertions, target_os = "macos"))]
             AppCommand::ZoomWindow => {
                 if let Some(win) = &self.window {
                     window::zoom_window(win);

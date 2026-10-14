@@ -184,6 +184,53 @@ pub(super) fn handle_get_window_diagnostics(
     write_response(stream, 200, "text/plain", text.as_bytes(), &[])
 }
 
+/// Resize the window step by step and report where the traffic lights sat in each frame that
+/// reached the window server. Body: `{"steps": 30, "live": true}` (both optional). The reply is
+/// one line per step plus a summary line counting the frames with a button off its nudged spot.
+/// Each step is its own command, so the event loop turns over between steps the way it does
+/// between the drag events of a real resize.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub(super) fn handle_post_traffic_light_trace(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+) -> Result<(), String> {
+    use crate::platform::macos::window_diagnostics::TrafficLightTraceStep as Step;
+
+    let parsed: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    let steps = parsed["steps"].as_u64().unwrap_or(30);
+    let live = parsed["live"].as_bool().unwrap_or(true);
+    let run = |step: Step| -> Result<String, String> {
+        let (tx, rx) = mpsc::channel();
+        proxy
+            .send_event(AppCommand::TrafficLightTrace(step, tx))
+            .map_err(|e| format!("Event loop closed: {e}"))?;
+        rx.recv_timeout(Duration::from_secs(15))
+            .map_err(|e| format!("Trace timeout: {e}"))
+    };
+
+    let mut lines = vec![run(Step::Begin { live })?];
+    let mut off_frames = 0;
+    for i in 0..steps {
+        // Grow, then shrink back, so a long trace doesn't walk off the screen.
+        let sign = if i < steps / 2 { 1.0 } else { -1.0 };
+        let line = run(Step::Resize {
+            dw: 7.0 * sign,
+            dh: 5.0 * sign,
+        })?;
+        if !line.contains("off=[]") {
+            off_frames += 1;
+        }
+        lines.push(line);
+    }
+    lines.push(run(Step::End)?);
+    lines.push(format!(
+        "summary: {off_frames} of {steps} flushed frames had a traffic light off its nudged spot"
+    ));
+    let text = lines.join("\n");
+    write_response(stream, 200, "text/plain", text.as_bytes(), &[])
+}
+
 /// Trigger the native window `zoom:` — the green traffic light's action.
 #[cfg(all(debug_assertions, target_os = "macos"))]
 pub(super) fn handle_post_zoom_window(

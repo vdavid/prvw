@@ -413,6 +413,17 @@ impl TestApp {
             .expect("Failed to parse response JSON")
     }
 
+    /// POST to an endpoint that answers in plain text rather than with the state JSON.
+    pub fn post_text(&self, path: &str, body: &str) -> String {
+        self.client
+            .post(format!("{}{path}", self.base_url))
+            .body(body.to_string())
+            .send()
+            .unwrap_or_else(|error| panic!("{}", self.diagnose(&format!("POST {path}"), &error)))
+            .text()
+            .expect("Failed to read response text")
+    }
+
     pub fn post_json(&self, path: &str, json: &serde_json::Value) -> serde_json::Value {
         self.client
             .post(format!("{}{path}", self.base_url))

@@ -155,6 +155,10 @@ fn handle_request(
         #[cfg(all(debug_assertions, target_os = "macos"))]
         ("GET", "/window-diagnostics") => http::handle_get_window_diagnostics(stream, proxy),
         #[cfg(all(debug_assertions, target_os = "macos"))]
+        ("POST", "/traffic-light-trace") => {
+            http::handle_post_traffic_light_trace(stream, proxy, &body)
+        }
+        #[cfg(all(debug_assertions, target_os = "macos"))]
         ("POST", "/zoom-window") => http::handle_post_zoom_window(stream, proxy, state),
         #[cfg(all(debug_assertions, target_os = "macos"))]
         ("POST", "/click-zoom-button") => http::handle_post_click_zoom_button(stream, proxy, state),

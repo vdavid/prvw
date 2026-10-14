@@ -123,12 +123,14 @@ All endpoints also available as simple HTTP for cURL debugging. POST endpoints r
 | GET    | /window-diagnostics   | -                                                                                                                 | Text (debug)     |
 | POST   | /zoom-window          | -                                                                                                                 | State JSON       |
 | POST   | /click-zoom-button    | -                                                                                                                 | State JSON       |
+| POST   | /traffic-light-trace  | JSON: `{"steps": 30, "live": true}` (both optional)                                                               | Text (debug)     |
 | POST   | /refresh              | -                                                                                                                 | State JSON       |
 | POST   | /browse/select-folder | absolute folder path (test-only, macOS)                                                                           | State JSON       |
 | POST   | /browse/select-grid   | grid index (test-only, macOS)                                                                                     | State JSON       |
 | POST   | /browse/open          | - (open the selected grid image; test-only, macOS)                                                                | State JSON       |
 
-The last three endpoints above are debug-build, macOS-only window-chrome hooks (they don't exist in release):
+`/window-diagnostics`, `/zoom-window`, `/click-zoom-button`, and `/traffic-light-trace` are debug-build, macOS-only
+window-chrome hooks (they don't exist in release):
 
 - `GET /window-diagnostics` dumps the window's AppKit view/layer tree — every titlebar view's frame in window
   coordinates, the standard window buttons, `styleMask`, `collectionBehavior`, and the corner-radius/mask geometry. It's
@@ -137,6 +139,9 @@ The last three endpoints above are debug-build, macOS-only window-chrome hooks (
 - `POST /zoom-window` performs the native `zoom:`; `POST /click-zoom-button` sends `performClick:` to the green traffic
   light. The two differ (the button's action, not `zoom:`, is what macOS 26 routes through fullscreen), so use the
   button one to exercise what a real click does.
+- `POST /traffic-light-trace` resizes the window step by step (in live-resize mode unless `"live": false`) and reports
+  each traffic light's origin in every frame flushed to the window server, plus a summary line. It measures the resize
+  flicker without judging screenshots.
 
 The three `/browse/*` endpoints are test-only driving hooks: the QA path can't synthesize native outline/collection-view
 clicks, so integration tests drive tree selection, grid selection, and open through them. macOS-only (browse mode is);

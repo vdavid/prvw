@@ -11,7 +11,7 @@
 
 use objc2::msg_send;
 use objc2::runtime::AnyObject;
-use objc2_foundation::NSRect;
+use objc2_foundation::{NSPoint, NSRect};
 use std::fmt::Write as _;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
@@ -109,6 +109,155 @@ pub fn click_zoom_button(window: &Window) {
         }
         let nil: *const AnyObject = std::ptr::null();
         let _: () = msg_send![button, performClick: nil];
+    }
+}
+
+/// One step of `POST /traffic-light-trace`, which measures whether the traffic lights ever
+/// reach the screen at AppKit's default spot instead of our nudged one during a resize.
+#[derive(Debug, Clone, Copy)]
+pub enum TrafficLightTraceStep {
+    /// Record where the buttons sit now (settled, so nudged) as the reference, and optionally
+    /// put the window into live resize the way a drag on its edge does.
+    Begin { live: bool },
+    /// Grow the window by this many points, then flush Core Animation and report the button
+    /// origins that flush carried to the window server.
+    Resize { dw: f64, dh: f64 },
+    /// Leave live resize (if `Begin` entered it) and report whether each button's visible spot
+    /// still hit-tests to that button.
+    End,
+}
+
+thread_local! {
+    /// `Begin`'s reference origins (superview coordinates) and whether it entered live resize.
+    static TRACE_BASELINE: std::cell::Cell<Option<([NSPoint; 3], bool)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run one trace step on the main thread and describe it in one line.
+///
+/// Each `Resize` is its own event-loop turn (the HTTP handler sends one command per step), so
+/// anything AppKit or our own code queues for the end of a turn runs between steps, the way it
+/// does between the drag events of a real live resize. Inside the step, `setFrame:display:`
+/// relays out and draws synchronously, and `CATransaction.flush` then pushes that state to the
+/// window server, which is what a live resize does at every step. The origins read just before
+/// the flush are therefore what that frame shows.
+pub fn traffic_light_trace_step(window: &Window, step: TrafficLightTraceStep) -> String {
+    let Ok(RawWindowHandle::AppKit(handle)) = window.window_handle().map(|h| h.as_raw()) else {
+        return "(no AppKit window handle)".to_string();
+    };
+    unsafe {
+        let content_view = handle.ns_view.as_ptr() as *const AnyObject;
+        let ns_window: *const AnyObject = msg_send![content_view, window];
+        if ns_window.is_null() {
+            return "(no NSWindow)".to_string();
+        }
+        match step {
+            TrafficLightTraceStep::Begin { live } => {
+                let origins = button_origins(ns_window);
+                let entered = live && send_if_responds(ns_window, objc2::sel!(_startLiveResize));
+                TRACE_BASELINE.with(|b| b.set(Some((origins, entered))));
+                format!(
+                    "begin live={entered} reference {}",
+                    describe_origins(&origins)
+                )
+            }
+            TrafficLightTraceStep::Resize { dw, dh } => {
+                let Some((baseline, _)) = TRACE_BASELINE.with(|b| b.get()) else {
+                    return "(no Begin)".to_string();
+                };
+                let mut frame: NSRect = msg_send![ns_window, frame];
+                frame.size.width += dw;
+                frame.size.height += dh;
+                // Grow downward so the title bar stays put on screen.
+                frame.origin.y -= dh;
+                let _: () = msg_send![ns_window, setFrame: frame, display: true, animate: false];
+                let origins = button_origins(ns_window);
+                let _: () = msg_send![objc2::class!(CATransaction), flush];
+                let off: Vec<usize> = (0..3)
+                    .filter(|&k| !same_point(origins[k], baseline[k]))
+                    .collect();
+                format!(
+                    "resize {:.0}x{:.0} off={off:?} {}",
+                    frame.size.width,
+                    frame.size.height,
+                    describe_origins(&origins)
+                )
+            }
+            TrafficLightTraceStep::End => {
+                let live = TRACE_BASELINE
+                    .with(|b| b.take())
+                    .is_some_and(|(_, live)| live);
+                if live {
+                    send_if_responds(ns_window, objc2::sel!(_endLiveResize));
+                }
+                let frame_view: *const AnyObject = msg_send![content_view, superview];
+                let mut hits = Vec::new();
+                for kind in 0u64..3 {
+                    let button: *const AnyObject = msg_send![ns_window, standardWindowButton: kind];
+                    if button.is_null() || frame_view.is_null() {
+                        hits.push(false);
+                        continue;
+                    }
+                    let bounds: NSRect = msg_send![button, bounds];
+                    let nil_view: *const AnyObject = std::ptr::null();
+                    let in_window: NSRect =
+                        msg_send![button, convertRect: bounds, toView: nil_view];
+                    // The frame view's superview coordinates are window coordinates.
+                    let center = NSPoint::new(
+                        in_window.origin.x + in_window.size.width / 2.0,
+                        in_window.origin.y + in_window.size.height / 2.0,
+                    );
+                    let hit: *const AnyObject = msg_send![frame_view, hitTest: center];
+                    let on_button = !hit.is_null() && {
+                        let is_descendant: bool = msg_send![hit, isDescendantOf: button];
+                        is_descendant
+                    };
+                    hits.push(on_button);
+                }
+                format!(
+                    "end live={live} now {} centerHitsButton={hits:?}",
+                    describe_origins(&button_origins(ns_window))
+                )
+            }
+        }
+    }
+}
+
+/// The three standard window buttons' frame origins, in their superview's coordinates.
+unsafe fn button_origins(ns_window: *const AnyObject) -> [NSPoint; 3] {
+    let mut out = [NSPoint::new(f64::NAN, f64::NAN); 3];
+    for (kind, slot) in out.iter_mut().enumerate() {
+        let button: *const AnyObject =
+            unsafe { msg_send![ns_window, standardWindowButton: kind as u64] };
+        if !button.is_null() {
+            let frame: NSRect = unsafe { msg_send![button, frame] };
+            *slot = frame.origin;
+        }
+    }
+    out
+}
+
+fn same_point(a: NSPoint, b: NSPoint) -> bool {
+    (a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01
+}
+
+fn describe_origins(origins: &[NSPoint; 3]) -> String {
+    let [c, m, z] = origins;
+    format!(
+        "close=({:.1},{:.1}) min=({:.1},{:.1}) zoom=({:.1},{:.1})",
+        c.x, c.y, m.x, m.y, z.x, z.y
+    )
+}
+
+/// Send a no-argument selector only when the receiver implements it. The live-resize pair is
+/// private AppKit, so a macOS that drops it makes the trace run non-live instead of crashing.
+unsafe fn send_if_responds(receiver: *const AnyObject, sel: objc2::runtime::Sel) -> bool {
+    unsafe {
+        let responds: bool = msg_send![receiver, respondsToSelector: sel];
+        if responds {
+            let _: () = objc2::runtime::MessageReceiver::send_message(receiver, sel, ());
+        }
+        responds
     }
 }
 

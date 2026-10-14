@@ -27,10 +27,12 @@
 //!   layer plus a title-bar strip toggled by `set_titlebar_vibrancy_visible`).
 //! - **Window corner radius.** `round_window_frame_to_glass` rounds the window's own frame
 //!   view to match the glass so the system's default-radius corner stroke can't peek out.
-//! - **Traffic lights.** Nudged off the rounded corner by `register_traffic_light_keeper`,
-//!   which observes each button's `NSViewFrameDidChangeNotification` and re-places all three
-//!   whenever AppKit resets them. The offset moves the buttons themselves, so what you click
-//!   and what you see stay together.
+//! - **Traffic lights.** Nudged off the rounded corner by `register_traffic_light_keeper`. Its
+//!   main layer, `hook_titlebar_layout`, replaces `NSThemeFrame`'s private
+//!   `_updateButtonPositions` / `_tileTitlebarAndRedisplay:` so the nudge runs inside the same
+//!   AppKit layout pass that puts the buttons at their default spot. A frame-change observer on
+//!   each button stays behind as a safety net for any path the hook misses. The offset moves
+//!   the buttons themselves, so what you click and what you see stay together.
 //! - **Fullscreen state comes from AppKit, not `winit`.** `is_fullscreen` reads the window's
 //!   style mask and `set_fullscreen` calls `toggleFullScreen:` directly, because the green
 //!   traffic light can start a transition `winit` never learns to un-remember. See the gotcha
@@ -60,11 +62,21 @@
 //!   hosts a `_NSCoreHostingView<ThemeWidgetView>` that does the drawing. Offsetting the child
 //!   moves the pixels only, leaving the clickable circle 6 pt up-left of the visible one —
 //!   clicks near the edge of the button then land nowhere.
-//! - **AppKit resets the button frames through a path `setFrame:` can't see.** Swizzling
-//!   `NSView`'s frame setters catches AppKit laying out the SwiftUI child, but the button's own
-//!   frame returns to the default without either setter running, so a swizzle-based nudge
-//!   silently stops applying. `NSViewFrameDidChangeNotification` (opt-in per view via
-//!   `setPostsFrameChangedNotifications:`) does see it — that's what the keeper observes.
+//! - **A traffic-light nudge has to land inside the layout call that undid it, or a live
+//!   resize flickers.** AppKit resets the buttons from `NSThemeFrame`'s `setFrameSize:` →
+//!   `_tileTitlebarAndRedisplay:` → `_updateButtonPositions` (seen on macOS 27 with
+//!   `NSThread.callStackSymbols` from a frame-change observer). A live resize draws and flushes to
+//!   the window server inside each step, so a re-place queued for later in the run-loop turn
+//!   (`NSOperationQueue.mainQueue`, which is what the keeper used to do alone) arrives after the
+//!   frame with the buttons at their default spot has already been shown: every step flickered
+//!   them 6 pt left and 2 pt up and back. `POST /traffic-light-trace` (debug builds) measures
+//!   it: 40 of 40 flushed frames off the nudged spot with the queued re-place alone, 0 of 40 with
+//!   the layout hook.
+//! - **The frame view's class is KVO's, so hook `NSThemeFrame` itself.** AppKit observes the
+//!   frame view, making its real class `NSKVONotifying_NSThemeFrame`. Swapping in our own
+//!   subclass over that would fight KVO, which swaps the class back when observation ends, so
+//!   `hook_titlebar_layout` replaces the two methods on `NSThemeFrame` and acts only for the main
+//!   window.
 //! - **Fullscreen appearance hand-off.** Toggling fullscreen triggers a `Resized` event
 //!   which calls `set_fullscreen_appearance` to swap the background (vibrancy → solid
 //!   black in fullscreen).
@@ -269,7 +281,7 @@ fn configure_macos_window(window: &Window) {
             round_window_frame_to_glass(ns_view);
         }
         // The traffic lights are nudged off the rounded edge by `register_traffic_light_keeper`
-        // (called from `initialize_viewer`), which swizzles the frame setters so the offset is
+        // (called from `initialize_viewer`), which hooks the titlebar layout so the offset is
         // applied as AppKit positions the buttons — see that function.
 
         // Test mode: push the window behind everything so a swarm of E2E windows
@@ -1111,12 +1123,9 @@ thread_local! {
     static PLACEMENT_QUEUED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Queue `place_traffic_lights` for the end of the current run-loop turn.
-///
-/// Placing straight from the notification isn't enough: AppKit's titlebar layout keeps going
-/// after it posts, and it moves the zoom button back without posting again — so a synchronous
-/// re-place is silently undone for that one button. Running after the whole pass lands last.
-/// It's still the same turn, so the window draws once, already nudged.
+/// Queue `place_traffic_lights` for the end of the current run-loop turn. The safety net
+/// behind `hook_titlebar_layout`: it catches a reset that comes through a path the hook
+/// doesn't cover, at the price of the frame that reset may already have drawn.
 #[cfg(target_os = "macos")]
 fn queue_traffic_light_placement(window_addr: usize) {
     use objc2::msg_send;
@@ -1214,15 +1223,155 @@ unsafe fn traffic_light_delta(view: *const objc2::runtime::AnyObject) -> (f64, f
     (TRAFFIC_LIGHT_X_OFFSET, dy)
 }
 
+/// The window whose traffic lights `hook_titlebar_layout` nudges, as an address (0 until the
+/// hook is installed). The hook is per class, so every other window's frame view runs through
+/// it too and has to be told apart from ours.
+#[cfg(target_os = "macos")]
+static NUDGED_WINDOW: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// AppKit's own implementations of the two methods `hook_titlebar_layout` replaces, called
+/// first from each replacement.
+#[cfg(target_os = "macos")]
+static ORIGINAL_UPDATE_BUTTON_POSITIONS: std::sync::OnceLock<objc2::runtime::Imp> =
+    std::sync::OnceLock::new();
+#[cfg(target_os = "macos")]
+static ORIGINAL_TILE_TITLEBAR: std::sync::OnceLock<objc2::runtime::Imp> =
+    std::sync::OnceLock::new();
+
+/// The two `NSThemeFrame` methods that put the traffic lights at their default spot.
+/// `_updateButtonPositions` writes the button origins; `_tileTitlebarAndRedisplay:` is what
+/// calls it on a resize or a title change, and it's hooked too so anything it moves after the
+/// buttons has already moved when we nudge.
+#[cfg(target_os = "macos")]
+const UPDATE_BUTTON_POSITIONS: &std::ffi::CStr = c"_updateButtonPositions";
+#[cfg(target_os = "macos")]
+const TILE_TITLEBAR: &std::ffi::CStr = c"_tileTitlebarAndRedisplay:";
+
+/// Make the window's frame view nudge the traffic lights inside AppKit's own titlebar layout,
+/// so no frame ever reaches the screen with them at the default spot.
+///
+/// AppKit lays the buttons out from the frame view (`NSThemeFrame`): `setFrameSize:` →
+/// `_tileTitlebarAndRedisplay:` → `_updateButtonPositions`, which writes each button's default
+/// origin. In a live resize, every step runs that layout, draws, and flushes to the window
+/// server before it returns, so whatever re-places the buttons has to run inside that call.
+/// This replaces both methods on the frame view's class with versions that run AppKit's own and
+/// then `place_traffic_lights`, for our window only.
+///
+/// It replaces them on the class because the instance is already taken: AppKit observes the
+/// frame view with KVO, so its real class is `NSKVONotifying_NSThemeFrame`, and a subclass
+/// swapped in over that would fight KVO (which swaps the class back when observation ends). The
+/// KVO class doesn't override these two methods, so calls still land on `NSThemeFrame`'s.
+///
+/// Both selectors are private AppKit, so each is replaced only if the class has it; when
+/// neither exists, the frame-change keeper nudges the buttons on its own. Returns whether the
+/// hook is in.
+#[cfg(target_os = "macos")]
+unsafe fn hook_titlebar_layout(ns_window: *const objc2::runtime::AnyObject) -> bool {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
+    use std::sync::atomic::Ordering;
+
+    unsafe extern "C-unwind" fn update_button_positions(this: *mut AnyObject, cmd: Sel) {
+        unsafe {
+            if let Some(&original) = ORIGINAL_UPDATE_BUTTON_POSITIONS.get() {
+                let original: unsafe extern "C-unwind" fn(*mut AnyObject, Sel) =
+                    std::mem::transmute(original);
+                original(this, cmd);
+            }
+            place_if_ours(this);
+        }
+    }
+
+    unsafe extern "C-unwind" fn tile_titlebar(this: *mut AnyObject, cmd: Sel, redisplay: Bool) {
+        unsafe {
+            if let Some(&original) = ORIGINAL_TILE_TITLEBAR.get() {
+                let original: unsafe extern "C-unwind" fn(*mut AnyObject, Sel, Bool) =
+                    std::mem::transmute(original);
+                original(this, cmd, redisplay);
+            }
+            place_if_ours(this);
+        }
+    }
+
+    unsafe fn place_if_ours(frame_view: *mut AnyObject) {
+        unsafe {
+            let ns_window: *const AnyObject = msg_send![frame_view, window];
+            if !ns_window.is_null() && ns_window as usize == NUDGED_WINDOW.load(Ordering::Relaxed) {
+                place_traffic_lights(ns_window);
+            }
+        }
+    }
+
+    /// Put `imp` in place of `name` on `class`, handing AppKit's implementation to `original`.
+    unsafe fn replace(
+        class: &AnyClass,
+        name: &std::ffi::CStr,
+        imp: Imp,
+        original: &std::sync::OnceLock<Imp>,
+    ) -> bool {
+        let sel = Sel::register(name);
+        let Some(method) = class.instance_method(sel) else {
+            return false;
+        };
+        unsafe {
+            let inherited = method.implementation();
+            let types = objc2::ffi::method_getTypeEncoding(method);
+            // Returns the class's own implementation, or nothing when it inherited the method and
+            // the call added an override instead, leaving the superclass untouched.
+            let previous = objc2::ffi::class_replaceMethod(
+                class as *const AnyClass as *mut AnyClass,
+                sel,
+                imp,
+                types,
+            );
+            original.set(previous.unwrap_or(inherited)).is_ok()
+        }
+    }
+
+    unsafe {
+        static HOOKED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let hooked = *HOOKED.get_or_init(|| {
+            let Some(class) = AnyClass::get(c"NSThemeFrame") else {
+                return false;
+            };
+            let update = replace(
+                class,
+                UPDATE_BUTTON_POSITIONS,
+                std::mem::transmute::<unsafe extern "C-unwind" fn(*mut AnyObject, Sel), Imp>(
+                    update_button_positions,
+                ),
+                &ORIGINAL_UPDATE_BUTTON_POSITIONS,
+            );
+            let tile = replace(
+                class,
+                TILE_TITLEBAR,
+                std::mem::transmute::<unsafe extern "C-unwind" fn(*mut AnyObject, Sel, Bool), Imp>(
+                    tile_titlebar,
+                ),
+                &ORIGINAL_TILE_TITLEBAR,
+            );
+            update || tile
+        });
+        if hooked {
+            NUDGED_WINDOW.store(ns_window as usize, Ordering::Relaxed);
+            log::debug!("Nudging the traffic lights inside NSThemeFrame's titlebar layout");
+        } else {
+            log::debug!(
+                "NSThemeFrame's titlebar layout isn't hookable; the frame-change keeper nudges alone"
+            );
+        }
+        hooked
+    }
+}
+
 /// Keep the traffic lights nudged off the rounded corner across every relayout.
 ///
-/// macOS puts the standard window buttons back at their default spot on every relayout (resize,
-/// zoom, title change), through a path that neither `setFrame:` nor `setFrameOrigin:` sees — a
-/// swizzle of those setters catches AppKit repositioning the SwiftUI view *inside* each button
-/// but never the button itself. What does see it is `NSViewFrameDidChangeNotification`, which
-/// NSView posts synchronously whenever the frame lands, whatever moved it. We opt each button
-/// into that notification and re-place all three from the handler, so the offset is restored in
-/// the same run-loop turn AppKit reset it, before anything draws.
+/// Two layers. The main one is `hook_titlebar_layout`, which nudges the buttons inside the
+/// AppKit layout pass that resets them, so the nudge lands before anything draws. The safety
+/// net observes each button's `NSViewFrameDidChangeNotification` and queues a re-place for the
+/// end of the run-loop turn, for any reset that comes through a path the hook doesn't cover
+/// (or a macOS where the hook's private selectors are gone). When the hook has already done
+/// the work, that queued pass finds every button on its target and changes nothing.
 ///
 /// Call once per process, after the main window exists.
 #[cfg(target_os = "macos")]
@@ -1243,6 +1392,8 @@ pub fn register_traffic_light_keeper(window: &Window) {
         if ns_window.is_null() {
             return;
         }
+        hook_titlebar_layout(ns_window);
+
         static OBSERVING: OnceLock<()> = OnceLock::new();
         OBSERVING.get_or_init(|| {
             let center: *const AnyObject =
@@ -1309,8 +1460,8 @@ pub fn zoom_window(window: &Window) {
 
 /// Set the native window title. Named "keeping buttons" because changing the title makes
 /// macOS relayout the standard window buttons; the traffic-light offset survives that because
-/// `register_traffic_light_keeper` swizzles the frame setters (the buttons stay nudged without
-/// any work here). Kept as a single call site for the title so that contract stays visible.
+/// `register_traffic_light_keeper` hooks that relayout (the buttons stay nudged without any
+/// work here). Kept as a single call site for the title so that contract stays visible.
 pub fn set_title_keeping_buttons(window: &Window, title: &str) {
     window.set_title(title);
 }
