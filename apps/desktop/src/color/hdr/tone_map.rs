@@ -185,6 +185,16 @@ impl PeakHistogram {
         self
     }
 
+    /// The brightest luminance of all, stray pixels included: what decides whether anything
+    /// passes SDR white at all, where [`Self::peak`] would call a few lamps "nothing".
+    pub fn max(&self) -> f32 {
+        // The bins rise with luminance, so the last occupied one holds the brightest pixel.
+        self.counts
+            .iter()
+            .rposition(|&n| n > 0)
+            .map_or(0.0, |bin| self.maxima[bin])
+    }
+
     /// The 99.9th-percentile luminance, to within a bin (1/32 stop): the brightest pixel in the
     /// bin the percentile falls in. 0 for an empty or all-black histogram.
     pub fn peak(&self) -> f32 {
@@ -321,6 +331,9 @@ mod tests {
     fn the_peak_ignores_stray_hot_pixels_but_not_highlights() {
         let stray = histogram((0..1000).map(|i| if i == 0 { 100.0 } else { 1.0 }));
         assert_eq!(stray.peak(), 1.0);
+        // The stray pixel is still there for whoever asks whether anything passes white.
+        assert_eq!(stray.max(), 100.0);
+        assert_eq!(histogram([0.0, -1.0, f32::NAN]).max(), 0.0);
         let highlight = histogram((0..1000).map(|i| if i < 10 { 100.0 } else { 1.0 }));
         assert!(
             close(highlight.peak(), 100.0, 0.035),

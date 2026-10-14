@@ -807,6 +807,14 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     identical. So the change only touches highlights past white, which RAW's highlight recovery already desaturates;
     clip-after keeps them more saturated (closer to the RAW HDR path), today's look is paler. Switching is one call in
     `raw.rs` plus a regenerated golden.
+- **2026-10-14, M4 review fix M2: float TIFFs decide SDR vs HDR by their brightest pixel.** The 99.9th percentile is the
+  right source peak for the tone map, and the wrong test for "is anything above SDR white": a render whose lamps or sun
+  glints cover under 0.1% of the pixels, or a star field, came out SDR and clipped at white even on an XDR panel.
+  `PeakHistogram::max` (the last occupied bin's maximum, so it costs nothing extra) now decides, and the percentile
+  still sets `content_peak`. The review's suggested floor (content peak at least 1.0 whenever the max passes 1) is left
+  out: the target is never below 1.0, and content at or under the target is the identity either way. Anchors:
+  `a_float_tiff_with_sparse_highlights_is_still_hdr` (two stars at 20× in 4,000 pixels) and `max` in
+  `the_peak_ignores_stray_hot_pixels_but_not_highlights`.
 - **2026-10-14, review fix M2: a turned gain map sat off by up to 3 pixels on every reversed axis.** `finalize` turned
   the map with the base, but upstream aligns map texel 0 with the _stored_ pixel 0, so after a flip or a rotation an
   axis that runs backwards needs `X × m / W − (1 − m / W)`, and the shader used `X × m / W`: half a texel (1 image

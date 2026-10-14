@@ -296,7 +296,7 @@ pub(super) fn decode_float(
     let mut rgba = img.into_rgba32f().into_raw();
     let space = SourceSpace::from_icc(icc);
     let weights = space.weights;
-    let peak = rgba
+    let histogram = rgba
         .par_chunks_mut(CHUNK_PIXELS * 4)
         .map(|chunk| {
             let mut histogram = PeakHistogram::default();
@@ -313,11 +313,13 @@ pub(super) fn decode_float(
             }
             histogram
         })
-        .reduce(PeakHistogram::default, PeakHistogram::merge)
-        .peak();
-    let sdr = peak <= SDR_PEAK;
+        .reduce(PeakHistogram::default, PeakHistogram::merge);
+    // The percentile shapes the tone map; whether there's anything above SDR white at all is the
+    // brightest pixel's call, or a few lamps would make a render "SDR" and clip.
+    let (peak, max) = (histogram.peak(), histogram.max());
+    let sdr = max <= SDR_PEAK;
     log::debug!(
-        "Float TIFF: content peak {peak:.3}× SDR white, {} in {:.1} ms",
+        "Float TIFF: content peak {peak:.3}× SDR white, brightest {max:.3}×, {} in {:.1} ms",
         if sdr { "SDR" } else { "HDR" },
         ms(start.elapsed())
     );
@@ -895,6 +897,19 @@ mod tests {
             hdr_active,
         )
         .expect("decodes")
+    }
+
+    /// A render's lamps or a star field: highlights on far fewer than 0.1% of the pixels, which
+    /// the content-peak percentile rightly ignores, are still HDR, and must reach the EDR surface
+    /// rather than clip at white.
+    #[test]
+    fn a_float_tiff_with_sparse_highlights_is_still_hdr() {
+        // 4,000 pixels: two stars at 20× SDR white (0.05%) on a dim sky.
+        let values: Vec<f32> = (0..4000)
+            .map(|i| if i % 2000 == 7 { 20.0 } else { 0.02 })
+            .collect();
+        let image = decode_tiff(float_tiff(&values), true, OutputDepth::Native);
+        assert_eq!(image.encoding.kind().name(), "scene_linear");
     }
 
     #[test]
