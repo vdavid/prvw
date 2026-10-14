@@ -290,13 +290,16 @@ for PQ and 8.1 ms for HLG, against a 25 ms budget; the CPU SDR fallback is 27 ms
 6. `color::saturation::apply_saturation_boost` scales each pixel's chroma around its luminance axis by `(1 + 0.08)` in
    linear Rec.2020 space. Preserves hue and luminance; adds the "vibrancy" Apple/Affinity bake in via per-camera tuning
    tables.
-7. **Color conversion, branching on HDR.** SDR path (`hdr_active == false`): `color::transform_f32_with_profile` hands
-   the buffer to moxcms for the linear-Rec.2020 → user's display-ICC conversion in f32. Clamp to [0, 1] on the way out
-   to RGBA8. HDR path (`hdr_active == true`): `color::profiles::rec2020_to_hdr_display_inplace` applies a direct 3×3
-   matrix with **no clipping** (moxcms clips at 1.0, which eats the HDR headroom the whole path exists for). **Which
-   matrix is the platform's call**, because the compositor has to be told what the numbers mean and the two platforms
-   accept different answers: linear Display P3 on macOS, matching the `CAMetalLayer`'s `extendedLinearDisplayP3`, and
-   linear BT.709 (scRGB) on Windows, which is the only colour space DXGI presents an `Rgba16Float` swapchain as.
+7. **Color conversion, branching on HDR.** SDR path (`hdr_active == false`): `raw::rec2020_to_sdr_display` calls
+   `color::transform_linear_f32_to_display`, which changes the primaries into the user's display profile in f32, clips
+   in the display's primaries, and lets `moxcms` apply only the display's curves (or a LUT-only profile's LUTs). A
+   saturated channel reaches it above 1.0 (the SDR tone curve caps luminance, not channels), and clipping before the
+   matrix washed those highlights pastel (`color/CLAUDE.md`). Clamp to [0, 1] on the way out to RGBA8. HDR path
+   (`hdr_active == true`): `color::profiles::rec2020_to_hdr_display_inplace` applies a direct 3×3 matrix with **no
+   clipping** (moxcms clips at 1.0, which eats the HDR headroom the whole path exists for). **Which matrix is the
+   platform's call**, because the compositor has to be told what the numbers mean and the two platforms accept different
+   answers: linear Display P3 on macOS, matching the `CAMetalLayer`'s `extendedLinearDisplayP3`, and linear BT.709
+   (scRGB) on Windows, which is the only colour space DXGI presents an `Rgba16Float` swapchain as.
    `color::profiles::HdrDisplaySpace` owns that decision and `color/CLAUDE.md` argues it. HDR brightness gain
    (`flags.hdr_gain`, default 2.0) multiplies the buffer before the matrix to push scene-white content into the EDR
    headroom. Without it, HDR output reads timidly SDR-bright rather than "HDR-bright" against Preview. 7b. **Phase 5:
@@ -345,7 +348,7 @@ Once inside `raw::decode`, `hdr_active` gates four different behaviors:
 1. **Tone-curve peak.** `DEFAULT_PEAK_HDR` (4.0) vs `DEFAULT_PEAK_SDR` (1.0) picks the filmic shoulder's asymptote. HDR
    lets above-1.0 content live; SDR clips at display-white.
 2. **Color conversion** (see step 7 in the pipeline list above). A direct Rec.2020 → platform-HDR-space matrix for HDR;
-   moxcms → user's display ICC for SDR.
+   `color::transform_linear_f32_to_display` into the user's display ICC for SDR.
 3. **HDR brightness gain.** `flags.hdr_gain` (default 2.0) multiplies the post-tone-curve buffer before the matrix,
    pushing scene-white into EDR headroom. SDR path ignores the knob. See `docs/notes/raw-support-phase5.md` Phase 5.2
    for rationale.
@@ -382,31 +385,31 @@ flags at their defaults (HDR output active on an EDR-capable display, so the num
 Re-run measurements for a fresh cold decode by flipping Settings → General → "Preload next/prev images" off and
 restarting. The preloader otherwise warms caches and decode-time drops.
 
-| Stage           | Warm ms | Notes                                                     |
-| --------------- | ------: | --------------------------------------------------------- |
-| `raw_image`     |     4.4 | Inside rawler: file parse + mosaic extraction             |
-| `opcode1`       |     0.0 | DNG only; ARW no-op                                       |
-| `rescale`       |     2.2 | rawler's black-level subtract + linear rescale            |
-| `opcode2`       |     0.0 | DNG only; ARW no-op                                       |
-| `demosaic`      |    34.7 | Inside rawler; bilinear (no Markesteijn)                  |
-| `cam_matrix`    |     6.0 | camera → linear Rec.2020 (WB + color matrix in one pass)  |
-| `opcode3`       |     0.0 | DNG only; ARW no-op                                       |
-| `lens`          |    83.0 | LensFun distortion + TCA + vignetting (SIMD, 6.3)         |
-| `crop`          |     5.4 | Default crop                                              |
-| `chroma_nr`     |    49.3 | σ=1.5 blur on Cb/Cr (SIMD, 6.1)                           |
-| `exposure`      |     2.8 | Baseline EV lift                                          |
-| `hl_recovery`   |     2.7 | Highlight recovery                                        |
-| `dcp`           |    22.5 | DCP HueSatMap + LookTable (trilinear 3D LUT, SIMD 6.5)    |
-| `tone`          |     7.7 | Filmic shoulder curve on luminance                        |
-| `hdr_diag_pre`  |     2.6 | Info-level diagnostic (0.1 ms when info off)              |
-| `saturation`    |     2.4 | Global chroma scale                                       |
-| `color_conv`    |     6.2 | Rec.2020 → the platform's HDR space (HDR) or moxcms (SDR) |
-| `hdr_diag_post` |     2.2 | Info-level diagnostic (0.1 ms when info off)              |
-| `to_rgba16f`    |     4.7 | f32 → half-float quantize                                 |
-| `clarity`       |    14.0 | σ=10 downsample fast path (6.4; was 144 ms pre-6.4)       |
-| `sharpen`       |    21.4 | σ=0.8 luminance-only unsharp                              |
-| `hdr_diag_f16`  |     2.3 | Info-level diagnostic (0.1 ms when info off)              |
-| **total**       | **277** | Warm cache; cold decode ≈ 650 ms                          |
+| Stage           | Warm ms | Notes                                                    |
+| --------------- | ------: | -------------------------------------------------------- |
+| `raw_image`     |     4.4 | Inside rawler: file parse + mosaic extraction            |
+| `opcode1`       |     0.0 | DNG only; ARW no-op                                      |
+| `rescale`       |     2.2 | rawler's black-level subtract + linear rescale           |
+| `opcode2`       |     0.0 | DNG only; ARW no-op                                      |
+| `demosaic`      |    34.7 | Inside rawler; bilinear (no Markesteijn)                 |
+| `cam_matrix`    |     6.0 | camera → linear Rec.2020 (WB + color matrix in one pass) |
+| `opcode3`       |     0.0 | DNG only; ARW no-op                                      |
+| `lens`          |    83.0 | LensFun distortion + TCA + vignetting (SIMD, 6.3)        |
+| `crop`          |     5.4 | Default crop                                             |
+| `chroma_nr`     |    49.3 | σ=1.5 blur on Cb/Cr (SIMD, 6.1)                          |
+| `exposure`      |     2.8 | Baseline EV lift                                         |
+| `hl_recovery`   |     2.7 | Highlight recovery                                       |
+| `dcp`           |    22.5 | DCP HueSatMap + LookTable (trilinear 3D LUT, SIMD 6.5)   |
+| `tone`          |     7.7 | Filmic shoulder curve on luminance                       |
+| `hdr_diag_pre`  |     2.6 | Info-level diagnostic (0.1 ms when info off)             |
+| `saturation`    |     2.4 | Global chroma scale                                      |
+| `color_conv`    |     6.2 | Rec.2020 → the platform's HDR space (HDR) or display ICC |
+| `hdr_diag_post` |     2.2 | Info-level diagnostic (0.1 ms when info off)             |
+| `to_rgba16f`    |     4.7 | f32 → half-float quantize                                |
+| `clarity`       |    14.0 | σ=10 downsample fast path (6.4; was 144 ms pre-6.4)      |
+| `sharpen`       |    21.4 | σ=0.8 luminance-only unsharp                             |
+| `hdr_diag_f16`  |     2.3 | Info-level diagnostic (0.1 ms when info off)             |
+| **total**       | **277** | Warm cache; cold decode ≈ 650 ms                         |
 
 **How to read the table:** numbers are guide-rail order-of-magnitude, not a contract. They shift with image resolution,
 scene content, cache state, thermal throttling, and flag combinations. The absolute values matter less than the

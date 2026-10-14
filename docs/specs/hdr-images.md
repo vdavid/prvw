@@ -499,39 +499,35 @@ existing RAW setting carries over).
 3. **An SDR monitor.** Move the window to an external monitor with HDR off. The photo shows its normal SDR version,
    identical to the release build. Back on the MacBook, it glows again.
 4. **The switch.** Turn Settings → Color → "HDR output" off. Every image renders SDR, identical to the release build
-   (gain-map JPEGs as their plain JPEG, RAW as its SDR develop). On again, the glow comes back. On the external SDR
-   monitor, toggling it changes nothing and decodes nothing.
+   (gain-map JPEGs as their plain JPEG, RAW as its SDR develop), except a RAW's saturated highlights: those now keep
+   their color where the release build washed them pale (Findings, the RAW SDR decision). Colored lights show it best.
+   On again, the glow comes back. On the external SDR monitor, toggling it changes nothing and decodes nothing.
 5. **PQ and HLG.** Open the PQ and HLG PNGs. They look like a grey ramp and four colored patches, not a flat grey wash,
    and the bright end of the ramp glows. Preview may not read `cICP` on your macOS; if it shows these grey and flat,
    that's the bug Prvw used to have. Then the float TIFFs: the peak-4 one glows, the SDR one doesn't.
 6. **The SDR renditions.** Repeat step 5 with HDR output off: diffuse white should sit close to full white (about 243 of
-   255), not dim, and the highlights packed into the top. HLG here is the one to judge (open item 5 below).
+   255), not dim, and the highlights packed into the top. HLG here is the one to judge (open item 4 below).
 7. **Navigation.** Step through a folder mixing SDR JPEGs, gain-map JPEGs, and RAWs: it should feel as instant as the
    release build.
 8. **RAW at launch.** At full brightness, launch Prvw on a RAW (from the command line, so it's the first image). It
    should open with its highlights glowing straight away, not after a display change (`RUST_LOG=info` logs
-   `Display HDR capable: false -> true` before the first `Decoded …` line). Open item 2.
+   `Display HDR capable: false -> true` before the first `Decoded …` line). Open item 1.
 
 **Open items to decide or check on real hardware.**
 
-1. **RAW's SDR conversion clips in BT.2020, before the matrix.** Scene-linear HDR got fixed (review fix M1 in Findings);
-   RAW keeps today's clip so its look doesn't change without you. Switching is one call in `raw.rs` plus a regenerated
-   golden: saturated highlights past white get more saturated (`[2.0, 0.6, 0.1]` lands on `[255, 175, 33]` in sRGB,
-   today `[255, 196, 51]`), everything in gamut stays put. The same switch would also fix RAW on a LUT-only calibrated
-   display profile, which shows a RAW linear (dark) in SDR today (review L3). Decide whether to take it.
-2. **The launch-time RAW gating bug from M0 should be gone.** Gating moved from the current headroom (which can read 1.0
+1. **The launch-time RAW gating bug from M0 should be gone.** Gating moved from the current headroom (which can read 1.0
    at launch) to the potential one, which an MBP reports as 16 whatever the brightness. Step 8 confirms it on hardware.
-3. **Windows HDR has never run on a real HDR display.** The scRGB surface, the SDR-white scale (`sdr_white_nits / 80`),
+2. **Windows HDR has never run on a real HDR display.** The scRGB surface, the SDR-white scale (`sdr_white_nits / 80`),
    and the headroom poll are unit- and GPU-tested only. Known gap: the overlay pills and text draw through their own
    pipeline and stay unscaled on a Windows HDR surface, so they look dim next to the image there.
-4. **16-bit TIFFs decode about 30% slower** (24 → 31.5 ms for 12 MP, measured under load; PNG is +7%). Almost all of it
+3. **16-bit TIFFs decode about 30% slower** (24 → 31.5 ms for 12 MP, measured under load; PNG is +7%). Almost all of it
    is `moxcms`' 16-bit transform. Worth an idle-machine rerun (`sixteen_bit_decode_perf`, `#[ignore]`) before deciding
    whether it matters.
-5. **HLG's SDR rendition** uses the fixed 1,000-nit OOTF plus the tone map, so it matches the HDR one at headroom 1. If
+4. **HLG's SDR rendition** uses the fixed 1,000-nit OOTF plus the tone map, so it matches the HDR one at headroom 1. If
    it looks off in step 6, the alternative is in Findings (review L2).
-6. **Crossfades between an HDR and an SDR image** show the outgoing image on the wrong surface for one fade (Findings,
+5. **Crossfades between an HDR and an SDR image** show the outgoing image on the wrong surface for one fade (Findings,
    M2 and M4). Watch a slideshow mixing the two and say whether it's noticeable.
-7. **The settings copy** for "HDR output" is a draft: `apps/desktop/src/color/settings_panel.rs` (macOS),
+6. **The settings copy** for "HDR output" is a draft: `apps/desktop/src/color/settings_panel.rs` (macOS),
    `apps/desktop/src/settings/windows/model.rs` (Windows, Color tab and the RAW tab's HDR gain line), and the RAW
    panel's HDR gain line in `apps/desktop/src/settings/panels/raw.rs`.
 
@@ -862,7 +858,7 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     `[255, 255, 67]`; `[0.9, 0.9, 1.3]` → `[243, 243, 255]` vs `[240, 243, 255]`; in-gamut and negative-only cases
     identical. So the change only touches highlights past white, which RAW's highlight recovery already desaturates;
     clip-after keeps them more saturated (closer to the RAW HDR path), today's look is paler. Switching is one call in
-    `raw.rs` plus a regenerated golden.
+    `raw.rs` plus a regenerated golden. David took it the same day (the RAW SDR decision below).
 - **2026-10-14, M4 review fix M2: float TIFFs decide SDR vs HDR by their brightest pixel.** The 99.9th percentile is the
   right source peak for the tone map, and the wrong test for "is anything above SDR white": a render whose lamps or sun
   glints cover under 0.1% of the pixels, or a star field, came out SDR and clipped at white even on an XDR panel.
@@ -929,7 +925,7 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     rendition went out still linear. `transform_linear_f32_to_display` sends such targets through `moxcms`' copying f32
     transform, which runs the LUTs. **Still open for RAW:** `transform_f32_with_profile` has the same refusal, so a RAW
     on a LUT-only calibrated display shows linear (dark) in SDR; not changed here, since RAW's path stays as it is until
-    David decides on M1.
+    David decides on M1. Fixed with that decision (the RAW SDR decision below).
   - **L4, float TIFF alpha:** NaN alpha reads as 1 (opaque), alpha clamps to [0, 1], and a non-matrix-shaper ICC on a
     float TIFF logs that it's taken as linear BT.709.
   - **L5, luminance weights in the source's white:** a float TIFF's weights now undo the D50 adaptation back to its own
@@ -965,3 +961,27 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     `hdr_output_re_decodes_only_when_it_changes_what_shows` checks both directions on an HDR display and no re-decode on
     an SDR one (verified to fail when the setting always re-decodes).
   - **Not added:** a menu item. The other color settings have one, but HDR output is a set-and-forget preference.
+- **2026-10-14, David decided: RAW's SDR conversion clips in the display's primaries too.** The open question from M4
+  review fix M1 and L3. `raw::rec2020_to_sdr_display` now calls `color::transform_linear_f32_to_display`, so RAW's SDR
+  develop converts the primaries in f32 first and clips after, like the scene-linear fallback; the HDR path is
+  unchanged. Outcome:
+  - **Saturated highlights keep their hue.** Rec.2020 `[2.0, 0.6, 0.1]` into sRGB is `[255, 175, 33]`, where it was
+    `[255, 196, 51]` (`sdr_conversion_clips_in_the_displays_primaries`). The SDR tone curve's peak of 1.0 caps
+    luminance, not channels, so a saturated channel still reaches the conversion above 1.0.
+  - **On a real photo it's more than the golden shows.** A 24 MP Sony A7 III ARW into sRGB (old path emulated as a clamp
+    to [0, 1] before the same conversion, temporary instrumentation): 8.7% of its pixels reach the conversion with a
+    channel above 1.0 (up to 3.68) and 4.1% change on screen: 865,000 by up to four codes, 104,000 by 5–10, 15,000 by
+    11–20, and 3,000 (0.012%) by more, up to 107. The big ones are saturated blue lights (Rec.2020 blue 2–3): pale sky
+    blue before, a saturated blue-cyan now, the way the HDR path already shows them (`[0.22, 0.33, 3.06]` was
+    `[90, 157, 255]`, now `[0, 153, 255]`). Worth a look on a RAW with colored lights.
+  - **A LUT-only display profile runs its LUTs** instead of leaving the RAW linear and dark
+    (`sdr_conversion_runs_a_lut_only_display_profile`). Values still clip in Rec.2020 there, as for every LUT target.
+  - **The golden moved, as measured in M1.** Old code vs new on `synthetic-bayer-128.dng` into sRGB: 481 of 16,384
+    pixels, up to 8 codes (114 by one). None of its pixels reach the conversion above 1.0; the 378 with a negative
+    Rec.2020 channel (down to −0.124, deep reds and magentas, outside Rec.2020) are what moves, and clarity and
+    sharpening spread it to their neighbors (419 changed with both off). The old checked-in golden read mean ΔE 0.077,
+    p95 0.36, max 3.96 against the new output, past the test's 3.0 bound, so it was regenerated. It was already 777
+    pixels (up to two codes) off the old code, from drift nobody had regenerated for.
+  - **Cost: about 2 ms on 24 MP.** Release, M3 Max under load (`raw_sdr_decode_perf`, `#[ignore]`): the conversion alone
+    went from 7.2–8.6 ms to 9.4–10.7 ms (the extra matrix pass), and a whole SDR decode of a 24 MP Sony A7 III ARW
+    measured 475–586 ms both before and after, so the difference is under the noise.
