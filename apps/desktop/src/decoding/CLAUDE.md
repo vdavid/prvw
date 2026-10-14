@@ -99,7 +99,10 @@ print, and previews get the SDR JPEG.
 With HDR active:
 
 1. `gain_map::locate` reads the headers zune already parsed: the primary's XMP, EXIF, MPF payload, and ISO APP2
-   segments. No signal (ISO segment, `hdrgm` namespace, Apple maker-note headroom) means a plain JPEG and today's path.
+   segments. No signal (ISO segment, `hdrgm` namespace, Apple maker-note headroom, or MPF listing an image past the
+   primary) means a plain JPEG and today's path. MPF counts because exporters and privacy tools strip maker notes and
+   keep MPF, and the iPhone's primary has no other signal (`an_mpf_listing_alone_is_enough_to_look_for_a_map`); the cost
+   is a header read per appended image, on HDR decodes only, including a camera JPEG's MPF preview.
 2. The candidates are the MPF entries other than the primary (`mpf.rs`, every offset bounds-checked), or, with no MPF,
    the `GContainer` directory's gain-map item, located from the end of the file by its listed length. Each candidate's
    headers are read (no pixels) for its ISO APP2, its XMP, and its ICC profile.

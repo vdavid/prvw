@@ -90,11 +90,15 @@ pub fn locate(file: &[u8], primary: &PrimaryHeaders) -> Option<Located> {
     let iso_signal = !primary.iso.is_empty();
     let hdrgm_signal = primary_xmp.as_deref().is_some_and(xmp::mentions_hdrgm);
     let apple = primary.exif.and_then(crate::color::hdr::parse_apple);
-    if !iso_signal && !hdrgm_signal && apple.is_none() {
+    // Images MPF lists past the primary are a signal of their own: a file whose maker note was
+    // stripped (exporters and privacy tools do, and keep MPF) can still carry a complete map. It
+    // costs a header read per appended image, on HDR decodes only.
+    let appended = appended_images(file, primary);
+    if !iso_signal && !hdrgm_signal && apple.is_none() && appended.is_empty() {
         return None;
     }
 
-    let candidates = candidate_ranges(file, primary, primary_xmp.as_deref())
+    let candidates = candidate_ranges(file, appended, primary_xmp.as_deref())
         .into_iter()
         .filter_map(|range| inspect(file, range))
         .collect::<Vec<_>>();
@@ -151,23 +155,27 @@ fn located(c: &Candidate, params: GainMapParams, source: GainMapSource) -> Locat
     }
 }
 
+/// Every image MPF lists but the primary (whose offset is 0).
+fn appended_images(file: &[u8], primary: &PrimaryHeaders) -> Vec<Range<usize>> {
+    let Some((index, offset)) = primary.mpf else {
+        return Vec::new();
+    };
+    mpf::parse(index, offset, file.len())
+        .into_iter()
+        .map(|i| i.range)
+        .filter(|r| r.start != 0)
+        .collect()
+}
+
 /// The appended images worth looking at: every MPF entry but the primary, or, with no MPF, the
 /// `GContainer` directory's gain-map item.
 fn candidate_ranges(
     file: &[u8],
-    primary: &PrimaryHeaders,
+    appended: Vec<Range<usize>>,
     primary_xmp: Option<&str>,
 ) -> Vec<Range<usize>> {
-    if let Some((index, offset)) = primary.mpf {
-        let images = mpf::parse(index, offset, file.len());
-        let appended: Vec<_> = images
-            .into_iter()
-            .map(|i| i.range)
-            .filter(|r| r.start != 0)
-            .collect();
-        if !appended.is_empty() {
-            return appended;
-        }
+    if !appended.is_empty() {
+        return appended;
     }
     // GContainer lists items in file order and gives the length of each one after the primary,
     // so the gain map ends where the file does.
@@ -277,6 +285,23 @@ mod tests {
             apple.alternate_headroom,
             found.params.alternate_headroom
         );
+        assert!((found.params.alternate_headroom - 1.7678).abs() < 1e-3);
+    }
+
+    /// The iPhone's primary names no `hdrgm` namespace and carries no ISO segment: only its maker
+    /// note says "HDR". With that stripped (some exporters and privacy tools drop maker notes but
+    /// keep MPF), the appended images MPF lists are signal enough, and the map's own ISO XMP is
+    /// complete.
+    #[test]
+    fn an_mpf_listing_alone_is_enough_to_look_for_a_map() {
+        let mut file = fixture("iphone-air-gain-map-776.jpg");
+        let at = file
+            .windows(10)
+            .position(|w| w == b"Apple iOS\0")
+            .expect("the fixture has Apple's maker note");
+        file[at..at + 5].copy_from_slice(b"Xpple");
+        let found = locate_in(&file).expect("the map, found through MPF");
+        assert_eq!(found.source, GainMapSource::Iso21496);
         assert!((found.params.alternate_headroom - 1.7678).abs() < 1e-3);
     }
 
