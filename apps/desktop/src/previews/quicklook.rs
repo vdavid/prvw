@@ -306,7 +306,30 @@ fn worker_submit(
                             index
                         );
                     }
-                    Err(())
+                    // QuickLook goes by the extension, so a mislabeled file (or a RAW it has no
+                    // renderer for) fails here though Prvw decodes it. Make our own preview, off
+                    // QuickLook's queue, and deliver that instead.
+                    let pending = Arc::clone(&pending_for_block);
+                    let proxy = proxy_for_block.clone();
+                    let pixels = (size_pt * scale).round() as u32;
+                    let path = log_path.clone();
+                    rayon::spawn(move || {
+                        let result = super::generator::fallback_preview(&path, pixels).ok_or(());
+                        request::push_delivery(
+                            &pending,
+                            Delivery {
+                                index,
+                                request_id,
+                                folder_generation,
+                                result,
+                                stamp,
+                            },
+                            &proxy,
+                            wake,
+                        );
+                    });
+                    let _ = forget_for_block.send(WorkerMsg::Forget(request_id));
+                    return;
                 } else {
                     let rep = &*rep;
                     cg_image_to_rgba8(rep).ok_or(())

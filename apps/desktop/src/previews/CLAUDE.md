@@ -299,8 +299,13 @@ cached indices, failed indices, paused flag, and parallelism cap.
 - **Request rendered content only, never the icon representation.** The QL request uses
   `RepresentationTypes::Thumbnail | LowQualityThumbnail`, _not_ `All`. `All` lets quicklookd fall back to the generic
   file-type icon (the gray "DNG"/"RAF" document stamp) for files it can't render, which we'd then show full-window as a
-  junk placeholder. Excluding `Icon` makes those files return an error instead (→ `PreviewFailed`, no placeholder), so
-  the "Loading…" pill — and, for RAW, the embedded-JPEG preview — covers the gap. Don't switch back to `All`.
+  junk placeholder. Excluding `Icon` makes those files return an error instead, and the completion block then makes a
+  preview of our own (below). Don't switch back to `All`.
+- **A QuickLook failure falls back to our own preview.** quicklookd picks its renderer by extension, so a JPEG saved as
+  `.png`, a PNG as `.jpg`, or a RAW it has no renderer for comes back with nothing, though Prvw decodes it by content.
+  The completion block hands those to `generator::fallback_preview` on the rayon pool (never on QuickLook's queue): the
+  camera's embedded JPEG when the bytes are RAW, else a decode by content. Both the image-mode previews and the browse
+  grid's thumbnails get it, since they share `RequestTable`. A file nothing can decode still ends in `PreviewFailed`.
 - **`QLThumbnailRepresentation::CGImage()` returns a `Retained<CGImage>` wrapper.** Pass its raw pointer via
   `Retained::as_ptr` to the FFI `CGContextDrawImage`; the `Retained` drops at end-of-scope and releases naturally.
 - **Completion blocks run on quicklookd's queue.** `EventLoopProxy` is `Send`, so forwarding is fine, but don't touch

@@ -263,6 +263,16 @@ fn worker_loop(
     }
 }
 
+/// A preview of our own for a file QuickLook couldn't render: a camera's embedded JPEG when the
+/// bytes are RAW, else a decode by content. QuickLook picks its renderer by extension, so a JPEG
+/// saved as `.png` (or a PNG as `.jpg`) comes back with nothing, though Prvw opens it fine.
+#[cfg(target_os = "macos")]
+pub fn fallback_preview(path: &Path, pixels: u32) -> Option<PreviewPixels> {
+    super::without_panicking("Preview fallback", path, || {
+        produce(&Route::EmbeddedRaw, path, pixels)
+    })
+}
+
 /// Run one route. `None` means no preview for this file, which leaves the "Loading…" pill to
 /// cover the gap — the same outcome a failed QuickLook request produces on macOS.
 fn produce(route: &Route, path: &Path, pixels: u32) -> Option<PreviewPixels> {
