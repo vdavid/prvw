@@ -13,7 +13,8 @@ orientation, and hand a `DecodedImage` off to the renderer.
 | `raw.rs`           | Camera RAW via `rawler` (DNG, CR2, CR3, NEF, ARW, ORF, RAF, RW2, PEF, SRW)                                                                                         |
 | `raw_preview.rs`   | Fast embedded-JPEG preview extraction (`decode_raw_preview`): no develop, downscaled + oriented soft placeholder shown on RAW cache-miss while the develop runs    |
 | `dng_opcodes.rs`   | DNG `OpcodeList1/2/3` parsing + application (Phase 3.0)                                                                                                            |
-| `generic.rs`       | Fallback path via the `image` crate (PNG, GIF, WebP, BMP, TIFF), including the 16-bit SDR path                                                                     |
+| `generic.rs`       | Fallback path via the `image` crate (PNG, GIF, WebP, BMP, TIFF), including the 16-bit SDR path and the `cICP` probe                                                |
+| `scene_linear.rs`  | PQ and HLG PNGs and float TIFFs: linear light, its content peak, then `SceneLinear` or the CPU's tone-mapped SDR rendition                                         |
 | `orientation.rs`   | EXIF orientation parsing and in-place pixel-buffer rotation                                                                                                        |
 | `exif_metadata.rs` | Curated EXIF subset for the EXIF info overlay (camera, lens, exposure, time, GPS). nom-exif on JPEG/Generic/RAW outer bytes; rawler `RawMetadata` fallback for RAW |
 
@@ -61,12 +62,13 @@ orientation, and hand a `DecodedImage` off to the renderer.
 - **ICC profile first, pixels second.** See the gotcha below.
 - **Storage and meaning are separate fields.** `PixelBuffer` says how the pixels are stored (`Rgba8` or `Rgba16F`),
   `PixelEncoding` what they mean: `DisplaySdr` (display-ICC-encoded SDR, either storage), `LinearHdrDisplay` (linear
-  light in `HdrDisplaySpace::for_host()`, `Rgba16F` only, RAW HDR), or `GainMapped` (a Display P3 SDR base plus its gain
-  map, `Rgba8` only; see below). `EncodingKind::is_hdr()` is the "needs the EDR surface" question, so never infer HDR
+  light in `HdrDisplaySpace::for_host()`, `Rgba16F` only, RAW HDR), `GainMapped` (a Display P3 SDR base plus its gain
+  map, `Rgba8` only; see below), or `SceneLinear` (linear light in the source's own primaries, `Rgba16F` only; PQ, HLG,
+  and HDR float TIFFs, see below). `EncodingKind::is_hdr()` is the "needs the EDR surface" question, so never infer HDR
   from storage. Each legal pair has its own constructor (`from_rgba8`, `from_display_sdr_rgba16f`,
-  `from_linear_hdr_rgba16f`, `from_gain_mapped`), and `finalize` re-checks `PixelEncoding::accepts` in debug builds.
-  `EncodingKind` is the payload-free tag the app keeps for the image on screen. M4 of `docs/specs/hdr-images.md` adds
-  `SceneLinear`.
+  `from_linear_hdr_rgba16f`, `from_gain_mapped`, `from_scene_linear_rgba16f`), and `finalize` re-checks
+  `PixelEncoding::accepts` in debug builds. `EncodingKind` is the payload-free tag the app keeps for the image on
+  screen.
 - **`OutputDepth::Rgba8` is for consumers that can only carry bytes.** The Windows clipboard and print
   (`platform/windows/ui_common.rs`) and the preview generator pass it. It forces `hdr_display` off (so RAW develops SDR)
   and keeps 16-bit sources on the 8-bit path, so those callers get exactly what they got before 16-bit decoding existed.
@@ -81,9 +83,10 @@ orientation, and hand a `DecodedImage` off to the renderer.
 **Why:** `to_rgba8()` before an 8-bit transform rounds twice, and on a smooth gradient through a real conversion (sRGB →
 Display P3) 48% of samples land a step off the single-rounding answer, up to 1.5 steps; those off-by-ones are the bands.
 The 16-bit path is under 0.1 steps everywhere. `a_16_bit_png_gradient_does_not_band_through_a_real_transform` is the
-anchor. Cost and numbers: `docs/specs/hdr-images.md` Findings, 2026-10-14. Float TIFFs stay on the 8-bit path until M4
-(they may be HDR). 8-bit sources are byte-identical to before (`an_8_bit_png_is_byte_identical_to_todays_path`).
-`RUST_LOG=prvw::decoding::generic=debug` logs the stage split (`to_rgba16`, `icc`, `to_f16`).
+anchor. Cost and numbers: `docs/specs/hdr-images.md` Findings, 2026-10-14. Float TIFFs take the scene-linear path
+(below), since they may be HDR. 8-bit sources are byte-identical to before
+(`an_8_bit_png_is_byte_identical_to_todays_path`). `RUST_LOG=prvw::decoding::generic=debug` logs the stage split
+(`to_rgba16`, `icc`, `to_f16`).
 
 ## Gain-map JPEGs
 
@@ -133,6 +136,50 @@ current headroom (`render/CLAUDE.md`), so a brightness change never re-decodes.
 Cost (release, M3 Max, `gain_map_decode_perf`): a 12.5 MP Pixel Ultra HDR photo decodes in 1.03× its SDR time with a P3
 display target and 0.67× with an sRGB one (the base's P3 transform is free where the display's isn't); memory is +6.2%,
 the map's sixteenth. Numbers in `docs/specs/hdr-images.md` Findings, 2026-10-14.
+
+## PQ and HLG PNGs, and float TIFFs
+
+Their samples are light, not display values, so `scene_linear.rs` turns them into linear light relative to SDR white
+(1.0 = 203 nits, BT.2408's reference white) in their own primaries, measures the content peak (the 99.9th percentile of
+luminance), and then picks a shape:
+
+- **HDR active** (RAW's gate, `raw_flags.hdr_output && hdr_display`, at `OutputDepth::Native`): `SceneLinear`
+  half-floats, which shader mode 3 tone-maps per frame at the current headroom (`render/CLAUDE.md`).
+- **Otherwise**: the same BT.2390 tone map on the CPU with SDR white as the target, `moxcms` from the linear source into
+  the display profile in f32, RGBA8 `DisplaySdr`. SDR displays, Linux, HDR off, and the byte consumers all get this.
+- **A float TIFF peaking at or below SDR white** is SDR in a float container: `DisplaySdr` half-floats, M1's shape, on
+  any display, so it never asks for the EDR surface.
+
+How each source gets to light:
+
+- **PNG:** `generic::decode` calls `scene_linear::probe_png` first, which reads the header chunks through the `png`
+  crate (`image` 0.25 doesn't pass `cICP` on; 1.3 µs per PNG). `cICP` outranks `iCCP` (PNG third edition). Transfer 16
+  (PQ) or 18 (HLG) takes this path; any other transfer is SDR with the profile `moxcms::ColorProfile::new_from_cicp`
+  builds, which then replaces the file's own on the normal SDR path. Matrix coefficients other than 0 mean a broken
+  chunk (PNG is RGB only) and are ignored, as are code points `moxcms` can't build a profile from. `image` still decodes
+  the pixels. Narrow-range files are scaled to full range first, in the source's own bit depth.
+- **PQ:** SMPTE ST 2084's EOTF to nits, over 203. **HLG:** BT.2100's inverse OETF, then its OOTF at the nominal 1,000
+  nits (system gamma 1.2), over 203; HLG's 75% signal is reference white. Both run through a 64K lookup table per
+  transfer (built once), and HLG adds a `powf` per pixel for the OOTF.
+- **Float TIFF** (`Rgb32F` / `Rgba32F` from `image`): already linear, 1.0 = SDR white. The ICC profile's colorants name
+  the primaries when it's a matrix-shaper profile, BT.709 otherwise; its curves are ignored. NaN becomes 0 and anything
+  past the half-float range clamps, since a renderer's stray value would otherwise reach the texture.
+
+`cLLI` and `mDCV` are logged at `debug`, never trusted: the measured peak decides.
+`RUST_LOG=prvw::decoding::scene_linear=debug` logs the stage split for both shapes.
+
+- **Decision: the histogram's 1,024 bins come off the f32 bit pattern** (exponent plus five mantissa bits, 1/32 stop),
+  so a pixel costs a shift and no `log2`, and each bin keeps its own maximum so a flat 1.0 image peaks at exactly 1.0. A
+  bin's upper edge would tip an SDR float TIFF into HDR.
+- **Gotcha: float samples are linear.** Never let them reach `to_rgba8()` and the 8-bit path: that reads them as sRGB
+  codes, which shows the file far too dark and clips every highlight
+  (`a_float_tiff_within_sdr_white_takes_the_16_bit_sdr_path`).
+- **Gotcha: a profile whose curves are swapped must lose its CICP tag** (`color/CLAUDE.md`); the linear source profile
+  drops it.
+
+Cost (release, M3 Max, `pq_decode_perf`, 12 MP): the added work on the HDR path (light, peak, half-float pack) is 2.9 ms
+for PQ and 8.1 ms for HLG, against a 25 ms budget; the CPU SDR fallback is 27 ms on top of that. Numbers in
+`docs/specs/hdr-images.md` Findings, 2026-10-14.
 
 ## Gotchas
 
@@ -261,7 +308,8 @@ macOS, HDR mode on in Windows; `render::display_hdr::DisplayHdr::from_info` read
 headroom.** It moves with screen brightness on macOS, and a decode that read it would have to re-run on every tweak; the
 shader takes it per frame instead (`render/CLAUDE.md`). `App` also tracks `current_image_encoding` (an `EncodingKind`),
 and `App::want_edr_surface` fuses all three inputs (flag, capability, `EncodingKind::is_hdr()`) to flip the window's
-surface between SDR and EDR modes per decode. A gain-map JPEG goes through the same gate (see "Gain-map JPEGs" above).
+surface between SDR and EDR modes per decode. Gain-map JPEGs, PQ and HLG PNGs, and float TIFFs go through the same gate
+(see their sections above).
 
 Once inside `raw::decode`, `hdr_active` gates four different behaviors:
 

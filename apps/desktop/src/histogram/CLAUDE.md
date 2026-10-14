@@ -25,8 +25,8 @@ navigation. Most users never enable the panel, so doing the work eagerly is pure
 
 **Decision:** `compute` takes the `PixelEncoding` alongside the buffer. `DisplaySdr` half-floats (16-bit PNGs and TIFFs)
 go back through the sRGB OETF (`color::display_sdr::display_sdr_f16_to_u8`, a 64K lookup) and land in exactly the bin
-their 8-bit equivalent would. `LinearHdrDisplay` (RAW HDR) clamps at 1.0 and quantizes linearly, so above-white
-highlights read as clipped.
+their 8-bit equivalent would. `LinearHdrDisplay` (RAW HDR) and `SceneLinear` clamp at 1.0 and quantize linearly, so
+above-white highlights read as clipped.
 
 **Why:** a `DisplaySdr` half-float is the linearized display value. Binning it as-is skews the whole histogram dark
 (mid-grey lands near bin 55). `display_sdr_half_floats_bin_like_the_bytes_they_stand_for` is the anchor.
@@ -34,6 +34,12 @@ highlights read as clipped.
 A `GainMapped` image (gain-map JPEG on an HDR display) bins its SDR base, the RGBA8 bytes, which are in Display P3
 rather than the display's profile. The highlights its gain map adds at the current headroom don't show: they exist only
 in the shader, and change with the brightness.
+
+A `SceneLinear` image (a PQ or HLG PNG or an HDR float TIFF on an HDR display) bins its stored values, linear light in
+the source's primaries before the tone map, clamped at SDR white like RAW HDR. **Known simplification:** that skews dark
+(no transfer curve) and piles every highlight into bin 255, and it's not what's on screen, which the shader tone-maps at
+the live headroom. The spec allows it for now; the SDR rendition the same file gets on an SDR display bins correctly,
+because it's RGBA8.
 
 ## Decision: `plot_rect_for` is the single layout source of truth
 

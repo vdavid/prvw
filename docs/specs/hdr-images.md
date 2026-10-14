@@ -681,3 +681,58 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     `ImageParams` is 256 bytes, its size pinned at compile time.
   - **The E2E test** drives the Ultra HDR fixture through `POST /display-hdr`: capable → `gain_mapped` and the EDR
     surface wanted; three headroom changes → `full_decodes` unchanged; capability off → decoded again, as `display_sdr`.
+- **2026-10-14, M4: `moxcms` believes a profile's CICP tag over its curves.** The float path built its linear source
+  profile as `new_srgb()` with linear TRCs, and an f32 transform from it into sRGB came out as a no-op (0.18 in, 0.18
+  out, where 0.461 was due): `new_srgb()` carries sRGB's CICP tag, and `moxcms` took the tag's word. Clearing `cicp`
+  fixes it. Two more `moxcms` traps on the way: `ColorProfile::new_from_cicp` silently returns an empty profile for
+  primaries or transfers it can't build, so check `ColorPrimaries::try_from` and `ToneReprCurve::try_from` first; and
+  `ColorProfile::encode` stamps the current time, so `make-hdr-fixtures` rewrites `iso-21496-64x48.jpg` on every run
+  (header bytes only; the committed one stays). All three are in `color/CLAUDE.md`.
+- **2026-10-14, M4: luminance weights need the source's white, not D50.** ICC colorants (and so every `moxcms` profile)
+  are Bradford-adapted to D50, and their Y row puts BT.2020 red at 0.279 and blue at 0.046, against BT.2100's 0.2627 and
+  0.0593. HLG's OOTF and the tone map both read luminance, so `decoding::scene_linear` undoes the adaptation back to D65
+  with `moxcms::adaption_matrix_d`, and a test pins BT.2100's weights to 1e-3. Every HDR source we take is D65; a
+  DCI-white source would be a few tenths of a percent off.
+- **2026-10-14, M4 cost, release, M3 Max** (`pq_decode_perf`, `#[ignore]`, median of seven, load average 5–10), 12 MP
+  RGB16 with a smooth gradient plus noise:
+  - Added work on the HDR path (light through a 64K lookup, the peak histogram, the half-float pack, one parallel pass):
+    **PQ 2.9 ms, HLG 8.1 ms** (HLG's OOTF is a `powf` per pixel), against the 25 ms budget. `into_rgba16` of the RGB16
+    decode is another 2.0 ms, the same widening M1's 16-bit path does.
+  - The `cICP` probe every PNG now pays: 1.3 µs. 8-bit PNGs are otherwise untouched
+    (`an_8_bit_png_is_byte_identical_to_todays_path`).
+  - The CPU SDR fallback: 27 ms on top (tone map 21, `moxcms` f32 3.8, quantize 2.7). It measured 115 ms at first: the
+    EETF set itself up per pixel and round-tripped every pixel through PQ, and the transform and quantize ran on one
+    thread. `ToneCurve` now sets up once and returns pixels under the knee untouched, and `transform_f32_with_profile`
+    runs in rayon chunks (RAW's SDR conversion gets that too). This gradient puts most pixels above the knee; a photo
+    spends less in the tone map.
+  - Whole decodes of the same file, 15 ms with HDR and 50 ms through the fallback, flatter the PNG inflate: the
+    synthetic gradient compresses far better than a photo, so don't quote those as a real file's.
+- **2026-10-14, M4 crossfade: scene-linear follows M2's rule.** The surface follows the incoming image, so an outgoing
+  `SceneLinear` image fading out on an SDR surface shows tone-mapped linear light read as display-encoded (dark and
+  clipped) for one fade, like RAW HDR does; an incoming one fades in on the EDR surface over an SDR image. Unchanged,
+  per section 7.
+- **2026-10-14, M4 deviations from the design.**
+  - **`png` reads the header chunks only; `image` still decodes the pixels**, PQ and HLG included. The spec routed the
+    16-bit HDR decode through `png` too, but `image` already expands palettes, grey, and alpha into RGBA16, and the only
+    thing it loses is `cICP`, which the probe reads first.
+  - **The content peak keeps each histogram bin's maximum** and returns the brightest pixel in the 99.9th-percentile
+    bin, never a bin's upper edge: an all-1.0 float TIFF must peak at 1.0, not 1.03, or it tips into HDR. The bins come
+    off the f32 bit pattern (exponent plus five mantissa bits), so no `log2` per pixel.
+  - **EETF edges:** the 0.1% of pixels above the content peak clamp onto the target with it; the knee never goes below 0
+    and the spline's output never above `maxLum` (both only matter past about 10⁸ nits, where the spline would turn
+    back); black-lift normalization drops PQ(0), which is 7e-7.
+  - **An SDR float TIFF converts in f32**, then stores M1's shape (display-encoded 16-bit through the sRGB EOTF into
+    half-floats). Running M1's 16-bit transform would have quantized linear light to 16 bits before the transform. "SDR"
+    is a peak at or under 1 + 1/1024, so white through weights that sum to 1.0000001 still counts.
+  - **PQ and HLG stay `SceneLinear` with HDR active whatever their peak**; only float TIFFs take the SDR shortcut, as
+    section 5 says. Unusable primaries (reserved, unspecified) on a PQ or HLG PNG are taken as BT.2020.
+  - **A narrow-range SDR `cICP` PNG** is scaled to full range as RGBA16, so an 8-bit one then takes the 16-bit SDR path.
+    Rare, and one rounding.
+  - **`gainforge` isn't used.** The WGSL needed our own BT.2390 port anyway, and one curve on both sides keeps the SDR
+    and HDR renditions in step. One fewer dependency.
+  - **The curve bounds luminance, not channels**, as section 5 specifies: a saturated highlight keeps one channel above
+    the target, which the display (or `moxcms`, in the fallback) clips. The parity test's orange shows it.
+  - **The WGSL can't name a variable `target`** (a reserved word); naga's error says so, the parity test is how it
+    surfaced.
+  - **Not checked against a real PQ or HLG file**: none was at hand, so the fixtures are ours and the curves are pinned
+    against BT.2100's and BT.2408's published reference values instead. Spec QA step 5 is the first real check.

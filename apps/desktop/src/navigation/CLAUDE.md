@@ -9,7 +9,9 @@ preload count identical in both modes. `image_memory_cost` counts the storage's 
 (half-float `DisplaySdr`, 8 B/px) costs twice an 8-bit image in either mode, and fewer of them fit in the SDR budget.
 Accepted: they're rare, and the budget isn't a count. A gain-map JPEG on an HDR display stays RGBA8 and adds its map's
 bytes (`PixelEncoding::extra_bytes`), usually a sixteenth of the base's, so it costs about what its SDR decode does and
-the doubled HDR budget simply holds more of them.
+the doubled HDR budget simply holds more of them. A PQ or HLG PNG or an HDR float TIFF on an HDR display is
+`SceneLinear` half-floats, 8 B/px like a RAW develop, which is exactly what the doubled budget is sized for; its SDR
+rendition elsewhere is RGBA8.
 
 ## Decision: the current image is found by name, not by canonicalizing every entry
 

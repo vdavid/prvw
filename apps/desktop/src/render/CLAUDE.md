@@ -108,23 +108,29 @@ sampler, and the per-frame uniform, and needs only a device and a queue. `Render
 
 - **Group 0 is per image**, owned by the image's own bind group: 0 transform, 1 image texture, 2 sampler, 3 gain-map
   texture (the `GainMapped` image's own `Rgba8Unorm` map, `GpuImage::gain_map`, or a shared 1×1 placeholder), 4
-  `ImageParams` (`mode`, then mode 2's per-channel parameters, headrooms, and three matrices as `vec4` rows; 256 bytes,
-  pinned by a compile-time size assert). The crossfade rebinds the outgoing `GpuImage` through `prev_uniform_buffer`, so
-  it keeps its own texture, map, and mode while the incoming image fades in over it.
+  `ImageParams` (`mode`, then mode 2's per-channel parameters, headrooms, and three matrices as `vec4` rows, then mode
+  3's source-to-display matrix and a `vec4` of luminance weights plus the content peak; 320 bytes, pinned by a
+  compile-time size assert). The crossfade rebinds the outgoing `GpuImage` through `prev_uniform_buffer`, so it keeps
+  its own texture, map, and mode while the incoming image fades in over it.
 - **Group 1 is per frame**: `FrameUniform { headroom_now }`, one buffer for the whole renderer. A headroom change is
   `Renderer::set_headroom_now` plus a redraw; nothing per image is rewritten, which is the whole point of the design.
   `capture_screenshot` binds a second group 1 pinned at 1.0, so the headroom-dependent modes screenshot as their SDR
   rendition.
 - **Modes** (`color::hdr::fragment::ShaderMode`, mirrored as constants in `shader.wgsl`): 0 `DisplaySdr` and 1
-  `LinearHdrDisplay` are passthrough, 2 `GainMap` applies a gain map, and M4 adds 3 (scene-linear tone map) as another
-  `case` arm in the shader's `shade`. The checkerboard composite and the crossfade `fade` stay after the mode's math for
-  every mode.
+  `LinearHdrDisplay` are passthrough, 2 `GainMap` applies a gain map, and 3 `SceneLinear` tone-maps linear light down to
+  the headroom. The checkerboard composite and the crossfade `fade` stay after the mode's math for every mode.
 - **Mode 2**, per fragment: the base sample (linear Display P3, thanks to the sRGB texture decode) into the gain's
   application space, `(x + base_offset) × gain − alternate_offset`, then into the HDR display space; with the weight at
   0 (headroom 1 on an SDR-base map) the base goes straight to the display space, which on macOS is the identity, so the
   SDR rendition is the same bits mode 0 would draw.
-- **The Rust reference is the spec.** `color::hdr::fragment::shade` is what the WGSL ports, branch for branch, and mode
-  2's pieces are ported function by function from `color::hdr::gain_map`.
+- **Mode 3**, per fragment: the sample's luminance (the source primaries' weights) through BT.2390's EETF from the
+  image's content peak down to `headroom_now` (never below 1.0), R, G, and B scaled by the same ratio, then the source
+  primaries into the HDR display space. The EETF's setup (two PQ encodes) runs per fragment, since its target is the
+  per-frame headroom; content that fits only changes primaries. The curve bounds luminance, not channels, so a saturated
+  highlight can keep one channel above the headroom, which the display clips, as with RAW's tone curve.
+- **The Rust reference is the spec.** `color::hdr::fragment::shade` is what the WGSL ports, branch for branch; mode 2's
+  pieces are ported function by function from `color::hdr::gain_map`, and mode 3's from `color::hdr::tone_map` and
+  `transfer`.
 
 ### Decision: the gain map is sampled exactly like `ultrahdr-core`, with four `textureLoad`s
 
@@ -152,8 +158,9 @@ matrix) is invisible on an SDR display. The `gpu_parity` tests in `image_pipelin
 `ImagePipeline` on a headless device into an `Rgba16Float` target at a forced headroom, read it back, and compare with
 `shade` (relative error under 1%, absolute under 1e-3 near black). A target exactly the image's size puts every fragment
 on a texel centre, so the comparison tests the colour math and not the filtering; the gain map is read at computed
-coordinates, which the reference mirrors, and a 2D image exercises its vertical weights too. The module doc says how to
-add a case.
+coordinates, which the reference mirrors, and a 2D image exercises its vertical weights too. Mode 3's case is a BT.2020
+strip with a 6× peak at six headrooms, both sides of it; a shader that skips the tone map fails it (1.19 against 1.11).
+The module doc says how to add a case.
 
 They run on macOS (Metal) and Windows (DX12, WARP on a GPU-less runner), where a missing adapter fails the test. Linux
 CI has no adapter, so they carry `#[cfg_attr(target_os = "linux", ignore = …)]`. ❌ Never turn that into an early return
