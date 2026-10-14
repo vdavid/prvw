@@ -11,6 +11,7 @@
 //! are mode-independent.
 
 use super::gain_map::{self, GainMapParams, MapView, Mat3};
+use super::tone_map::{self, SceneLinearParams};
 
 /// Which branch of the fragment shader draws an image. One per `PixelEncoding` kind, and the
 /// discriminant is the `mode` field of the shader's `ImageParams` uniform, so the two must agree
@@ -26,7 +27,9 @@ pub enum ShaderMode {
     /// `PixelEncoding::GainMapped`: a linear Display P3 SDR base plus a gain map, weighted by the
     /// display's current headroom.
     GainMap = 2,
-    // 3: scene-linear tone map (M4).
+    /// `PixelEncoding::SceneLinear`: linear light in the source primaries (PQ and HLG PNGs,
+    /// float TIFFs), tone-mapped from its content peak down to the display's current headroom.
+    SceneLinear = 3,
 }
 
 /// What the shader reads from its per-frame uniform (group 1). Display-dependent, shared by every
@@ -64,6 +67,7 @@ pub enum ImageInputs<'a> {
     DisplaySdr,
     LinearHdrDisplay,
     GainMap(GainMapInputs<'a>),
+    SceneLinear(SceneLinearParams),
 }
 
 impl ImageInputs<'_> {
@@ -73,6 +77,7 @@ impl ImageInputs<'_> {
             ImageInputs::DisplaySdr => ShaderMode::DisplaySdr,
             ImageInputs::LinearHdrDisplay => ShaderMode::LinearHdrDisplay,
             ImageInputs::GainMap(_) => ShaderMode::GainMap,
+            ImageInputs::SceneLinear(_) => ShaderMode::SceneLinear,
         }
     }
 }
@@ -95,6 +100,17 @@ pub fn shade(image: &ImageInputs, sample: [f32; 3], uv: [f32; 2], frame: FrameIn
             let x = gain_map::mul(&g.p3_to_app, sample);
             let gain = gain_map::sample_gain(&g.map, g.image_size, uv, &g.params, w);
             gain_map::mul(&g.app_to_display, gain_map::apply(x, gain, &g.params))
+        }
+        // Tone-mapped in the source primaries (a uniform scale, so it commutes with the matrix),
+        // then into the display space.
+        ImageInputs::SceneLinear(s) => {
+            let mapped = tone_map::tone_map(
+                sample,
+                s.luminance_weights,
+                s.content_peak,
+                frame.headroom_now.max(1.0),
+            );
+            gain_map::mul(&s.source_to_display, mapped)
         }
     }
 }
@@ -197,5 +213,53 @@ mod tests {
         assert_eq!(ShaderMode::DisplaySdr as u32, 0);
         assert_eq!(ShaderMode::LinearHdrDisplay as u32, 1);
         assert_eq!(ShaderMode::GainMap as u32, 2);
+        assert_eq!(ShaderMode::SceneLinear as u32, 3);
+    }
+
+    const BT2020_WEIGHTS: [f32; 3] = [0.2627, 0.6780, 0.0593];
+
+    fn scene_linear(content_peak: f32) -> ImageInputs<'static> {
+        ImageInputs::SceneLinear(SceneLinearParams {
+            source_to_display: [[1.5, -0.4, -0.1], [-0.1, 1.1, 0.0], [0.0, -0.1, 1.1]],
+            content_peak,
+            luminance_weights: BT2020_WEIGHTS,
+        })
+    }
+
+    /// Content that fits the headroom only changes primaries: nothing is tone-mapped.
+    #[test]
+    fn scene_linear_content_that_fits_only_changes_primaries() {
+        let image = scene_linear(3.0);
+        let sample = [2.0, 1.0, 0.5];
+        let got = shade(&image, sample, UV, FrameInputs { headroom_now: 4.0 });
+        let ImageInputs::SceneLinear(p) = image else {
+            unreachable!()
+        };
+        assert_eq!(got, gain_map::mul(&p.source_to_display, sample));
+    }
+
+    /// Brighter content than the display has is brought down to its headroom, and the headroom
+    /// the shader sees is never below SDR white.
+    #[test]
+    fn scene_linear_content_peak_lands_on_the_headroom() {
+        let identity = ImageInputs::SceneLinear(SceneLinearParams {
+            source_to_display: gain_map::IDENTITY,
+            content_peak: 8.0,
+            luminance_weights: BT2020_WEIGHTS,
+        });
+        for (headroom, want) in [(2.0f32, 2.0f32), (1.0, 1.0), (0.5, 1.0)] {
+            let got = shade(
+                &identity,
+                [8.0; 3],
+                UV,
+                FrameInputs {
+                    headroom_now: headroom,
+                },
+            );
+            assert!(
+                got.iter().all(|v| (v - want).abs() < 1e-3 * want),
+                "headroom {headroom}: {got:?}"
+            );
+        }
     }
 }

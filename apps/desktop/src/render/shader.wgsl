@@ -40,6 +40,11 @@ struct ImageParams {
     p3_to_app: array<vec4<f32>, 3>,
     app_to_display: array<vec4<f32>, 3>,
     p3_to_display: array<vec4<f32>, 3>,
+    // Mode 3 (`color::hdr::tone_map::SceneLinearParams`): the source primaries into the HDR
+    // display space, one row per vec4, and the source's luminance weights (xyz) with the content
+    // peak (w).
+    source_to_display: array<vec4<f32>, 3>,
+    scene: vec4<f32>,
 };
 
 // The image's gain map, or a 1x1 placeholder. `Rgba8Unorm`, so texels are raw map values. Read
@@ -67,6 +72,7 @@ var<uniform> frame: Frame;
 const MODE_DISPLAY_SDR: u32 = 0u;
 const MODE_LINEAR_HDR_DISPLAY: u32 = 1u;
 const MODE_GAIN_MAP: u32 = 2u;
+const MODE_SCENE_LINEAR: u32 = 3u;
 
 // ── Mode 2: the gain map. Each function ports its namesake in `color::hdr::gain_map`. ──
 
@@ -151,6 +157,60 @@ fn shade_gain_map(sdr: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
     return rows_times(image.app_to_display, y);
 }
 
+// ── Mode 3: scene-linear tone map. Each function ports its namesake in `color::hdr::transfer`
+// and `color::hdr::tone_map`. ──
+
+const REFERENCE_WHITE_NITS: f32 = 203.0;
+const PQ_M1: f32 = 2610.0 / 16384.0;
+const PQ_M2: f32 = 2523.0 / 4096.0 * 128.0;
+const PQ_C1: f32 = 3424.0 / 4096.0;
+const PQ_C2: f32 = 2413.0 / 4096.0 * 32.0;
+const PQ_C3: f32 = 2392.0 / 4096.0 * 32.0;
+
+fn pq_eotf(signal: f32) -> f32 {
+    let p = pow(max(signal, 0.0), 1.0 / PQ_M2);
+    let ratio = max(p - PQ_C1, 0.0) / (PQ_C2 - PQ_C3 * p);
+    // pow(0, y) is undefined in WGSL, so black stays black explicitly.
+    return select(10000.0 * pow(ratio, 1.0 / PQ_M1), 0.0, ratio <= 0.0);
+}
+
+fn pq_inverse_eotf(nits: f32) -> f32 {
+    let y = select(pow(max(nits, 0.0) / 10000.0, PQ_M1), 0.0, nits <= 0.0);
+    return pow((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y), PQ_M2);
+}
+
+// BT.2390's EETF on a luminance relative to SDR white, from `content_peak` down to `target_peak`.
+fn eetf(y: f32, content_peak: f32, target_peak: f32) -> f32 {
+    if content_peak <= target_peak || y <= 0.0 {
+        return y;
+    }
+    let source_pq = pq_inverse_eotf(content_peak * REFERENCE_WHITE_NITS);
+    let max_lum = pq_inverse_eotf(target_peak * REFERENCE_WHITE_NITS) / source_pq;
+    let start = max(1.5 * max_lum - 0.5, 0.0);
+    let e1 = min(pq_inverse_eotf(y * REFERENCE_WHITE_NITS) / source_pq, 1.0);
+    var e2 = e1;
+    if e1 >= start {
+        let t = (e1 - start) / (1.0 - start);
+        let t2 = t * t;
+        let t3 = t2 * t;
+        e2 = min(
+            (2.0 * t3 - 3.0 * t2 + 1.0) * start + (t3 - 2.0 * t2 + t) * (1.0 - start)
+                + (-2.0 * t3 + 3.0 * t2) * max_lum,
+            max_lum,
+        );
+    }
+    return pq_eotf(e2 * source_pq) / REFERENCE_WHITE_NITS;
+}
+
+fn shade_scene_linear(source: vec3<f32>) -> vec3<f32> {
+    let y = dot(image.scene.xyz, source);
+    var ratio = 1.0;
+    if y > 0.0 {
+        ratio = eetf(y, image.scene.w, max(frame.headroom_now, 1.0)) / y;
+    }
+    return rows_times(image.source_to_display, source * ratio);
+}
+
 // Full-screen quad vertices (two triangles), generated from vertex index.
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
@@ -205,7 +265,10 @@ fn shade(sample: vec4<f32>, uv: vec2<f32>) -> vec3<f32> {
         case MODE_GAIN_MAP: {
             return shade_gain_map(sample.rgb, uv);
         }
-        // 3u: scene-linear tone map (M4) down to `frame.headroom_now`.
+        // Linear light in the source primaries, tone-mapped down to the current headroom.
+        case MODE_SCENE_LINEAR: {
+            return shade_scene_linear(sample.rgb);
+        }
         default: {
             return sample.rgb;
         }

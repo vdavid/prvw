@@ -38,6 +38,11 @@ pub struct ImageParams {
     pub p3_to_app: [[f32; 4]; 3],
     pub app_to_display: [[f32; 4]; 3],
     pub p3_to_display: [[f32; 4]; 3],
+    /// Mode 3: the source primaries into the HDR display space, one row per `vec4`
+    /// (`color::hdr::tone_map::SceneLinearParams`).
+    pub source_to_display: [[f32; 4]; 3],
+    /// Mode 3: `xyz` the source's luminance weights, `w` the content peak.
+    pub scene: [f32; 4],
 }
 
 impl ImageParams {
@@ -45,6 +50,11 @@ impl ImageParams {
         let mut params = Self::zeroed_with_mode(encoding.shader_mode() as u32);
         match encoding {
             PixelEncoding::DisplaySdr | PixelEncoding::LinearHdrDisplay => {}
+            PixelEncoding::SceneLinear(s) => {
+                params.source_to_display = rows(&s.source_to_display);
+                let [r, g, b] = s.luminance_weights;
+                params.scene = [r, g, b, s.content_peak];
+            }
             PixelEncoding::GainMapped(map) => {
                 let p = &map.params;
                 let per_channel = |f: fn(&crate::color::hdr::gain_map::ChannelParams) -> f32| {
@@ -78,7 +88,7 @@ fn rows(m: &Mat3) -> [[f32; 4]; 3] {
 
 /// What `shader.wgsl` reads: its `ImageParams` must be exactly this size, or the GPU reads the
 /// wrong fields with no error anywhere.
-const _: () = assert!(std::mem::size_of::<ImageParams>() == 16 + 6 * 16 + 9 * 16);
+const _: () = assert!(std::mem::size_of::<ImageParams>() == 16 + 6 * 16 + 9 * 16 + 4 * 16);
 
 /// Group 1, binding 0: what every image on screen shares about the display.
 #[repr(C)]
@@ -366,7 +376,9 @@ impl ImagePipeline {
             usage: wgpu::BufferUsages::UNIFORM,
         });
         let gain_map = match &image.encoding {
-            PixelEncoding::DisplaySdr | PixelEncoding::LinearHdrDisplay => None,
+            PixelEncoding::DisplaySdr
+            | PixelEncoding::LinearHdrDisplay
+            | PixelEncoding::SceneLinear(_) => None,
             // `Rgba8Unorm`, not `Srgb`: the shader must read the map's raw values.
             PixelEncoding::GainMapped(map) => Some(device.create_texture_with_data(
                 queue,
@@ -460,6 +472,7 @@ mod gpu_parity {
     use super::*;
     use crate::color::hdr::fragment::{FrameInputs, shade};
     use crate::color::hdr::gain_map::{ChannelParams, GainMapParams, GainMapSource, GainMapSpaces};
+    use crate::color::hdr::tone_map::SceneLinearParams;
     use crate::decoding::GainMapPayload;
     use crate::render::gpu::GpuPolicy;
     use crate::zoom::view::TransformUniform;
@@ -798,6 +811,57 @@ mod gpu_parity {
     )]
     fn mode_2_lands_on_pixel_centres_at_any_width() {
         assert_matches_reference(&gain_mapped_sized(776, 4, 388, 2), &[8.0]);
+    }
+
+    /// A scene-linear strip in BT.2020 with a 6× content peak: deep shadows, reference white, and
+    /// highlights past the peak, in every channel ratio `strip_f16` makes.
+    fn scene_linear() -> DecodedImage {
+        let values = [0.0, 0.0004, 0.02, 0.18, 0.5, 1.0, 2.0, 3.5, 6.0, 9.0];
+        let source = crate::color::profiles::linear_rec2020_profile();
+        let display = match crate::color::profiles::HdrDisplaySpace::for_host() {
+            crate::color::profiles::HdrDisplaySpace::LinearDisplayP3 => {
+                moxcms::ColorProfile::new_display_p3()
+            }
+            crate::color::profiles::HdrDisplaySpace::LinearSrgb => moxcms::ColorProfile::new_srgb(),
+        };
+        let m = source.transform_matrix(&display).v;
+        DecodedImage::from_scene_linear_rgba16f(
+            values.len() as u32,
+            1,
+            strip_f16(&values),
+            SceneLinearParams {
+                source_to_display: m.map(|row| row.map(|v| v as f32)),
+                content_peak: 6.0,
+                luminance_weights: [0.2627, 0.6780, 0.0593],
+            },
+        )
+    }
+
+    /// The tone map on the GPU: headrooms well under the content peak (the knee bites), at it,
+    /// and above it (only the primaries change).
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "Linux CI runners have no GPU adapter; macOS and Windows run this"
+    )]
+    fn mode_3_matches_the_reference() {
+        let image = scene_linear();
+        assert_eq!(image.encoding.shader_mode() as u32, 3);
+        assert_matches_reference(&image, &[1.0, 1.5, 2.0, 4.0, 6.0, 16.0]);
+        let brightest = |headroom| {
+            render(&image, headroom)
+                .into_iter()
+                .flatten()
+                .fold(0.0f32, f32::max)
+        };
+        let (fits, squeezed) = (brightest(16.0), brightest(2.0));
+        assert!(fits > 6.0, "content that fits keeps its highlights: {fits}");
+        // The curve bounds luminance, not channels: the strip's saturated orange keeps its red
+        // above the headroom, as the RAW tone curve's does.
+        assert!(
+            squeezed < fits / 2.0,
+            "the tone map brings them down toward the headroom: {squeezed} vs {fits}"
+        );
     }
 
     /// At headroom 1 a gain-mapped image is its SDR base. On macOS, where the HDR display space

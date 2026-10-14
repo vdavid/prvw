@@ -65,9 +65,13 @@ pub fn compute(pixels: &PixelBuffer, encoding: &PixelEncoding) -> HistogramData 
         }
         // Gain-mapped half-floats are an illegal pair (`PixelEncoding::accepts`); binned as
         // linear rather than panicking in a UI path.
+        // Scene-linear values bin as they are, before the tone map, clamped at SDR white: a known
+        // simplification (`histogram/CLAUDE.md`).
         (
             PixelBuffer::Rgba16F(halfs),
-            PixelEncoding::LinearHdrDisplay | PixelEncoding::GainMapped(_),
+            PixelEncoding::LinearHdrDisplay
+            | PixelEncoding::GainMapped(_)
+            | PixelEncoding::SceneLinear(_),
         ) => compute_rgba16f(halfs, quantize_half),
     };
     hist.finalize();

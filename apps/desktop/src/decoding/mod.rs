@@ -49,6 +49,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 
 use crate::color::hdr::fragment::{ImageInputs, ShaderMode};
+use crate::color::hdr::tone_map::SceneLinearParams;
 use crate::file_stamp::FileStamp;
 
 pub use gain_map::GainMapPayload;
@@ -116,6 +117,12 @@ pub enum PixelEncoding {
     /// applies at the display's current headroom. Only `Rgba8`. Gain-map JPEGs
     /// on an HDR display.
     GainMapped(Box<GainMapPayload>),
+    /// Linear light in the source's own primaries, 1.0 = SDR white (203 nits), with no ceiling:
+    /// the shader tone-maps it from its content peak down to the display's current headroom.
+    /// Only `Rgba16F`. PQ and HLG PNGs and float TIFFs brighter than SDR white, on an HDR
+    /// display.
+    #[cfg_attr(not(test), allow(dead_code))] // Built by the PNG and float TIFF decoders, next.
+    SceneLinear(SceneLinearParams),
 }
 
 /// Which [`PixelEncoding`] an image has, without its payload: the tag the app
@@ -126,6 +133,7 @@ pub enum EncodingKind {
     DisplaySdr,
     LinearHdrDisplay,
     GainMapped,
+    SceneLinear,
 }
 
 impl EncodingKind {
@@ -133,7 +141,9 @@ impl EncodingKind {
     pub fn is_hdr(self) -> bool {
         match self {
             EncodingKind::DisplaySdr => false,
-            EncodingKind::LinearHdrDisplay | EncodingKind::GainMapped => true,
+            EncodingKind::LinearHdrDisplay
+            | EncodingKind::GainMapped
+            | EncodingKind::SceneLinear => true,
         }
     }
 
@@ -143,6 +153,7 @@ impl EncodingKind {
             EncodingKind::DisplaySdr => ShaderMode::DisplaySdr,
             EncodingKind::LinearHdrDisplay => ShaderMode::LinearHdrDisplay,
             EncodingKind::GainMapped => ShaderMode::GainMap,
+            EncodingKind::SceneLinear => ShaderMode::SceneLinear,
         }
     }
 
@@ -152,6 +163,7 @@ impl EncodingKind {
             EncodingKind::DisplaySdr => "display_sdr",
             EncodingKind::LinearHdrDisplay => "linear_hdr_display",
             EncodingKind::GainMapped => "gain_mapped",
+            EncodingKind::SceneLinear => "scene_linear",
         }
     }
 }
@@ -162,6 +174,7 @@ impl PixelEncoding {
             PixelEncoding::DisplaySdr => EncodingKind::DisplaySdr,
             PixelEncoding::LinearHdrDisplay => EncodingKind::LinearHdrDisplay,
             PixelEncoding::GainMapped(_) => EncodingKind::GainMapped,
+            PixelEncoding::SceneLinear(_) => EncodingKind::SceneLinear,
         }
     }
 
@@ -178,13 +191,16 @@ impl PixelEncoding {
             PixelEncoding::DisplaySdr => ImageInputs::DisplaySdr,
             PixelEncoding::LinearHdrDisplay => ImageInputs::LinearHdrDisplay,
             PixelEncoding::GainMapped(map) => ImageInputs::GainMap(map.inputs([width, height])),
+            PixelEncoding::SceneLinear(params) => ImageInputs::SceneLinear(*params),
         }
     }
 
     /// The gain map's bytes, which the cache counts on top of the base's.
     pub fn extra_bytes(&self) -> usize {
         match self {
-            PixelEncoding::DisplaySdr | PixelEncoding::LinearHdrDisplay => 0,
+            PixelEncoding::DisplaySdr
+            | PixelEncoding::LinearHdrDisplay
+            | PixelEncoding::SceneLinear(_) => 0,
             PixelEncoding::GainMapped(map) => map.rgba.len(),
         }
     }
@@ -198,6 +214,8 @@ impl PixelEncoding {
             (PixelEncoding::LinearHdrDisplay, PixelBuffer::Rgba8(_)) => false,
             (PixelEncoding::GainMapped(_), PixelBuffer::Rgba8(_)) => true,
             (PixelEncoding::GainMapped(_), PixelBuffer::Rgba16F(_)) => false,
+            (PixelEncoding::SceneLinear(_), PixelBuffer::Rgba16F(_)) => true,
+            (PixelEncoding::SceneLinear(_), PixelBuffer::Rgba8(_)) => false,
         }
     }
 }
@@ -289,6 +307,25 @@ impl DecodedImage {
             height,
             pixels: PixelBuffer::Rgba8(rgba),
             encoding: PixelEncoding::GainMapped(Box::new(map)),
+            exif: None,
+            stamp: None,
+        }
+    }
+
+    /// Build a scene-linear HDR half-float image: linear light in the source primaries that
+    /// `params` describes. Used by the PNG (PQ, HLG) and float TIFF paths when HDR is active.
+    #[cfg_attr(not(test), allow(dead_code))] // See `PixelEncoding::SceneLinear`.
+    pub fn from_scene_linear_rgba16f(
+        width: u32,
+        height: u32,
+        half_rgba: Vec<u16>,
+        params: SceneLinearParams,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            pixels: PixelBuffer::Rgba16F(half_rgba),
+            encoding: PixelEncoding::SceneLinear(params),
             exif: None,
             stamp: None,
         }
@@ -741,6 +778,7 @@ fn log_result(
             let hdr_label = match (&image.pixels, &image.encoding) {
                 (_, PixelEncoding::LinearHdrDisplay) => " [HDR]",
                 (_, PixelEncoding::GainMapped(_)) => " [gain map]",
+                (_, PixelEncoding::SceneLinear(_)) => " [scene-linear HDR]",
                 (PixelBuffer::Rgba16F(_), PixelEncoding::DisplaySdr) => " [16-bit SDR]",
                 (PixelBuffer::Rgba8(_), PixelEncoding::DisplaySdr) => "",
             };

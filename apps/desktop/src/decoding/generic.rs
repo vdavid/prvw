@@ -206,7 +206,12 @@ mod tests {
                     ]
                 })
                 .collect(),
-            (_, PixelEncoding::LinearHdrDisplay | PixelEncoding::GainMapped(_)) => {
+            (
+                _,
+                PixelEncoding::LinearHdrDisplay
+                | PixelEncoding::GainMapped(_)
+                | PixelEncoding::SceneLinear(_),
+            ) => {
                 panic!("a 16-bit PNG is never HDR")
             }
         }
