@@ -162,10 +162,14 @@ luminance), and then picks a shape:
 
 - **HDR active** (RAW's gate, `raw_flags.hdr_output && hdr_display`, at `OutputDepth::Native`): `SceneLinear`
   half-floats, which shader mode 3 tone-maps per frame at the current headroom (`render/CLAUDE.md`).
-- **Otherwise**: the same BT.2390 tone map on the CPU with SDR white as the target, `moxcms` from the linear source into
-  the display profile in f32, RGBA8 `DisplaySdr`. SDR displays, Linux, HDR off, and the byte consumers all get this.
-- **A float TIFF peaking at or below SDR white** is SDR in a float container: `DisplaySdr` half-floats, M1's shape, on
-  any display, so it never asks for the EDR surface.
+- **Otherwise**: the same tone curve on the CPU with SDR white as the target (`color::hdr::tone_map::ToneCurve`), then
+  the primaries changed in f32 and clipped in the display's own primaries, with `moxcms` applying only the display's
+  curves (`color::transform_linear_f32_to_display`). The viewer gets M1's 16-bit `DisplaySdr` half-floats (a strong tone
+  curve then an 8-bit rounding is where skies band); the byte consumers get RGBA8. SDR displays, Linux, and HDR off all
+  take this.
+- **A float TIFF whose brightest pixel is at or below SDR white** is SDR in a float container: the same rendition with
+  nothing to tone-map, on any display, so it never asks for the EDR surface. The brightest pixel decides, not the
+  content peak: a render's lamps on 0.05% of the pixels are still HDR (`PeakHistogram::max`).
 
 How each source gets to light:
 

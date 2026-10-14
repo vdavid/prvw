@@ -191,6 +191,7 @@ pub(super) fn decode_hdr_png(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
     hdr_active: bool,
+    depth: OutputDepth,
 ) -> DecodedImage {
     let start = Instant::now();
     let bits = bits_per_channel(&img);
@@ -260,6 +261,7 @@ pub(super) fn decode_hdr_png(
         &space,
         target_icc,
         use_relative_colorimetric,
+        depth,
     );
     log_stages(signal.transfer, start, widened, peak, "SDR fallback");
     image
@@ -345,18 +347,8 @@ pub(super) fn decode_float(
         .iter()
         .flat_map(|px| [px[0], px[1], px[2]])
         .collect();
+    // An SDR float TIFF is the same rendition with nothing to tone-map (its peak fits SDR white).
     let alpha = |i: usize| rgba[i * 4 + 3];
-    if sdr && depth == OutputDepth::Native {
-        return display_sdr_16(
-            width,
-            height,
-            rgb,
-            alpha,
-            &space,
-            target_icc,
-            use_relative_colorimetric,
-        );
-    }
     sdr_fallback(
         width,
         height,
@@ -366,6 +358,7 @@ pub(super) fn decode_float(
         &space,
         target_icc,
         use_relative_colorimetric,
+        depth,
     )
 }
 
@@ -377,7 +370,9 @@ const F16_MAX: f32 = 65_504.0;
 const SDR_PEAK: f32 = 1.0 + 1.0 / 1024.0;
 
 /// The CPU rendition for anything that can't show HDR: the tone map with SDR white as the target,
-/// then the linear source into the display profile, RGBA8.
+/// then the linear source into the display profile. The viewer (`OutputDepth::Native`) gets M1's
+/// 16-bit `DisplaySdr` shape, because a strong tone curve followed by an 8-bit rounding is where
+/// skies band; the byte consumers get RGBA8.
 #[allow(clippy::too_many_arguments)] // One call shape for two decoders; the knobs are independent
 fn sdr_fallback(
     width: u32,
@@ -388,6 +383,7 @@ fn sdr_fallback(
     space: &SourceSpace,
     target_icc: &[u8],
     use_relative_colorimetric: bool,
+    depth: OutputDepth,
 ) -> DecodedImage {
     let start = Instant::now();
     let weights = space.weights;
@@ -405,8 +401,36 @@ fn sdr_fallback(
         use_relative_colorimetric,
     );
     let transformed = start.elapsed();
-    let to_byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    let mut rgba = vec![0u8; rgb.len() / 3 * 4];
+    let image = match depth {
+        OutputDepth::Rgba8 => {
+            let rgba = quantize(&rgb, &alpha, |v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            DecodedImage::from_rgba8(width, height, rgba)
+        }
+        OutputDepth::Native => {
+            let mut samples = quantize(&rgb, &alpha, |v| {
+                (v.clamp(0.0, 1.0) * 65_535.0).round() as u16
+            });
+            color::display_sdr::rgba16_to_display_sdr_f16_inplace(&mut samples);
+            DecodedImage::from_display_sdr_rgba16f(width, height, samples)
+        }
+    };
+    log::debug!(
+        "SDR fallback stages [{:.1} ms total]: tone_map={:.1}, icc={:.1}, quantize={:.1} ({depth:?})",
+        ms(start.elapsed()),
+        ms(toned),
+        ms(transformed - toned),
+        ms(start.elapsed() - transformed),
+    );
+    image
+}
+
+/// Display-encoded RGB plus alpha into RGBA samples, in parallel.
+fn quantize<T: Copy + Default + Send>(
+    rgb: &[f32],
+    alpha: &(impl Fn(usize) -> f32 + Sync),
+    to: impl Fn(f32) -> T + Sync,
+) -> Vec<T> {
+    let mut rgba = vec![T::default(); rgb.len() / 3 * 4];
     rgba.par_chunks_mut(CHUNK_PIXELS * 4)
         .zip(rgb.par_chunks(CHUNK_PIXELS * 3))
         .enumerate()
@@ -419,58 +443,10 @@ fn sdr_fallback(
                 .zip(src.as_chunks::<3>().0)
                 .enumerate()
             {
-                *out = [
-                    to_byte(px[0]),
-                    to_byte(px[1]),
-                    to_byte(px[2]),
-                    to_byte(alpha(first + i)),
-                ];
+                *out = [to(px[0]), to(px[1]), to(px[2]), to(alpha(first + i))];
             }
         });
-    log::debug!(
-        "SDR fallback stages [{:.1} ms total]: tone_map={:.1}, icc={:.1}, to_rgba8={:.1}",
-        ms(start.elapsed()),
-        ms(toned),
-        ms(transformed - toned),
-        ms(start.elapsed() - transformed),
-    );
-    DecodedImage::from_rgba8(width, height, rgba)
-}
-
-/// An SDR float TIFF in M1's 16-bit shape: the linear source into the display profile in f32,
-/// then display-encoded 16-bit values through `color::display_sdr` into half-floats.
-fn display_sdr_16(
-    width: u32,
-    height: u32,
-    mut rgb: Vec<f32>,
-    alpha: impl Fn(usize) -> f32,
-    space: &SourceSpace,
-    target_icc: &[u8],
-    use_relative_colorimetric: bool,
-) -> DecodedImage {
-    color::transform_linear_f32_to_display(
-        &mut rgb,
-        &space.linear,
-        target_icc,
-        use_relative_colorimetric,
-    );
-    let to_u16 = |v: f32| (v.clamp(0.0, 1.0) * 65_535.0).round() as u16;
-    let mut samples: Vec<u16> = rgb
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .enumerate()
-        .flat_map(|(i, px)| {
-            [
-                to_u16(px[0]),
-                to_u16(px[1]),
-                to_u16(px[2]),
-                to_u16(alpha(i)),
-            ]
-        })
-        .collect();
-    color::display_sdr::rgba16_to_display_sdr_f16_inplace(&mut samples);
-    DecodedImage::from_display_sdr_rgba16f(width, height, samples)
+    rgba
 }
 
 fn luminance(rgb: [f32; 3], weights: [f32; 3]) -> f32 {
@@ -679,6 +655,19 @@ mod tests {
         .expect("decodes")
     }
 
+    /// What the byte consumers (clipboard, print, previews) get: the SDR rendition as RGBA8.
+    fn decode_rgba8(bytes: Vec<u8>, target: &[u8]) -> DecodedImage {
+        crate::decoding::generic::decode(
+            std::path::Path::new("test.png"),
+            bytes,
+            target,
+            false,
+            OutputDepth::Rgba8,
+            false,
+        )
+        .expect("decodes")
+    }
+
     fn half(bits: u16) -> f32 {
         f16::from_bits(bits).to_f32()
     }
@@ -795,9 +784,9 @@ mod tests {
             .map(|&v| (transfer::pq_inverse_eotf(v * 203.0) * 65_535.0).round() as u16)
             .collect();
         let bytes = png_bytes(2, 1, &samples, Some([9, 16, 0, 1]), None);
-        let image = decode(bytes, color::srgb_icc_bytes(), false);
+        let image = decode_rgba8(bytes, color::srgb_icc_bytes());
         let PixelBuffer::Rgba8(rgba) = &image.pixels else {
-            panic!("the SDR fallback is RGBA8");
+            panic!("the SDR fallback is RGBA8 at 8 bits");
         };
 
         // The reference: what decode measured as the peak (the brighter pixel), the tone map in
@@ -841,9 +830,9 @@ mod tests {
         let nits = [0.0, 1.0, 10.0, 203.0, 1000.0];
         let codes: Vec<f32> = nits.iter().map(|&n| transfer::pq_inverse_eotf(n)).collect();
         let bytes = png_bytes(5, 1, &grey_pq(&codes), Some([9, 16, 0, 1]), None);
-        let image = decode(bytes, color::srgb_icc_bytes(), false);
+        let image = decode_rgba8(bytes, color::srgb_icc_bytes());
         let PixelBuffer::Rgba8(rgba) = &image.pixels else {
-            panic!("the SDR fallback is RGBA8");
+            panic!("the SDR fallback is RGBA8 at 8 bits");
         };
         assert_eq!(image.encoding, PixelEncoding::DisplaySdr);
         let got: Vec<u8> = rgba.as_chunks::<4>().0.iter().map(|px| px[1]).collect();
@@ -951,14 +940,36 @@ mod tests {
     }
 
     #[test]
-    fn a_float_tiff_without_hdr_or_at_8_bits_is_rgba8() {
-        for (hdr_active, depth) in [(false, OutputDepth::Native), (true, OutputDepth::Rgba8)] {
-            let image = decode_tiff(float_tiff(&[0.0, 1.0, 4.0]), hdr_active, depth);
-            assert!(
-                matches!(image.pixels, PixelBuffer::Rgba8(_)),
-                "{hdr_active} {depth:?}"
-            );
-            assert_eq!(image.encoding, PixelEncoding::DisplaySdr);
+    fn a_float_tiff_without_hdr_keeps_16_bits_and_byte_consumers_get_rgba8() {
+        let viewer = decode_tiff(float_tiff(&[0.0, 1.0, 4.0]), false, OutputDepth::Native);
+        assert!(matches!(viewer.pixels, PixelBuffer::Rgba16F(_)));
+        assert_eq!(viewer.encoding, PixelEncoding::DisplaySdr);
+        let bytes = decode_tiff(float_tiff(&[0.0, 1.0, 4.0]), true, OutputDepth::Rgba8);
+        assert!(matches!(bytes.pixels, PixelBuffer::Rgba8(_)));
+        assert_eq!(bytes.encoding, PixelEncoding::DisplaySdr);
+    }
+
+    /// A 16-bit PQ PNG on an SDR display: a strong tone curve then an 8-bit rounding is where
+    /// skies band, so the viewer gets M1's 16-bit `DisplaySdr` shape, and only the byte
+    /// consumers get RGBA8. Both carry the same rendition.
+    #[test]
+    fn a_pq_png_on_an_sdr_display_keeps_16_bits() {
+        let codes: Vec<f32> = [0.0, 10.0, 203.0, 1000.0]
+            .iter()
+            .map(|&n| transfer::pq_inverse_eotf(n))
+            .collect();
+        let bytes = png_bytes(4, 1, &grey_pq(&codes), Some([9, 16, 0, 1]), None);
+        let viewer = decode(bytes.clone(), color::srgb_icc_bytes(), false);
+        assert_eq!(viewer.encoding, PixelEncoding::DisplaySdr);
+        let PixelBuffer::Rgba16F(halves) = &viewer.pixels else {
+            panic!("the viewer's SDR rendition keeps 16 bits");
+        };
+        let PixelBuffer::Rgba8(rgba) = &decode_rgba8(bytes, color::srgb_icc_bytes()).pixels else {
+            panic!("byte consumers get RGBA8");
+        };
+        for (half_bits, byte) in halves.iter().zip(rgba) {
+            let as_byte = color::display_sdr::display_sdr_f16_to_u8(*half_bits);
+            assert!(as_byte.abs_diff(*byte) <= 1, "{as_byte} vs {byte}");
         }
     }
 
@@ -999,7 +1010,14 @@ mod tests {
         };
         for transfer in [Transfer::Pq, Transfer::Hlg] {
             let signal = HdrSignal { transfer, ..signal };
-            let _ = decode_hdr_png(img.clone(), signal, color::srgb_icc_bytes(), false, true);
+            let _ = decode_hdr_png(
+                img.clone(),
+                signal,
+                color::srgb_icc_bytes(),
+                false,
+                true,
+                OutputDepth::Native,
+            );
             let mut runs: Vec<(f64, f64)> = (0..7)
                 .map(|_| {
                     let img = img.clone();
@@ -1013,6 +1031,7 @@ mod tests {
                         color::srgb_icc_bytes(),
                         false,
                         true,
+                        OutputDepth::Native,
                     );
                     (ms(start.elapsed()), to_rgba16)
                 })

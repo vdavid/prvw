@@ -65,6 +65,7 @@ pub(super) fn decode(
                 target_icc,
                 use_relative_colorimetric,
                 hdr_active,
+                depth,
             ));
         }
         PngColor::Sdr { icc, full_range } => {

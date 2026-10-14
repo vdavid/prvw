@@ -1022,14 +1022,13 @@ mod tests {
             assert!(hdr.encoding.kind().is_hdr(), "{name}");
             assert_eq!((hdr.width, hdr.height), (32, 16), "{name}");
 
-            for (hdr_display, depth) in [(false, OutputDepth::Native), (true, OutputDepth::Rgba8)] {
-                let sdr = load_at(&path, hdr_display, depth);
-                assert!(
-                    matches!(sdr.pixels, PixelBuffer::Rgba8(_)),
-                    "{name} at {hdr_display}, {depth:?}"
-                );
-                assert_eq!(sdr.encoding, PixelEncoding::DisplaySdr, "{name}");
-            }
+            // The SDR rendition: 16 bits for the viewer, bytes for the byte consumers.
+            let viewer = load_at(&path, false, OutputDepth::Native);
+            assert!(matches!(viewer.pixels, PixelBuffer::Rgba16F(_)), "{name}");
+            assert_eq!(viewer.encoding, PixelEncoding::DisplaySdr, "{name}");
+            let bytes = load_at(&path, true, OutputDepth::Rgba8);
+            assert!(matches!(bytes.pixels, PixelBuffer::Rgba8(_)), "{name}");
+            assert_eq!(bytes.encoding, PixelEncoding::DisplaySdr, "{name}");
         }
     }
 
