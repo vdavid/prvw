@@ -109,6 +109,11 @@ pub struct ContainerItem {
     pub length: Option<usize>,
 }
 
+/// The most `GContainer` items read, and the most `Item:Semantic` names looked at (valid or
+/// not) before the scan gives up. Real files list two or three items.
+const MAX_CONTAINER_ITEMS: usize = 16;
+const MAX_SEMANTIC_HITS: usize = 64;
+
 /// The `GContainer` directory in the primary's XMP: the media items the file carries, in file
 /// order. Empty when there's none.
 pub fn container_items(xmp: &str) -> Vec<ContainerItem> {
@@ -119,7 +124,13 @@ pub fn container_items(xmp: &str) -> Vec<ContainerItem> {
     let semantic_attr = format!("{item}:Semantic");
     let mut items = Vec::new();
     let mut from = 0;
+    let mut hits = 0;
     while let Some(found) = find_name(xmp, &semantic_attr, from) {
+        hits += 1;
+        if hits > MAX_SEMANTIC_HITS || items.len() == MAX_CONTAINER_ITEMS {
+            log::debug!("GContainer directory past {MAX_CONTAINER_ITEMS} items; reading no more");
+            break;
+        }
         from = found + semantic_attr.len();
         // The attributes of the element this one sits on.
         let Some(open) = xmp[..found].rfind('<') else {
@@ -421,6 +432,23 @@ mod tests {
             ]
         );
         assert!(container_items(ATTRIBUTE_FORM).is_empty());
+    }
+
+    /// A hostile packet can't make the directory scan quadratic: each `Item:Semantic` hit looks
+    /// back for its tag's `<`, so the scan stops after a few times what real files carry (2–3).
+    #[test]
+    fn a_gcontainer_directory_is_read_up_to_a_cap() {
+        let item = r#"<Container:Item Item:Semantic="GainMap" Item:Length="1"/>"#;
+        let many = CONTAINER.replace(
+            r#"<Container:Directory>"#,
+            &format!("<Container:Directory>{}", item.repeat(500)),
+        );
+        assert_eq!(container_items(&many).len(), MAX_CONTAINER_ITEMS);
+        let bare = CONTAINER.replace(
+            r#"<Container:Directory>"#,
+            &format!("<Container:Directory>{}", " Item:Semantic".repeat(50_000)),
+        );
+        assert!(container_items(&bare).is_empty());
     }
 
     /// What iOS 18 writes on its gain-map image (this is the iPhone Air fixture's packet): ISO
