@@ -271,7 +271,7 @@ pub fn transform_f32_with_profile(
 /// in place: the primaries change in f32 with nothing clipped, then each channel clips to the
 /// target's [0, 1], and `moxcms` applies only the target's curves. So a saturated highlight
 /// clips in the display's primaries, the way the GPU path and the compositor clip it, and keeps
-/// its hue. A target that isn't a matrix-shaper profile takes [`transform_f32_with_profile`].
+/// its hue. A target that isn't a matrix-shaper profile goes through its LUTs instead.
 ///
 /// For the scene-linear SDR renditions (`decoding::scene_linear`).
 pub fn transform_linear_f32_to_display(
@@ -282,8 +282,12 @@ pub fn transform_linear_f32_to_display(
 ) {
     let target = match ColorProfile::new_from_slice(target_icc) {
         Ok(target) if target.is_matrix_shaper() => target,
-        _ => {
-            transform_f32_with_profile(rgb, source, target_icc, use_relative_colorimetric);
+        Ok(target) => {
+            transform_f32_through_luts(rgb, source, &target, use_relative_colorimetric);
+            return;
+        }
+        Err(e) => {
+            log::debug!("Skipping f32 ICC transform: couldn't parse target profile ({e})");
             return;
         }
     };
@@ -304,6 +308,46 @@ pub fn transform_linear_f32_to_display(
     linear_target.blue_trc = Some(linear);
     linear_target.cicp = None;
     transform_f32_with_profile(rgb, &linear_target, target_icc, use_relative_colorimetric);
+}
+
+/// A target without matrix-shaper tags (a LUT-only calibrated display profile): `moxcms`' in-place
+/// f32 transform only joins matrix-shaper pairs and refuses this one, which left the buffer
+/// linear and showed it far too dark. Its copying f32 transform runs the profile's LUTs. Values
+/// clip in the source's primaries on this path, as LUTs take [0, 1] input; it's the rare case.
+fn transform_f32_through_luts(
+    rgb: &mut [f32],
+    source: &ColorProfile,
+    target: &ColorProfile,
+    use_relative_colorimetric: bool,
+) {
+    let options = TransformOptions {
+        rendering_intent: if use_relative_colorimetric {
+            RenderingIntent::RelativeColorimetric
+        } else {
+            RenderingIntent::Perceptual
+        },
+        ..TransformOptions::default()
+    };
+    let transform = match source.create_transform_f32(Layout::Rgb, target, Layout::Rgb, options) {
+        Ok(t) => t,
+        Err(e) => {
+            log::warn!("No f32 transform into the display profile ({e}); colors will be wrong");
+            return;
+        }
+    };
+    use rayon::prelude::*;
+    const CHUNK_PIXELS: usize = 16_384;
+    let failed = rgb
+        .par_chunks_mut(CHUNK_PIXELS * 3)
+        .map(|chunk| {
+            let src = chunk.to_vec();
+            transform.transform(&src, chunk).err()
+        })
+        .find_any(Option::is_some)
+        .flatten();
+    if let Some(e) = failed {
+        log::warn!("f32 LUT transform into the display profile failed: {e}");
+    }
 }
 
 /// Format a number with thousands separators (e.g., 24000000 -> "24,000,000").
@@ -429,6 +473,91 @@ fn profile_description(profile: &ColorProfile) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A display profile built from LUTs alone, the way calibration software writes them: a
+    /// `lut16` B2A (identity input curves, an identity 2-point grid, the sRGB curve as output
+    /// curves) and no TRCs, so it isn't a matrix-shaper profile and `moxcms`' in-place f32
+    /// transform refuses it. Not an accurate sRGB: `moxcms` ignores a `lut16`'s matrix on this
+    /// path, so it encodes PCS XYZ directly. It only has to be a real LUT profile.
+    fn lut_only_icc() -> Vec<u8> {
+        use moxcms::{LutDataType, LutStore, LutType, LutWarehouse};
+        let mut profile = ColorProfile::new_srgb();
+        profile.red_trc = None;
+        profile.green_trc = None;
+        profile.blue_trc = None;
+        profile.cicp = None;
+        const ENTRIES: u16 = 4096;
+        let table = |f: &dyn Fn(f64) -> f64| -> Vec<u16> {
+            (0..3)
+                .flat_map(|_| {
+                    (0..ENTRIES).map(|i| {
+                        let x = f64::from(i) / f64::from(ENTRIES - 1);
+                        (f(x).clamp(0.0, 1.0) * 65_535.0).round() as u16
+                    })
+                })
+                .collect()
+        };
+        let encode = |v: f64| {
+            if v <= 0.003_130_8 {
+                12.92 * v
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            }
+        };
+        let corners: Vec<u16> = (0..8u16)
+            .flat_map(|i| [(i >> 2) & 1, (i >> 1) & 1, i & 1].map(|bit| bit * 65_535))
+            .collect();
+        let lut = LutWarehouse::Lut(LutDataType {
+            num_input_channels: 3,
+            num_output_channels: 3,
+            num_clut_grid_points: 2,
+            matrix: moxcms::Matrix3d {
+                v: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            },
+            num_input_table_entries: ENTRIES,
+            num_output_table_entries: ENTRIES,
+            input_table: LutStore::Store16(table(&|x| x)),
+            clut_table: LutStore::Store16(corners),
+            output_table: LutStore::Store16(table(&encode)),
+            lut_type: LutType::Lut16,
+        });
+        profile.lut_b_to_a_perceptual = Some(lut.clone());
+        profile.lut_b_to_a_colorimetric = Some(lut);
+        profile.encode().expect("the LUT profile encodes")
+    }
+
+    /// A display profile with no matrix-shaper tags (a calibrated LUT profile) still gets the
+    /// linear light converted through its LUTs, rather than linear values handed on as
+    /// display-encoded ones (dark and contrasty): what the in-place transform's refusal did.
+    #[test]
+    fn a_lut_only_display_profile_still_converts_linear_light() {
+        let lut_icc = lut_only_icc();
+        let target = ColorProfile::new_from_slice(&lut_icc).expect("parses");
+        assert!(
+            !target.is_matrix_shaper(),
+            "the test needs a LUT-only target"
+        );
+        let source = crate::color::linear_rec2020_profile();
+        let input = vec![0.18f32, 0.18, 0.18, 0.5, 0.2, 0.1];
+        let mut got = input.clone();
+        transform_linear_f32_to_display(&mut got, &source, &lut_icc, false);
+        // The reference: `moxcms`' own copying transform through the same LUTs.
+        let mut want = vec![0.0f32; input.len()];
+        source
+            .create_transform_f32(
+                Layout::Rgb,
+                &target,
+                Layout::Rgb,
+                TransformOptions::default(),
+            )
+            .expect("a LUT transform")
+            .transform(&input, &mut want)
+            .expect("runs");
+        assert_ne!(got, input, "left linear");
+        for (g, w) in got.iter().zip(&want) {
+            assert!((g - w).abs() < 1e-5, "{got:?} vs {want:?}");
+        }
+    }
 
     /// Apple's Adobe RGB (1998) ICC profile (560 bytes). Embedded so tests run without filesystem
     /// access. If you swap the color library, these tests verify the replacement produces the
