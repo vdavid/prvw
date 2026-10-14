@@ -3763,6 +3763,67 @@ impl App {
         self.navigation.image_cache.failure(dir.current())
     }
 
+    /// The window's client area is now `size`: resize the surface, refit or re-clamp the zoom,
+    /// and redraw. `WindowEvent::Resized` lands here, and so does the QA server's
+    /// `/window-geometry`, so tests drive the same path a user's drag does.
+    pub(crate) fn handle_window_resized(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        // The Windows browser is a child window covering the client area, so winit's own
+        // resize doesn't reach it: it's told here. macOS pins its split view to the
+        // content view's edges, so it follows on its own.
+        #[cfg(target_os = "windows")]
+        self.browser.relayout();
+        // Re-apply content offset (may change on fullscreen transitions)
+        let offset = self.content_offset_y();
+        self.zoom.view.set_content_offset_y(offset);
+        #[cfg(target_os = "macos")]
+        if let Some(win) = &self.window {
+            window::set_titlebar_vibrancy_visible(win, offset.0 > 0.0);
+            window::set_fullscreen_appearance(win, window::is_fullscreen(win));
+            // The glass frame mask doesn't autoresize; rebuild it for the new size.
+            window::apply_glass_frame_mask(win);
+            // The traffic lights stay nudged across the relayout via the swizzled
+            // frame setters (see `window::register_traffic_light_keeper`).
+        }
+        // Asked before the new size lands: a fitted image follows the window, a zoomed one
+        // keeps its zoom.
+        let was_at_fit = self.zoom.view.is_at_fit();
+        if let Some(renderer) = &mut self.renderer {
+            let (pw, ph) = from_physical_size(size);
+            renderer.resize(pw, ph);
+            if let Some((iw, ih)) = self.navigation.current_image_size {
+                self.zoom.view.update_dimensions(
+                    iw,
+                    ih,
+                    renderer.logical_width(),
+                    renderer.logical_height(),
+                );
+            }
+        }
+        // On a fullscreen transition, re-decide the zoom (fit vs actual size) for the
+        // new viewport mode: entering fullscreen drops auto-fit's grip, so the
+        // fit/enlarge rules apply afresh. Otherwise a resize keeps the user's zoom and
+        // only re-clamps the floor, except that "Enlarge small images" keeps a fitted
+        // image fitted, auto-fit or not: auto-fit governs navigation and zoom, and a size
+        // the user gives the window is theirs to fill. Auto-fit's own resizes land here
+        // too, already at fit, so refitting them changes nothing.
+        let now_fullscreen = self.is_fullscreen();
+        if now_fullscreen != self.was_fullscreen {
+            self.was_fullscreen = now_fullscreen;
+            self.apply_initial_zoom();
+        } else if self.zoom.enlarge && was_at_fit {
+            self.update_min_zoom();
+            self.zoom.view.fit_to_window();
+        } else {
+            // Recalculate zoom floor — image-to-window ratio changed
+            self.update_min_zoom();
+        }
+        if let Some(renderer) = &self.renderer {
+            renderer.update_transform(&self.zoom.view.transform());
+        }
+        self.request_redraw();
+        self.update_shared_state();
+    }
+
     /// Recompute the effective display ICC, update the layer colorspace, flush cache, and re-decode.
     /// Called when either ICC toggle changes. Returns `true` when the profile changed, which
     /// re-decoded the image on screen.
@@ -4475,52 +4536,7 @@ impl ApplicationHandler<AppCommand> for App {
 
             WindowEvent::Resized(size) => {
                 log::debug!("Window resized to {}x{}", size.width, size.height);
-                // The Windows browser is a child window covering the client area, so winit's own
-                // resize doesn't reach it: it's told here. macOS pins its split view to the
-                // content view's edges, so it follows on its own.
-                #[cfg(target_os = "windows")]
-                self.browser.relayout();
-                // Re-apply content offset (may change on fullscreen transitions)
-                let offset = self.content_offset_y();
-                self.zoom.view.set_content_offset_y(offset);
-                #[cfg(target_os = "macos")]
-                if let Some(win) = &self.window {
-                    window::set_titlebar_vibrancy_visible(win, offset.0 > 0.0);
-                    window::set_fullscreen_appearance(win, window::is_fullscreen(win));
-                    // The glass frame mask doesn't autoresize; rebuild it for the new size.
-                    window::apply_glass_frame_mask(win);
-                    // The traffic lights stay nudged across the relayout via the swizzled
-                    // frame setters (see `window::register_traffic_light_keeper`).
-                }
-                if let Some(renderer) = &mut self.renderer {
-                    let (pw, ph) = from_physical_size(size);
-                    renderer.resize(pw, ph);
-                    if let Some((iw, ih)) = self.navigation.current_image_size {
-                        self.zoom.view.update_dimensions(
-                            iw,
-                            ih,
-                            renderer.logical_width(),
-                            renderer.logical_height(),
-                        );
-                    }
-                }
-                // On a fullscreen transition, re-decide the zoom (fit vs actual size) for the
-                // new viewport mode: entering fullscreen drops auto-fit's grip, so the
-                // fit/enlarge rules apply afresh. A plain manual resize keeps the user's zoom
-                // and only re-clamps the floor.
-                let now_fullscreen = self.is_fullscreen();
-                if now_fullscreen != self.was_fullscreen {
-                    self.was_fullscreen = now_fullscreen;
-                    self.apply_initial_zoom();
-                } else {
-                    // Recalculate zoom floor — image-to-window ratio changed
-                    self.update_min_zoom();
-                }
-                if let Some(renderer) = &self.renderer {
-                    renderer.update_transform(&self.zoom.view.transform());
-                }
-                self.request_redraw();
-                self.update_shared_state();
+                self.handle_window_resized(size);
             }
 
             WindowEvent::RedrawRequested if self.needs_redraw => {

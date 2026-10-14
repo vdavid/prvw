@@ -684,6 +684,77 @@ fn actual_size_undoes_enlarging_a_small_image() {
     );
 }
 
+/// The zoom at which the 32×16 fixture below fills the window `state` reports.
+fn fit_of_32x16(state: &serde_json::Value) -> f64 {
+    let width = state["window_width"].as_f64().unwrap();
+    let height =
+        state["window_height"].as_f64().unwrap() - state["content_offset_y"].as_f64().unwrap();
+    (width / 32.0).min(height / 16.0)
+}
+
+/// Resize the window and wait until the app has seen the new size.
+fn resize_window(app: &SharedApp, width: u32, height: u32) -> serde_json::Value {
+    app.post_json(
+        "/window-geometry",
+        &serde_json::json!({"width": width, "height": height}),
+    );
+    app.wait_for_state(Duration::from_secs(5), |s| {
+        s["window_width"].as_u64() == Some(u64::from(width))
+            && s["window_height"].as_u64() == Some(u64::from(height))
+    })
+}
+
+/// A window the user resizes refits a small image that "Enlarge small images" blew up, with
+/// auto-fit on or off: auto-fit decides the window on navigation and zoom, but a size the user
+/// gives the window is theirs, and the enlarge rule fits the image to it. With enlarge off, a
+/// resize leaves the zoom alone.
+///
+/// Regression: David's 32×16 PQ PNG sat at 625% in a window he had dragged three times larger.
+#[test]
+fn resizing_the_window_refits_an_enlarged_small_image() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("small.png");
+    create_white_image(&img_path, 32, 16);
+    let Some(app) =
+        SharedApp::start_with_image(&["AutoFitWindow", "EnlargeSmallImages"], &img_path)
+    else {
+        return;
+    };
+    let close = |zoom: f64, want: f64| (zoom - want).abs() < want * 0.01;
+
+    app.post("/enlarge-small", "on");
+    for auto_fit in ["on", "off"] {
+        app.post("/auto-fit", auto_fit);
+        for (width, height) in [(320, 260), (720, 520), (400, 300)] {
+            let resized = resize_window(&app, width, height);
+            let want = fit_of_32x16(&resized);
+            let state = app.wait_for_state(Duration::from_secs(5), |s| {
+                close(s["zoom"].as_f64().unwrap_or(0.0), want)
+            });
+            assert!(
+                close(state["zoom"].as_f64().unwrap(), want),
+                "auto-fit {auto_fit}, window {width}x{height}: zoom should refit to {want}, got {state}"
+            );
+        }
+    }
+
+    // Enlarge off: the user's resize is no reason to blow the image up.
+    app.post("/enlarge-small", "off");
+    for auto_fit in ["on", "off"] {
+        app.post("/auto-fit", auto_fit);
+        resize_window(&app, 320, 260);
+        std::thread::sleep(Duration::from_millis(200));
+        let before = app.get_state()["zoom"].as_f64().unwrap();
+        resize_window(&app, 720, 520);
+        std::thread::sleep(Duration::from_millis(200));
+        let after = app.get_state()["zoom"].as_f64().unwrap();
+        assert!(
+            close(after, before),
+            "auto-fit {auto_fit}, enlarge off: a resize keeps the zoom ({before} became {after})"
+        );
+    }
+}
+
 // ── Title bar ────────────────────────────────────────────────────────────────────────────────
 //
 // The `TitleBar` capability is what makes these shared rather than macOS-only. Prvw draws behind

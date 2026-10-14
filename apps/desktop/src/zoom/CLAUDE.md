@@ -45,6 +45,15 @@ fullscreen (the window is the whole screen). So the zoom decision uses `App::eff
 new viewport mode. This is also why the "Enlarge small images" menu/settings toggle stays enabled when auto-fit is on:
 it still governs fullscreen.
 
+**A window resize keeps the zoom, except that "Enlarge small images" keeps a fitted image fitted** (David's rule):
+"Auto-fit window" governs navigation and zoom, but a size the user gives the window is theirs, so with enlarge on, an
+image that was at fit before the resize (`ViewState::is_at_fit`, asked before the new size lands) refits to the new
+window, auto-fit on or off. A zoomed-in image keeps its zoom, and with enlarge off every resize only re-clamps the
+floor. Auto-fit's own resizes come through the same `Resized` path already at fit, so refitting them is a no-op.
+`App::handle_window_resized` owns it, and the QA server's `/window-geometry` calls it too, so
+`resizing_the_window_refits_an_enlarged_small_image` drives the path a drag does. **Why (regression):** a 32×16 PNG
+stayed at 625% in a window David had dragged far larger.
+
 ## Transform
 
 Zoom and pan become a 2D affine transform in the vertex shader via `TransformUniform` (a uniform buffer write). No

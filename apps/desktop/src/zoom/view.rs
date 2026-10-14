@@ -107,6 +107,13 @@ impl ViewState {
         self.fit_zoom().min(1.0)
     }
 
+    /// Whether the image is shown at exactly its fit (to a hair, so float noise doesn't count as
+    /// the user having zoomed).
+    pub fn is_at_fit(&self) -> bool {
+        let fit = self.fit_zoom();
+        (self.zoom - fit).abs() <= fit * 1e-4
+    }
+
     /// Set zoom to fit the image in the window, centered.
     pub fn fit_to_window(&mut self) {
         self.zoom = self.fit_zoom();

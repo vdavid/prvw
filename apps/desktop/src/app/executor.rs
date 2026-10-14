@@ -664,24 +664,8 @@ impl App {
                             Logical(new_y as f64),
                         ));
                     }
-                    if let Some(renderer) = &mut self.renderer {
-                        let (pw, ph) = from_physical_size(win.inner_size());
-                        renderer.resize(pw, ph);
-                        if let Some((iw, ih)) = self.navigation.current_image_size {
-                            self.zoom.view.update_dimensions(
-                                iw,
-                                ih,
-                                renderer.logical_width(),
-                                renderer.logical_height(),
-                            );
-                        }
-                    }
-                    self.update_min_zoom();
-                    if let Some(renderer) = &self.renderer {
-                        renderer.update_transform(&self.zoom.view.transform());
-                    }
-                    self.request_redraw();
-                    self.update_shared_state();
+                    let size = win.inner_size();
+                    self.handle_window_resized(size);
                 }
             }
             AppCommand::ScrollZoom {
