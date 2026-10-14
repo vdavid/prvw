@@ -865,3 +865,31 @@ Filled in by the implementing agent during M0 and later. Date each entry.
     `the_curve_is_monotonic_and_smooth_across_peaks_and_headrooms` (four masters by six headrooms, slope 1 at the knee),
     `bt2390_runs_where_its_knee_leaves_white_alone`. All three failed first with the anchor set to 0, which is pure
     BT.2390.
+- **2026-10-14, M4 review lows, fixed.**
+  - **L1, 16 bits on an SDR display:** the CPU SDR rendition was RGBA8 even for the viewer, so a 16-bit PQ/HLG PNG or an
+    HDR float TIFF rounded to 8 bits right after a strong tone curve. The viewer now gets M1's 16-bit `DisplaySdr`
+    half-floats; only the byte consumers get RGBA8. The SDR float TIFF path folded into the same function.
+  - **L3, a LUT-only display profile:** `moxcms`' in-place f32 transform refuses a non-matrix-shaper target, and the
+    rendition went out still linear. `transform_linear_f32_to_display` sends such targets through `moxcms`' copying f32
+    transform, which runs the LUTs. **Still open for RAW:** `transform_f32_with_profile` has the same refusal, so a RAW
+    on a LUT-only calibrated display shows linear (dark) in SDR; not changed here, since RAW's path stays as it is until
+    David decides on M1.
+  - **L4, float TIFF alpha:** NaN alpha reads as 1 (opaque), alpha clamps to [0, 1], and a non-matrix-shaper ICC on a
+    float TIFF logs that it's taken as linear BT.709.
+  - **L5, luminance weights in the source's white:** a float TIFF's weights now undo the D50 adaptation back to its own
+    white (`icc_white`: `chad⁻¹ · D50` for ICC v4, else the white-point tag), so ProPhoto keeps its D50 weights. Found
+    on the way: `moxcms` writes Bradford's cone matrix as every profile's `chad`, which isn't an adaptation, so a `chad`
+    whose white doesn't have Y = 1 is ignored.
+- **2026-10-14, M4 review L2, decided: HLG keeps the fixed 1,000-nit OOTF, then the tone map.** BT.2100's HLG is
+  display-referred, and a display at `Lw` nits would use system gamma `1.2 + 0.42 × log10(Lw / 1000)` and need no tone
+  map. Prvw renders HLG at its nominal 1,000-nit display and tone-maps from there, for three reasons:
+  1. One light for both renditions: the CPU SDR rendition and the GPU at headroom 1 stay the same image, which a
+     per-target gamma would break (the GPU's target moves with brightness every frame, and its OOTF would have to move
+     with it in the shader).
+  2. With M3's white-anchored shoulder, HLG's reference white (75% signal) lands at 0.90 of SDR white on an SDR target,
+     so the dimming that made a display-adaptive gamma attractive is gone.
+  3. Every HLG file is mastered for the 1,000-nit reference display the 1.2 gamma belongs to; rendering it there first
+     is the faithful starting point.
+  - **The alternative, if QA says HLG looks off on SDR:** on the CPU fallback only, render with the display-adaptive
+    gamma at `Lw` = 203 nits (BT.2100's extended formula gives about 0.95) and skip the tone map. It would match a
+    native HLG SDR display more closely, at the cost of the SDR rendition no longer matching headroom 1 on an HDR one.

@@ -180,8 +180,9 @@ How each source gets to light:
   chunk (PNG is RGB only) and are ignored, as are code points `moxcms` can't build a profile from. `image` still decodes
   the pixels. Narrow-range files are scaled to full range first, in the source's own bit depth.
 - **PQ:** SMPTE ST 2084's EOTF to nits, over 203. **HLG:** BT.2100's inverse OETF, then its OOTF at the nominal 1,000
-  nits (system gamma 1.2), over 203; HLG's 75% signal is reference white. Both run through a 64K lookup table per
-  transfer (built once), and HLG adds a `powf` per pixel for the OOTF.
+  nits (system gamma 1.2), over 203; HLG's 75% signal is reference white. Fixed at 1,000 nits rather than adapted to the
+  display, so the SDR rendition and the GPU at headroom 1 stay one image (decided in the spec's Findings, review L2).
+  Both run through a 64K lookup table per transfer (built once), and HLG adds a `powf` per pixel for the OOTF.
 - **Float TIFF** (`Rgb32F` / `Rgba32F` from `image`): already linear, 1.0 = SDR white. The ICC profile's colorants name
   the primaries when it's a matrix-shaper profile, BT.709 otherwise (logged at `debug`); its curves are ignored. A NaN
   color becomes 0, a NaN alpha 1 (the pixel stays rather than vanishing), alpha clamps to [0, 1], and color past the
