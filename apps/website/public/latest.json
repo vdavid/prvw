@@ -1,24 +1,24 @@
 {
-  "version": "0.17.0",
+  "version": "0.18.0",
   "dmgSizes": {
-    "aarch64": 23161741,
-    "x86_64": 24347683,
-    "universal": 45887661
+    "aarch64": 23407651,
+    "x86_64": 24609336,
+    "universal": 46419635
   },
-  "pub_date": "2026-09-24T06:01:27Z",
+  "pub_date": "2026-10-14T09:51:54Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/vdavid/prvw/releases/download/v0.17.0/Prvw_0.17.0_aarch64.dmg"
+      "url": "https://github.com/vdavid/prvw/releases/download/v0.18.0/Prvw_0.18.0_aarch64.dmg"
     },
     "darwin-x86_64": {
-      "url": "https://github.com/vdavid/prvw/releases/download/v0.17.0/Prvw_0.17.0_x86_64.dmg"
+      "url": "https://github.com/vdavid/prvw/releases/download/v0.18.0/Prvw_0.18.0_x86_64.dmg"
     },
     "darwin-universal": {
-      "url": "https://github.com/vdavid/prvw/releases/download/v0.17.0/Prvw_0.17.0_universal.dmg"
+      "url": "https://github.com/vdavid/prvw/releases/download/v0.18.0/Prvw_0.18.0_universal.dmg"
     },
     "windows-x86_64": {
-      "url": "https://github.com/vdavid/prvw/releases/download/v0.17.0/PrvwSetup-0.17.0-x64.exe",
-      "size": 17728226
+      "url": "https://github.com/vdavid/prvw/releases/download/v0.18.0/PrvwSetup-0.18.0-x64.exe",
+      "size": 17983875
     }
   }
 }
