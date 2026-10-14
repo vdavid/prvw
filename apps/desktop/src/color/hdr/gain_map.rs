@@ -91,11 +91,12 @@ impl GainMapSpaces {
 
 /// A conversion within this of the identity, in every coefficient, is the identity: two
 /// profiles naming the same primaries (Apple's Display P3 and `moxcms`') differ in their
-/// colorants' last digits (about 1e-5), and the almost-identity leaks each channel into the
-/// others. A 1e-4 leak from a saturated channel into a black one is 1e-4 linear, about a third of
-/// an sRGB code near black (where codes are 3e-4 apart); real conversions (sRGB to P3) move
-/// coefficients by about 1e-1.
-const IDENTITY_TOLERANCE: f64 = 1e-4;
+/// colorants' last digits, and the almost-identity leaks each channel into the others. The
+/// iPhone's Display P3 is 3.5e-4 off `moxcms`' (`moxcms` against itself, 1e-5), so the tolerance
+/// can't go much tighter. What it lets through at worst: a saturated channel leaking 1e-3 linear
+/// into a black one, about three sRGB codes near black and invisible above it. Real conversions
+/// (sRGB to P3) move coefficients by about 1e-1.
+const IDENTITY_TOLERANCE: f64 = 1e-3;
 
 /// A `moxcms` conversion matrix in our shape, snapped to the exact identity within
 /// [`IDENTITY_TOLERANCE`]. Scene-linear sources (`decoding::scene_linear`) go through it too.
@@ -518,19 +519,6 @@ mod tests {
         // An sRGB base is a real conversion, and stays one.
         let srgb = GainMapSpaces::new(crate::color::srgb_icc_bytes(), None, true);
         assert_ne!(srgb.p3_to_app, IDENTITY);
-    }
-
-    /// A conversion a few 8-bit codes off the identity near black is a real one: 5e-4 of a
-    /// saturated channel leaking into a dark one is about 1.5 sRGB codes there.
-    #[test]
-    fn a_conversion_a_few_codes_off_the_identity_is_kept() {
-        let mut m = moxcms::Matrix3d {
-            v: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-        };
-        m.v[1][0] = 5e-4;
-        assert_ne!(to_mat3(m), IDENTITY);
-        m.v[1][0] = 2e-5;
-        assert_eq!(to_mat3(m), IDENTITY);
     }
 
     #[test]
