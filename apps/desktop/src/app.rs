@@ -3850,15 +3850,22 @@ impl App {
     fn adopt_display_hdr(&mut self, measured: DisplayHdr) -> bool {
         let was_active = self.hdr_active();
         let old = self.display_hdr;
-        if display_hdr::headroom_moved(old.headroom_now, measured.headroom_now) {
+        // Both halves of the frame uniform move with the user's brightness settings, and both go
+        // through the same one-buffer write: neither touches anything decoded.
+        if display_hdr::headroom_moved(old.headroom_now, measured.headroom_now)
+            || display_hdr::headroom_moved(old.sdr_white_scale, measured.sdr_white_scale)
+        {
             log::debug!(
-                "Display headroom now: {:.2} -> {:.2}",
+                "Display headroom now: {:.2} -> {:.2}, SDR white scale {:.2} -> {:.2}",
                 old.headroom_now,
-                measured.headroom_now
+                measured.headroom_now,
+                old.sdr_white_scale,
+                measured.sdr_white_scale
             );
             self.display_hdr.headroom_now = measured.headroom_now;
+            self.display_hdr.sdr_white_scale = measured.sdr_white_scale;
             if let Some(renderer) = &self.renderer {
-                renderer.set_headroom_now(measured.headroom_now);
+                renderer.set_display_frame(measured.headroom_now, measured.sdr_white_scale);
             }
             self.request_redraw();
         }

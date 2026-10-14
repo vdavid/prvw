@@ -743,3 +743,18 @@ Filled in by the implementing agent during M0 and later. Date each entry.
   through `ImagePipeline::frame_bind_group_for(edr_surface)`, which hands any non-EDR surface the headroom-1 group the
   screenshot already used: the gain map's SDR base, and mode 3's tone map onto SDR white. The GPU test renders both at
   headroom 8 onto a non-EDR target and gets the headroom-1 bits exactly.
+- **2026-10-14, review fix: Windows' scRGB surface put SDR white at 80 nits.** On a DXGI `Rgba16Float` swapchain in
+  `DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709`, 1.0 is 80 nits, and Windows composites SDR at the user's SDR content
+  brightness, so modes 1 and 2 (and 3) showed SDR white about 3× too dark next to a 250-nit desktop. wgpu does expose
+  the number: `DisplayHdrInfo::luminance.sdr_white_nits`, from `DISPLAYCONFIG_SDR_WHITE_LEVEL`, read on every
+  `display_hdr_info` call. `DisplayHdr` now carries `sdr_white_scale` (`sdr_white_nits / 80` on an scRGB host with HDR
+  mode on, 1.0 on macOS and whenever the number is missing), `DisplayHdr::from_info` takes the `HdrDisplaySpace` so both
+  platforms test from any host, the 500 ms poll and `FrameUniform` carry it, and the shader multiplies its final colour
+  by it. The headroom is already peak over SDR white on Windows, so the gain and the tone map are unchanged.
+  - **Applied to every mode on the EDR surface, not only 1–3**: the checkerboard and a `DisplaySdr` image mid-crossfade
+    are in SDR-white units too, and leaving them out would drop them to 80 nits beside the HDR image. An SDR surface
+    binds the headroom-1 group, whose scale is 1.0, so nothing SDR changes.
+  - The overlay pills and text draw through their own pipeline and stay unscaled on an EDR surface; that's dim on
+    Windows HDR too, and outside this fix.
+  - Verified by unit tests on `from_info` and a GPU test (each HDR mode at 3.125 is its unscaled render times 3.125);
+    nobody has looked at a real Windows HDR display with it yet.

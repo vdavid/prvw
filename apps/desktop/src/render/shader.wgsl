@@ -59,9 +59,11 @@ var<uniform> image: ImageParams;
 struct Frame {
     // The display's current headroom over SDR white, >= 1.0.
     headroom_now: f32,
+    // SDR white in the surface's units: 1.0 except on an scRGB EDR surface, where 1.0 is 80 nits
+    // and SDR white is the user's SDR content brightness (`DisplayHdr::sdr_white_scale`).
+    sdr_white_scale: f32,
     _pad0: f32,
     _pad1: f32,
-    _pad2: f32,
 };
 
 @group(1) @binding(0)
@@ -291,5 +293,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let bg = checkerboard(input.position.xy);
         rgb = shaded * color.a + bg * (1.0 - color.a);
     }
-    return vec4<f32>(rgb, fade);
+    // Every mode works in SDR-white units; this puts them in the surface's. A surface that can't
+    // show HDR binds the frame with 1.0 here (`ImagePipeline::frame_bind_group_for`).
+    return vec4<f32>(rgb * frame.sdr_white_scale, fade);
 }

@@ -3,17 +3,17 @@
 Not a feature. This is the GPU rendering scaffolding. Features like `zoom` (which owns `ViewState`) plug transforms into
 the renderer's uniform buffer via `crate::zoom::view::TransformUniform`.
 
-| File                | Purpose                                                                                       |
-| ------------------- | --------------------------------------------------------------------------------------------- |
-| `gpu.rs`            | Which backend and which adapter this platform asks wgpu for, as a pure policy                 |
-| `display_hdr.rs`    | `DisplayHdr { capable, headroom_now }` read out of wgpu's `DisplayHdrInfo`, pure and testable |
-| `image_pipeline.rs` | The image quad's shader, bind group layouts, per-frame uniform, and upload; GPU parity tests  |
-| `renderer.rs`       | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback |
-| _(HDR)_             | `display_hdr` and `configure_surface` live in `renderer.rs`; see the sections below           |
-| `text.rs`           | `glyphon`-based text layout and rendering for the overlay pill                                |
-| `progress_bar.rs`   | Pure layout for the read progress bar under the "Loading…" overlay: three overlay pills       |
-| `shader.wgsl`       | Image-quad shader: 2D affine transform, one colour branch per `ShaderMode`                    |
-| `overlay.wgsl`      | Rounded-rect pill shader for the title overlay                                                |
+| File                | Purpose                                                                                                 |
+| ------------------- | ------------------------------------------------------------------------------------------------------- |
+| `gpu.rs`            | Which backend and which adapter this platform asks wgpu for, as a pure policy                           |
+| `display_hdr.rs`    | `DisplayHdr { capable, headroom_now, sdr_white_scale }` from wgpu's `DisplayHdrInfo`, pure and testable |
+| `image_pipeline.rs` | The image quad's shader, bind group layouts, per-frame uniform, and upload; GPU parity tests            |
+| `renderer.rs`       | `wgpu` instance/device/surface, two pipelines (image quad, overlay pill), screenshot readback           |
+| _(HDR)_             | `display_hdr` and `configure_surface` live in `renderer.rs`; see the sections below                     |
+| `text.rs`           | `glyphon`-based text layout and rendering for the overlay pill                                          |
+| `progress_bar.rs`   | Pure layout for the read progress bar under the "Loading…" overlay: three overlay pills                 |
+| `shader.wgsl`       | Image-quad shader: 2D affine transform, one colour branch per `ShaderMode`                              |
+| `overlay.wgsl`      | Rounded-rect pill shader for the title overlay                                                          |
 
 ## Decision: the backend is pinned per platform, with a wider fallback
 
@@ -65,6 +65,14 @@ Three things have to agree, and only one of them is a compile error if it doesn'
 - **The pixels** come from `color::profiles::HdrDisplaySpace::for_host()`, which picks linear Display P3 on macOS and
   linear BT.709 elsewhere to match. That decision lives with the colour maths, and `color/CLAUDE.md` argues it.
 
+**SDR white isn't 1.0 on scRGB.** An scRGB swapchain's 1.0 is 80 nits, while Windows composites SDR (the desktop, every
+other window) at the user's SDR content brightness, `sdr_white_nits` (wgpu reads `DISPLAYCONFIG_SDR_WHITE_LEVEL`). Every
+mode works in SDR-white units, so the shader multiplies its final colour by `FrameUniform::sdr_white_scale`
+(`sdr_white_nits / 80` there, 1.0 on macOS, whose EDR 1.0 is SDR white); without it, HDR images sat at 80 nits, about a
+third of a 250-nit desktop. The headroom stays in SDR-white units (Windows reports it as peak over SDR white), so the
+gain and the tone map don't move. The scale rides the headroom's 500 ms poll, and only the live group carries it, which
+only an EDR surface binds (`an_edr_surface_scales_every_mode_to_sdr_white`).
+
 `hdr_surface_supported` asks for the format _and_ the colour space together, because a surface offering one without the
 other would take the configure and then clamp everything at display white.
 
@@ -112,13 +120,13 @@ sampler, and the per-frame uniform, and needs only a device and a queue. `Render
   3's source-to-display matrix and a `vec4` of luminance weights plus the content peak; 320 bytes, pinned by a
   compile-time size assert). The crossfade rebinds the outgoing `GpuImage` through `prev_uniform_buffer`, so it keeps
   its own texture, map, and mode while the incoming image fades in over it.
-- **Group 1 is per frame**: `FrameUniform { headroom_now }`, one buffer for the whole renderer. A headroom change is
-  `Renderer::set_headroom_now` plus a redraw; nothing per image is rewritten, which is the whole point of the design.
-  `capture_screenshot` binds a second group 1 pinned at 1.0, so the headroom-dependent modes screenshot as their SDR
-  rendition, and the live render binds that one too whenever the surface isn't EDR (`frame_bind_group_for`): decoding
-  gates on the display being capable, but the surface can still stay SDR (macOS refusing EDR, Windows falling back from
-  DX12 to Vulkan), and the live headroom would then lift a gain map or a tone map past the surface's 1.0, where it
-  clips. `an_sdr_surface_shows_the_sdr_rendition_at_any_headroom` is the anchor.
+- **Group 1 is per frame**: `FrameUniform { headroom_now, sdr_white_scale }`, one buffer for the whole renderer. A
+  headroom change is `Renderer::set_display_frame` plus a redraw; nothing per image is rewritten, which is the whole
+  point of the design. `capture_screenshot` binds a second group 1 pinned at 1.0, so the headroom-dependent modes
+  screenshot as their SDR rendition, and the live render binds that one too whenever the surface isn't EDR
+  (`frame_bind_group_for`): decoding gates on the display being capable, but the surface can still stay SDR (macOS
+  refusing EDR, Windows falling back from DX12 to Vulkan), and the live headroom would then lift a gain map or a tone
+  map past the surface's 1.0, where it clips. `an_sdr_surface_shows_the_sdr_rendition_at_any_headroom` is the anchor.
 - **Modes** (`color::hdr::fragment::ShaderMode`, mirrored as constants in `shader.wgsl`): 0 `DisplaySdr` and 1
   `LinearHdrDisplay` are passthrough, 2 `GainMap` applies a gain map, and 3 `SceneLinear` tone-maps linear light down to
   the headroom. The checkerboard composite and the crossfade `fade` stay after the mode's math for every mode.

@@ -96,14 +96,21 @@ const _: () = assert!(std::mem::size_of::<ImageParams>() == 16 + 6 * 16 + 9 * 16
 pub struct FrameUniform {
     /// The display's current headroom over SDR white, at least 1.0.
     pub headroom_now: f32,
-    pub _pad: [f32; 3],
+    /// What every fragment's final colour is multiplied by: SDR white in the surface's units
+    /// (`DisplayHdr::sdr_white_scale`). Above 1.0 only on an scRGB EDR surface.
+    pub sdr_white_scale: f32,
+    pub _pad: [f32; 2],
 }
 
 impl FrameUniform {
-    pub fn with_headroom(headroom_now: f32) -> Self {
+    /// What a surface that can't show HDR gets: SDR white at 1.0, no headroom.
+    pub const SDR: Self = Self::new(1.0, 1.0);
+
+    pub const fn new(headroom_now: f32, sdr_white_scale: f32) -> Self {
         Self {
             headroom_now,
-            _pad: [0.0; 3],
+            sdr_white_scale,
+            _pad: [0.0; 2],
         }
     }
 }
@@ -230,10 +237,10 @@ impl ImagePipeline {
         );
         let placeholder_gain_map = placeholder.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let frame_group = |label, headroom| {
+        let frame_group = |label, frame: FrameUniform| {
             let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
-                contents: bytemuck::bytes_of(&FrameUniform::with_headroom(headroom)),
+                contents: bytemuck::bytes_of(&frame),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
             let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -246,8 +253,9 @@ impl ImagePipeline {
             });
             (buffer, group)
         };
-        let (frame_buffer, frame_bind_group) = frame_group("frame uniform", 1.0);
-        let (_sdr_frame_buffer, sdr_frame_bind_group) = frame_group("SDR frame uniform", 1.0);
+        let (frame_buffer, frame_bind_group) = frame_group("frame uniform", FrameUniform::SDR);
+        let (_sdr_frame_buffer, sdr_frame_bind_group) =
+            frame_group("SDR frame uniform", FrameUniform::SDR);
 
         Self {
             shader,
@@ -303,14 +311,10 @@ impl ImagePipeline {
         })
     }
 
-    /// Tell every image on screen the display's current headroom. One buffer write; the caller
+    /// Tell every image on screen what the display is doing now. One buffer write; the caller
     /// asks for a redraw.
-    pub fn set_headroom_now(&self, queue: &wgpu::Queue, headroom_now: f32) {
-        queue.write_buffer(
-            &self.frame_buffer,
-            0,
-            bytemuck::bytes_of(&FrameUniform::with_headroom(headroom_now)),
-        );
+    pub fn set_frame(&self, queue: &wgpu::Queue, frame: FrameUniform) {
+        queue.write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&frame));
     }
 
     /// Group 1 at headroom 1.0, so a render shows the SDR rendition.
@@ -523,16 +527,17 @@ mod gpu_parity {
     /// Render `image` at `headroom_now` into an EDR target and read back linear RGB per pixel, row
     /// by row.
     fn render(image: &DecodedImage, headroom_now: f32) -> Vec<[f32; 3]> {
-        render_onto(image, headroom_now, true)
+        render_onto(image, FrameUniform::new(headroom_now, 1.0), true)
     }
 
-    /// [`render`], choosing group 1 the way the renderer does for a surface that is or isn't EDR.
-    fn render_onto(image: &DecodedImage, headroom_now: f32, edr_surface: bool) -> Vec<[f32; 3]> {
+    /// [`render`] with the whole live frame uniform, choosing group 1 the way the renderer does for
+    /// a surface that is or isn't EDR.
+    fn render_onto(image: &DecodedImage, frame: FrameUniform, edr_surface: bool) -> Vec<[f32; 3]> {
         let (device, queue) = headless_gpu();
         let pipeline = ImagePipeline::new(&device, &queue);
         let format = wgpu::TextureFormat::Rgba16Float;
         let render_pipeline = pipeline.build(&device, format);
-        pipeline.set_headroom_now(&queue, headroom_now);
+        pipeline.set_frame(&queue, frame);
 
         // Identity transform, fade 1.0: the quad covers the target exactly.
         let transform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -878,6 +883,31 @@ mod gpu_parity {
         );
     }
 
+    /// On an scRGB EDR surface (1.0 = 80 nits) every mode's output is scaled so SDR white lands
+    /// on the desktop's SDR white: 250 nits here, 3.125 units. The headroom stays in SDR-white
+    /// units, so the gain and the tone map don't move.
+    #[test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "Linux CI runners have no GPU adapter; macOS and Windows run this"
+    )]
+    fn an_edr_surface_scales_every_mode_to_sdr_white() {
+        let scale = 250.0 / 80.0;
+        let raw = DecodedImage::from_linear_hdr_rgba16f(4, 1, strip_f16(&[0.0, 0.18, 1.0, 4.0]));
+        for image in [raw, gain_mapped(), scene_linear()] {
+            let plain = render(&image, 4.0);
+            let scaled = render_onto(&image, FrameUniform::new(4.0, scale), true);
+            for (want, got) in plain.iter().flatten().zip(scaled.iter().flatten()) {
+                let want = want * scale;
+                assert!(
+                    (got - want).abs() <= 1e-3 + want.abs() * 2e-3,
+                    "{:?}: {got} vs {want}",
+                    image.encoding.shader_mode()
+                );
+            }
+        }
+    }
+
     /// An HDR image on a surface that stayed SDR (macOS refusing EDR, Windows' DX12 to Vulkan
     /// fallback) draws its headroom-1 rendition, whatever the display's headroom says: the gain
     /// map's SDR base and the scene-linear tone map onto SDR white, where the live headroom would
@@ -890,7 +920,7 @@ mod gpu_parity {
     fn an_sdr_surface_shows_the_sdr_rendition_at_any_headroom() {
         for image in [gain_mapped(), scene_linear()] {
             let want = render(&image, 1.0);
-            let got = render_onto(&image, 8.0, false);
+            let got = render_onto(&image, FrameUniform::new(8.0, 3.0), false);
             assert_eq!(got, want, "{:?}", image.encoding.shader_mode());
         }
     }

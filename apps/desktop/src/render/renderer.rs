@@ -640,7 +640,7 @@ impl Renderer {
     pub fn display_hdr(&self) -> DisplayHdr {
         let info = self.surface.display_hdr_info(&self.adapter);
         log::trace!("Display HDR info: {info:?}");
-        DisplayHdr::from_info(&info)
+        DisplayHdr::from_info(&info, crate::color::profiles::HdrDisplaySpace::for_host())
     }
 
     /// Whether the surface is in EDR mode right now (`Rgba16Float`).
@@ -760,12 +760,14 @@ impl Renderer {
         self.image = Some(BoundImage { gpu, bind_group });
     }
 
-    /// Tell the shader the display's current headroom. One uniform write that
-    /// every image on screen shares; nothing is re-uploaded. The caller asks
-    /// for the redraw.
-    pub fn set_headroom_now(&self, headroom_now: f32) {
-        self.image_pipeline
-            .set_headroom_now(&self.queue, headroom_now);
+    /// Tell the shader the display's current headroom and where SDR white sits in the EDR
+    /// surface's units. One uniform write that every image on screen shares; nothing is
+    /// re-uploaded. The caller asks for the redraw.
+    pub fn set_display_frame(&self, headroom_now: f32, sdr_white_scale: f32) {
+        self.image_pipeline.set_frame(
+            &self.queue,
+            super::image_pipeline::FrameUniform::new(headroom_now, sdr_white_scale),
+        );
     }
 
     /// Update the transform uniform buffer with the current view state.
