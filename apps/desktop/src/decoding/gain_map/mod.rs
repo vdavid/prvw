@@ -79,6 +79,8 @@ struct Candidate {
     has_iso_segment: bool,
     hdrgm: Option<(GainMapParams, GainMapSource)>,
     apple_tagged: bool,
+    /// Tagged as an auxiliary image that isn't a gain map: a depth map, a portrait matte.
+    other_auxiliary: bool,
     icc: Option<Vec<u8>>,
 }
 
@@ -122,10 +124,7 @@ pub fn locate(file: &[u8], primary: &PrimaryHeaders) -> Option<Located> {
         .iter()
         .find_map(|p| crate::color::hdr::parse_iso21496(p));
     if let Some(params) = primary_iso
-        && let Some(c) = candidates
-            .iter()
-            .find(|c| c.has_iso_segment)
-            .or(candidates.first())
+        && let Some(c) = map_for_primary_iso(&candidates)
     {
         return Some(located(c, params, GainMapSource::Iso21496));
     }
@@ -144,6 +143,16 @@ pub fn locate(file: &[u8], primary: &PrimaryHeaders) -> Option<Located> {
         candidates.len()
     );
     None
+}
+
+/// Which appended image full ISO parameters on the primary apply to: one with an ISO segment of
+/// its own, else the first not tagged as another kind of auxiliary image. None at all when every
+/// appended image is a depth map or a matte, which a gain applied from would only garble.
+fn map_for_primary_iso(candidates: &[Candidate]) -> Option<&Candidate> {
+    candidates
+        .iter()
+        .find(|c| c.has_iso_segment)
+        .or_else(|| candidates.iter().find(|c| !c.other_auxiliary))
 }
 
 fn located(c: &Candidate, params: GainMapParams, source: GainMapSource) -> Located {
@@ -225,6 +234,10 @@ fn inspect(file: &[u8], range: Range<usize>) -> Option<Candidate> {
         has_iso_segment: !info.gain_map_info.is_empty(),
         hdrgm: xmp.as_deref().and_then(xmp::parse_hdrgm),
         apple_tagged: xmp.as_deref().is_some_and(xmp::is_apple_gain_map),
+        other_auxiliary: xmp
+            .as_deref()
+            .and_then(xmp::auxiliary_image_type)
+            .is_some_and(|kind| kind != xmp::APPLE_GAIN_MAP_URN),
         icc: decoder.icc_profile(),
     })
 }
@@ -303,6 +316,38 @@ mod tests {
         let found = locate_in(&file).expect("the map, found through MPF");
         assert_eq!(found.source, GainMapSource::Iso21496);
         assert!((found.params.alternate_headroom - 1.7678).abs() < 1e-3);
+    }
+
+    fn candidate(at: usize, has_iso_segment: bool, other_auxiliary: bool) -> Candidate {
+        Candidate {
+            range: at..at + 10,
+            iso: None,
+            has_iso_segment,
+            hdrgm: None,
+            apple_tagged: false,
+            other_auxiliary,
+            icc: None,
+        }
+    }
+
+    /// Full ISO parameters on the primary say "there's a map" without saying which image it is.
+    /// One with an ISO segment of its own is the map; otherwise any image not tagged as some
+    /// other auxiliary image (a depth map, a portrait matte); and a file of nothing but those
+    /// has no map to show.
+    #[test]
+    fn primary_iso_parameters_never_land_on_a_depth_map_or_a_matte() {
+        let depth_then_plain = [candidate(10, false, true), candidate(20, false, false)];
+        assert_eq!(
+            map_for_primary_iso(&depth_then_plain).map(|c| c.range.start),
+            Some(20)
+        );
+        let with_segment = [candidate(10, false, false), candidate(20, true, false)];
+        assert_eq!(
+            map_for_primary_iso(&with_segment).map(|c| c.range.start),
+            Some(20)
+        );
+        let only_mattes = [candidate(10, false, true), candidate(20, false, true)];
+        assert!(map_for_primary_iso(&only_mattes).is_none());
     }
 
     #[test]

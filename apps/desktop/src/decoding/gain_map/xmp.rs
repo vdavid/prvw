@@ -13,7 +13,8 @@ const HDRGM_NS: &str = "http://ns.adobe.com/hdr-gain-map/1.0/";
 const CONTAINER_NS: &str = "http://ns.google.com/photos/1.0/container/";
 const ITEM_NS: &str = "http://ns.google.com/photos/1.0/container/item/";
 /// Apple's tag for the MPF image that holds its HDR gain map (`apdi:AuxiliaryImageType`).
-const APPLE_GAIN_MAP_URN: &str = "urn:com:apple:photo:2020:aux:hdrgainmap";
+pub const APPLE_GAIN_MAP_URN: &str = "urn:com:apple:photo:2020:aux:hdrgainmap";
+const APPLE_PIXEL_DATA_NS: &str = "http://ns.apple.com/pixeldatainfo/1.0/";
 
 /// Whether the packet declares the `hdrgm` namespace at all: the primary's "this is Ultra HDR"
 /// signal, which carries only `hdrgm:Version`.
@@ -24,6 +25,16 @@ pub fn mentions_hdrgm(xmp: &str) -> bool {
 /// Whether this is the XMP of Apple's HDR gain-map image.
 pub fn is_apple_gain_map(xmp: &str) -> bool {
     xmp.contains(APPLE_GAIN_MAP_URN)
+}
+
+/// What kind of auxiliary image Apple tagged this one as (`apdi:AuxiliaryImageType`): the gain
+/// map, a depth map, a portrait matte. `None` when it carries no such tag.
+pub fn auxiliary_image_type(xmp: &str) -> Option<String> {
+    let prefix = prefix_for(xmp, APPLE_PIXEL_DATA_NS)?;
+    match find_field(xmp, prefix, "AuxiliaryImageType")? {
+        Field::Scalar(kind) => Some(kind.trim().to_string()),
+        Field::Seq(_) => None,
+    }
 }
 
 /// Read gain-map parameters from the gain-map image's `hdrgm` XMP, in either of its two
@@ -493,6 +504,23 @@ mod tests {
             apdi:AuxiliaryImageType="urn:com:apple:photo:2020:aux:hdrgainmap"/>"#;
         assert!(is_apple_gain_map(xmp));
         assert!(!is_apple_gain_map(ATTRIBUTE_FORM));
+        assert_eq!(
+            auxiliary_image_type(xmp).as_deref(),
+            Some(APPLE_GAIN_MAP_URN)
+        );
+        assert_eq!(auxiliary_image_type(ATTRIBUTE_FORM), None);
+    }
+
+    /// A portrait matte, written as an element the way iOS does.
+    #[test]
+    fn another_auxiliary_image_type_is_read() {
+        let xmp = r#"<rdf:Description xmlns:apdi="http://ns.apple.com/pixeldatainfo/1.0/">
+            <apdi:AuxiliaryImageType>urn:com:apple:photo:2018:aux:portraiteffectsmatte</apdi:AuxiliaryImageType>
+        </rdf:Description>"#;
+        assert_eq!(
+            auxiliary_image_type(xmp).as_deref(),
+            Some("urn:com:apple:photo:2018:aux:portraiteffectsmatte")
+        );
     }
 
     /// The packet is file bytes: every truncation must answer, never panic.

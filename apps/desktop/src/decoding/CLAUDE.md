@@ -107,9 +107,10 @@ With HDR active:
    the `GContainer` directory's gain-map item, located from the end of the file by its listed length. Each candidate's
    headers are read (no pixels) for its ISO APP2, its XMP, and its ICC profile.
 3. Metadata precedence: ISO 21496-1 (an APP2 on the map, then Apple's XMP form of the same fields, then full parameters
-   on the primary), Ultra HDR XMP, then Apple's maker note with a map tagged `urn:com:apple:photo:2020:aux:hdrgainmap`.
-   Every flavor lands in one `color::hdr::gain_map::GainMapParams`. Apple's carries its own curve (`GainCurve::Apple`)
-   and Apple's headroom formula (`color/CLAUDE.md`).
+   on the primary, applied to the appended image with an ISO segment, else the first one not tagged as a depth map or
+   matte, else none), Ultra HDR XMP, then Apple's maker note with a map tagged
+   `urn:com:apple:photo:2020:aux:hdrgainmap`. Every flavor lands in one `color::hdr::gain_map::GainMapParams`. Apple's
+   carries its own curve (`GainCurve::Apple`) and Apple's headroom formula (`color/CLAUDE.md`).
 4. The map decodes to RGBA8 (a grayscale map replicated into R, G, B), the base is color-managed into **Display P3**,
    and `GainMapSpaces` works out the three matrices the shader's mode 2 needs. A map larger than its base on either side
    is refused. Anything that fails falls back to the SDR path.
