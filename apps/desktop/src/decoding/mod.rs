@@ -358,10 +358,12 @@ pub type SalvageSink = Box<dyn FnOnce(DecodedImage) + Send>;
 /// then the byte count per chunk. The preloader hands one in for the image the user is waiting on
 /// so the "Loading…" overlay can draw a read bar. Pass `None` everywhere else.
 ///
-/// `hdr_display` says the display can show HDR at all (its _potential_
-/// headroom, [`crate::render::display_hdr::DisplayHdr::capable`]). Combined
-/// with `raw_flags.hdr_output == true` it triggers the `RGBA16F` output path
-/// for RAW files. Decoders never read the _current_ headroom: it moves with
+/// `hdr_active` says HDR images decode to HDR: Settings → Color → "HDR output"
+/// is on and the display can show HDR at all (its _potential_ headroom,
+/// [`crate::render::display_hdr::DisplayHdr::capable`]); `App::hdr_active` is
+/// where the two meet. It sends RAW down its `RGBA16F` path, keeps a JPEG's
+/// gain map, and keeps PQ, HLG, and float HDR scene-linear. Off, every format
+/// decodes SDR. Decoders never read the _current_ headroom: it moves with
 /// screen brightness, and the shader applies it per frame instead.
 ///
 /// `depth` is [`OutputDepth::Native`] for the viewer. [`OutputDepth::Rgba8`]
@@ -374,14 +376,14 @@ pub fn load_image(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
     raw_flags: RawPipelineFlags,
-    hdr_display: bool,
+    hdr_active: bool,
     depth: OutputDepth,
     salvage: Option<SalvageSink>,
     read_progress: Option<Arc<ReadProgress>>,
 ) -> Result<DecodedImage, String> {
     // An 8-bit caller gets SDR, whatever the display can do.
-    let hdr_display = match depth {
-        OutputDepth::Native => hdr_display,
+    let hdr_active = match depth {
+        OutputDepth::Native => hdr_active,
         OutputDepth::Rgba8 => false,
     };
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -405,7 +407,7 @@ pub fn load_image(
         target_icc,
         use_relative_colorimetric,
         raw_flags,
-        hdr_display,
+        hdr_active,
         depth,
         salvage,
     )
@@ -476,7 +478,7 @@ fn decode_with(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
     raw_flags: RawPipelineFlags,
-    hdr_display: bool,
+    hdr_active: bool,
     depth: OutputDepth,
     salvage: Option<SalvageSink>,
 ) -> Result<DecodedImage, String> {
@@ -490,8 +492,7 @@ fn decode_with(
             // path) let the closure be `'static`.
             let owned_path = path.to_path_buf();
             let owned_icc = target_icc.to_vec();
-            // Same gate as RAW's: the gain map is only ever read when the result can be shown.
-            let hdr_active = raw_flags.hdr_output && hdr_display;
+            // The gain map is only ever read when the result can be shown.
             run_decode_cancellable(cancelled, salvage, move || {
                 let mut img = jpeg::decode(
                     &owned_path,
@@ -509,8 +510,7 @@ fn decode_with(
             let exif = parse_exif_metadata(&bytes).map(Box::new);
             let owned_path = path.to_path_buf();
             let owned_icc = target_icc.to_vec();
-            // RAW's gate again: PQ, HLG, and float HDR stay scene-linear only when they can be shown.
-            let hdr_active = raw_flags.hdr_output && hdr_display;
+            // PQ, HLG, and float HDR stay scene-linear only when they can be shown.
             run_decode_cancellable(cancelled, salvage, move || {
                 let mut img = generic::decode(
                     &owned_path,
@@ -538,7 +538,7 @@ fn decode_with(
                 target_icc,
                 use_relative_colorimetric,
                 raw_flags,
-                hdr_display,
+                hdr_active,
             )?;
             img.exif = exif_via_nom
                 .or_else(|| raw_metadata.as_ref().and_then(parse_raw_exif))
@@ -928,14 +928,14 @@ mod tests {
             .expect("write 16-bit PNG");
     }
 
-    fn load_at(path: &Path, hdr_display: bool, depth: OutputDepth) -> DecodedImage {
+    fn load_at(path: &Path, hdr_active: bool, depth: OutputDepth) -> DecodedImage {
         load_image(
             path,
             &AtomicBool::new(false),
             color::srgb_icc_bytes(),
             false,
             RawPipelineFlags::default(),
-            hdr_display,
+            hdr_active,
             depth,
             None,
             None,
@@ -971,10 +971,6 @@ mod tests {
     fn load_image_tags_raw_hdr_and_rgba8_depth_turns_it_off() {
         let raw_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/raw/synthetic-bayer-128.dng");
-        assert!(
-            RawPipelineFlags::default().hdr_output,
-            "the test needs HDR on"
-        );
 
         let hdr = load_at(&raw_path, true, OutputDepth::Native);
         assert!(matches!(hdr.pixels, PixelBuffer::Rgba16F(_)));
@@ -1117,25 +1113,10 @@ mod tests {
             panic!("a JPEG decodes to bytes");
         };
 
-        let hdr_off = RawPipelineFlags {
-            hdr_output: false,
-            ..RawPipelineFlags::default()
-        };
+        // An SDR display and HDR output off both reach the decoder as `hdr_active == false`.
         for image in [
             load_at(&path, false, OutputDepth::Native),
             load_at(&path, true, OutputDepth::Rgba8),
-            load_image(
-                &path,
-                &AtomicBool::new(false),
-                color::srgb_icc_bytes(),
-                false,
-                hdr_off,
-                true,
-                OutputDepth::Native,
-                None,
-                None,
-            )
-            .expect("decode"),
         ] {
             assert_eq!(image.encoding, PixelEncoding::DisplaySdr);
             let PixelBuffer::Rgba8(bytes) = &image.pixels else {
@@ -1447,7 +1428,7 @@ mod tests {
             Ok("srgb") => color::srgb_icc_bytes().to_vec(),
             _ => color::display_p3_icc_bytes().to_vec(),
         };
-        let decode = |hdr_display: bool| {
+        let decode = |hdr_active: bool| {
             let start = Instant::now();
             let image = load_image(
                 path,
@@ -1455,7 +1436,7 @@ mod tests {
                 &target,
                 false,
                 RawPipelineFlags::default(),
-                hdr_display,
+                hdr_active,
                 OutputDepth::Native,
                 None,
                 None,
@@ -1463,9 +1444,9 @@ mod tests {
             .expect("decode");
             (start.elapsed().as_secs_f64() * 1e3, image)
         };
-        let median = |hdr_display: bool| {
-            let _ = decode(hdr_display);
-            let mut times: Vec<f64> = (0..7).map(|_| decode(hdr_display).0).collect();
+        let median = |hdr_active: bool| {
+            let _ = decode(hdr_active);
+            let mut times: Vec<f64> = (0..7).map(|_| decode(hdr_active).0).collect();
             times.sort_by(f64::total_cmp);
             times[3]
         };
@@ -1796,7 +1777,7 @@ mod tests {
             super::PixelBuffer::Rgba8(v) => v.as_slice(),
             super::PixelBuffer::Rgba16F(_) => {
                 panic!(
-                    "synthetic DNG shouldn't be HDR: hdr_output is off-by-default via default_flags path when no EDR display is available; this fixture test runs SDR-only"
+                    "synthetic DNG shouldn't be HDR: this fixture test decodes with HDR inactive"
                 )
             }
         };

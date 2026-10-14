@@ -144,6 +144,9 @@ setting_keys! {
     IccColorManagement { label: "ICC color management", panel: Color, control: Toggle, field: "icc_color_management", }
     ColorMatchDisplay { label: "Color match display", panel: Color, control: Toggle, field: "color_match_display", }
     RelativeColorimetric { label: "Relative colorimetric", panel: Color, control: Toggle, field: "use_relative_colorimetric", }
+    /// Show HDR images (RAW, gain-map JPEGs, PQ and HLG PNGs, float TIFFs) brighter than SDR
+    /// white on a display that can. Off, everything renders SDR.
+    HdrOutput { label: "HDR output", panel: Color, control: Toggle, field: "color.hdr_output", }
 
     // ── RAW panel ────────────────────────────────────────────────────
     RawDngOpcodeList1 { label: "DNG OpcodeList 1", panel: Raw, control: Toggle, field: "raw.dng_opcode_list_1", }
@@ -166,7 +169,6 @@ setting_keys! {
     RawSharpenAmount { label: "Sharpening amount", panel: Raw, control: Slider, field: "raw.sharpen_amount", }
     RawChromaDenoise { label: "Chroma noise reduction", panel: Raw, control: Toggle, field: "raw.chroma_denoise", }
     RawLensCorrection { label: "Lens correction", panel: Raw, control: Toggle, field: "raw.lens_correction", }
-    RawHdrOutput { label: "HDR / EDR output", panel: Raw, control: Toggle, field: "raw.hdr_output", }
     RawHdrGain { label: "HDR brightness gain", panel: Raw, control: Slider, field: "raw.hdr_gain", }
     /// Directory of `.dcp` profiles that wins over the bundled collection.
     CustomDcpDir { label: "Custom DCP directory", panel: Raw, control: Path, field: "custom_dcp_dir", }
@@ -214,6 +216,7 @@ impl SettingKey {
             | SettingKey::IccColorManagement
             | SettingKey::ColorMatchDisplay
             | SettingKey::RelativeColorimetric
+            | SettingKey::HdrOutput
             | SettingKey::RawDngOpcodeList1
             | SettingKey::RawDngOpcodeList2
             | SettingKey::RawDngOpcodeList3
@@ -234,7 +237,6 @@ impl SettingKey {
             | SettingKey::RawSharpenAmount
             | SettingKey::RawChromaDenoise
             | SettingKey::RawLensCorrection
-            | SettingKey::RawHdrOutput
             | SettingKey::RawHdrGain
             | SettingKey::CustomDcpDir
             | SettingKey::SlideshowSeconds
@@ -267,6 +269,7 @@ impl SettingKey {
             | SettingKey::IccColorManagement
             | SettingKey::ColorMatchDisplay
             | SettingKey::RelativeColorimetric
+            | SettingKey::HdrOutput
             | SettingKey::RawDngOpcodeList1
             | SettingKey::RawDngOpcodeList2
             | SettingKey::RawDngOpcodeList3
@@ -287,7 +290,6 @@ impl SettingKey {
             | SettingKey::RawSharpenAmount
             | SettingKey::RawChromaDenoise
             | SettingKey::RawLensCorrection
-            | SettingKey::RawHdrOutput
             | SettingKey::RawHdrGain
             | SettingKey::CustomDcpDir
             | SettingKey::SlideshowSeconds
@@ -320,6 +322,7 @@ impl SettingKey {
             | SettingKey::IccColorManagement
             | SettingKey::ColorMatchDisplay
             | SettingKey::RelativeColorimetric
+            | SettingKey::HdrOutput
             | SettingKey::RawDngOpcodeList1
             | SettingKey::RawDngOpcodeList2
             | SettingKey::RawDngOpcodeList3
@@ -340,7 +343,6 @@ impl SettingKey {
             | SettingKey::RawSharpenAmount
             | SettingKey::RawChromaDenoise
             | SettingKey::RawLensCorrection
-            | SettingKey::RawHdrOutput
             | SettingKey::RawHdrGain
             | SettingKey::CustomDcpDir
             | SettingKey::SlideshowSeconds

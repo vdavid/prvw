@@ -59,7 +59,6 @@ const TAG_DCP_TONE_CURVE: isize = 122;
 const TAG_CLARITY: isize = 130;
 const TAG_CAPTURE_SHARPENING: isize = 131;
 const TAG_LENS_CORRECTION: isize = 140;
-const TAG_HDR_OUTPUT: isize = 150;
 /// "Denoise" section toggle. The spec nominally pinned this at 123 inside
 /// the tone-row range, but keeping each section in its own 1xx decade makes
 /// accidental collisions impossible as sections grow — so we park it at
@@ -97,7 +96,6 @@ struct RawDelegateIvars {
     capture_sharpening: *const NSSwitch,
     chroma_denoise: *const NSSwitch,
     lens_correction: *const NSSwitch,
-    hdr_output: *const NSSwitch,
     // Phase 6.0 Tuning sliders + their right-hand value labels.
     baseline_exposure_offset_slider: *const NSSlider,
     baseline_exposure_offset_label: *const NSTextField,
@@ -246,7 +244,6 @@ impl RawDelegate {
             capture_sharpening: switch_is_on(ivars.capture_sharpening),
             chroma_denoise: switch_is_on(ivars.chroma_denoise),
             lens_correction: switch_is_on(ivars.lens_correction),
-            hdr_output: switch_is_on(ivars.hdr_output),
             baseline_exposure_offset: slider_value(ivars.baseline_exposure_offset_slider),
             sharpen_amount: slider_value(ivars.sharpen_amount_slider),
             saturation_boost_amount: slider_value(ivars.saturation_amount_slider),
@@ -258,7 +255,7 @@ impl RawDelegate {
     }
 
     /// Push `flags` into every widget we own: the fourteen switches, the
-    /// three Tuning sliders, and their value labels. Used by the "Reset to
+    /// seven sliders, and their value labels. Used by the "Reset to
     /// defaults" path so a click snaps the UI back to the production
     /// baseline in one atomic step.
     fn write_flags_to_all_widgets(&self, flags: RawPipelineFlags) {
@@ -277,7 +274,6 @@ impl RawDelegate {
         set_switch(ivars.capture_sharpening, flags.capture_sharpening);
         set_switch(ivars.chroma_denoise, flags.chroma_denoise);
         set_switch(ivars.lens_correction, flags.lens_correction);
-        set_switch(ivars.hdr_output, flags.hdr_output);
         set_slider(
             ivars.baseline_exposure_offset_slider,
             flags.baseline_exposure_offset,
@@ -823,14 +819,6 @@ pub(crate) fn build(
             TAG_LENS_CORRECTION,
             mtm,
         ),
-        build_flag_row(
-            audit,
-            SettingKey::RawHdrOutput,
-            "Keep highlights above display-white alive when the screen supports it.",
-            flags.hdr_output,
-            TAG_HDR_OUTPUT,
-            mtm,
-        ),
     ];
 
     // Pull out the toggle pointers before handing rows to the panel.
@@ -922,7 +910,7 @@ pub(crate) fn build(
     let hdr_gain_row = build_slider_row(
         audit,
         SettingKey::RawHdrGain,
-        "Multiplier pushing scene white into EDR headroom. 1.0 = off, 2.0 = double brightness.",
+        "Multiplier pushing scene white into EDR headroom when HDR output (Color) is on. 1.0 = off, 2.0 = double brightness.",
         flags.hdr_gain,
         HDR_GAIN_RANGE.0,
         HDR_GAIN_RANGE.1,
@@ -1023,7 +1011,6 @@ pub(crate) fn build(
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&geometry_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[13].row) }); // lens correction
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&output_header) });
-    panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&rows[14].row) }); // HDR output toggle
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&hdr_gain_row.row) }); // HDR brightness gain slider
     panel.addArrangedSubview(unsafe { as_view::<NSTextField>(&dcp_header) });
     panel.addArrangedSubview(unsafe { as_view::<NSStackView>(&custom_dcp_outer) });
@@ -1077,7 +1064,6 @@ pub(crate) fn build(
         capture_sharpening: toggle_ptrs[11],
         chroma_denoise: toggle_ptrs[12],
         lens_correction: toggle_ptrs[13],
-        hdr_output: toggle_ptrs[14],
         baseline_exposure_offset_slider: slider_ptrs[0],
         baseline_exposure_offset_label: slider_label_ptrs[0],
         sharpen_amount_slider: slider_ptrs[1],

@@ -189,17 +189,17 @@ impl StageTimings {
 /// EXIF info from it as a fallback when nom-exif can't parse the file.
 ///
 /// The buffer comes out as:
-/// - `PixelBuffer::Rgba16F` when `flags.hdr_output == true` **and**
-///   `hdr_display` — the display can show highlights above white,
-///   so we shape the filmic shoulder toward the EDR peak and quantise to
-///   IEEE 754 half-floats.
+/// - `PixelBuffer::Rgba16F` when `hdr_active`: Settings → Color → "HDR
+///   output" is on and the display can show highlights above white, so we
+///   shape the filmic shoulder toward the EDR peak and quantise to IEEE 754
+///   half-floats.
 /// - `PixelBuffer::Rgba8` otherwise — identical output to Phase 4 for SDR
-///   displays or when the user has opted out via the Settings toggle.
+///   displays or when the user has turned HDR output off.
 ///
-/// `hdr_display` is whether the display can show HDR at all (its potential
-/// headroom, `crate::render::display_hdr::DisplayHdr::capable`). The develop
-/// never reads the current headroom: the shoulder peak is fixed, so a
-/// brightness change can't make the same file develop differently.
+/// The display half of `hdr_active` is its potential headroom
+/// (`crate::render::display_hdr::DisplayHdr::capable`). The develop never
+/// reads the current headroom: the shoulder peak is fixed, so a brightness
+/// change can't make the same file develop differently.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode(
     path: &Path,
@@ -208,19 +208,16 @@ pub(super) fn decode(
     target_icc: &[u8],
     use_relative_colorimetric: bool,
     mut flags: RawPipelineFlags,
-    hdr_display: bool,
+    hdr_active: bool,
 ) -> Result<(DecodedImage, u16, Option<rawler::decoders::RawMetadata>), String> {
     let mut timings = StageTimings::new();
     // Defend against hand-edited settings.json with out-of-range knob
     // values. Production-path calls from the Settings panel are already
     // in range, so this is a no-op in the common case.
     flags.clamp_knobs();
-    // Decide upfront whether this decode lands in HDR territory. "HDR" here
-    // means: the user opted in (`flags.hdr_output`), **and** the active
-    // display actually has headroom above display-white. SDR displays
-    // always fall through to the legacy RGBA8 path so we stay bit-identical
-    // to Phase 4 there.
-    let hdr_active = flags.hdr_output && hdr_display;
+    // `hdr_active` decides upfront whether this decode lands in HDR
+    // territory. SDR displays and HDR output off always fall through to the
+    // legacy RGBA8 path so we stay bit-identical to Phase 4 there.
     let peak = if hdr_active {
         // Cap at the user-facing 4× asymptote. Letting the shoulder track
         // the reported headroom would swing the image every time macOS
@@ -584,7 +581,7 @@ pub(super) fn decode(
     timings.mark("tone");
 
     // HDR diagnostic: peak post-tone-curve linear value. Only computed
-    // when `flags.hdr_output` is on — the SDR path never stays above 1.0
+    // when the decode is HDR — the SDR path never stays above 1.0
     // (Phase 4's shoulder clipped there by design), so the measurement
     // would be a constant `1.0` and cost a buffer scan we don't want in
     // the default path. When HDR is on, this tells the user whether the
@@ -593,7 +590,7 @@ pub(super) fn decode(
     // means the EDR path has nothing extra to show, regardless of what
     // the display itself can do). Runs in parallel via rayon so the cost
     // is a single pass over the f32 buffer.
-    if flags.hdr_output && log::log_enabled!(log::Level::Debug) {
+    if hdr_active && log::log_enabled!(log::Level::Debug) {
         let peak_linear = rec2020.par_iter().copied().reduce(|| 0.0_f32, f32::max);
         log::debug!(
             "RAW pipeline peak linear value: {:.2} (EDR-capable content: {}) for {}",
@@ -677,7 +674,7 @@ pub(super) fn decode(
     // the color conversion. With the direct-matrix path above, this
     // should track the pre-ICC peak (modulo gamut projection) and preserve
     // above-white content — unlike the moxcms path, which clipped at 1.0.
-    if flags.hdr_output && log::log_enabled!(log::Level::Debug) {
+    if hdr_active && log::log_enabled!(log::Level::Debug) {
         let peak_post_icc = rec2020.par_iter().copied().reduce(|| 0.0_f32, f32::max);
         log::debug!(
             "RAW pipeline peak post-ICC: {:.2} for {}",

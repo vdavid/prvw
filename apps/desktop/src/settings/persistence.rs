@@ -34,6 +34,11 @@ pub struct Settings {
     #[serde(default)]
     pub use_relative_colorimetric: bool,
 
+    /// Settings → Color settings that came after the three flat ones above. See
+    /// [`ColorSettings`].
+    #[serde(default)]
+    pub color: ColorSettings,
+
     /// When true, scroll wheel/touchpad zooms the image. When false, scroll navigates images.
     #[serde(default)]
     pub scroll_to_zoom: bool,
@@ -113,6 +118,22 @@ pub struct Settings {
     pub custom_dcp_dir: Option<String>,
 }
 
+/// The Color panel's settings that live under `color` in the JSON.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColorSettings {
+    /// Settings → Color → "HDR output": show HDR images (RAW, gain-map JPEGs, PQ and HLG PNGs,
+    /// float TIFFs) brighter than SDR white on a display that can. Off, every image renders SDR.
+    /// Was `raw.hdr_output` when only RAW had HDR; [`Settings::parse`] carries an old value over.
+    #[serde(default = "default_true")]
+    pub hdr_output: bool,
+}
+
+impl Default for ColorSettings {
+    fn default() -> Self {
+        Self { hdr_output: true }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -130,6 +151,7 @@ impl Default for Settings {
             icc_color_management: true,
             color_match_display: true,
             use_relative_colorimetric: false,
+            color: ColorSettings::default(),
             scroll_to_zoom: false,
             preload_neighbors: true,
             title_bar: true,
@@ -152,12 +174,20 @@ impl Settings {
     pub fn load() -> Self {
         let path = settings_path();
         match fs::read_to_string(&path) {
-            Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|e| {
+            Ok(contents) => Self::parse(&contents).unwrap_or_else(|e| {
                 log::warn!("Couldn't parse settings file, using defaults: {e}");
                 Self::default()
             }),
             Err(_) => Self::default(),
         }
+    }
+
+    /// Read a settings file's contents, carrying keys that moved over to where they live now.
+    /// The next [`Self::save`] then writes them only in their new place.
+    fn parse(contents: &str) -> serde_json::Result<Self> {
+        let mut json: serde_json::Value = serde_json::from_str(contents)?;
+        migrate_hdr_output(&mut json);
+        serde_json::from_value(json)
     }
 
     /// Save settings to disk, creating the directory if needed.
@@ -177,6 +207,27 @@ impl Settings {
             }
             Err(e) => log::warn!("Couldn't serialize settings: {e}"),
         }
+    }
+}
+
+/// "HDR output" was `raw.hdr_output` while only RAW had HDR, and is `color.hdr_output` since it
+/// governs every format. An old value moves over unless the new key is already there.
+fn migrate_hdr_output(json: &mut serde_json::Value) {
+    let Some(old) = json
+        .get("raw")
+        .and_then(|raw| raw.get("hdr_output"))
+        .cloned()
+    else {
+        return;
+    };
+    let Some(root) = json.as_object_mut() else {
+        return;
+    };
+    let color = root
+        .entry("color")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(color) = color.as_object_mut() {
+        color.entry("hdr_output").or_insert(old);
     }
 }
 
@@ -427,6 +478,7 @@ mod tests {
             icc_color_management: false,
             color_match_display: false,
             use_relative_colorimetric: true,
+            color: ColorSettings { hdr_output: false },
             scroll_to_zoom: true,
             preload_neighbors: false,
             title_bar: false,
@@ -460,7 +512,32 @@ mod tests {
         assert!(!loaded.raw.default_tone_curve);
         assert!(!loaded.raw.capture_sharpening);
         assert!(loaded.raw.highlight_recovery); // untouched flag stays true
+        assert!(!loaded.color.hdr_output);
         assert_eq!(loaded.custom_dcp_dir.as_deref(), Some("/tmp/my-dcps"));
+    }
+
+    /// "HDR output" moved from Settings → RAW (`raw.hdr_output`) to Settings → Color
+    /// (`color.hdr_output`) when it started governing every HDR format. Someone who had turned
+    /// it off keeps it off.
+    #[test]
+    fn the_old_raw_hdr_output_key_carries_over() {
+        let off = Settings::parse(r#"{"raw": {"hdr_output": false, "clarity": false}}"#).unwrap();
+        assert!(!off.color.hdr_output);
+        assert!(!off.raw.clarity, "the rest of the RAW block still reads");
+
+        let on = Settings::parse(r#"{"raw": {"hdr_output": true}}"#).unwrap();
+        assert!(on.color.hdr_output);
+
+        // Once the new key exists it wins: the old one is a leftover, not a second opinion.
+        let both =
+            Settings::parse(r#"{"raw": {"hdr_output": false}, "color": {"hdr_output": true}}"#)
+                .unwrap();
+        assert!(both.color.hdr_output);
+
+        // And a save writes it in its new place only.
+        let saved = serde_json::to_value(&off).unwrap();
+        assert_eq!(saved["color"]["hdr_output"], false);
+        assert!(saved["raw"].get("hdr_output").is_none());
     }
 
     #[test]
@@ -515,6 +592,8 @@ mod tests {
         assert!(loaded.slideshow_loop);
         // Missing `raw` → all RAW flags default to true.
         assert!(loaded.raw.is_default());
+        // HDR output defaults to on.
+        assert!(loaded.color.hdr_output);
         assert!(loaded.custom_dcp_dir.is_none());
     }
 }

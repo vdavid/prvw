@@ -97,6 +97,7 @@ command_keys! {
     IccColorManagement { label: "ICC color management", area: View, }
     ColorMatchDisplay { label: "Color match display", area: View, }
     RelativeColorimetric { label: "Relative colorimetric", area: View, }
+    HdrOutput { label: "HDR output", area: View, }
     ScrollToZoom { label: "Scroll to zoom", area: View, }
     PreloadNeighbors { label: "Preload next/prev images", area: View, }
     TitleBar { label: "Title bar", area: View, }
@@ -176,6 +177,7 @@ impl CommandKey {
             | CommandKey::IccColorManagement
             | CommandKey::ColorMatchDisplay
             | CommandKey::RelativeColorimetric
+            | CommandKey::HdrOutput
             | CommandKey::ScrollToZoom
             | CommandKey::PreloadNeighbors
             | CommandKey::TitleBar
@@ -235,6 +237,7 @@ impl CommandKey {
             | CommandKey::IccColorManagement
             | CommandKey::ColorMatchDisplay
             | CommandKey::RelativeColorimetric
+            | CommandKey::HdrOutput
             | CommandKey::ScrollToZoom
             | CommandKey::PreloadNeighbors
             | CommandKey::Histogram
@@ -294,6 +297,7 @@ impl CommandKey {
             | CommandKey::IccColorManagement
             | CommandKey::ColorMatchDisplay
             | CommandKey::RelativeColorimetric
+            | CommandKey::HdrOutput
             | CommandKey::ScrollToZoom
             | CommandKey::PreloadNeighbors
             | CommandKey::Histogram

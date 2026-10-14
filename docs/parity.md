@@ -11,15 +11,15 @@ ships without chrome and gets its own spec later (decision 4 in `docs/specs/cros
 
 ## Summary
 
-- macOS: 125 of 125 done, 0 not applicable, 0 missing
-- Windows: 111 of 125 done, 14 not applicable, 0 missing
-- Linux: 32 of 125 done, 13 not applicable, 80 missing
+- macOS: 126 of 126 done, 0 not applicable, 0 missing
+- Windows: 112 of 126 done, 14 not applicable, 0 missing
+- Linux: 33 of 126 done, 13 not applicable, 80 missing
 
 Per registry, as `done / not applicable / missing`:
 
 - Settings (40 entries): macOS 40 / 0 / 0, Windows 39 / 1 / 0, Linux 0 / 1 / 39
 - Menu items (44 entries): macOS 44 / 0 / 0, Windows 33 / 11 / 0, Linux 0 / 10 / 34
-- Commands (41 entries): macOS 41 / 0 / 0, Windows 39 / 2 / 0, Linux 32 / 2 / 7
+- Commands (42 entries): macOS 42 / 0 / 0, Windows 40 / 2 / 0, Linux 33 / 2 / 7
 
 ## What each platform still owes
 
@@ -37,8 +37,8 @@ Nothing missing.
 
 - Setting, General: `AutoUpdate`, `ScrollToZoom`, `PreloadNeighbors`
 - Setting, Zoom: `AutoFitWindow`, `EnlargeSmallImages`
-- Setting, Color: `IccColorManagement`, `ColorMatchDisplay`, `RelativeColorimetric`
-- Setting, RAW: `RawDngOpcodeList1`, `RawDngOpcodeList2`, `RawDngOpcodeList3`, `RawBaselineExposure`, `RawBaselineExposureOffset`, `RawDcpHueSatMap`, `RawDcpLookTable`, `RawSaturationBoost`, `RawSaturationAmount`, `RawHighlightRecovery`, `RawDefaultToneCurve`, `RawToneMidtoneAnchor`, `RawDcpToneCurve`, `RawClarity`, `RawClarityRadius`, `RawClarityAmount`, `RawCaptureSharpening`, `RawSharpenAmount`, `RawChromaDenoise`, `RawLensCorrection`, `RawHdrOutput`, `RawHdrGain`, `CustomDcpDir`
+- Setting, Color: `IccColorManagement`, `ColorMatchDisplay`, `RelativeColorimetric`, `HdrOutput`
+- Setting, RAW: `RawDngOpcodeList1`, `RawDngOpcodeList2`, `RawDngOpcodeList3`, `RawBaselineExposure`, `RawBaselineExposureOffset`, `RawDcpHueSatMap`, `RawDcpLookTable`, `RawSaturationBoost`, `RawSaturationAmount`, `RawHighlightRecovery`, `RawDefaultToneCurve`, `RawToneMidtoneAnchor`, `RawDcpToneCurve`, `RawClarity`, `RawClarityRadius`, `RawClarityAmount`, `RawCaptureSharpening`, `RawSharpenAmount`, `RawChromaDenoise`, `RawLensCorrection`, `RawHdrGain`, `CustomDcpDir`
 - Setting, Slideshow: `SlideshowSeconds`, `SlideshowCrossfade`, `SlideshowLoop`
 - Setting, File associations: `FileAssociations`
 - Setting, Menu only: `HistogramVisible`, `ExifVisible`, `LoopNavigation`, `SortBy`
@@ -100,6 +100,7 @@ Nothing missing.
 - `IccColorManagement` "ICC color management" (setting, Color, toggle, field `icc_color_management`): macOS done, Windows done, Linux missing
 - `ColorMatchDisplay` "Color match display" (setting, Color, toggle, field `color_match_display`): macOS done, Windows done, Linux missing
 - `RelativeColorimetric` "Relative colorimetric" (setting, Color, toggle, field `use_relative_colorimetric`): macOS done, Windows done, Linux missing
+- `HdrOutput` "HDR output" (setting, Color, toggle, field `color.hdr_output`): macOS done, Windows done, Linux missing
 - `RawDngOpcodeList1` "DNG OpcodeList 1" (setting, RAW, toggle, field `raw.dng_opcode_list_1`): macOS done, Windows done, Linux missing
 - `RawDngOpcodeList2` "DNG OpcodeList 2" (setting, RAW, toggle, field `raw.dng_opcode_list_2`): macOS done, Windows done, Linux missing
 - `RawDngOpcodeList3` "DNG OpcodeList 3" (setting, RAW, toggle, field `raw.dng_opcode_list_3`): macOS done, Windows done, Linux missing
@@ -120,7 +121,6 @@ Nothing missing.
 - `RawSharpenAmount` "Sharpening amount" (setting, RAW, slider, field `raw.sharpen_amount`): macOS done, Windows done, Linux missing
 - `RawChromaDenoise` "Chroma noise reduction" (setting, RAW, toggle, field `raw.chroma_denoise`): macOS done, Windows done, Linux missing
 - `RawLensCorrection` "Lens correction" (setting, RAW, toggle, field `raw.lens_correction`): macOS done, Windows done, Linux missing
-- `RawHdrOutput` "HDR / EDR output" (setting, RAW, toggle, field `raw.hdr_output`): macOS done, Windows done, Linux missing
 - `RawHdrGain` "HDR brightness gain" (setting, RAW, slider, field `raw.hdr_gain`): macOS done, Windows done, Linux missing
 - `CustomDcpDir` "Custom DCP directory" (setting, RAW, path, field `custom_dcp_dir`): macOS done, Windows done, Linux missing
 - `SlideshowSeconds` "Time per image" (setting, Slideshow, slider, field `slideshow_seconds`): macOS done, Windows done, Linux missing
@@ -201,6 +201,7 @@ Nothing missing.
 - `IccColorManagement` "ICC color management" (command, View): macOS done, Windows done, Linux done
 - `ColorMatchDisplay` "Color match display" (command, View): macOS done, Windows done, Linux done
 - `RelativeColorimetric` "Relative colorimetric" (command, View): macOS done, Windows done, Linux done
+- `HdrOutput` "HDR output" (command, View): macOS done, Windows done, Linux done
 - `ScrollToZoom` "Scroll to zoom" (command, View): macOS done, Windows done, Linux done
 - `PreloadNeighbors` "Preload next/prev images" (command, View): macOS done, Windows done, Linux done
 - `TitleBar` "Title bar" (command, View): macOS done, Windows not applicable, Linux not applicable

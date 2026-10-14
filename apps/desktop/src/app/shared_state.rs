@@ -128,6 +128,8 @@ pub struct SharedAppState {
     /// What the image on screen's pixels mean (`EncodingKind::name`: `"display_sdr"`,
     /// `"linear_hdr_display"`, `"gain_mapped"`, `"scene_linear"`), or `None` before the first image.
     pub pixel_encoding: Option<&'static str>,
+    /// Settings → Color → "HDR output".
+    pub hdr_output: bool,
     /// Whether the display can show HDR at all (potential headroom), QA override applied.
     pub hdr_capable: bool,
     /// The display's current headroom over SDR white, QA override applied.
@@ -241,6 +243,7 @@ impl Default for SharedAppState {
             tags: None,
             browse_grid_selected_tags: None,
             pixel_encoding: None,
+            hdr_output: true,
             hdr_capable: false,
             headroom_now: 1.0,
             want_edr_surface: false,
@@ -356,6 +359,7 @@ impl App {
         state.pixel_encoding = self
             .current_image_encoding
             .map(crate::decoding::EncodingKind::name);
+        state.hdr_output = self.color.hdr_output;
         state.hdr_capable = self.display_hdr.capable;
         state.headroom_now = self.display_hdr.headroom_now;
         state.want_edr_surface = self.want_edr_surface();

@@ -189,10 +189,9 @@ pub(crate) struct App {
     /// another monitor, and by the headroom poll while an HDR image is on screen.
     pub(crate) display_hdr: DisplayHdr,
     /// What the currently-displayed image's pixels mean, `None` before the
-    /// first one. Its `is_hdr()`, combined with `raw_flags.hdr_output` and
-    /// `display_hdr.capable`, determines whether the wgpu surface should be
-    /// configured for EDR output. Only RAW decodes produce HDR buffers today, so
-    /// it reads SDR again whenever a JPEG / PNG / WebP / etc. loads.
+    /// first one. Its `is_hdr()`, combined with `hdr_active()` (the "HDR
+    /// output" setting and `display_hdr.capable`), determines whether the wgpu
+    /// surface should be configured for EDR output.
     pub(crate) current_image_encoding: Option<decoding::EncodingKind>,
     /// The QA server's stand-in for the display's HDR answer, for test machines
     /// whose displays have none. Empty unless a test set it.
@@ -779,7 +778,7 @@ impl App {
             self.color.display_icc.clone(),
             self.color.relative_col,
             self.raw_flags,
-            self.display_hdr.capable,
+            self.hdr_active(),
             self.event_loop_proxy.clone(),
         ));
 
@@ -1784,7 +1783,7 @@ impl App {
             &self.color.display_icc,
             self.color.relative_col,
             self.raw_flags,
-            self.display_hdr.capable,
+            self.hdr_active(),
             decoding::OutputDepth::Native,
             None, // Synchronous path — never cancelled, so nothing to salvage.
             None, // Nor is there an overlay up to show a read bar on.
@@ -3763,34 +3762,49 @@ impl App {
 
     /// Push new RAW pipeline flags into the preloader, flush the cache, and
     /// re-decode. Phase 3.7 Settings → RAW toggles funnel through here.
-    /// Phase 5: also retunes the cache's memory budget between SDR (512 MB)
-    /// and HDR (1 GB) so the preload count stays constant when the user
-    /// flips `hdr_output`.
     pub(crate) fn apply_raw_flag_change(&mut self) {
-        self.navigation.image_cache.set_hdr_mode(self.hdr_active());
         self.navigation.image_cache.clear();
         if let Some(preloader) = &mut self.navigation.preloader {
             preloader.set_raw_flags(self.raw_flags);
         }
-        if let Some(dir) = &self.navigation.dir_list {
-            let path = dir.current().to_path_buf();
-            // `display_image` updates `current_image_encoding` and calls
-            // `apply_edr_surface_state`, so the surface picks up the new
-            // `hdr_output` flag through the re-decode.
-            self.display_image(&path);
-        } else {
-            // No image yet, but the user toggled hdr_output — make sure
-            // the surface matches in case we later load an image from an
-            // already-primed cache path.
-            self.apply_edr_surface_state();
-        }
+        self.redisplay_current();
     }
 
-    /// Whether decodes produce HDR right now: the user hasn't opted out and the display can show
-    /// it. The one place both inputs meet; the RAW decoder computes the same thing from the two
-    /// values the preloader hands it.
+    /// Settings → Color → "HDR output" changed. Re-decodes only when that flips
+    /// [`Self::hdr_active`]: on a display that can't show HDR, the setting
+    /// changes nothing anyone sees, so nothing is decoded again.
+    pub(crate) fn apply_hdr_output_change(&mut self, on: bool) {
+        let was_active = self.hdr_active();
+        self.color.hdr_output = on;
+        if self.sync_hdr_active(was_active) {
+            self.redisplay_current();
+        }
+        // `display_image` already re-applied the surface state on a re-decode; with nothing on
+        // screen, or nothing flipped, this confirms it.
+        self.apply_edr_surface_state();
+    }
+
+    /// Whether decodes produce HDR right now: "HDR output" is on and the display can show HDR.
+    /// The one place both inputs meet, and what every decoder is handed as `hdr_active`.
     fn hdr_active(&self) -> bool {
-        self.raw_flags.hdr_output && self.display_hdr.capable
+        self.color.hdr_output && self.display_hdr.capable
+    }
+
+    /// Bring what depends on [`Self::hdr_active`] in line after one of its inputs changed: the
+    /// preloader's decodes, the cache's budget, and the cache itself, every buffer in which was
+    /// decoded for the other answer. Returns `true` when it flipped, so the caller re-decodes the
+    /// image on screen; returns `false`, touching nothing, when it didn't.
+    fn sync_hdr_active(&mut self, was_active: bool) -> bool {
+        let active = self.hdr_active();
+        if active == was_active {
+            return false;
+        }
+        if let Some(preloader) = &mut self.navigation.preloader {
+            preloader.set_hdr_active(active);
+        }
+        self.navigation.image_cache.set_hdr_mode(active);
+        self.navigation.image_cache.clear();
+        true
     }
 
     /// What the display can do with HDR, with any QA override applied. [`DisplayHdr::SDR`] until
@@ -3852,9 +3866,9 @@ impl App {
     /// Take a new reading of the display, and re-tune what depends on each half of it.
     ///
     /// A **headroom** change is cheap by design: it's stored for the shader, and nothing decoded
-    /// is touched. A **capability** flip changes what the decoders produce, so it retunes the
-    /// preloader and, when that flips `hdr_active`, the cache's budget and contents: every buffer
-    /// in it was decoded for the other answer. Returns `true` in that last case.
+    /// is touched. A **capability** flip changes what the decoders produce when it flips
+    /// `hdr_active`, so it retunes the preloader and the cache's budget and contents
+    /// ([`Self::sync_hdr_active`]). Returns `true` in that case.
     fn adopt_display_hdr(&mut self, measured: DisplayHdr) -> bool {
         let was_active = self.hdr_active();
         let old = self.display_hdr;
@@ -3884,17 +3898,8 @@ impl App {
                 measured.capable
             );
             self.display_hdr.capable = measured.capable;
-            if let Some(preloader) = &mut self.navigation.preloader {
-                preloader.set_hdr_display(measured.capable);
-            }
         }
-        let active = self.hdr_active();
-        if active == was_active {
-            return false;
-        }
-        self.navigation.image_cache.set_hdr_mode(active);
-        self.navigation.image_cache.clear();
-        true
+        self.sync_hdr_active(was_active)
     }
 
     /// Decode the image on screen again, from the file. For the changes that invalidate what the

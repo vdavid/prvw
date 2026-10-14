@@ -189,6 +189,14 @@ impl App {
                 self.sync_menu_from_settings(&s);
                 self.flush_and_redisplay();
             }
+            AppCommand::SetHdrOutput(enabled) => {
+                log::info!("HDR output set to: {enabled}");
+                let mut s = settings::Settings::load();
+                s.color.hdr_output = enabled;
+                s.save();
+                self.apply_hdr_output_change(enabled);
+                self.update_shared_state();
+            }
             AppCommand::SetScrollToZoom(enabled) => {
                 self.zoom.scroll_to_zoom = enabled;
                 log::debug!("Scroll to zoom set to: {enabled}");

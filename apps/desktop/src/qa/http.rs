@@ -468,6 +468,30 @@ pub(super) fn handle_post_display_hdr(
     )
 }
 
+/// Settings → Color → "HDR output", the way the settings toggle sets it.
+pub(super) fn handle_post_hdr_output(
+    stream: &mut std::net::TcpStream,
+    proxy: &EventLoopProxy<AppCommand>,
+    body: &str,
+    state: &Arc<Mutex<SharedAppState>>,
+) -> Result<(), String> {
+    let value = body.trim().to_lowercase();
+    let enabled = match value.as_str() {
+        "on" | "true" | "1" => true,
+        "off" | "false" | "0" => false,
+        _ => {
+            return write_response(
+                stream,
+                400,
+                "text/plain",
+                b"Body must be 'on'/'off', 'true'/'false', or '1'/'0'",
+                &[],
+            );
+        }
+    };
+    send_and_wait_http(stream, proxy, AppCommand::SetHdrOutput(enabled), state)
+}
+
 pub(super) fn handle_post_scroll_zoom(
     stream: &mut std::net::TcpStream,
     proxy: &EventLoopProxy<AppCommand>,

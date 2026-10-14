@@ -446,6 +446,12 @@ const COLOR: &[Group] = &[Group {
              every color into range (perceptual). With this on, the colors your monitor can \
              show stay exact and the rest are clipped.",
         ),
+        Row::check(
+            SettingKey::HdrOutput,
+            "Shows HDR photos with their bright highlights when Windows has HDR turned on for \
+             this monitor: RAW files, HDR JPEGs from recent phones, and HDR PNGs and TIFFs. \
+             Turn it off to see every image in standard range.",
+        ),
     ],
 }];
 
@@ -574,19 +580,18 @@ const RAW: &[Group] = &[
     },
     Group {
         title: Some("Output"),
-        rows: &[
-            Row::check(
-                SettingKey::RawHdrOutput,
-                "Keep highlights above display white alive when the monitor can show them.",
-            ),
-            Row::bar(
+        // The group's only row since "HDR output" moved to the Color tab, so there's no toggle
+        // above it to sit under.
+        rows: &[Row {
+            indented: false,
+            ..Row::bar(
                 SettingKey::RawHdrGain,
-                "Multiplier that pushes scene white into the monitor's HDR headroom. 1.0 is \
-                 off, 2.0 doubles the brightness.",
+                "Multiplier that pushes scene white into the monitor's HDR headroom when HDR \
+                 output is on (Color tab). 1.0 is off, 2.0 doubles the brightness.",
                 HDR_GAIN_RANGE,
                 ValueFormat::TwoDecimal,
-            ),
-        ],
+            )
+        }],
     },
     Group {
         title: Some("DCP profile"),
@@ -681,6 +686,7 @@ pub fn value_of(key: SettingKey, settings: &Settings) -> Option<Value> {
         K::IccColorManagement => Value::Bool(settings.icc_color_management),
         K::ColorMatchDisplay => Value::Bool(settings.color_match_display),
         K::RelativeColorimetric => Value::Bool(settings.use_relative_colorimetric),
+        K::HdrOutput => Value::Bool(settings.color.hdr_output),
         K::RawDngOpcodeList1 => Value::Bool(raw.dng_opcode_list_1),
         K::RawDngOpcodeList2 => Value::Bool(raw.dng_opcode_list_2),
         K::RawDngOpcodeList3 => Value::Bool(raw.dng_opcode_list_3),
@@ -701,7 +707,6 @@ pub fn value_of(key: SettingKey, settings: &Settings) -> Option<Value> {
         K::RawSharpenAmount => Value::Number(raw.sharpen_amount),
         K::RawChromaDenoise => Value::Bool(raw.chroma_denoise),
         K::RawLensCorrection => Value::Bool(raw.lens_correction),
-        K::RawHdrOutput => Value::Bool(raw.hdr_output),
         K::RawHdrGain => Value::Number(raw.hdr_gain),
         K::CustomDcpDir => Value::Folder(settings.custom_dcp_dir.clone()),
         K::SlideshowSeconds => Value::Number(clamp_seconds(settings.slideshow_seconds) as f32),
@@ -787,6 +792,10 @@ pub fn apply(key: SettingKey, value: &Value, settings: &Settings) -> Option<Chan
             Some(AppCommand::SetRelativeColorimetric(
                 next.use_relative_colorimetric,
             ))
+        }
+        K::HdrOutput => {
+            next.color.hdr_output = on!();
+            Some(AppCommand::SetHdrOutput(next.color.hdr_output))
         }
         K::SlideshowSeconds => {
             next.slideshow_seconds = clamp_seconds(number!().round() as u32);
@@ -886,10 +895,6 @@ pub fn apply(key: SettingKey, value: &Value, settings: &Settings) -> Option<Chan
         }
         K::RawLensCorrection => {
             next.raw.lens_correction = on!();
-            raw_command(&next.raw)
-        }
-        K::RawHdrOutput => {
-            next.raw.hdr_output = on!();
             raw_command(&next.raw)
         }
         K::RawHdrGain => {
@@ -1192,6 +1197,7 @@ mod tests {
             | AppCommand::SetIccColorManagement(on)
             | AppCommand::SetColorMatchDisplay(on)
             | AppCommand::SetRelativeColorimetric(on)
+            | AppCommand::SetHdrOutput(on)
             | AppCommand::SetSlideshowCrossfade(on)
             | AppCommand::SetSlideshowLoop(on) => Some(*on),
             _ => None,
@@ -1361,8 +1367,9 @@ mod tests {
     #[test]
     fn knobs_are_indented_under_their_toggle() {
         for (_, row) in all_rows() {
-            if row.key == SettingKey::SlideshowSeconds {
-                // The slideshow's own bar is the top-level setting, not a knob under one.
+            if row.key == SettingKey::SlideshowSeconds || row.key == SettingKey::RawHdrGain {
+                // The slideshow's own bar is the top-level setting, not a knob under one, and the
+                // HDR gain's toggle ("HDR output") lives on the Color tab.
                 assert!(!row.indented);
                 continue;
             }

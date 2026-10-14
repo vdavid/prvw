@@ -147,6 +147,13 @@ define_class!(
             );
         }
 
+        #[unsafe(method(toggleHdrOutput:))]
+        fn toggle_hdr_output(&self, sender: &NSSwitch) {
+            let on = sender.state() == NSControlStateValueOn;
+            log::debug!("HDR output toggled via settings: {on}");
+            crate::commands::send_command(crate::commands::AppCommand::SetHdrOutput(on));
+        }
+
         #[unsafe(method(toggleScrollToZoom:))]
         fn toggle_scroll_to_zoom(&self, sender: &NSSwitch) {
             let on = sender.state() == NSControlStateValueOn;
@@ -487,6 +494,9 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
             .rc_toggle
             .setAction(Some(sel!(toggleRelativeColorimetric:)));
 
+        color.hdr_toggle.setTarget(Some(&delegate as &AnyObject));
+        color.hdr_toggle.setAction(Some(sel!(toggleHdrOutput:)));
+
         sidebar_general_btn.setTarget(Some(&delegate as &AnyObject));
         sidebar_general_btn.setAction(Some(sel!(selectGeneral:)));
 
@@ -822,6 +832,7 @@ pub fn show_settings_window(parent_ns_window: *const NSWindow) {
     retained_views.push(unsafe { Retained::cast_unchecked(color.icc_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(color.cm_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(color.rc_toggle) });
+    retained_views.push(unsafe { Retained::cast_unchecked(color.hdr_toggle) });
     retained_views.push(unsafe { Retained::cast_unchecked(raw.panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(slideshow.panel) });
     retained_views.push(unsafe { Retained::cast_unchecked(file_assoc_panel) });

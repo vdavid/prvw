@@ -244,6 +244,63 @@ fn a_gain_map_jpeg_follows_the_headroom_without_re_decoding() {
     assert_eq!(sdr["edr_surface"], false);
 }
 
+/// Settings → Color → "HDR output" governs every HDR format. On a display that can show HDR,
+/// turning it off decodes a gain-map JPEG again as its plain SDR JPEG and drops the EDR surface,
+/// and turning it back on restores both. On a display that can't, the setting changes nothing
+/// anyone sees, so neither direction decodes the image again.
+#[test]
+fn hdr_output_re_decodes_only_when_it_changes_what_shows() {
+    let jpeg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/hdr/ultra-hdr-xmp-64x48.jpg");
+    let Some(app) = SharedApp::start_with_image(&["HdrOutput"], &jpeg) else {
+        return;
+    };
+    app.wait_for_state(Duration::from_secs(10), |s| {
+        s["pixel_encoding"].as_str().is_some()
+    });
+
+    let hdr = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": true, "headroom_now": 4.0 }),
+    );
+    assert_eq!(hdr["hdr_output"], true, "HDR output defaults to on");
+    assert_eq!(hdr["pixel_encoding"], "gain_mapped");
+    assert_eq!(hdr["want_edr_surface"], true);
+
+    let off = app.post("/hdr-output", "off");
+    assert_eq!(off["hdr_output"], false);
+    assert!(
+        full_decodes(&off) > full_decodes(&hdr),
+        "turning HDR output off on an HDR display changes the decode"
+    );
+    assert_eq!(off["pixel_encoding"], "display_sdr");
+    assert_eq!(off["want_edr_surface"], false);
+    assert_eq!(off["edr_surface"], false);
+
+    let on = app.post("/hdr-output", "on");
+    assert_eq!(on["hdr_output"], true);
+    assert!(full_decodes(&on) > full_decodes(&off));
+    assert_eq!(on["pixel_encoding"], "gain_mapped");
+    assert_eq!(on["want_edr_surface"], true);
+
+    let sdr_display = app.post_json(
+        "/display-hdr",
+        &serde_json::json!({ "capable": false, "headroom_now": 1.0 }),
+    );
+    assert_eq!(sdr_display["pixel_encoding"], "display_sdr");
+    let decodes = full_decodes(&sdr_display);
+    for setting in ["off", "on"] {
+        let state = app.post("/hdr-output", setting);
+        assert_eq!(state["hdr_output"], setting == "on");
+        assert_eq!(
+            full_decodes(&state),
+            decodes,
+            "HDR output {setting} on an SDR display must not decode the image again"
+        );
+        assert_eq!(state["pixel_encoding"], "display_sdr");
+    }
+}
+
 /// Browse mode shows no HDR image, so the EDR surface and the headroom poll go off while it's up,
 /// and come back with the image: an idle browser never wakes for the display.
 #[test]

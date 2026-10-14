@@ -1,4 +1,4 @@
-//! "Color" panel: ICC color management, display matching, rendering intent.
+//! "Color" panel: ICC color management, display matching, rendering intent, HDR output.
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -18,6 +18,7 @@ pub(crate) struct ColorPanel {
     pub icc_toggle: Retained<NSSwitch>,
     pub cm_toggle: Retained<NSSwitch>,
     pub rc_toggle: Retained<NSSwitch>,
+    pub hdr_toggle: Retained<NSSwitch>,
 }
 
 pub(crate) fn build(
@@ -59,9 +60,22 @@ pub(crate) fn build(
     );
     rc_toggle.setEnabled(settings.icc_color_management);
 
+    // Independent of the ICC switch: the HDR surface's color space defines its values, so HDR
+    // images convert into it whether ICC is on or off (`decoding/CLAUDE.md`).
+    let (hdr_row, hdr_toggle, hdr_desc) = make_setting_row(
+        audit,
+        SettingKey::HdrOutput,
+        "Shows HDR photos with their bright highlights on screens that can, like the XDR displays on MacBook Pros: RAW files, HDR photos from iPhones and Android phones, and HDR PNGs and TIFFs. Turn it off to see every image in standard range.",
+        settings.color.hdr_output,
+        true,
+        content_max_width,
+        mtm,
+    );
+
     let icc_desc_ref = unsafe { as_view::<NSTextField>(&icc_desc) };
     let cm_desc_ref = unsafe { as_view::<NSTextField>(&cm_desc) };
     let rc_desc_ref = unsafe { as_view::<NSTextField>(&rc_desc) };
+    let hdr_desc_ref = unsafe { as_view::<NSTextField>(&hdr_desc) };
 
     let panel = make_vertical_stack(
         &[
@@ -71,6 +85,8 @@ pub(crate) fn build(
             cm_desc_ref,
             unsafe { as_view::<NSStackView>(&rc_row) },
             rc_desc_ref,
+            unsafe { as_view::<NSStackView>(&hdr_row) },
+            hdr_desc_ref,
         ],
         8.0,
         mtm,
@@ -78,8 +94,9 @@ pub(crate) fn build(
     panel.setAlignment(NSLayoutAttribute::Leading);
     panel.setCustomSpacing_afterView(16.0, icc_desc_ref);
     panel.setCustomSpacing_afterView(16.0, cm_desc_ref);
+    panel.setCustomSpacing_afterView(16.0, rc_desc_ref);
 
-    for row in [&icc_row, &cm_row, &rc_row] {
+    for row in [&icc_row, &cm_row, &rc_row, &hdr_row] {
         let c = unsafe {
             NSLayoutConstraint::constraintWithItem_attribute_relatedBy_toItem_attribute_multiplier_constant(
                 row, NSLayoutAttribute::Width,
@@ -102,11 +119,14 @@ pub(crate) fn build(
     retained_views.push(unsafe { Retained::cast_unchecked(cm_desc) });
     retained_views.push(unsafe { Retained::cast_unchecked(rc_row) });
     retained_views.push(unsafe { Retained::cast_unchecked(rc_desc) });
+    retained_views.push(unsafe { Retained::cast_unchecked(hdr_row) });
+    retained_views.push(unsafe { Retained::cast_unchecked(hdr_desc) });
 
     ColorPanel {
         panel,
         icc_toggle,
         cm_toggle,
         rc_toggle,
+        hdr_toggle,
     }
 }

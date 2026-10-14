@@ -89,6 +89,7 @@ impl AppCommand {
             AppCommand::SetIccColorManagement(_) => Action(CommandKey::IccColorManagement),
             AppCommand::SetColorMatchDisplay(_) => Action(CommandKey::ColorMatchDisplay),
             AppCommand::SetRelativeColorimetric(_) => Action(CommandKey::RelativeColorimetric),
+            AppCommand::SetHdrOutput(_) => Action(CommandKey::HdrOutput),
             AppCommand::SetScrollToZoom(_) => Action(CommandKey::ScrollToZoom),
             AppCommand::SetPreloadNeighbors(_) => Action(CommandKey::PreloadNeighbors),
             AppCommand::SetTitleBar(_) => Action(CommandKey::TitleBar),
@@ -245,6 +246,9 @@ pub enum AppCommand {
     SetColorMatchDisplay(bool),
     /// Set rendering intent to relative colorimetric (false = perceptual).
     SetRelativeColorimetric(bool),
+    /// Set "HDR output" (Settings → Color): HDR images show brighter than SDR white on a display
+    /// that can. Off, every image renders SDR.
+    SetHdrOutput(bool),
     /// Set scroll-to-zoom mode (true = scroll zooms, false = scroll navigates).
     SetScrollToZoom(bool),
     /// Set preload-neighbors mode. When false, the preloader skips adjacent

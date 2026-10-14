@@ -13,7 +13,7 @@ About box under Help, its own Win32 settings dialog (`src/settings/windows/`), i
 thumbnail cache), a startup update check that opens the download in a browser (`src/updater/`), display-profile matching
 (the differentiator: images transformed into the calibrated monitor's own ICC profile, re-read when the window crosses
 screens), and the cross-platform core (decode, RAW pipeline, color transform, settings, navigation, and the header-only
-dimension read that sizes the window before the first pixel paints). That is the whole parity table: 111 of 125 done, 14
+dimension read that sizes the window before the first pixel paints). That is the whole parity table: 112 of 126 done, 14
 not applicable, nothing missing. Linux has the core, no menu bar, no settings window, no browser, and no display
 profile. Windows deliberately gets no onboarding window, and the launch empty state is the whole of it there
 (`apps/desktop/src/onboarding/CLAUDE.md` says why). Neither ships a release yet, and `docs/parity.md` is the honest

@@ -193,8 +193,9 @@ impl ImageCache {
         }
     }
 
-    /// Switch the cache budget between the SDR and HDR sizes. Called when the
-    /// RAW pipeline's `hdr_output` flag or whether the display can show HDR changes.
+    /// Switch the cache budget between the SDR and HDR sizes. Called when
+    /// `App::hdr_active` flips: the "HDR output" setting, or whether the display
+    /// can show HDR.
     /// Evicts LRU entries if the new budget is smaller than the
     /// currently-resident total.
     pub fn set_hdr_mode(&mut self, hdr: bool) {
@@ -417,11 +418,11 @@ pub struct Preloader {
     /// (all true). Changed via the Settings → RAW panel; the main thread flushes
     /// the cache and re-requests the current image when this changes.
     raw_flags: RawPipelineFlags,
-    /// Whether the active display can show HDR at all (its potential
-    /// headroom). Passed through to every decode task so the RAW decoder
-    /// picks between RGBA8 and RGBA16F output. The current headroom never
+    /// Whether HDR images decode to HDR: "HDR output" is on and the active
+    /// display can show HDR at all (its potential headroom); `App::hdr_active`.
+    /// Passed through to every decode task. The current headroom never
     /// reaches a decode: it's the shader's per-frame input.
-    hdr_display: bool,
+    hdr_active: bool,
     /// Sent after each `PreloadResponse` to wake winit's event loop.
     /// Without this, `ControlFlow::Wait` sleeps until the next OS event
     /// (mouse, key) and a freshly-decoded image can sit unprocessed in
@@ -445,7 +446,7 @@ impl Preloader {
         display_icc: Vec<u8>,
         use_relative_colorimetric: bool,
         raw_flags: RawPipelineFlags,
-        hdr_display: bool,
+        hdr_active: bool,
         event_proxy: EventLoopProxy<AppCommand>,
     ) -> Self {
         let (task_tx, task_rx) = mpsc::channel::<Box<dyn FnOnce() + Send + 'static>>();
@@ -471,7 +472,7 @@ impl Preloader {
             display_icc: Arc::new(display_icc),
             use_relative_colorimetric,
             raw_flags,
-            hdr_display,
+            hdr_active,
             event_proxy,
         }
     }
@@ -479,8 +480,8 @@ impl Preloader {
     /// Update whether future decode tasks may produce HDR. The caller flushes
     /// the image cache and re-submits preload tasks so existing entries
     /// (possibly RGBA8-only) don't mix with fresh RGBA16F ones.
-    pub fn set_hdr_display(&mut self, hdr_display: bool) {
-        self.hdr_display = hdr_display;
+    pub fn set_hdr_active(&mut self, hdr_active: bool) {
+        self.hdr_active = hdr_active;
     }
 
     /// Update the target display ICC profile (called when the window moves to a different display).
@@ -662,7 +663,7 @@ impl Preloader {
         let display_icc = Arc::clone(&self.display_icc);
         let use_relative_colorimetric = self.use_relative_colorimetric;
         let raw_flags = self.raw_flags;
-        let hdr_display = self.hdr_display;
+        let hdr_active = self.hdr_active;
         let event_proxy = self.event_proxy.clone();
         let task = move || {
             let file_name = path
@@ -756,7 +757,7 @@ impl Preloader {
                 &display_icc,
                 use_relative_colorimetric,
                 raw_flags,
-                hdr_display,
+                hdr_active,
                 decoding::OutputDepth::Native,
                 Some(salvage_sink),
                 Some(Arc::clone(&read_progress)),

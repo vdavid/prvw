@@ -35,6 +35,9 @@ pub struct State {
     pub match_display: bool,
     /// Relative colorimetric rendering intent (when on) vs perceptual (when off).
     pub relative_col: bool,
+    /// "HDR output": HDR images show brighter than SDR white when the display can. Off, every
+    /// image renders SDR. `App::hdr_active` combines it with the display's capability.
+    pub hdr_output: bool,
     /// ICC bytes for the target display. Defaults to sRGB; updated when the display
     /// is detected or the window moves.
     pub display_icc: Vec<u8>,
@@ -50,6 +53,7 @@ impl State {
             icc_enabled: settings.icc_color_management,
             match_display: settings.color_match_display,
             relative_col: settings.use_relative_colorimetric,
+            hdr_output: settings.color.hdr_output,
             display_icc: srgb_icc_bytes().to_vec(),
             monitors: display_profile::MonitorTracker::new(),
         }

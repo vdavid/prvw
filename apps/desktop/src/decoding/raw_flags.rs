@@ -56,8 +56,9 @@ pub const CLARITY_AMOUNT_RANGE: (f32, f32) = (0.0, 1.0);
 /// 1.0 = no extra lift (raw tone-curve output goes to the compositor
 /// unchanged); 2.0 = double the scene-white output (pushes SDR-range
 /// content into EDR headroom so the image reads "HDR-bright" rather than
-/// just "preserved detail in highlights"). Only active when HDR / EDR
-/// output is on. SDR path always behaves as if gain = 1.0.
+/// just "preserved detail in highlights"). Only active when a RAW decodes to
+/// HDR (Settings → Color → "HDR output" on, and a display that can show it).
+/// SDR path always behaves as if gain = 1.0.
 pub const HDR_GAIN_RANGE: (f32, f32) = (0.5, 4.0);
 
 /// Per-stage flags + tuning knobs for the RAW pipeline. All `true` and
@@ -130,17 +131,6 @@ pub struct RawPipelineFlags {
     /// correction.
     #[serde(default = "default_true")]
     pub lens_correction: bool,
-
-    // ── Output (Phase 5) ──────────────────────────────────────────────
-    /// HDR / EDR output: keep highlights above display-white alive through
-    /// the tone curve and ship a `RGBA16F` buffer to the renderer so an
-    /// EDR-capable display can show them. Silent no-op on SDR-only displays
-    /// (the headroom query returns 1.0 and the f16 conversion is the same
-    /// [0, 1] clamp Phase 4 produced). Defaults to `true`; users on mini-LED
-    /// or OLED XDR displays get HDR highlights by default, and the toggle
-    /// in Settings → RAW → Output lets them opt out.
-    #[serde(default = "default_true")]
-    pub hdr_output: bool,
 
     // ── Tuning knobs (Phase 6.0 + 6.1.1) ──────────────────────────────
     /// User-controllable offset added to the resolved baseline exposure
@@ -242,7 +232,6 @@ impl Default for RawPipelineFlags {
             capture_sharpening: true,
             chroma_denoise: true,
             lens_correction: true,
-            hdr_output: true,
             baseline_exposure_offset: 0.73,
             sharpen_amount: DEFAULT_AMOUNT,
             saturation_boost_amount: DEFAULT_SATURATION_BOOST,
@@ -336,9 +325,6 @@ impl RawPipelineFlags {
         if !self.lens_correction {
             out.push("lens correction");
         }
-        if !self.hdr_output {
-            out.push("HDR output");
-        }
         out
     }
 }
@@ -364,7 +350,6 @@ mod tests {
         assert!(flags.capture_sharpening);
         assert!(flags.chroma_denoise);
         assert!(flags.lens_correction);
-        assert!(flags.hdr_output);
         assert_eq!(flags.sharpen_amount, DEFAULT_AMOUNT);
         assert_eq!(flags.saturation_boost_amount, DEFAULT_SATURATION_BOOST);
         assert_eq!(flags.midtone_anchor, DEFAULT_MIDTONE_ANCHOR);

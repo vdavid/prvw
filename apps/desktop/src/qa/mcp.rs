@@ -228,6 +228,20 @@ fn mcp_tools_list() -> Result<Value, Value> {
             }
         },
         {
+            "name": "hdr_output",
+            "description": "Control Settings → Color → HDR output. On, HDR images (RAW, gain-map JPEGs, PQ/HLG PNGs, float TIFFs) render brighter than SDR white on a display that can show HDR; off, everything renders SDR. Re-decodes the image on screen only when that changes what it decodes to.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "true to enable, false to disable."
+                    }
+                },
+                "required": ["enabled"]
+            }
+        },
+        {
             "name": "set_window_geometry",
             "description": "Set the window position and/or size. All parameters are optional — only provided values are changed.",
             "inputSchema": {
@@ -476,6 +490,21 @@ fn mcp_tools_call(
             )?;
             let label = if enabled { "enabled" } else { "disabled" };
             let mut content = mcp_text_content(&format!("Scroll to zoom: {label}"));
+            content["state"] = state_json;
+            Ok(content)
+        }
+        "hdr_output" => {
+            let enabled = args["enabled"]
+                .as_bool()
+                .ok_or_else(|| json_rpc_error(-32602, "enabled must be a boolean"))?;
+            let state_json = send_and_wait(
+                proxy,
+                AppCommand::SetHdrOutput(enabled),
+                state,
+                SYNC_TIMEOUT,
+            )?;
+            let label = if enabled { "enabled" } else { "disabled" };
+            let mut content = mcp_text_content(&format!("HDR output: {label}"));
             content["state"] = state_json;
             Ok(content)
         }

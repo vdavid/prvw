@@ -4,7 +4,7 @@
 //! Each decodes to linear light relative to SDR white (1.0 = 203 nits) in its own primaries, then
 //! takes one of three shapes:
 //!
-//! - **HDR active** (`raw_flags.hdr_output` and a display that can show HDR): `SceneLinear`
+//! - **HDR active** (Settings → Color → "HDR output" and a display that can show HDR): `SceneLinear`
 //!   half-floats, which shader mode 3 tone-maps per frame at the live headroom.
 //! - **Otherwise** (an SDR display, HDR off, Linux, and every byte consumer): the same tone map on
 //!   the CPU with SDR white as the target, then `moxcms` from the linear source into the display
