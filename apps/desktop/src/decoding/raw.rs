@@ -622,11 +622,11 @@ pub(super) fn decode(
 
     // Final color conversion. Two paths:
     //
-    // - **SDR:** linear Rec.2020 → user's display ICC via moxcms. Honors
-    //   whatever calibration profile the display reports (including
-    //   custom-calibrated profiles). moxcms gamut-maps out-of-gamut
-    //   colors and clamps to [0, 1] on the way out, which is exactly what
-    //   the 8-bit quantizer needs.
+    // - **SDR:** linear Rec.2020 → user's display ICC. Honors whatever
+    //   calibration profile the display reports (including LUT-only
+    //   calibrated profiles). The primaries change before anything clips,
+    //   so out-of-gamut colors clip in the display's primaries and keep
+    //   their hue; see `rec2020_to_sdr_display`.
     //
     // - **HDR:** bypass moxcms entirely; apply a direct linear Rec.2020 →
     //   linear Display P3 matrix. Required for two reasons: (1) moxcms
@@ -660,13 +660,7 @@ pub(super) fn decode(
         let hdr_space = color::profiles::HdrDisplaySpace::for_host();
         color::profiles::rec2020_to_hdr_display_inplace(&mut rec2020, hdr_space);
     } else {
-        let source_profile = color::linear_rec2020_profile();
-        color::transform_f32_with_profile(
-            &mut rec2020,
-            &source_profile,
-            target_icc,
-            use_relative_colorimetric,
-        );
+        rec2020_to_sdr_display(&mut rec2020, target_icc, use_relative_colorimetric);
     }
     timings.mark("color_conv");
 
@@ -1037,6 +1031,19 @@ fn tag_value_to_f32(value: &Value) -> Option<f32> {
         Value::Byte(v) => v.first().map(|x| *x as f32),
         _ => None,
     }
+}
+
+/// The SDR path's color conversion: linear Rec.2020 into the display profile, in place. The
+/// primaries change before anything clips, so a saturated highlight past white clips in the
+/// display's primaries and keeps its hue (a clip in Rec.2020 first turns orange pastel), and a
+/// LUT-only display profile runs its LUTs (see `color::transform_linear_f32_to_display`).
+fn rec2020_to_sdr_display(rec2020: &mut [f32], target_icc: &[u8], use_relative_colorimetric: bool) {
+    color::transform_linear_f32_to_display(
+        rec2020,
+        &color::linear_rec2020_profile(),
+        target_icc,
+        use_relative_colorimetric,
+    );
 }
 
 /// Clamp every f32 to [0, 1] and promote to RGBA8 with full alpha. This is the
@@ -1508,6 +1515,126 @@ mod tests {
             PixelBuffer::Rgba8(v) => v.as_slice(),
             PixelBuffer::Rgba16F(_) => panic!("test expected RGBA8 but decode produced RGBA16F"),
         }
+    }
+
+    /// A saturated highlight past white keeps its hue on the SDR path: the primaries change
+    /// first and the clip happens in the display's primaries, the way the HDR path plus the
+    /// compositor clips it. A clamp in Rec.2020 before the matrix (`moxcms`' in-place f32
+    /// transform does that to its input) turns an orange highlight pastel.
+    #[test]
+    fn sdr_conversion_clips_in_the_displays_primaries() {
+        let light = [[2.0f32, 0.6, 0.1], [1.5, 1.4, 0.2], [0.4, 0.2, 0.1]];
+        let mut got: Vec<f32> = light.iter().flatten().copied().collect();
+        rec2020_to_sdr_display(&mut got, color::srgb_icc_bytes(), false);
+
+        // The reference: Rec.2020 → sRGB unclipped, then the clip and the sRGB curve.
+        let m = color::linear_rec2020_profile()
+            .transform_matrix(&moxcms::ColorProfile::new_srgb())
+            .v;
+        let encode = |v: f32| {
+            let v = v.clamp(0.0, 1.0);
+            let e = if v <= 0.003_130_8 {
+                12.92 * v
+            } else {
+                1.055 * v.powf(1.0 / 2.4) - 0.055
+            };
+            (e * 255.0).round() as u8
+        };
+        for (i, px) in light.iter().enumerate() {
+            let want: Vec<u8> = (0..3)
+                .map(|r| encode((0..3).map(|c| m[r][c] as f32 * px[c]).sum()))
+                .collect();
+            let have: Vec<u8> = got[i * 3..i * 3 + 3]
+                .iter()
+                .map(|&v| f32_to_u8(v))
+                .collect();
+            for (h, w) in have.iter().zip(&want) {
+                assert!(h.abs_diff(*w) <= 1, "{px:?}: {have:?} vs {want:?}");
+            }
+        }
+    }
+
+    /// A calibrated display profile built only from LUTs still gets the RAW converted through
+    /// its LUTs. `moxcms`' in-place f32 transform refuses such a target, which left the buffer
+    /// linear and showed the RAW far too dark.
+    #[test]
+    fn sdr_conversion_runs_a_lut_only_display_profile() {
+        let lut_icc = color::lut_only_icc();
+        let target = moxcms::ColorProfile::new_from_slice(&lut_icc).expect("parses");
+        let input = vec![0.18f32, 0.18, 0.18, 0.5, 0.2, 0.1];
+        let mut got = input.clone();
+        rec2020_to_sdr_display(&mut got, &lut_icc, false);
+
+        // The reference: `moxcms`' own copying transform through the same LUTs.
+        let mut want = vec![0.0f32; input.len()];
+        color::linear_rec2020_profile()
+            .create_transform_f32(
+                moxcms::Layout::Rgb,
+                &target,
+                moxcms::Layout::Rgb,
+                moxcms::TransformOptions::default(),
+            )
+            .expect("a LUT transform")
+            .transform(&input, &mut want)
+            .expect("runs");
+        assert_ne!(got, input, "left linear");
+        for (g, w) in got.iter().zip(&want) {
+            assert!((g - w).abs() < 1e-5, "{got:?} vs {want:?}");
+        }
+    }
+
+    /// What the SDR color conversion costs: alone on a 24 MP buffer, and inside a whole SDR
+    /// decode of a real RAW when `PRVW_RAW_SAMPLE` names one. Release only:
+    /// `PRVW_RAW_SAMPLE=/path/to.arw cargo test --release --bin prvw raw_sdr_decode_perf -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn raw_sdr_decode_perf() {
+        let median = |mut runs: Vec<f64>| {
+            runs.sort_by(f64::total_cmp);
+            runs[runs.len() / 2]
+        };
+        let pixels = 6000 * 4000;
+        let buffer: Vec<f32> = (0..pixels * 3)
+            .map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 8) as f32 / 16_777_216.0 * 1.3)
+            .collect();
+        for (name, target) in [
+            ("sRGB", color::srgb_icc_bytes()),
+            ("Display P3", color::display_p3_icc_bytes()),
+        ] {
+            let runs = (0..7)
+                .map(|_| {
+                    let mut rgb = buffer.clone();
+                    let start = std::time::Instant::now();
+                    rec2020_to_sdr_display(&mut rgb, target, false);
+                    start.elapsed().as_secs_f64() * 1e3
+                })
+                .collect();
+            println!(
+                "color conversion, 24 MP into {name}: {:.1} ms",
+                median(runs)
+            );
+        }
+        let Ok(path) = std::env::var("PRVW_RAW_SAMPLE") else {
+            return;
+        };
+        let path = Path::new(&path);
+        let bytes = std::fs::read(path).expect("reads the sample");
+        let runs = (0..5)
+            .map(|_| {
+                let start = std::time::Instant::now();
+                decode_sdr(
+                    path,
+                    bytes.clone(),
+                    None,
+                    color::srgb_icc_bytes(),
+                    false,
+                    RawPipelineFlags::default(),
+                )
+                .expect("decodes");
+                start.elapsed().as_secs_f64() * 1e3
+            })
+            .collect();
+        println!("SDR decode of {}: {:.1} ms", path.display(), median(runs));
     }
 
     #[test]

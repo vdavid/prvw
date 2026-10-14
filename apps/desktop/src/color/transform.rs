@@ -190,20 +190,19 @@ impl<T: Copy + Default + Into<u32>> BuiltTransform<'_, T> {
 
 /// Transform f32 RGB pixels from a source `ColorProfile` into a target ICC
 /// profile, in place. Input and output layouts are both `Rgb` (three
-/// components, no alpha). Used by the RAW decode path to convert its linear
-/// Rec.2020 buffer into the display's color space in f32, skipping an 8-bit
-/// round trip's rounding.
+/// components, no alpha). Only [`transform_linear_f32_to_display`] calls it,
+/// with the primaries already converted, to apply the target's curves.
 ///
-/// **It still clips in the source's primaries.** `moxcms`' in-place f32
+/// **Never hand it a conversion between primaries.** `moxcms`' in-place f32
 /// transform runs every input channel through its linearization table, which
 /// clamps to [0, 1] before the matrix, so a saturated channel above 1 (or a
 /// wide-gamut negative) is cut before the conversion sees it, and the hue
-/// shifts toward white. [`transform_linear_f32_to_display`] converts first and
-/// clips after; RAW stays here until David decides (spec Findings, 2026-10-14).
+/// shifts toward white. It also refuses a target that isn't a matrix-shaper
+/// profile, which leaves the buffer linear.
 ///
 /// Silently skips the transform on parse/setup errors and leaves the buffer
 /// untouched. The caller decides what to render in that case.
-pub fn transform_f32_with_profile(
+fn transform_f32_with_profile(
     rgb: &mut [f32],
     source: &ColorProfile,
     target_icc: &[u8],
@@ -273,7 +272,8 @@ pub fn transform_f32_with_profile(
 /// clips in the display's primaries, the way the GPU path and the compositor clip it, and keeps
 /// its hue. A target that isn't a matrix-shaper profile goes through its LUTs instead.
 ///
-/// For the scene-linear SDR renditions (`decoding::scene_linear`).
+/// For RAW's SDR develop (`decoding::raw`, linear Rec.2020) and the scene-linear SDR
+/// renditions (`decoding::scene_linear`).
 pub fn transform_linear_f32_to_display(
     rgb: &mut [f32],
     source: &ColorProfile,
@@ -470,61 +470,62 @@ fn profile_description(profile: &ColorProfile) -> String {
     desc.unwrap_or("unknown").to_string()
 }
 
+/// A display profile built from LUTs alone, the way calibration software writes them: a
+/// `lut16` B2A (identity input curves, an identity 2-point grid, the sRGB curve as output
+/// curves) and no TRCs, so it isn't a matrix-shaper profile and `moxcms`' in-place f32
+/// transform refuses it. Not an accurate sRGB: `moxcms` ignores a `lut16`'s matrix on this
+/// path, so it encodes PCS XYZ directly. It only has to be a real LUT profile.
+#[cfg(test)]
+pub(crate) fn lut_only_icc() -> Vec<u8> {
+    use moxcms::{LutDataType, LutStore, LutType, LutWarehouse};
+    let mut profile = ColorProfile::new_srgb();
+    profile.red_trc = None;
+    profile.green_trc = None;
+    profile.blue_trc = None;
+    profile.cicp = None;
+    const ENTRIES: u16 = 4096;
+    let table = |f: &dyn Fn(f64) -> f64| -> Vec<u16> {
+        (0..3)
+            .flat_map(|_| {
+                (0..ENTRIES).map(|i| {
+                    let x = f64::from(i) / f64::from(ENTRIES - 1);
+                    (f(x).clamp(0.0, 1.0) * 65_535.0).round() as u16
+                })
+            })
+            .collect()
+    };
+    let encode = |v: f64| {
+        if v <= 0.003_130_8 {
+            12.92 * v
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        }
+    };
+    let corners: Vec<u16> = (0..8u16)
+        .flat_map(|i| [(i >> 2) & 1, (i >> 1) & 1, i & 1].map(|bit| bit * 65_535))
+        .collect();
+    let lut = LutWarehouse::Lut(LutDataType {
+        num_input_channels: 3,
+        num_output_channels: 3,
+        num_clut_grid_points: 2,
+        matrix: moxcms::Matrix3d {
+            v: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        },
+        num_input_table_entries: ENTRIES,
+        num_output_table_entries: ENTRIES,
+        input_table: LutStore::Store16(table(&|x| x)),
+        clut_table: LutStore::Store16(corners),
+        output_table: LutStore::Store16(table(&encode)),
+        lut_type: LutType::Lut16,
+    });
+    profile.lut_b_to_a_perceptual = Some(lut.clone());
+    profile.lut_b_to_a_colorimetric = Some(lut);
+    profile.encode().expect("the LUT profile encodes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A display profile built from LUTs alone, the way calibration software writes them: a
-    /// `lut16` B2A (identity input curves, an identity 2-point grid, the sRGB curve as output
-    /// curves) and no TRCs, so it isn't a matrix-shaper profile and `moxcms`' in-place f32
-    /// transform refuses it. Not an accurate sRGB: `moxcms` ignores a `lut16`'s matrix on this
-    /// path, so it encodes PCS XYZ directly. It only has to be a real LUT profile.
-    fn lut_only_icc() -> Vec<u8> {
-        use moxcms::{LutDataType, LutStore, LutType, LutWarehouse};
-        let mut profile = ColorProfile::new_srgb();
-        profile.red_trc = None;
-        profile.green_trc = None;
-        profile.blue_trc = None;
-        profile.cicp = None;
-        const ENTRIES: u16 = 4096;
-        let table = |f: &dyn Fn(f64) -> f64| -> Vec<u16> {
-            (0..3)
-                .flat_map(|_| {
-                    (0..ENTRIES).map(|i| {
-                        let x = f64::from(i) / f64::from(ENTRIES - 1);
-                        (f(x).clamp(0.0, 1.0) * 65_535.0).round() as u16
-                    })
-                })
-                .collect()
-        };
-        let encode = |v: f64| {
-            if v <= 0.003_130_8 {
-                12.92 * v
-            } else {
-                1.055 * v.powf(1.0 / 2.4) - 0.055
-            }
-        };
-        let corners: Vec<u16> = (0..8u16)
-            .flat_map(|i| [(i >> 2) & 1, (i >> 1) & 1, i & 1].map(|bit| bit * 65_535))
-            .collect();
-        let lut = LutWarehouse::Lut(LutDataType {
-            num_input_channels: 3,
-            num_output_channels: 3,
-            num_clut_grid_points: 2,
-            matrix: moxcms::Matrix3d {
-                v: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-            },
-            num_input_table_entries: ENTRIES,
-            num_output_table_entries: ENTRIES,
-            input_table: LutStore::Store16(table(&|x| x)),
-            clut_table: LutStore::Store16(corners),
-            output_table: LutStore::Store16(table(&encode)),
-            lut_type: LutType::Lut16,
-        });
-        profile.lut_b_to_a_perceptual = Some(lut.clone());
-        profile.lut_b_to_a_colorimetric = Some(lut);
-        profile.encode().expect("the LUT profile encodes")
-    }
 
     /// A display profile with no matrix-shaper tags (a calibrated LUT profile) still gets the
     /// linear light converted through its LUTs, rather than linear values handed on as

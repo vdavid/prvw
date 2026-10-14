@@ -16,9 +16,11 @@ pub mod tone_curve;
 mod transform;
 
 pub use profiles::linear_rec2020_profile;
+#[cfg(test)]
+pub(crate) use transform::lut_only_icc;
 pub use transform::{
-    display_p3_icc_bytes, profiles_match, srgb_icc_bytes, transform_f32_with_profile,
-    transform_icc, transform_icc_16bit, transform_linear_f32_to_display,
+    display_p3_icc_bytes, profiles_match, srgb_icc_bytes, transform_icc, transform_icc_16bit,
+    transform_linear_f32_to_display,
 };
 
 pub mod display_profile;
