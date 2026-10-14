@@ -21,3 +21,9 @@ Every file in this directory is listed here with its source, license, and the at
   third-party content; the Display P3 profile in `iso-21496-64x48.jpg` is the one `moxcms` builds from the published
   primaries.
 - **License**: the repo's own, like the code that writes them.
+
+## `pq-bt2020-32x16.png`, `hlg-bt2020-32x16.png`, `sdr-cicp-display-p3-32x16.png`, `float-linear-peak-4-32x16.tif`, `float-linear-sdr-32x16.tif`
+
+- **Source**: generated for this repo by `apps/desktop/examples/make-hdr-fixtures.rs` from a synthetic ramp and flat
+  patches. No third-party content.
+- **License**: the repo's own, like the code that writes them.

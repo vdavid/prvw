@@ -14,18 +14,28 @@ use image::ImageDecoder;
 
 use crate::color;
 
+use super::scene_linear::{self, PngColor};
 use super::{DecodedImage, OutputDepth};
 
 /// Decode a non-JPEG image via the `image` crate and color-manage to the target ICC profile.
 /// 16-bit sources come back as `DisplaySdr` half-floats unless `depth` asks for 8 bits;
 /// everything else, and every source at [`OutputDepth::Rgba8`], comes back RGBA8.
+///
+/// PQ and HLG PNGs and float TIFFs are light, not display values (`scene_linear`): with
+/// `hdr_active` they come back `SceneLinear` for the shader to tone-map, otherwise tone-mapped
+/// to SDR here.
 pub(super) fn decode(
     path: &Path,
     bytes: Vec<u8>,
     target_icc: &[u8],
     use_relative_colorimetric: bool,
     depth: OutputDepth,
+    hdr_active: bool,
 ) -> Result<DecodedImage, String> {
+    // An 8-bit caller can't carry HDR, whatever it was told.
+    let hdr_active = hdr_active && depth == OutputDepth::Native;
+    // Header chunks only, before the pixels: `image` doesn't pass `cICP` on.
+    let png_color = scene_linear::probe_png(&bytes);
     let cursor = Cursor::new(&bytes);
     let reader = image::ImageReader::new(cursor)
         .with_guessed_format()
@@ -42,12 +52,43 @@ pub(super) fn decode(
 
     let icc_profile = decoder.icc_profile().ok().flatten();
 
-    let img = image::DynamicImage::from_decoder(decoder)
+    let mut img = image::DynamicImage::from_decoder(decoder)
         .map_err(|e| format!("Couldn't decode {}: {e}", crate::paths::for_display(path)))?;
 
-    let source_icc = icc_profile
-        .as_deref()
-        .unwrap_or_else(|| color::srgb_icc_bytes());
+    // A `cICP` chunk outranks `iCCP` (PNG third edition).
+    let cicp_icc;
+    let source_icc = match png_color {
+        PngColor::Hdr(signal) => {
+            return Ok(scene_linear::decode_hdr_png(
+                img,
+                signal,
+                target_icc,
+                use_relative_colorimetric,
+                hdr_active,
+            ));
+        }
+        PngColor::Sdr { icc, full_range } => {
+            if !full_range {
+                img = expanded_to_full_range(img);
+            }
+            cicp_icc = icc;
+            cicp_icc.as_slice()
+        }
+        PngColor::Untagged => icc_profile
+            .as_deref()
+            .unwrap_or_else(|| color::srgb_icc_bytes()),
+    };
+
+    if is_float(&img) {
+        return Ok(scene_linear::decode_float(
+            img,
+            icc_profile.as_deref(),
+            target_icc,
+            use_relative_colorimetric,
+            hdr_active,
+            depth,
+        ));
+    }
 
     if depth == OutputDepth::Native && is_16_bit(&img) {
         return Ok(decode_16_bit(
@@ -79,6 +120,23 @@ fn is_16_bit(img: &image::DynamicImage) -> bool {
     matches!(
         img,
         D::ImageLuma16(_) | D::ImageLumaA16(_) | D::ImageRgb16(_) | D::ImageRgba16(_)
+    )
+}
+
+/// Linear-light float samples, which `image` produces for float TIFFs.
+fn is_float(img: &image::DynamicImage) -> bool {
+    use image::DynamicImage as D;
+    matches!(img, D::ImageRgb32F(_) | D::ImageRgba32F(_))
+}
+
+/// A narrow-range SDR `cICP` PNG at full range, as RGBA16 so the scaling rounds once.
+fn expanded_to_full_range(img: image::DynamicImage) -> image::DynamicImage {
+    let bits = scene_linear::bits_per_channel(&img);
+    let (width, height) = (img.width(), img.height());
+    let mut samples = img.into_rgba16().into_raw();
+    scene_linear::expand_narrow_range(&mut samples, bits);
+    image::DynamicImage::ImageRgba16(
+        image::ImageBuffer::from_raw(width, height, samples).expect("same dimensions"),
     )
 }
 
@@ -249,7 +307,7 @@ mod tests {
     }
 
     fn decode_bytes(bytes: Vec<u8>, target_icc: &[u8], depth: OutputDepth) -> DecodedImage {
-        decode(Path::new("ramp"), bytes, target_icc, false, depth).expect("ramp decodes")
+        decode(Path::new("ramp"), bytes, target_icc, false, depth, false).expect("ramp decodes")
     }
 
     /// The banding this path exists to fix. A 16-bit ramp rounded to 8 bits

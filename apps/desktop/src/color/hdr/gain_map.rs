@@ -95,7 +95,9 @@ impl GainMapSpaces {
 /// at most a quarter of an 8-bit step; real conversions (sRGB to P3) are hundreds of times that.
 const IDENTITY_TOLERANCE: f64 = 1e-3;
 
-fn to_mat3(m: moxcms::Matrix3d) -> Mat3 {
+/// A `moxcms` conversion matrix in our shape, snapped to the exact identity within
+/// [`IDENTITY_TOLERANCE`]. Scene-linear sources (`decoding::scene_linear`) go through it too.
+pub fn to_mat3(m: moxcms::Matrix3d) -> Mat3 {
     let near_identity = m.v.iter().enumerate().all(|(r, row)| {
         row.iter().enumerate().all(|(c, &v)| {
             let identity = if r == c { 1.0 } else { 0.0 };

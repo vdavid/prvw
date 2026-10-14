@@ -29,21 +29,41 @@ pub struct SceneLinearParams {
 
 /// BT.2390's EETF on a luminance `y` relative to SDR white: content up to `content_peak` mapped
 /// onto a display that reaches `target_peak`.
+#[cfg_attr(not(test), allow(dead_code))] // The tests' handle on the curve; the app uses the others
 pub fn eetf(y: f32, content_peak: f32, target_peak: f32) -> f32 {
-    match Knee::new(content_peak, target_peak) {
-        Some(knee) if y > 0.0 => knee.apply(y),
-        _ => y,
-    }
+    ToneCurve::new(content_peak, target_peak).luminance(y)
 }
 
 /// [`eetf`] on `rgb`'s luminance, with R, G, and B scaled together so the hue stays.
 pub fn tone_map(rgb: [f32; 3], weights: [f32; 3], content_peak: f32, target_peak: f32) -> [f32; 3] {
-    let y = weights[0] * rgb[0] + weights[1] * rgb[1] + weights[2] * rgb[2];
-    if y <= 0.0 {
-        return rgb;
+    ToneCurve::new(content_peak, target_peak).rgb(rgb, weights)
+}
+
+/// [`eetf`] and [`tone_map`] for one source and target, set up once: what the CPU runs per
+/// pixel. The shader recomputes the setup per fragment, since its target moves every frame.
+#[derive(Clone, Copy, Debug)]
+pub struct ToneCurve(Option<Knee>);
+
+impl ToneCurve {
+    pub fn new(content_peak: f32, target_peak: f32) -> Self {
+        Self(Knee::new(content_peak, target_peak))
     }
-    let ratio = eetf(y, content_peak, target_peak) / y;
-    rgb.map(|v| v * ratio)
+
+    pub fn luminance(&self, y: f32) -> f32 {
+        match self.0 {
+            Some(knee) if y > 0.0 => knee.apply(y),
+            _ => y,
+        }
+    }
+
+    pub fn rgb(&self, rgb: [f32; 3], weights: [f32; 3]) -> [f32; 3] {
+        let y = weights[0] * rgb[0] + weights[1] * rgb[1] + weights[2] * rgb[2];
+        if y <= 0.0 {
+            return rgb;
+        }
+        let ratio = self.luminance(y) / y;
+        rgb.map(|v| v * ratio)
+    }
 }
 
 /// The EETF's constants for one source and target, in BT.2390's normalized PQ domain, where the
@@ -56,6 +76,10 @@ struct Knee {
     max_lum: f32,
     /// Where the curve leaves the identity (`KS`).
     start: f32,
+    /// `start` as a luminance, so the pixels below the knee (most of them) skip the PQ round
+    /// trip altogether: it's the identity there, and four `powf` per pixel made the CPU fallback
+    /// 66 ms on 12 MP.
+    start_luminance: f32,
 }
 
 impl Knee {
@@ -65,16 +89,21 @@ impl Knee {
         }
         let source_pq = pq_inverse_eotf(content_peak * REFERENCE_WHITE_NITS);
         let max_lum = pq_inverse_eotf(target_peak * REFERENCE_WHITE_NITS) / source_pq;
+        // Never below 0: a target far below the content would put the knee there, and the
+        // spline needs `start <= e <= 1`.
+        let start = (1.5 * max_lum - 0.5).max(0.0);
         Some(Self {
             source_pq,
             max_lum,
-            // Never below 0: a target far below the content would put the knee there, and the
-            // spline needs `start <= e <= 1`.
-            start: (1.5 * max_lum - 0.5).max(0.0),
+            start,
+            start_luminance: pq_eotf(start * source_pq) / REFERENCE_WHITE_NITS,
         })
     }
 
     fn apply(self, y: f32) -> f32 {
+        if y < self.start_luminance {
+            return y;
+        }
         // The 0.1% of pixels above the content peak land on the target with it.
         let e1 = (pq_inverse_eotf(y * REFERENCE_WHITE_NITS) / self.source_pq).min(1.0);
         let e2 = if e1 < self.start {

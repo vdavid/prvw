@@ -3562,6 +3562,7 @@ dependencies = [
  "objc2-image-io",
  "objc2-quick-look-thumbnailing",
  "plist",
+ "png",
  "pollster 1.0.1",
  "rawler",
  "rayon",

@@ -233,7 +233,16 @@ pub fn transform_f32_with_profile(
     };
 
     let start = Instant::now();
-    if let Err(e) = transform.transform(rgb) {
+    // One `moxcms` call runs on one thread; the transform is per pixel, so rayon chunks give the
+    // same result. 12 MP took 34 ms in one call, the scene-linear SDR fallback's whole budget.
+    use rayon::prelude::*;
+    const CHUNK_PIXELS: usize = 16_384;
+    let failed = rgb
+        .par_chunks_mut(CHUNK_PIXELS * 3)
+        .map(|chunk| transform.transform(chunk).err())
+        .find_any(Option::is_some)
+        .flatten();
+    if let Some(e) = failed {
         log::debug!("f32 ICC transform failed: {e}");
         return;
     }

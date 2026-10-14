@@ -26,6 +26,18 @@ Synthetic gain-map JPEGs, written by `cargo run --example make-hdr-fixtures` (it
 - `apple-64x48.jpg`: Apple's older flavor alone: maker-note headroom (tags 33 = 1.01, 48 = 0.5, so 2.64 stops) and a map
   tagged as Apple's HDR gain map.
 
+Synthetic scene-linear fixtures, written by the same example: 32×16, a grey ramp across the top half and four patches
+along the bottom (red, green, and blue at about reference white, then a warm highlight at the ramp's top), so a wrong
+transfer, wrong primaries, or a clip all show.
+
+- `pq-bt2020-32x16.png`: 16-bit PQ, BT.2020, `cICP` 9/16/0/1, light up to 1,000 nits, and a `cLLI` of 1,000 nits.
+- `hlg-bt2020-32x16.png`: 16-bit HLG, BT.2020, `cICP` 9/18/0/1, reference white at the 75% signal, the top clipping at
+  full signal (1,000 nits through the OOTF).
+- `sdr-cicp-display-p3-32x16.png`: 8-bit SDR, `cICP` 12/13/0/1 (Display P3, sRGB curve) and no ICC profile, so a reader
+  that ignores the chunk reads the saturated patches as sRGB.
+- `float-linear-peak-4-32x16.tif`: `Rgb32F`, linear BT.709, no ICC profile, peaking at 4.0 (four times SDR white).
+- `float-linear-sdr-32x16.tif`: the same scene peaking at exactly 1.0: SDR in a float container.
+
 ## Not checked in
 
 Larger real-world samples live outside the repo; the spec lists them under "Fixtures": two Pixel Ultra HDR photos on

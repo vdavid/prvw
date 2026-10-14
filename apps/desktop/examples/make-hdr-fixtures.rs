@@ -16,8 +16,20 @@
 //! - `apple-64x48.jpg`: Apple's older flavor. Headroom in an Apple maker note in the primary's
 //!   EXIF, a map tagged `urn:com:apple:photo:2020:aux:hdrgainmap` and nothing else.
 //!
+//! The scene-linear fixtures are 32×16, a grey ramp over four patches (see `scene_light`):
+//!
+//! - `pq-bt2020-32x16.png`, `hlg-bt2020-32x16.png`: 16-bit, `cICP` BT.2020 PQ or HLG, up to
+//!   1,000 nits; the PQ one carries a `cLLI` too.
+//! - `sdr-cicp-display-p3-32x16.png`: 8-bit, `cICP` Display P3 with the sRGB curve, no ICC.
+//! - `float-linear-peak-4-32x16.tif`, `float-linear-sdr-32x16.tif`: linear `Rgb32F`, peaking at 4.0
+//!   and at exactly 1.0.
+//!
 //! Self-made fixtures risk a misunderstanding shared by this writer and the app's reader, which
-//! is why the real iPhone file sits next to them.
+//! is why the real iPhone file sits next to them, and why the PQ and HLG curves here are written
+//! out again rather than shared with the app, whose tests pin the BT.2100 reference values.
+//!
+//! The `moxcms`-encoded ICC profile in `iso-21496-64x48.jpg` carries a creation timestamp, so a
+//! rerun rewrites that file with nothing else changed; keep the committed one.
 
 use std::path::Path;
 
@@ -41,6 +53,162 @@ fn main() {
     write("ultra-hdr-xmp-orientation-6.jpg", ultra_hdr(Some(6)));
     write("iso-21496-64x48.jpg", iso_21496());
     write("apple-64x48.jpg", apple());
+
+    write("pq-bt2020-32x16.png", pq_png());
+    write("hlg-bt2020-32x16.png", hlg_png());
+    write("sdr-cicp-display-p3-32x16.png", sdr_cicp_png());
+    write("float-linear-peak-4-32x16.tif", float_tiff(4.0));
+    write("float-linear-sdr-32x16.tif", float_tiff(1.0));
+}
+
+// ── Scene-linear fixtures: PQ and HLG PNGs (with `cICP`), an SDR `cICP` PNG, float TIFFs ──
+//
+// Each is 32×16: a grey ramp across the top half, and four patches along the bottom (red, green,
+// blue, and a warm highlight), so a wrong transfer, wrong primaries, or a clip all show.
+
+const SCENE_WIDTH: u32 = 32;
+const SCENE_HEIGHT: u32 = 16;
+
+/// Light at `(x, y)`, linear RGB relative to SDR white: the ramp runs from black to `top`, the
+/// patches sit at reference white except the highlight, which is `top`.
+fn scene_light(x: u32, y: u32, top: f32) -> [f32; 3] {
+    if y < SCENE_HEIGHT / 2 {
+        return [top * x as f32 / (SCENE_WIDTH - 1) as f32; 3];
+    }
+    match x / (SCENE_WIDTH / 4) {
+        0 => [0.8, 0.05, 0.05],
+        1 => [0.05, 0.8, 0.05],
+        2 => [0.05, 0.05, 0.8],
+        _ => [top, top * 0.7, top * 0.4],
+    }
+}
+
+/// SMPTE ST 2084's inverse EOTF. Written out here rather than shared with the app, so a mistake in
+/// one doesn't hide in the other; the app's tests pin the reference values.
+fn pq_signal(nits: f32) -> f32 {
+    let (m1, m2) = (2610.0 / 16384.0, 2523.0 / 4096.0 * 128.0);
+    let (c1, c2, c3) = (
+        3424.0 / 4096.0,
+        2413.0 / 4096.0 * 32.0,
+        2392.0 / 4096.0 * 32.0,
+    );
+    let y = (nits / 10_000.0f32).max(0.0).powf(m1);
+    ((c1 + c2 * y) / (1.0 + c3 * y)).powf(m2)
+}
+
+/// BT.2100's HLG OETF, scene light (0 to 1) to signal.
+fn hlg_signal(scene: f32) -> f32 {
+    let (a, b, c) = (0.178_832_77, 0.284_668_92, 0.559_910_7);
+    if scene <= 1.0 / 12.0 {
+        (3.0 * scene).sqrt()
+    } else {
+        a * (12.0 * scene - b).ln() + c
+    }
+}
+
+/// A 16-bit RGB PNG with `cICP` (BT.2020 primaries, full range) and, optionally, `cLLI`.
+fn cicp_png(
+    transfer: u8,
+    signal: impl Fn([f32; 3]) -> [f32; 3],
+    max_cll_nits: Option<u32>,
+) -> Vec<u8> {
+    let mut samples = Vec::new();
+    for y in 0..SCENE_HEIGHT {
+        for x in 0..SCENE_WIDTH {
+            for v in signal(light_at(x, y)) {
+                samples.extend_from_slice(
+                    &((v.clamp(0.0, 1.0) * 65_535.0).round() as u16).to_be_bytes(),
+                );
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, SCENE_WIDTH, SCENE_HEIGHT);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Sixteen);
+    let mut writer = encoder.write_header().expect("PNG header");
+    // `png` 0.18's encoder ignores `Info`'s code points, so the chunks go in by hand, right after
+    // the header (spec Findings, 2026-10-13).
+    writer
+        .write_chunk(png::chunk::cICP, &[9, transfer, 0, 1])
+        .expect("cICP");
+    if let Some(nits) = max_cll_nits {
+        let mut clli = (nits * 10_000).to_be_bytes().to_vec();
+        clli.extend_from_slice(&(nits * 10_000 / 4).to_be_bytes());
+        writer.write_chunk(png::chunk::cLLI, &clli).expect("cLLI");
+    }
+    writer.write_image_data(&samples).expect("PNG pixels");
+    writer.finish().expect("PNG end");
+    out
+}
+
+/// The scene's light at `(x, y)` with a 1,000-nit top (4.93× SDR white).
+fn light_at(x: u32, y: u32) -> [f32; 3] {
+    scene_light(x, y, 1000.0 / 203.0)
+}
+
+/// PQ, BT.2020: up to 1,000 nits, with a `cLLI` that says so.
+fn pq_png() -> Vec<u8> {
+    cicp_png(16, |light| light.map(|v| pq_signal(v * 203.0)), Some(1000))
+}
+
+/// HLG, BT.2020. The light is scene light, normalized so that reference white (1.0) sits at
+/// HLG's 75% signal (scene light 0.2650); the 1,000-nit top clips at full signal.
+fn hlg_png() -> Vec<u8> {
+    const REFERENCE_SCENE: f32 = 0.265;
+    cicp_png(
+        18,
+        |light| light.map(|v| hlg_signal((v * REFERENCE_SCENE).min(1.0))),
+        None,
+    )
+}
+
+/// 8-bit, `cICP` Display P3 with the sRGB curve: P3 red reads visibly differently from sRGB red,
+/// so a reader that ignores the chunk gets the patch wrong.
+fn sdr_cicp_png() -> Vec<u8> {
+    let mut rgb = Vec::new();
+    for y in 0..SCENE_HEIGHT {
+        for x in 0..SCENE_WIDTH {
+            let light = scene_light(x, y, 1.0).map(|v| v.min(1.0));
+            rgb.extend(light.map(|v| (srgb_encode(v) * 255.0).round() as u8));
+        }
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, SCENE_WIDTH, SCENE_HEIGHT);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("PNG header");
+    writer
+        .write_chunk(png::chunk::cICP, &[12, 13, 0, 1])
+        .expect("cICP");
+    writer.write_image_data(&rgb).expect("PNG pixels");
+    writer.finish().expect("PNG end");
+    out
+}
+
+fn srgb_encode(linear: f32) -> f32 {
+    if linear <= 0.003_130_8 {
+        12.92 * linear
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// A linear-light `Rgb32F` TIFF, BT.709, no ICC profile, peaking at `top`.
+fn float_tiff(top: f32) -> Vec<u8> {
+    let mut rgb = Vec::new();
+    for y in 0..SCENE_HEIGHT {
+        for x in 0..SCENE_WIDTH {
+            rgb.extend(scene_light(x, y, top));
+        }
+    }
+    let buffer = image::ImageBuffer::<image::Rgb<f32>, _>::from_raw(SCENE_WIDTH, SCENE_HEIGHT, rgb)
+        .expect("dimensions");
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb32F(buffer)
+        .write_to(&mut out, image::ImageFormat::Tiff)
+        .expect("encode TIFF");
+    out.into_inner()
 }
 
 /// A base with a horizontal and a vertical ramp, so a rotation shows.

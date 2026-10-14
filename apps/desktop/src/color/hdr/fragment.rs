@@ -34,8 +34,9 @@ pub enum ShaderMode {
 
 /// What the shader reads from its per-frame uniform (group 1). Display-dependent, shared by every
 /// image on screen.
-// Only the tests and the GPU parity harness run the reference until M4's CPU SDR fallback for
-// PQ/HLG runs it for real.
+// Only the tests and the GPU parity harness run the reference. The CPU SDR fallback for
+// scene-linear images (`decoding::scene_linear`) calls `tone_map` directly instead: it has no
+// texture sample or display matrix, and converts into the display profile with `moxcms`.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameInputs {

@@ -42,6 +42,7 @@ mod raw;
 mod raw_flags;
 mod raw_preview;
 mod read_progress;
+mod scene_linear;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -121,7 +122,6 @@ pub enum PixelEncoding {
     /// the shader tone-maps it from its content peak down to the display's current headroom.
     /// Only `Rgba16F`. PQ and HLG PNGs and float TIFFs brighter than SDR white, on an HDR
     /// display.
-    #[cfg_attr(not(test), allow(dead_code))] // Built by the PNG and float TIFF decoders, next.
     SceneLinear(SceneLinearParams),
 }
 
@@ -314,7 +314,6 @@ impl DecodedImage {
 
     /// Build a scene-linear HDR half-float image: linear light in the source primaries that
     /// `params` describes. Used by the PNG (PQ, HLG) and float TIFF paths when HDR is active.
-    #[cfg_attr(not(test), allow(dead_code))] // See `PixelEncoding::SceneLinear`.
     pub fn from_scene_linear_rgba16f(
         width: u32,
         height: u32,
@@ -510,6 +509,8 @@ fn decode_with(
             let exif = parse_exif_metadata(&bytes).map(Box::new);
             let owned_path = path.to_path_buf();
             let owned_icc = target_icc.to_vec();
+            // RAW's gate again: PQ, HLG, and float HDR stay scene-linear only when they can be shown.
+            let hdr_active = raw_flags.hdr_output && hdr_display;
             run_decode_cancellable(cancelled, salvage, move || {
                 let mut img = generic::decode(
                     &owned_path,
@@ -517,6 +518,7 @@ fn decode_with(
                     &owned_icc,
                     use_relative_colorimetric,
                     depth,
+                    hdr_active,
                 )?;
                 img.exif = exif;
                 Ok(finalize(img, orientation))
@@ -994,6 +996,60 @@ mod tests {
             PixelEncoding::GainMapped(map) => map,
             other => panic!("expected a gain map, got {other:?}"),
         }
+    }
+
+    /// PQ, HLG, and an HDR float TIFF: scene-linear half-floats with their measured peak on a
+    /// display that can show HDR, the tone-mapped SDR rendition everywhere else, and bytes for
+    /// the byte consumers whatever the display.
+    #[test]
+    fn scene_linear_fixtures_decode_by_what_the_display_can_show() {
+        for (name, peak) in [
+            ("pq-bt2020-32x16.png", 1000.0 / 203.0),
+            ("hlg-bt2020-32x16.png", 1000.0 / 203.0),
+            ("float-linear-peak-4-32x16.tif", 4.0),
+        ] {
+            let path = hdr_fixture(name);
+            let hdr = load_at(&path, true, OutputDepth::Native);
+            let PixelEncoding::SceneLinear(params) = &hdr.encoding else {
+                panic!("{name}: expected scene-linear, got {:?}", hdr.encoding);
+            };
+            assert!(
+                (params.content_peak - peak).abs() < peak * 0.01,
+                "{name}: peak {} vs {peak}",
+                params.content_peak
+            );
+            assert!(matches!(hdr.pixels, PixelBuffer::Rgba16F(_)), "{name}");
+            assert!(hdr.encoding.kind().is_hdr(), "{name}");
+            assert_eq!((hdr.width, hdr.height), (32, 16), "{name}");
+
+            for (hdr_display, depth) in [(false, OutputDepth::Native), (true, OutputDepth::Rgba8)] {
+                let sdr = load_at(&path, hdr_display, depth);
+                assert!(
+                    matches!(sdr.pixels, PixelBuffer::Rgba8(_)),
+                    "{name} at {hdr_display}, {depth:?}"
+                );
+                assert_eq!(sdr.encoding, PixelEncoding::DisplaySdr, "{name}");
+            }
+        }
+    }
+
+    /// A float TIFF within SDR white is SDR, on any display; an SDR `cICP` PNG is plain SDR.
+    #[test]
+    fn sdr_fixtures_in_hdr_containers_stay_sdr() {
+        let float = load_at(
+            &hdr_fixture("float-linear-sdr-32x16.tif"),
+            true,
+            OutputDepth::Native,
+        );
+        assert_eq!(float.encoding, PixelEncoding::DisplaySdr);
+        assert!(matches!(float.pixels, PixelBuffer::Rgba16F(_)));
+        let cicp = load_at(
+            &hdr_fixture("sdr-cicp-display-p3-32x16.png"),
+            true,
+            OutputDepth::Native,
+        );
+        assert_eq!(cicp.encoding, PixelEncoding::DisplaySdr);
+        assert!(matches!(cicp.pixels, PixelBuffer::Rgba8(_)));
     }
 
     /// Every flavor, on a display that can show HDR: an RGBA8 base plus its map, tagged with
