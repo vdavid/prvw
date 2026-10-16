@@ -17,11 +17,17 @@ import (
 // stopping a check stops what the check spawned. `cargo` spawns `rustc`, and a
 // grandchild that survives a cancelled run wedges the next one.
 func TestKillAllProcessesStopsTheWholeTree(t *testing.T) {
-	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	dir := t.TempDir()
+	childPidFile := filepath.Join(dir, "child.pid")
+	pidFile := filepath.Join(dir, "grandchild.pid")
 
-	// The child shell spawns a grandchild and then waits, so only a signal
-	// aimed at the whole process group reaches the grandchild.
-	cmd := exec.Command("sh", "-c", "sh -c 'echo $$ > "+pidFile+"; sleep 30' & sleep 30")
+	// The child shell spawns a grandchild, so only a signal aimed at the whole
+	// process group reaches the grandchild. Each shell writes its PID and then
+	// `exec`s, so once both files exist no fork is still in flight: a process
+	// forked while `killpg` runs can miss the signal, and a stray `sleep 30`
+	// holding the output pipe kept `Wait` blocked under load.
+	cmd := exec.Command("sh", "-c",
+		"sh -c 'echo $$ > "+pidFile+"; exec sleep 30' & echo $$ > "+childPidFile+"; exec sleep 30")
 
 	finished := make(chan struct{})
 	go func() {
@@ -29,7 +35,8 @@ func TestKillAllProcessesStopsTheWholeTree(t *testing.T) {
 		close(finished)
 	}()
 
-	grandchild := waitForGrandchild(t, pidFile)
+	waitForPid(t, childPidFile)
+	grandchild := waitForPid(t, pidFile)
 	waitUntilTracked(t, cmd)
 
 	KillAllProcesses()
@@ -50,9 +57,8 @@ func TestKillAllProcessesStopsTheWholeTree(t *testing.T) {
 	}
 }
 
-// waitForGrandchild blocks until the grandchild has written its PID, which also
-// means the whole tree is up.
-func waitForGrandchild(t *testing.T, pidFile string) int {
+// waitForPid blocks until a process has written its PID to pidFile.
+func waitForPid(t *testing.T, pidFile string) int {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -63,7 +69,7 @@ func waitForGrandchild(t *testing.T, pidFile string) int {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("the grandchild never wrote its PID")
+	t.Fatalf("%s never got a PID", filepath.Base(pidFile))
 	return 0
 }
 
