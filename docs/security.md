@@ -80,6 +80,10 @@ copyright lines to travel with the binary. `THIRD-PARTY-NOTICES.md` at the repo 
   them in a separate tool keeps the gating lane off the daily-changing database, and keeps cargo-audit's split between a
   failing vulnerability and a warning-only unmaintained crate, which cargo-deny would make errors.
 - **`govulncheck`** checks the Go check runner, and only flags vulnerable code we actually call.
+- **Both follow the three-day window.** A vulnerability whose fix is younger than three days warns rather than fails,
+  since failing would demand an upgrade this policy forbids, and keeps warning for three more days once the fix is
+  adoptable. Then it fails. A vulnerability with no fix, or a fix the check can't date, fails at once.
+  `scripts/check/CLAUDE.md` § Pinned tools and advisory checks has the mechanics.
 - **`pnpm audit`** covers the website's npm graph, run by hand (no check wraps it yet); `overrides` in
   `pnpm-workspace.yaml` hold the forced fixes.
 - The first two run in every local `./scripts/check.sh` and daily in `.github/workflows/advisories.yml`, deliberately

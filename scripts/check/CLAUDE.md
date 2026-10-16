@@ -55,6 +55,7 @@ On Windows the entry point is `scripts\check.ps1`, which takes the same flags an
 | `checks/website-*.go`                   | Website checks (eslint, typecheck, build)                                            |
 | `checks/scripts-go-*.go`                | Go checks (gofmt, vet, staticcheck, misspell, gocyclo, deadcode, govulncheck, tests) |
 | `checks/conflict-markers.go`            | Unresolved merge conflict markers in source and docs                                 |
+| `checks/vuln-fix-age.go`, `vuln-osv.go` | Fix-age policy for cargo-audit and govulncheck; OSV + crates.io fix lookup           |
 | `stats.go`                              | CSV stats logging (`~/.local/share/check-runner/prvw/check-log.csv`)                 |
 | `colors.go`                             | ANSI color constants                                                                 |
 | `utils.go`                              | `findRootDir()` (walks up until `AGENTS.md` is found)                                |
@@ -138,12 +139,18 @@ picture.
   bumping one without the other fails the `staticcheck` check. Renovate groups the two for that reason. Today's pin is a
   pseudo-version (a 2026-10-09 commit, the one Cmdr pins), because 2026.2.2 was inside the three-day window when Go
   1.27.2 had to land, and staying on 1.27.1 would have failed `govulncheck` on eight stdlib advisories.
-- **`cargo-audit`** (nickname `cargo-audit`) checks `Cargo.lock` against the RustSec database: a vulnerability fails, an
-  unmaintained or unsound warning warns. `cargoAuditIgnoredAdvisories` holds the accepted ones, each with why it doesn't
-  reach the shipped app and when to drop it. `cargo-audit` itself installs at a pinned `--version`.
-- **`govulncheck`** (nickname `govulncheck`) is the Go twin, and only flags advisories our code actually calls into. An
-  advisory whose fix is under three days old can't be adopted yet, so it warns, and turns red three days after it
-  becomes adoptable.
+- **`cargo-audit`** (nickname `cargo-audit`) checks `Cargo.lock` against the RustSec database: a vulnerability fails
+  (subject to the fix-age policy below), an unmaintained or unsound warning warns. `cargoAuditIgnoredAdvisories` holds
+  the accepted ones, each with why it doesn't reach the shipped app and when to drop it. `cargo-audit` itself installs
+  at a pinned `--version`.
+- **`govulncheck`** (nickname `govulncheck`) is the Go twin, and only flags advisories our code actually calls into.
+- **The fix-age policy** (`checks/vuln-fix-age.go`, shared by both, ported from Cmdr): a vulnerability whose fix is
+  under three days old can't be adopted yet, so it warns; it keeps warning for three more days once the fix is adoptable
+  (`vulnUpgradeGrace`), then fails. Each warning line names when its fix turns adoptable and when it fails. No fix, or
+  one the check can't date, fails at once. govulncheck reads the fix from its own report; cargo-audit's `patched` is
+  only a requirement (`>=0.23.46`), so it looks each advisory up on `api.osv.dev` by ID, takes the fix the record names
+  for our version, and dates it on crates.io (`checks/vuln-osv.go`). **Why**: `rustls` 0.23.46 fixed four advisories on
+  2026-10-14, and the daily scan went red two days later demanding an upgrade the three-day window forbids.
 - Both run in every local `./scripts/check.sh` and daily in `.github/workflows/advisories.yml`, so a new advisory for a
   dependency nobody touched still shows up within a day. They're deliberately not in `ci.yml`: a fresh advisory would
   turn every unrelated push red.

@@ -48,22 +48,22 @@ func TestParseGovulnStreamRejectsNonJSON(t *testing.T) {
 
 func TestSplitByFixAgeHoldsBackOnlyFixesInsideTheWindow(t *testing.T) {
 	now := time.Date(2026, 10, 10, 8, 0, 0, 0, time.UTC)
-	fresh := govulnAdvisory{ID: "GO-fresh", Module: "stdlib", FixedVersion: "v1.27.2"}
-	old := govulnAdvisory{ID: "GO-old", Module: "golang.org/x/net", FixedVersion: "v0.44.0"}
-	unfixed := govulnAdvisory{ID: "GO-unfixed", Module: "example.com/m"}
-	unknownDate := govulnAdvisory{ID: "GO-unknown", Module: "example.com/n", FixedVersion: "v2.0.0"}
-	adoptable := govulnAdvisory{ID: "GO-adoptable", Module: "golang.org/x/text", FixedVersion: "v0.30.0"}
+	fresh := vulnAdvisory{ID: "GO-fresh", Module: "stdlib", FixedVersion: "v1.27.2"}
+	old := vulnAdvisory{ID: "GO-old", Module: "golang.org/x/net", FixedVersion: "v0.44.0"}
+	unfixed := vulnAdvisory{ID: "GO-unfixed", Module: "example.com/m"}
+	unknownDate := vulnAdvisory{ID: "GO-unknown", Module: "example.com/n", FixedVersion: "v2.0.0"}
+	adoptable := vulnAdvisory{ID: "GO-adoptable", Module: "golang.org/x/text", FixedVersion: "v0.30.0"}
 	released := map[string]time.Time{
 		"GO-fresh":     now.Add(-40 * time.Hour),
 		"GO-adoptable": now.Add(-100 * time.Hour),
 		"GO-old":       now.Add(-90 * 24 * time.Hour),
 	}
-	fixReleased := func(a govulnAdvisory) (time.Time, bool) {
+	fixReleased := func(a vulnAdvisory) (time.Time, bool) {
 		at, ok := released[a.ID]
 		return at, ok
 	}
 
-	blocking, waiting := splitByFixAge([]govulnAdvisory{fresh, adoptable, old, unfixed, unknownDate}, now, fixReleased)
+	blocking, waiting := splitByFixAge([]vulnAdvisory{fresh, adoptable, old, unfixed, unknownDate}, now, fixReleased)
 
 	if len(waiting) != 2 || waiting[0].ID != "GO-fresh" || waiting[1].ID != "GO-adoptable" {
 		t.Fatalf("want GO-fresh and the adoptable-but-not-yet-due GO-adoptable held back, got %+v", waiting)
@@ -85,21 +85,21 @@ func TestSplitByFixAgeHoldsBackOnlyFixesInsideTheWindow(t *testing.T) {
 
 func TestSplitByFixAgeBlocksOnceTheGraceRunsOut(t *testing.T) {
 	now := time.Date(2026, 10, 14, 22, 31, 9, 0, time.UTC)
-	a := govulnAdvisory{ID: "GO-edge", Module: "stdlib", FixedVersion: "v1.27.2"}
-	split := func(age time.Duration) (blocking, waiting []govulnAdvisory) {
-		return splitByFixAge([]govulnAdvisory{a}, now, func(govulnAdvisory) (time.Time, bool) { return now.Add(-age), true })
+	a := vulnAdvisory{ID: "GO-edge", Module: "stdlib", FixedVersion: "v1.27.2"}
+	split := func(age time.Duration) (blocking, waiting []vulnAdvisory) {
+		return splitByFixAge([]vulnAdvisory{a}, now, func(vulnAdvisory) (time.Time, bool) { return now.Add(-age), true })
 	}
-	if blocking, waiting := split(govulnFixAdoptionWindow); len(blocking) != 0 || len(waiting) != 1 {
+	if blocking, waiting := split(vulnFixAdoptionWindow); len(blocking) != 0 || len(waiting) != 1 {
 		t.Errorf("a fix exactly three days old is adoptable but not yet due, so it warns: blocking=%v waiting=%v", blocking, waiting)
 	}
-	if blocking, waiting := split(govulnFixAdoptionWindow + govulnUpgradeGrace); len(blocking) != 1 || len(waiting) != 0 {
+	if blocking, waiting := split(vulnFixAdoptionWindow + vulnUpgradeGrace); len(blocking) != 1 || len(waiting) != 0 {
 		t.Errorf("a fix exactly six days old is due, so it blocks: blocking=%v waiting=%v", blocking, waiting)
 	}
 }
 
 func TestStdlibFixIsDatedByItsAdvisory(t *testing.T) {
 	published := time.Date(2026, 10, 8, 22, 31, 9, 0, time.UTC)
-	a := govulnAdvisory{ID: "GO-1", Module: "stdlib", FixedVersion: "v1.27.2", Published: published}
+	a := vulnAdvisory{ID: "GO-1", Module: "stdlib", FixedVersion: "v1.27.2", Published: published}
 	at, ok := govulnFixReleased(a, func(string, string) (time.Time, bool) {
 		t.Fatal("stdlib must not ask the module proxy")
 		return time.Time{}, false
@@ -111,7 +111,7 @@ func TestStdlibFixIsDatedByItsAdvisory(t *testing.T) {
 
 func TestModuleFixIsDatedByTheProxy(t *testing.T) {
 	proxyTime := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	a := govulnAdvisory{ID: "GO-2", Module: "golang.org/x/net", FixedVersion: "v0.44.0",
+	a := vulnAdvisory{ID: "GO-2", Module: "golang.org/x/net", FixedVersion: "v0.44.0",
 		Published: time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)}
 	at, ok := govulnFixReleased(a, func(module, version string) (time.Time, bool) {
 		if module != "golang.org/x/net" || version != "v0.44.0" {
@@ -126,10 +126,10 @@ func TestModuleFixIsDatedByTheProxy(t *testing.T) {
 
 func TestPendingFixesCollapseToOneLinePerFix(t *testing.T) {
 	adoptable := time.Date(2026, 10, 11, 22, 31, 9, 0, time.UTC)
-	stdlib := func(id string) govulnAdvisory {
-		return govulnAdvisory{ID: id, Module: "stdlib", Version: "v1.27.1", FixedVersion: "v1.27.2", FixAdoptable: adoptable, FixDue: adoptable.Add(govulnUpgradeGrace)}
+	stdlib := func(id string) vulnAdvisory {
+		return vulnAdvisory{ID: id, Module: "stdlib", Version: "v1.27.1", FixedVersion: "v1.27.2", FixAdoptable: adoptable, FixDue: adoptable.Add(vulnUpgradeGrace)}
 	}
-	groups := map[govulnPendingFix]*govulnPendingGroup{}
+	groups := map[vulnPendingFix]*vulnPendingGroup{}
 	addPendingFix(groups, stdlib("GO-2026-6611"), "scripts/check")
 	addPendingFix(groups, stdlib("GO-2026-6603"), "scripts/check")
 	addPendingFix(groups, stdlib("GO-2026-6603"), "xtask/scripts")

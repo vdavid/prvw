@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"strings"
+	"time"
 )
 
 // cargoAuditReport is the top-level JSON output from `cargo audit --json`.
@@ -62,47 +64,44 @@ func buildCargoAuditCmd() *exec.Cmd {
 	return exec.Command("cargo", args...)
 }
 
-// formatAuditReport builds a compact one-line-per-advisory summary.
-func formatAuditReport(report cargoAuditReport) string {
-	var lines []string
-
-	// Header
-	var parts []string
-	if report.Vulnerabilities.Count > 0 {
-		parts = append(parts, fmt.Sprintf("%d %s",
-			report.Vulnerabilities.Count,
-			Pluralize(report.Vulnerabilities.Count, "vulnerability", "vulnerabilities")))
-	}
-	totalWarnings := countAuditWarnings(report)
-	if totalWarnings > 0 {
-		parts = append(parts, fmt.Sprintf("%d %s",
-			totalWarnings, Pluralize(totalWarnings, "warning", "warnings")))
-	}
-	lines = append(lines, strings.Join(parts, ", "), "")
-
+// cargoAuditAdvisories turns the report's vulnerabilities into advisories for the fix-age split.
+// cargo-audit's `patched` is a requirement, not a version, so the fix is left for OSV to name.
+func cargoAuditAdvisories(report cargoAuditReport) []vulnAdvisory {
+	var advisories []vulnAdvisory
 	for _, v := range report.Vulnerabilities.List {
-		lines = append(lines, fmt.Sprintf("VULN  %s %s: %s", v.Package.Name, v.Package.Version, v.Advisory.Title))
-		fix := "no fix available"
-		if len(v.Versions.Patched) > 0 {
-			fix = "upgrade to " + strings.Join(v.Versions.Patched, " or ")
-		}
-		lines = append(lines, fmt.Sprintf("      %s  |  %s", fix, v.Advisory.ID))
+		advisories = append(advisories, vulnAdvisory{
+			ID: v.Advisory.ID, Summary: v.Advisory.Title, Ecosystem: "crates.io",
+			Module: v.Package.Name, Version: v.Package.Version,
+		})
 	}
+	return advisories
+}
+
+// splitCargoAuditAdvisories names each advisory's fix, then applies the shared fix-age split.
+func splitCargoAuditAdvisories(
+	advisories []vulnAdvisory,
+	now time.Time,
+	withFix func(vulnAdvisory) vulnAdvisory,
+	fixReleased func(vulnAdvisory) (time.Time, bool),
+) (blocking, waiting []vulnAdvisory) {
+	filled := make([]vulnAdvisory, len(advisories))
+	for i, a := range advisories {
+		filled[i] = withFix(a)
+	}
+	return splitByFixAge(filled, now, fixReleased)
+}
+
+// formatAuditWarnings is one sorted line per unmaintained or unsound crate, which warn on their own.
+func formatAuditWarnings(report cargoAuditReport) []string {
+	var lines []string
 	for kind, entries := range report.Warnings {
 		for _, w := range entries {
 			lines = append(lines, fmt.Sprintf("WARN  %s %s, %s: %s (%s)",
 				w.Package.Name, w.Package.Version, kind, w.Advisory.Title, w.Advisory.ID))
 		}
 	}
-	return strings.Join(lines, "\n")
-}
-
-func countAuditWarnings(report cargoAuditReport) int {
-	total := 0
-	for _, entries := range report.Warnings {
-		total += len(entries)
-	}
-	return total
+	sort.Strings(lines)
+	return lines
 }
 
 // parseAuditJSON extracts and parses the JSON object from cargo-audit output.
@@ -138,21 +137,25 @@ func RunCargoAudit(ctx *CheckContext) (CheckResult, error) {
 		return CheckResult{}, err
 	}
 
-	if report.Vulnerabilities.Count == 0 && countAuditWarnings(report) == 0 {
-		return Success(fmt.Sprintf("Scanned %d %s",
-			report.Lockfile.DependencyCount,
-			Pluralize(report.Lockfile.DependencyCount, "crate", "crates"))), nil
+	// A vulnerability whose fix is too fresh to adopt warns until it's three days past adoptable
+	// (`vuln-fix-age.go`); only an advisory that needs no network lookup skips it.
+	var blocking, waiting []vulnAdvisory
+	if advisories := cargoAuditAdvisories(report); len(advisories) > 0 {
+		releases := newCrateReleaseTimes()
+		blocking, waiting = splitCargoAuditAdvisories(advisories, time.Now(), releases.osvFix, releases.fixReleased)
 	}
-
-	summary := formatAuditReport(report)
-	if report.Vulnerabilities.Count > 0 {
-		return CheckResult{}, fmt.Errorf("security vulnerabilities found\n%s", indentOutput(summary))
+	var blockingLines []string
+	for _, a := range blocking {
+		blockingLines = append(blockingLines, "[Cargo.lock] "+a.describe())
 	}
-
-	totalWarnings := countAuditWarnings(report)
-	return CheckResult{
-		Code:    ResultWarning,
-		Message: fmt.Sprintf("%d %s\n%s", totalWarnings, Pluralize(totalWarnings, "warning", "warnings"), indentOutput(summary)),
-		Total:   -1, Issues: -1, Changes: -1,
-	}, nil
+	sort.Strings(blockingLines)
+	pending := map[vulnPendingFix]*vulnPendingGroup{}
+	for _, a := range waiting {
+		addPendingFix(pending, a, "Cargo.lock")
+	}
+	return vulnVerdict("cargo-audit", blockingLines,
+		"Upgrade past the fix, or, if it can't reach what we ship, add it to cargoAuditIgnoredAdvisories with a reason.",
+		pending, formatAuditWarnings(report),
+		fmt.Sprintf("Scanned %d %s", report.Lockfile.DependencyCount,
+			Pluralize(report.Lockfile.DependencyCount, "crate", "crates")))
 }
