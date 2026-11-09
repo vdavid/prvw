@@ -1,7 +1,7 @@
 # Check runner
 
 Go CLI that runs all code quality checks for the Prvw monorepo in parallel with dependency ordering. Ported from
-[Cmdr's check runner](https://github.com/vdavid/cmdr/tree/main/scripts/check). Invoked via `./scripts/check.sh`.
+[Cmdr's check runner](https://github.com/getcmdr/cmdr/tree/main/scripts/check). Invoked via `./scripts/check.sh`.
 
 ## Quick start
 
