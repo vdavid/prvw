@@ -1,6 +1,6 @@
 # Build stage. Both base images are pinned by digest, so a re-pushed tag can't
 # change what we build on; Renovate bumps the digests.
-FROM node:26-alpine@sha256:143494b1da2945f061539253adc65e4f1569ddf07da2d384c022c791a9d90a4a AS builder
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS builder
 
 WORKDIR /app
 
