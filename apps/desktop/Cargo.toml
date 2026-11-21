@@ -45,7 +45,7 @@ notify = "8.2.0"
 # `xdg-portal` + `wayland`, both Linux-only; `gtk3` is opt-in in 0.17, so the GTK chain M0
 # step 8 removed can't come back through here. Linux adds `xdg-portal` below, which is the
 # only backend it needs and whose one dependency (`pollster`) we already have.
-rfd = { version = "0.17.2", default-features = false }
+rfd = { version = "0.18.0", default-features = false }
 
 # The native menu bar and the right-click context menu. macOS and Windows only: muda's Linux
 # backend is GTK (nine C dependencies, and an `apt-get` in CI), and its menu bar can't attach to
@@ -114,7 +114,7 @@ libc = "0.2.190"
 # The file picker's Linux backend: the XDG desktop portal, which works under Flatpak and
 # Snap and needs no toolkit. The Wayland default feature is deliberately left off — it only
 # supplies a parent-window handle, and it would pull `libwayland-client` back in.
-rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The updater's manifest fetch and DMG download. `rustls` here means `aws-lc-rs`, which builds
